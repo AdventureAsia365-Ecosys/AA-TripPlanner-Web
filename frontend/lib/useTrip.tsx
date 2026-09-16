@@ -53,6 +53,12 @@ interface TripState {
   // specific component (per product rule: never "add a whole destination").
   focusDestinationId: string | null;
   focusDestination: (id: string | null) => void;
+  // A country the UI wants to *preview* highlighting on the map (e.g. while
+  // hovering a country in the picker), WITHOUT committing it as a filter. The
+  // map highlights this country's polygon; clearing it falls back to the
+  // selected filters.country highlight. null means "no preview".
+  previewCountry: string | null;
+  setPreviewCountry: (country: string | null) => void;
   setFilters: (f: BrowseFilters) => void;
   runSearch: (q: string) => Promise<void>;
   clearSearch: () => void;
@@ -110,6 +116,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   const [focusDestinationId, setFocusDestinationId] = useState<string | null>(
     null,
   );
+  const [previewCountry, setPreviewCountry] = useState<string | null>(null);
   const [narration, setNarration] = useState<string>("");
   const [narrationSource, setNarrationSource] = useState<string>("");
   const [narrating, setNarrating] = useState<boolean>(false);
@@ -275,6 +282,8 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     suggestions,
     focusDestinationId,
     focusDestination: setFocusDestinationId,
+    previewCountry,
+    setPreviewCountry,
     setFilters,
     runSearch,
     clearSearch,

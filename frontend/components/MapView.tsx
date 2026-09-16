@@ -4,7 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { fetchByCountry, fetchTile } from "@/lib/api";
-import { fetchRouteLegs, hasMapboxToken, MAPBOX_TOKEN, tileIdFor } from "@/lib/mapbox";
+import {
+  fetchRouteLegs,
+  hasMapboxToken,
+  MAPBOX_TOKEN,
+  nearestGateway,
+  tileIdFor,
+} from "@/lib/mapbox";
 import type { DestinationPin } from "@/lib/types";
 import { COUNTRY_BBOX, COUNTRY_ISO } from "@/lib/types";
 import { useTrip } from "@/lib/useTrip";
@@ -14,6 +20,7 @@ const SOURCE_ID = "destinations";
 const TRIP_LINE_SOURCE = "trip-line";
 const TRIP_FLIGHT_SOURCE = "trip-flight-line";
 const TRIP_STOP_SOURCE = "trip-stops";
+const TRIP_GATEWAY_SOURCE = "trip-gateways";
 const COUNTRY_SOURCE = "country-boundaries";
 
 // Interpolate a great-circle arc between two [lng,lat] points (n segments).
@@ -73,8 +80,14 @@ function tilesForBounds(b: mapboxgl.LngLatBounds): string[] {
 }
 
 export default function MapView() {
-  const { filters, searchResults, itinerary, focusDestinationId, focusDestination } =
-    useTrip();
+  const {
+    filters,
+    searchResults,
+    itinerary,
+    focusDestinationId,
+    focusDestination,
+    previewCountry,
+  } = useTrip();
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pinsRef = useRef<Map<string, DestinationPin>>(new Map());
@@ -303,6 +316,55 @@ export default function MapView() {
         paint: { "text-color": "#ffffff" },
       });
 
+      // --- Gateway airports: arrival (fly in, near the first stop) and
+      // departure (fly out, near the last stop). Drawn as a small ✈ marker so
+      // the map shows the WHOLE journey — the flight in, the route, the flight
+      // out — matching the "Getting there / Heading home" panel copy.
+      map.addSource(TRIP_GATEWAY_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: "trip-gateway-dot",
+        type: "circle",
+        source: TRIP_GATEWAY_SOURCE,
+        paint: {
+          "circle-color": "#ffffff",
+          "circle-radius": 11,
+          "circle-stroke-width": 2,
+          "circle-stroke-color": "#9AA5B1",
+        },
+      });
+      map.addLayer({
+        id: "trip-gateway-icon",
+        type: "symbol",
+        source: TRIP_GATEWAY_SOURCE,
+        layout: {
+          "text-field": "✈",
+          "text-size": 13,
+          "text-allow-overlap": true,
+        },
+        paint: { "text-color": "#5A6572" },
+      });
+      map.addLayer({
+        id: "trip-gateway-label",
+        type: "symbol",
+        source: TRIP_GATEWAY_SOURCE,
+        layout: {
+          "text-field": ["get", "label"],
+          "text-size": 10,
+          "text-offset": [0, 1.4],
+          "text-anchor": "top",
+          "text-font": ["DIN Offc Pro Medium", "Arial Unicode MS Regular"],
+          "text-optional": true,
+        },
+        paint: {
+          "text-color": "#5A6572",
+          "text-halo-color": "#ffffff",
+          "text-halo-width": 1.2,
+        },
+      });
+
       map.on("click", "unclustered", (e) => {
         const f = e.features?.[0];
         const id = f?.properties?.id as string | undefined;
@@ -347,6 +409,20 @@ export default function MapView() {
     refreshVisibleTiles();
   }, [filters, refreshVisibleTiles, searchResults]);
 
+  // Drive the country polygon highlight. A hover-preview (previewCountry) wins
+  // over the committed selection (filters.country) so hovering a country in
+  // the picker gives an instant "this is where you'd go" cue without changing
+  // the trip. Clearing the preview falls back to the selected country.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const active = previewCountry ?? filters.country ?? null;
+    const iso = active ? COUNTRY_ISO[active] ?? "__none__" : "__none__";
+    const f: mapboxgl.FilterSpecification = ["==", ["get", "iso_3166_1"], iso];
+    if (map.getLayer("country-highlight-fill")) map.setFilter("country-highlight-fill", f);
+    if (map.getLayer("country-highlight-line")) map.setFilter("country-highlight-line", f);
+  }, [previewCountry, filters.country]);
+
   // When a COUNTRY is picked (country-first filter), fly the map to that
   // country and show its destinations — otherwise selecting a country only
   // filters within the current viewport, which looks like "nothing happened".
@@ -355,23 +431,10 @@ export default function MapView() {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
 
-    // Update the country highlight (gold fill/outline) to match the selection.
-    const setHighlight = (iso: string) => {
-      const f: mapboxgl.FilterSpecification = [
-        "==",
-        ["get", "iso_3166_1"],
-        iso,
-      ];
-      if (map.getLayer("country-highlight-fill")) map.setFilter("country-highlight-fill", f);
-      if (map.getLayer("country-highlight-line")) map.setFilter("country-highlight-line", f);
-    };
-
     const country = filters.country;
     if (!country) {
-      setHighlight("__none__"); // cleared -> remove highlight
-      return; // the filters effect above refreshes tiles
+      return; // highlight handled by the dedicated effect below; refresh tiles elsewhere
     }
-    setHighlight(COUNTRY_ISO[country] ?? "__none__");
 
     let cancelled = false;
     fetchByCountry(country).then((pins) => {
@@ -449,6 +512,9 @@ export default function MapView() {
     const flightSrc = map.getSource(TRIP_FLIGHT_SOURCE) as
       | mapboxgl.GeoJSONSource
       | undefined;
+    const gatewaySrc = map.getSource(TRIP_GATEWAY_SOURCE) as
+      | mapboxgl.GeoJSONSource
+      | undefined;
 
     // A line needs at least 2 distinct points; dedupe consecutive identical
     // coords (several components can share one destination's coordinate).
@@ -456,9 +522,55 @@ export default function MapView() {
       (c, i, arr) => i === 0 || c[0] !== arr[i - 1][0] || c[1] !== arr[i - 1][1],
     );
 
+    // Arrival/departure gateways: fly into the gateway nearest the first stop,
+    // fly out from the gateway nearest the last stop. Draw a ✈ marker at each
+    // and a dashed arc linking it to the adjacent stop, so the map tells the
+    // full story (flight in -> route -> flight out). A one-stop trip still
+    // gets both a fly-in and fly-out cue. When the same gateway serves both
+    // ends we show it once.
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    const arrivalGw = first ? nearestGateway(first) : null;
+    const departureGw = last ? nearestGateway(last) : null;
+    const gatewayFeatures: GeoJSON.Feature[] = [];
+    const gatewayArcs: [number, number][][] = [];
+    const seenGateway = new Set<string>();
+    const addGateway = (
+      gw: { gw: { iata: string; city: string; lng: number; lat: number }; km: number } | null,
+      stop: [number, number] | undefined,
+      role: string,
+    ) => {
+      if (!gw || !stop) return;
+      const coord: [number, number] = [gw.gw.lng, gw.gw.lat];
+      // Link the airport to the stop unless they're effectively the same point.
+      if (gw.km > 1) gatewayArcs.push(greatCircleSegment(coord, stop));
+      if (!seenGateway.has(gw.gw.iata)) {
+        seenGateway.add(gw.gw.iata);
+        gatewayFeatures.push({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: coord },
+          properties: { label: `${gw.gw.iata} · ${role}`, iata: gw.gw.iata },
+        });
+      }
+    };
+    addGateway(arrivalGw, first, "arrive");
+    addGateway(departureGw, last, "depart");
+    gatewaySrc?.setData({
+      type: "FeatureCollection",
+      features: gatewayFeatures,
+    });
+
     if (stops.length < 2) {
       lineSrc.setData({ type: "FeatureCollection", features: [] });
-      flightSrc?.setData({ type: "FeatureCollection", features: [] });
+      // Even a single-stop trip shows its fly-in/out arcs.
+      flightSrc?.setData({
+        type: "FeatureCollection",
+        features: gatewayArcs.map((coords) => ({
+          type: "Feature" as const,
+          geometry: { type: "LineString" as const, coordinates: coords },
+          properties: {},
+        })),
+      });
       return;
     }
 
@@ -490,8 +602,19 @@ export default function MapView() {
           properties: {},
         }));
 
+      // Prepend the gateway fly-in/out arcs so the whole journey is dashed
+      // consistently (airport -> first stop, last stop -> airport).
+      const gatewayArcFeatures = gatewayArcs.map((coords) => ({
+        type: "Feature" as const,
+        geometry: { type: "LineString" as const, coordinates: coords },
+        properties: {},
+      }));
+
       road.setData({ type: "FeatureCollection", features: roadFeatures });
-      flight.setData({ type: "FeatureCollection", features: flightFeatures });
+      flight.setData({
+        type: "FeatureCollection",
+        features: [...gatewayArcFeatures, ...flightFeatures],
+      });
     });
     return () => {
       cancelled = true;

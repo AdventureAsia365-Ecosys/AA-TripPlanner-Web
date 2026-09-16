@@ -2,14 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
-import { fetchRouteLegs, formatLeg, haversineKm, type RouteLeg } from "@/lib/mapbox";
-import { COUNTRY_GATEWAY, type Gateway } from "@/lib/types";
+import { fetchRouteLegs, formatLeg, nearestGateway, type RouteLeg } from "@/lib/mapbox";
+import { COUNTRY_GATEWAY } from "@/lib/types";
 
 const LONG_TRIP_WARN_DAYS = 25;
-
-// Flatten all known gateways once; each stop finds its nearest gateway across
-// all countries, so we don't need a country field on the itinerary.
-const ALL_GATEWAYS: Gateway[] = Object.values(COUNTRY_GATEWAY).flat();
 
 // Map each gateway IATA back to its country, for a "countries visited" count.
 const IATA_TO_COUNTRY: Record<string, string> = Object.entries(
@@ -18,18 +14,6 @@ const IATA_TO_COUNTRY: Record<string, string> = Object.entries(
   for (const gw of gws) acc[gw.iata] = country;
   return acc;
 }, {});
-
-// Nearest gateway airport to a [lng,lat] stop, with the transfer distance.
-function nearestGateway(
-  coord: [number, number],
-): { gw: Gateway; km: number } | null {
-  let best: { gw: Gateway; km: number } | null = null;
-  for (const gw of ALL_GATEWAYS) {
-    const km = haversineKm(coord, [gw.lng, gw.lat]);
-    if (!best || km < best.km) best = { gw, km };
-  }
-  return best;
-}
 
 // Transfer hint from the gateway airport to the stop, tuned for adventure
 // trips (overland / boat / domestic flight rather than city cabs).

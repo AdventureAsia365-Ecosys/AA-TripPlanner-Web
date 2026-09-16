@@ -47,9 +47,15 @@ export default function FilterChips() {
     searching,
     searchResults,
     countries,
+    setPreviewCountry,
   } = useTrip();
   const [open, setOpen] = useState(true);
   const [text, setText] = useState("");
+  // Country picker is a custom listbox (not a native <select>) so hovering a
+  // country can preview-highlight it on the map — native <option> elements
+  // don't emit reliable mouseenter events.
+  const [countryOpen, setCountryOpen] = useState(false);
+  const countryBoxRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
@@ -62,6 +68,20 @@ export default function FilterChips() {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [text, runSearch, clearSearch]);
+
+  // Close the country listbox on an outside click, and drop any hover-preview
+  // highlight so the map returns to the selected country.
+  useEffect(() => {
+    if (!countryOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!countryBoxRef.current?.contains(e.target as Node)) {
+        setCountryOpen(false);
+        setPreviewCountry(null);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [countryOpen, setPreviewCountry]);
 
   const grouped = useMemo(() => groupByRegion(countries), [countries]);
 
@@ -154,32 +174,86 @@ export default function FilterChips() {
               <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-aa-ink text-[11px] font-bold text-white">
                 1
               </span>
-              <label htmlFor="country-select" className="text-xs font-semibold text-aa-ink">
-                Country
-              </label>
-              <select
-                id="country-select"
-                aria-label="Country"
-                value={filters.country ?? ""}
-                onChange={(e) =>
-                  setFilters({ ...filters, country: e.target.value || undefined })
-                }
-                className="aa-focus min-w-[12rem] flex-1 rounded-lg border border-aa-line bg-white px-2.5 py-1.5 text-xs text-aa-ink"
-              >
-                <option value="">All countries</option>
-                {grouped.map((g) => (
-                  <optgroup key={g.region} label={g.region}>
-                    {g.items.map((c) => (
-                      <option key={c.country} value={c.country}>
-                        {c.country} ({c.component_count})
-                      </option>
+              <span className="text-xs font-semibold text-aa-ink">Country</span>
+              <div ref={countryBoxRef} className="relative min-w-[12rem] flex-1">
+                <button
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded={countryOpen}
+                  onClick={() => {
+                    setCountryOpen((o) => !o);
+                    setPreviewCountry(null);
+                  }}
+                  className="aa-focus flex w-full items-center justify-between rounded-lg border border-aa-line bg-white px-2.5 py-1.5 text-xs text-aa-ink"
+                >
+                  <span className={filters.country ? "" : "text-aa-muted"}>
+                    {filters.country ?? "All countries"}
+                  </span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-aa-muted">
+                    <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+
+                {countryOpen && (
+                  <div
+                    role="listbox"
+                    aria-label="Country"
+                    onMouseLeave={() => setPreviewCountry(null)}
+                    className="aa-animate-in absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-auto rounded-lg border border-aa-line bg-white py-1 shadow-aa"
+                  >
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={!filters.country}
+                      onMouseEnter={() => setPreviewCountry(null)}
+                      onClick={() => {
+                        setFilters({ ...filters, country: undefined });
+                        setCountryOpen(false);
+                        setPreviewCountry(null);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left text-xs text-aa-ink hover:bg-aa-sand"
+                    >
+                      All countries
+                    </button>
+                    {grouped.map((g) => (
+                      <div key={g.region}>
+                        <div className="px-3 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-aa-muted">
+                          {g.region}
+                        </div>
+                        {g.items.map((c) => {
+                          const selected = filters.country === c.country;
+                          return (
+                            <button
+                              key={c.country}
+                              type="button"
+                              role="option"
+                              aria-selected={selected}
+                              onMouseEnter={() => setPreviewCountry(c.country)}
+                              onClick={() => {
+                                setFilters({ ...filters, country: c.country });
+                                setCountryOpen(false);
+                                setPreviewCountry(null);
+                              }}
+                              className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-xs hover:bg-aa-sand ${
+                                selected ? "font-semibold text-aa-gold-dark" : "text-aa-ink"
+                              }`}
+                            >
+                              <span>{c.country}</span>
+                              <span className="text-aa-muted">{c.component_count}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     ))}
-                  </optgroup>
-                ))}
-              </select>
+                  </div>
+                )}
+              </div>
               {filters.country && (
                 <button
-                  onClick={() => setFilters({ ...filters, country: undefined })}
+                  onClick={() => {
+                    setFilters({ ...filters, country: undefined });
+                    setPreviewCountry(null);
+                  }}
                   className="aa-focus rounded-lg px-2 py-1 text-xs font-medium text-aa-muted hover:text-aa-ink"
                 >
                   Clear
