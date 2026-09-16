@@ -322,6 +322,50 @@ async def test_handler_suggestions_route_ok():
     assert "suggestions" in json.loads(resp["body"])
 
 
+# --- suggestion geography re-rank (#5) --------------------------------------
+
+def test_rerank_without_anchor_preserves_taste_order():
+    from backend.assembly import suggestions
+    cands = [
+        {"id": "a", "name": "A", "lat": 0, "lng": 0, "country": "X", "component_count": 1},
+        {"id": "b", "name": "B", "lat": 0, "lng": 1, "country": "X", "component_count": 1},
+        {"id": "c", "name": "C", "lat": 0, "lng": 2, "country": "X", "component_count": 1},
+    ]
+    out = suggestions._rerank_by_route(cands, None, 3)
+    assert [s["id"] for s in out] == ["a", "b", "c"]
+    assert all(s["why"] == "Similar to places you've pinned" for s in out)
+
+
+def test_rerank_promotes_a_near_candidate_over_a_slightly_better_far_one():
+    from backend.assembly import suggestions
+    # Last stop at (0,0). Taste order is far0, far1, near, far2 (near is 3rd).
+    # 'near' sits right next to the last stop while the far ones are ~30° away.
+    # A small taste gap + a big proximity gap should let 'near' climb to the
+    # top — geography breaking a near-tie in taste.
+    cands = [
+        {"id": "far0", "name": "F0", "lat": 30.0, "lng": 30.0, "country": "X", "component_count": 1},
+        {"id": "near", "name": "N", "lat": 0.1, "lng": 0.1, "country": "X", "component_count": 1},
+        {"id": "far1", "name": "F1", "lat": 30.0, "lng": 31.0, "country": "X", "component_count": 1},
+        {"id": "far2", "name": "F2", "lat": 30.0, "lng": 32.0, "country": "X", "component_count": 1},
+    ]
+    # far0 is taste #1 but ~4700km away (geo=1.0): 0.6*0 + 0.4*1 = 0.40.
+    # near is taste #2 but next-door (geo=0.0):    0.6*0.333 + 0.4*0 = 0.20.
+    # near wins.
+    out = suggestions._rerank_by_route(cands, (0.0, 0.0), 4)
+    assert out[0]["id"] == "near"
+    assert out[0]["why"].endswith("close to your last stop")
+
+
+def test_rerank_keeps_top_taste_when_also_closest():
+    from backend.assembly import suggestions
+    cands = [
+        {"id": "best", "name": "Best", "lat": 0.1, "lng": 0.1, "country": "X", "component_count": 1},
+        {"id": "other", "name": "Other", "lat": 20.0, "lng": 20.0, "country": "X", "component_count": 1},
+    ]
+    out = suggestions._rerank_by_route(cands, (0.0, 0.0), 1)
+    assert out[0]["id"] == "best"
+
+
 # --- handler routing --------------------------------------------------------
 
 @pytest.mark.asyncio

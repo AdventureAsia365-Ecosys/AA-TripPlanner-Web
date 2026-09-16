@@ -38,6 +38,26 @@ export interface RouteLeg {
   to: [number, number];
 }
 
+import { COUNTRY_GATEWAY, type Gateway } from "./types";
+
+// All known gateway airports, flattened once across countries. A stop finds
+// its nearest gateway across this whole set, so we don't need a country field
+// on the itinerary to place arrival/departure.
+export const ALL_GATEWAYS: Gateway[] = Object.values(COUNTRY_GATEWAY).flat();
+
+// Nearest gateway airport to a [lng,lat] stop, with the transfer distance.
+// Returns null only when no gateways are configured at all.
+export function nearestGateway(
+  coord: [number, number],
+): { gw: Gateway; km: number } | null {
+  let best: { gw: Gateway; km: number } | null = null;
+  for (const gw of ALL_GATEWAYS) {
+    const km = haversineKm(coord, [gw.lng, gw.lat]);
+    if (!best || km < best.km) best = { gw, km };
+  }
+  return best;
+}
+
 // Haversine great-circle distance in km between two [lng,lat] points.
 export function haversineKm(a: [number, number], b: [number, number]): number {
   const R = 6371;
