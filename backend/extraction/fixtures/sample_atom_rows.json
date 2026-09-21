@@ -1,0 +1,23 @@
+[
+  {
+    "tour_id": "SAMPLE-VN-01",
+    "itinerary_day": 1,
+    "text": "Arrive in Hanoi; evening walking tour of the Old Quarter's temples and street-food stalls.",
+    "primary_destination": "Hanoi",
+    "country": "Vietnam"
+  },
+  {
+    "tour_id": "SAMPLE-VN-01",
+    "itinerary_day": 2,
+    "text": "Overnight cruise on Halong Bay with kayaking among the limestone karsts.",
+    "primary_destination": "Hanoi",
+    "country": "Vietnam"
+  },
+  {
+    "tour_id": "SAMPLE-VN-01",
+    "itinerary_day": 3,
+    "text": "Multi-day trek through the terraced rice fields and hill-tribe villages around Sapa.",
+    "primary_destination": "Hanoi",
+    "country": "Vietnam"
+  }
+]

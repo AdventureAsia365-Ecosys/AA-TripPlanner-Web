@@ -1,0 +1,84 @@
+name: Deploy Lambdas
+
+# Builds the two TripPlanner Lambda zips and ships them to AWS via a
+# least-privilege GitHub OIDC role (aa-tripplanner-dev-app-deploy, defined in
+# AA-CIS-Infra accounts/aa365/tripplanner.tf). This repo owns the Lambda CODE;
+# AA-CIS-Infra owns the infrastructure. See that repo's
+# docs/implementation-notes/AA-TripPlanner-backend.md.
+#
+# Prereqs (one-time, done in AA-CIS-Infra apply):
+#   - the two Lambdas + the artifacts bucket + the OIDC deploy role exist.
+# Repo configuration (Settings -> Secrets and variables -> Actions -> Variables):
+#   - AWS_DEPLOY_ROLE_ARN   (default below if unset)
+#   - LAMBDA_ARTIFACTS_BUCKET (default below if unset)
+# Both are non-secret identifiers; the defaults match the dev account so the
+# workflow works out of the box, and can be overridden per environment.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-lambdas.yml"
+
+permissions:
+  id-token: write # assume the OIDC role
+  contents: read
+
+concurrency:
+  group: deploy-lambdas
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-1
+  AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN || 'arn:aws:iam::005097885195:role/aa-tripplanner-dev-app-deploy' }}
+  ARTIFACTS_BUCKET: ${{ vars.LAMBDA_ARTIFACTS_BUCKET || 'aa-tripplanner-dev-lambda-artifacts-005097885195' }}
+  BROWSE_FUNCTION: aa-tripplanner-dev-browse
+  ASSEMBLY_FUNCTION: aa-tripplanner-dev-assembly
+
+jobs:
+  deploy:
+    name: Build + deploy Lambda code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Lambda zips
+        run: bash backend/package_lambdas.sh
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify identity
+        run: aws sts get-caller-identity
+
+      - name: Upload artifacts to S3
+        run: |
+          aws s3 cp dist/tripplanner/browse.zip   "s3://${ARTIFACTS_BUCKET}/browse.zip"
+          aws s3 cp dist/tripplanner/assembly.zip "s3://${ARTIFACTS_BUCKET}/assembly.zip"
+
+      - name: Update Lambda code from S3
+        run: |
+          aws lambda update-function-code \
+            --function-name "${BROWSE_FUNCTION}" \
+            --s3-bucket "${ARTIFACTS_BUCKET}" --s3-key browse.zip \
+            --publish >/dev/null
+          aws lambda update-function-code \
+            --function-name "${ASSEMBLY_FUNCTION}" \
+            --s3-bucket "${ARTIFACTS_BUCKET}" --s3-key assembly.zip \
+            --publish >/dev/null
+
+      - name: Wait for updates to settle
+        run: |
+          aws lambda wait function-updated --function-name "${BROWSE_FUNCTION}"
+          aws lambda wait function-updated --function-name "${ASSEMBLY_FUNCTION}"
+          echo "Both Lambdas updated."
