@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  background-color: #f8f6f2; /* aa.offwhite */
+  color: #1f2933; /* aa.ink */
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Consistent gold focus ring for interactive elements (aa-focus). */
+.aa-focus:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #db9628;
+  border-radius: 0.5rem;
+}
+
+/* Subtle entrance for popovers/panels (aa-animate-in). */
+@keyframes aaFadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.aa-animate-in {
+  animation: aaFadeInUp 0.18s ease-out both;
+}

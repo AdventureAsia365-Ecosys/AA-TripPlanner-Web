@@ -112,3 +112,46 @@ unverified guess.
 - Do not build a fallback that re-parses `aa_itineraries` free text for
   tour-days with zero atoms — accepted as an out-of-scope edge case for
   this build.
+
+## Current deployed state (updated 2026-09-13)
+See docs/architecture-overview.md + docs/change-report-mvp-completion.md
+for the full picture. Deltas from the original plan above:
+
+- **Edge auth**: API Gateway stays `authorization = NONE`; instead both
+  Lambdas verify a shared secret header `X-TripPlanner-Key`
+  (backend/shared/auth.py), which only the server-side BFF sends. Secret
+  is `tripplanner/dev/api-key` (Terraform `random_password`), injected as
+  the Lambda env `TRIPPLANNER_API_KEY` and set in Vercel env. Disabled
+  when the env is empty (local/tests). A JWT/authorizer + CloudFront are
+  still deferred.
+- **Compose model id**: `global.anthropic.claude-sonnet-4-6` (NOT `us.`).
+  The satellite invoker roles (AA3-Bedrock-Invoker / AA-Bedrock-Invoker)
+  only allow the `global.` inference profile; the `us.` id → AccessDenied.
+  Embed stays `us.cohere.embed-v4:0` (direct on acc2, 1536-dim).
+- **Narration**: reachable via `POST /trip/{id}/narrate` (compose |
+  renarrate). Uses a BUFFERED `bedrock invoke` (not
+  InvokeModelWithResponseStream) — the route returns the whole narration
+  as JSON, so streaming buys nothing and needs no extra IAM.
+- **Embeddings**: the deterministic seeder leaves `embedding = NULL`;
+  `backend/extraction/backfill_embeddings.py` fills them (idempotent).
+  Semantic search only returns rows with a populated embedding.
+- **Search UI**: the FilterChips search box calls the semantic
+  `/browse/search` endpoint (debounced); the map shows ranked results.
+- **Frontend deploy (Vercel, Root Directory = frontend)**: copy
+  `frontend/.vercel` to the repo root, then run
+  `vercel deploy --prod --yes --archive=tgz` FROM THE REPO ROOT (remote
+  build applies Root Directory correctly). Do NOT run `vercel --prod` from
+  `frontend/` (looks for `frontend/frontend` → ENOENT). Do NOT
+  `vercel pull` from the repo root (writes a bad microfrontends
+  vercel.json).
+- **Local AWS + MFA**: terraform/boto3 under a non-interactive shell hit
+  an MFA prompt for the assume-role profiles. Workaround:
+  `aws configure export-credentials --profile <p> --format env`, eval the
+  `export AWS_*` lines, then `unset AWS_PROFILE`.
+
+## Deferred (tracked)
+- Auto-refresh: new tours atomized into `acp_contract.tour_atoms` do NOT
+  automatically appear in TripPlanner — extraction is manual/offline. A
+  scheduled/triggered re-run (+ idempotent `run.py`) is a future task.
+- Real advisor email (SES), CloudFront over Browse, Mapbox token URL
+  restriction, mis-geocoded-destination cleanup, RDS admin pw rotation.

@@ -70,3 +70,18 @@ active tours, 1289 atoms total). No mock data phase — see tech.md for why.
 - Any language other than English
 - Deeper cache optimization beyond a fixed TTL (revisit once real usage
   data exists)
+
+## Current state note (updated 2026-09-13)
+- Live on prod: browse map, pin components, live day-by-day itinerary,
+  drag-reorder, AI narration (Compose/Regenerate), send-to-advisor +
+  registration. Semantic search (free-text box) narrows the map by
+  meaning, ranked — it is a filter over the already-visible catalog, never
+  an entry gate (still map-first). Advisor notification is a v1 logging
+  stub (real email deferred). See docs/change-report-mvp-completion.md.
+- Known: a minority of destinations are mis-geocoded (Mapbox limit=1
+  landing on a same-named place elsewhere) — affects map pin placement
+  only, not search relevance.
+- Deferred (tracked): when new tours are atomized into
+  `acp_contract.tour_atoms`, they do NOT yet flow automatically into the
+  TripPlanner map — the extraction step is manual. Auto-refresh is a
+  planned future task.
