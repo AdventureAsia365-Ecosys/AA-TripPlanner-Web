@@ -26,25 +26,35 @@ AA-CIS-App. What it shares with the rest of the ecosystem is a small set of AWS-
 
 ## Architecture at a glance
 
-```
+```text
 Traveler (browser)
       │
       ▼
 Next.js 14 frontend  ──(Mapbox GL)──►  interactive map UI
-      │  HTTP (JSON)
+      │  same-origin /api/* (BFF, server-side; holds the TripPlanner API key)
+      ▼
+API Gateway HTTP v2  (ANY /browse/{proxy+}, ANY /trip/{proxy+}; edge shared secret
+      │               X-TripPlanner-Key, no per-user auth yet)
       ▼
 Two Python 3.12 Lambda functions
-  ├─ browse      → stateless, cacheable reads (destinations, suggestions)
+  ├─ browse      → stateless, cacheable reads (destinations, suggestions), no LLM
   └─ assembly    → stateful writes (trip mutations) + Bedrock (AI narrative/plan)
       │
       ▼
-Postgres
-  ├─ tripplanner.*        (owned here — trips, events, taste vectors)
-  └─ shared.destinations  (shared reference data, CIS-owned)
+Postgres (the shared RDS in acc2)
+  ├─ tripplanner.*        (owned here — itinerary_components, customers, sessions,
+  │                        trip_events, trip_drafts; pgvector)
+  ├─ shared.destinations  (shared reference data, geocoded lat/lng)
+  └─ read-only: acp_contract.tour_atoms, gold_aa_internal.published_tours (CIS-owned)
       │
       ▼
-Amazon Bedrock  (via cross-account role: acc3 primary → acc1 fallback)
+Amazon Bedrock  — Cohere Embed v4 called directly in acc2;
+                  Claude via cross-account role (acc3 primary → acc1 fallback)
 ```
+
+The journey ends with a **draft trip + customer** sent to an advisor ("Send to advisor" +
+sign-up), not a completed booking — booking belongs to the future AA-Booking (AAA) product
+(see `docs/tripplanner-to-aaa-handoff.md` in the root docs repo).
 
 ### Frontend
 
@@ -73,15 +83,30 @@ Amazon Bedrock  (via cross-account role: acc3 primary → acc1 fallback)
   fold over its events. This gives a natural history/undo and makes concurrent edits reconcilable.
 - **Taste vector**: a per-traveler preference signal built from their interactions, combined with
   **geographic** proximity to drive suggestions ("you liked X, and Y is nearby and similar").
+  Since AA-590 (PR #46) "suggest next place" re-ranks by 0.6 taste (pgvector) + 0.4 distance to
+  the trip's last stop (absolute km, ramp 150-1500 km) in `backend/assembly/suggestions.py`;
+  with no anchor stop it falls back to taste order only.
+- **Map extras (AA-589, PR #46)**: arrival/departure gateways are drawn on the map (airport
+  marker + dashed arc to the first/last stop; `ALL_GATEWAYS` / `nearestGateway` in
+  `frontend/lib/mapbox.ts`), and hovering a country in the country picker previews its highlight
+  (custom listbox — a native `<option>` does not fire hover events). The gateway table covers
+  only 6 countries so far (Laos, Sri Lanka, South Korea, Nepal, Japan, India); other countries
+  snap to the nearest listed gateway.
 - Schema ownership: everything under `tripplanner.*` is owned by this repo's migrations.
   `shared.destinations` is **read-shared** reference data owned by the CIS side — treat it as
   read-only from here; do not migrate or mutate it from this repo.
 
 ### AI (Bedrock)
 
-- Only the **assembly** Lambda calls Bedrock, for trip narrative/plan assembly.
-- Cross-account access follows the ecosystem Bedrock routing: **acc3 primary → acc1 fallback**
-  (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md` for the account map).
+- Only the **assembly** Lambda calls Claude, for trip narrative/plan assembly
+  (`global.anthropic.claude-sonnet-4-6` through the satellite role).
+- Embeddings use **Cohere Embed v4** (`us.cohere.embed-v4:0`, 1536-dim), called directly in acc2
+  without the satellite.
+- Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 primary → acc1
+  fallback** (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md`).
+- `itinerary_components` is built by an offline extraction pipeline from CIS published tours and
+  atoms. It is not refreshed automatically when new tours are published; the CIS data reset of
+  16/09/2026 means it must be rebuilt after the CIS rerun (tracked in CIS Linear AA-600).
 - The trust and role wiring that make this call possible live in **AA-CIS-Infra**, not here.
 
 ## Deploy & CI
@@ -102,7 +127,14 @@ Amazon Bedrock  (via cross-account role: acc3 primary → acc1 fallback)
 - It does not own or migrate `shared.destinations` — read-only from here.
 - It does not provision its own AWS resources or OIDC roles — those live in AA-CIS-Infra.
 - **Agents must not merge to the production branch directly.** Ship via PR and let the human
-  merge (matches this repo's stated policy and the ecosystem program rules).
+  merge (matches this repo's stated policy and the ecosystem program rules). This repo has no
+  branch protection like AA-CIS-App; a squash merge works as soon as CI is green.
+
+## Known gaps (deferred)
+
+Automatic re-extraction when new tours are published; real advisor email (currently a stub);
+CloudFront in front of browse; Mapbox token URL restriction; some wrong geocode points; more
+countries in the gateway table.
 
 ## Related documents
 
