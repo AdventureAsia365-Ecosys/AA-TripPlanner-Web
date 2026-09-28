@@ -13,11 +13,14 @@ from __future__ import annotations
 from typing import Any, Callable, Optional, Protocol
 
 from backend.browse.filters import BrowseFilters
-from backend.shared import bedrock_satellite
+from backend.shared import llm_gateway
+
+STAGE = "tp_search_embed"
 
 
 class _Pool(Protocol):
     async def fetch(self, query: str, *args: Any) -> Any: ...
+    async def execute(self, query: str, *args: Any) -> Any: ...
 
 
 # Injectable embedder so tests don't call Bedrock.
@@ -66,8 +69,14 @@ async def search(
     if not q or not q.strip():
         return {"destinations": []}
 
-    embed = embedder or bedrock_satellite.embed
-    vec = embed(q)
+    if embedder is not None:
+        vec = embedder(q)
+    else:
+        # AA-685: model from the gateway route, one llm_call_log row per search.
+        route = await llm_gateway.load_route(pool, STAGE)
+        vectors, call = llm_gateway.embed_texts(route, [q], input_type="search_document")
+        vec = vectors[0]
+        await llm_gateway.record(pool, call, {"texts": 1, "query_len_chars": len(q)})
     vec_literal = _vector_literal(vec)
 
     sql, _ = build_search_query(filters, limit=limit)

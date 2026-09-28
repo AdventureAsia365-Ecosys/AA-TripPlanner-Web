@@ -37,7 +37,7 @@ API Gateway HTTP v2  (ANY /browse/{proxy+}, ANY /trip/{proxy+}; edge shared secr
       │               X-TripPlanner-Key, no per-user auth yet)
       ▼
 Two Python 3.12 Lambda functions
-  ├─ browse      → stateless, cacheable reads (destinations, suggestions), no LLM
+  ├─ browse      → stateless, cacheable reads (destinations, suggestions); embeds search text
   └─ assembly    → stateful writes (trip mutations) + Bedrock (AI narrative/plan)
       │
       ▼
@@ -68,11 +68,12 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 
 - **browse Lambda** — read-only, **stateless and cacheable**. Serves destination browsing and
   suggestion queries. Because it never mutates trip state, its responses can be cached at the
-  edge/CDN layer without correctness risk. Keep new read-only endpoints here.
+  edge/CDN layer without correctness risk. Keep new read-only endpoints here. Its one model
+  call is the embedding for free-text search (`/browse/search`, not cached).
 - **assembly Lambda** — **stateful**, owns all trip mutations, and is the only side that calls
-  **Bedrock**. Building/AI-narrating a trip is a write that also incurs model cost, so it is
+  **Claude**. Building/AI-narrating a trip is a write that also incurs model cost, so it is
   deliberately isolated from the cacheable read path. Keep anything that writes trip state or
-  calls a model here.
+  calls a text model here.
 - Runtime: **Python 3.12**. The two functions are separate deploy units so the cacheable read
   path and the expensive stateful path scale and cache independently.
 
@@ -98,12 +99,23 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 
 ### AI (Bedrock)
 
-- Only the **assembly** Lambda calls Claude, for trip narrative/plan assembly
-  (`global.anthropic.claude-sonnet-4-6` through the satellite role).
-- Embeddings use **Cohere Embed v4** (`us.cohere.embed-v4:0`, 1536-dim), called directly in acc2
-  without the satellite.
+- **Every model call goes through the ecosystem Model Gateway** (AA-685,
+  `backend/shared/llm_gateway.py`). The model, fallback order and price for each stage come
+  from the gateway tables that AA-CIS-App owns in the shared RDS (`shared.llm_role_config`,
+  `shared.llm_model_catalog`). Every successful call writes one `shared.llm_call_log` row,
+  tagged `quality_signal.app = "tripplanner"`, so it shows on the CIS External Spend page. The
+  `tripplanner` DB role has SELECT on the two config tables and INSERT on the log (CIS
+  migration 173). If the tables cannot be read, built-in routes keep the previous models.
+  Stages:
+  - `tp_compose`: assembly narration (Claude Sonnet 4.6 via the satellite role);
+  - `tp_search_embed`: browse free-text search, one Cohere Embed v4 call per query (acc2);
+  - `tp_extract` / `tp_component_embed`: the offline extraction pipeline.
+
+  An admin can change a stage's model on the CIS admin Settings page (TripPlanner group) without
+  a TripPlanner deploy; the Lambdas pick the change up within 60 s.
 - Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 primary → acc1
   fallback** (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md`).
+  Cohere embeddings run directly on acc2 (no satellite).
 - `itinerary_components` is built by an offline extraction pipeline from CIS published tours and
   atoms. It is not refreshed automatically when new tours are published; the CIS data reset of
   16/09/2026 means it must be rebuilt after the CIS rerun (tracked in CIS Linear AA-600).

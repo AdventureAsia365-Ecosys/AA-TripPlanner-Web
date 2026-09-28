@@ -56,19 +56,10 @@ BEDROCK_ROLE_NAME_PRIMARY = _get("BEDROCK_ROLE_NAME_PRIMARY", "AA3-Bedrock-Invok
 BEDROCK_ROLE_NAME_FALLBACK = _get("BEDROCK_ROLE_NAME_FALLBACK", "AA-Bedrock-Invoker")
 BEDROCK_EXTERNAL_ID_PRIMARY = _get("BEDROCK_EXTERNAL_ID_PRIMARY", "aa296-satellite-bedrock-acc3")
 BEDROCK_EXTERNAL_ID_FALLBACK = _get("BEDROCK_EXTERNAL_ID_FALLBACK", "aa296-satellite-bedrock")
-# The satellite invoker roles (acc3 AA3-Bedrock-Invoker / acc1
-# AA-Bedrock-Invoker) grant InvokeModel on the GLOBAL cross-region profile
-# `global.anthropic.claude-sonnet-4-6` — NOT the `us.` profile. Verified
-# live against AA-Bedrock-Invoker's InvokeApprovedClaudeModelsOnly policy
-# (AA-CIS-Infra accounts/acc1-bedrock/bedrock_invoker_import.tf). Using the
-# `us.` id fails with AccessDenied on the inference-profile ARN.
-BEDROCK_MODEL_COMPOSE = _get("BEDROCK_MODEL_COMPOSE", "global.anthropic.claude-sonnet-4-6")
-
-# Embedding — Cohere Embed v4 via a DIRECT Bedrock call on acc2 (no
-# satellite: acc2 CAN invoke Cohere embeddings). Verified live:
-# us.cohere.embed-v4:0 returns 1536-dim vectors (matches VECTOR(1536)).
-# Called by inference-profile id (bare id fails on-demand).
-BEDROCK_MODEL_EMBED = _get("BEDROCK_MODEL_EMBED", "us.cohere.embed-v4:0")
+# AA-685: which model each call uses (and its Bedrock profile per account) comes from the Model
+# Gateway tables in the shared RDS — stages tp_compose / tp_extract (Claude via the satellite
+# roles) and tp_search_embed / tp_component_embed (Cohere Embed v4, direct on acc2). See
+# backend/shared/llm_gateway.py. Embeddings must stay 1536-dim to match VECTOR(1536).
 EMBED_DIM = 1536
 
 # --- Advisor notification (single config value, never inline) ---
