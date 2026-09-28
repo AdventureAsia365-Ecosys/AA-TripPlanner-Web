@@ -19,7 +19,7 @@ customer, KHÔNG phải booking hoàn chỉnh (booking thuộc AAA sau này).
 ## KIẾN TRÚC (tóm tắt — chi tiết ở docs/architecture-overview.md)
 ```
 Browser (Next.js, Vercel) → BFF /api/* (server-side, giữ TRIPPLANNER_API_KEY)
-  → API Gateway HTTP v2 (auth=NONE)  → Lambda A Browse (stateless, đọc, no LLM)
+  → API Gateway HTTP v2 (auth=NONE)  → Lambda A Browse (stateless, đọc; embed câu search)
                                       → Lambda B Assembly (stateful, Bedrock narration)
   → RDS Postgres acc2 (schema tripplanner.* + shared.destinations, pgvector)
   → Bedrock: Cohere Embed v4 (direct acc2) / Claude (satellite assume acc3→acc1)
@@ -39,9 +39,14 @@ Browser (Next.js, Vercel) → BFF /api/* (server-side, giữ TRIPPLANNER_API_KEY
   (2 Lambda, API GW, S3 artifacts, OIDC role, secret DB+api-key). Terraform `ignore_changes` code
   attrs → `deploy-lambdas.yml` (`lambda:UpdateFunctionCode`) không bị Terraform ghi đè.
 
-## MODEL IDs (verified live)
-- Embed: `us.cohere.embed-v4:0` (direct acc2, 1536-dim).
-- Compose/renarrate: `global.anthropic.claude-sonnet-4-6` (via satellite; role cho phép `global.` không phải `us.`).
+## MODEL — qua Model Gateway (AA-685, 28/09/2026)
+- KHÔNG hardcode model id. Model mỗi stage lấy từ bảng gateway của AA-CIS-App trong RDS dùng chung
+  (`shared.llm_role_config` + `shared.llm_model_catalog`), client ở `backend/shared/llm_gateway.py`;
+  mỗi lần gọi ghi 1 dòng `shared.llm_call_log` (`quality_signal.app = "tripplanner"`).
+- Stage: `tp_compose` (narration, Sonnet 4.6 qua satellite acc3→acc1), `tp_search_embed` (search,
+  Cohere Embed v4 direct acc2, 1536-dim), `tp_extract` / `tp_component_embed` (extraction offline).
+- Đổi model: trang admin CIS → Settings → nhóm TripPlanner (không cần deploy, cache 60s).
+- Role DB `tripplanner` chỉ có SELECT 2 bảng config + INSERT log (CIS migration 173).
 
 ## DEFERRED (tracked)
 Auto-refresh extraction khi có tour mới; advisor email thật (đang stub); CloudFront trước Browse;
