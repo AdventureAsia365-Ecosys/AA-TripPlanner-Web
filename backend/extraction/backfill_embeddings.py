@@ -46,13 +46,14 @@ import os
 
 import asyncpg
 
-# Pin the prod embedding config regardless of any stale local .env, so the
-# document vectors match what live search will embed queries with.
+# Pin the prod region regardless of any stale local .env. The model comes from the
+# `tp_component_embed` gateway route (AA-685), the same catalog row live search uses.
 os.environ["BEDROCK_REGION"] = "us-west-1"
-os.environ["BEDROCK_MODEL_EMBED"] = "us.cohere.embed-v4:0"
 
 from backend import config  # noqa: E402  (after env pin)
-from backend.shared import bedrock_satellite  # noqa: E402
+from backend.shared import llm_gateway  # noqa: E402
+
+STAGE = "tp_component_embed"
 
 
 def _vector_literal(vec: list[float]) -> str:
@@ -77,7 +78,7 @@ async def main() -> None:
         raise SystemExit("Set TRIPPLANNER_DATABASE_URL to the DB DSN first.")
 
     print(
-        f"[backfill] model={config.BEDROCK_MODEL_EMBED} "
+        f"[backfill] stage={STAGE} "
         f"region={config.BEDROCK_REGION} dim={config.EMBED_DIM}"
     )
 
@@ -99,7 +100,10 @@ async def main() -> None:
                 print(f"[skip] {comp_id} has empty text_extract")
                 continue
             try:
-                vec = bedrock_satellite.embed(text, input_type="search_document")
+                route = await llm_gateway.load_route(conn, STAGE)
+                vectors, call = llm_gateway.embed_texts(route, [text], input_type="search_document")
+                vec = vectors[0]
+                await llm_gateway.record(conn, call, {"texts": 1, "backfill": True})
             except Exception as e:  # noqa: BLE001
                 failed += 1
                 print(f"[embed-fail] {comp_id}: {e}")

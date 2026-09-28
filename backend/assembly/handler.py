@@ -15,6 +15,7 @@ the updated projection immediately.
 """
 from __future__ import annotations
 
+import functools
 import json
 import re
 from typing import Any, Optional
@@ -26,6 +27,7 @@ from backend.assembly import master_content
 from backend.assembly import notify as notify_mod
 from backend.assembly import registration as reg_mod
 from backend.assembly import suggestions as suggest_mod
+from backend.shared import llm_gateway
 
 _COMPONENTS_RE = re.compile(r"^/trip/([^/]+)/components$")
 _COMPONENT_ITEM_RE = re.compile(r"^/trip/([^/]+)/components/([^/]+)$")
@@ -146,11 +148,16 @@ async def route(
             return _resp(400, {"error": "empty_trip",
                                "detail": "pin at least one component before narrating"})
 
-        narrate_fn = _resolve_narrator(mode, narrator)
+        calls: list = []
+        narrate_fn = await _resolve_narrator(mode, narrator, conn, calls)
         try:
             narration, source = await _narrate(conn, itinerary, narrate_fn)
         except Exception as e:  # noqa: BLE001 — surface Bedrock failure as 502
             return _resp(502, {"error": "narration_failed", "detail": str(e)})
+        for call in calls:  # AA-685: one llm_call_log row per model call
+            await llm_gateway.record(conn, call, {
+                "mode": mode, "source": source, "days": len(itinerary),
+                "output_len_chars": len(narration)})
 
         return _resp(200, {"trip_id": trip_id, "mode": mode, "source": source,
                            "narration": narration, "itinerary": itinerary})
@@ -164,13 +171,16 @@ async def route(
     return _resp(404, {"error": "not found"})
 
 
-def _resolve_narrator(mode: str, narrator: Optional[Any]):
+async def _resolve_narrator(mode: str, narrator: Optional[Any], conn, calls: list):
     """Pick the narration function. `narrator`, when supplied (tests), is a
     callable(itinerary)->iterator[str] used for BOTH modes; otherwise the
-    real agent.compose / agent.renarrate are used."""
+    real agent.compose / agent.renarrate run on the `tp_compose` gateway
+    route, appending each model call to `calls`."""
     if narrator is not None:
         return narrator
-    return agent_mod.renarrate if mode == "renarrate" else agent_mod.compose
+    route = await llm_gateway.load_route(conn, agent_mod.STAGE)
+    fn = agent_mod.renarrate if mode == "renarrate" else agent_mod.compose
+    return functools.partial(fn, route=route, calls=calls)
 
 
 async def _narrate(conn, itinerary: list[dict], narrate_fn) -> tuple[str, str]:

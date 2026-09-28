@@ -441,6 +441,37 @@ async def test_handler_narrate_returns_narration():
 
 
 @pytest.mark.asyncio
+async def test_handler_narrate_logs_each_model_call(monkeypatch):
+    """AA-685: without an injected narrator the real agent runs on the tp_compose gateway
+    route, and every model call becomes one llm_call_log row."""
+    from backend.shared import llm_gateway
+
+    conn = FakeConn()
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    recorded = []
+
+    async def fake_load_route(db, stage):
+        assert stage == "tp_compose"
+        return llm_gateway.builtin_route(stage)
+
+    def fake_generate_text(route, system, user, max_tokens):
+        return "Day 1: Arrive.", llm_gateway.Call(route.stage, "writer", "sonnet", "acc3",
+                                                  120, 30, 0.00081, False, "end_turn")
+
+    async def fake_record(db, call, quality_signal, **kw):
+        recorded.append((call.stage, call.cost_usd, quality_signal))
+
+    monkeypatch.setattr(handler.llm_gateway, "load_route", fake_load_route)
+    monkeypatch.setattr(agent.llm_gateway, "generate_text", fake_generate_text)
+    monkeypatch.setattr(handler.llm_gateway, "record", fake_record)
+    resp = await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"}, conn=conn)
+    assert resp["statusCode"] == 200
+    assert json.loads(resp["body"])["narration"] == "Day 1: Arrive."
+    assert recorded == [("tp_compose", 0.00081, {"mode": "compose", "source": "llm", "days": 1,
+                                                  "output_len_chars": 14})]
+
+
+@pytest.mark.asyncio
 async def test_handler_narrate_empty_trip_400():
     conn = FakeConn()
     resp = await handler.route(

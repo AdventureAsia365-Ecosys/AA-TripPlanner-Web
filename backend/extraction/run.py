@@ -29,7 +29,7 @@ from backend import config
 from backend.extraction import prompts
 from backend.extraction.geocode import Destination, geocode_place
 from backend.extraction.verify import verify_activity
-from backend.shared import bedrock_satellite
+from backend.shared import llm_gateway
 from backend.shared.schemas import ExtractedComponent
 
 
@@ -118,28 +118,19 @@ async def categorize_group(
     return []
 
 
-def _default_categorize_fn() -> CategorizeFn:
+def _default_categorize_fn(pool) -> CategorizeFn:
+    """AA-685: runs on the `tp_extract` gateway route and logs each call."""
     async def _fn(group: AtomGroup) -> str:
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1500,
-            "system": prompts.SYSTEM_PROMPT,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompts.build_user_prompt(
-                        group.tour_id,
-                        group.itinerary_day,
-                        group.texts,
-                        group.primary_destination,
-                    ),
-                }
-            ],
-        }
-        resp = bedrock_satellite.invoke(config.BEDROCK_MODEL_COMPOSE, body)
-        # Claude messages API response shape.
-        parts = resp.get("content", [])
-        return "".join(p.get("text", "") for p in parts)
+        route = await llm_gateway.load_route(pool, "tp_extract")
+        text, call = llm_gateway.generate_text(
+            route, prompts.SYSTEM_PROMPT,
+            prompts.build_user_prompt(
+                group.tour_id, group.itinerary_day, group.texts, group.primary_destination),
+            1500)
+        await llm_gateway.record(pool, call, {
+            "tour_id": group.tour_id, "itinerary_day": group.itinerary_day,
+            "output_len_chars": len(text)})
+        return text
 
     return _fn
 
@@ -164,7 +155,10 @@ async def _read_active_atom_rows(pool) -> list[dict]:
 async def _persist(
     pool, group: AtomGroup, comp: ExtractedComponent, dest: Destination
 ) -> None:
-    embedding = bedrock_satellite.embed(comp.text_extract)
+    route = await llm_gateway.load_route(pool, "tp_component_embed")
+    vectors, call = llm_gateway.embed_texts(route, [comp.text_extract])
+    await llm_gateway.record(pool, call, {"texts": 1, "tour_id": group.tour_id})
+    embedding = vectors[0]
     await pool.execute(
         """
         INSERT INTO tripplanner.itinerary_components
@@ -191,7 +185,7 @@ async def main() -> None:
 
     pool = await get_pool()
     http = httpx.AsyncClient(timeout=20)
-    categorize = _default_categorize_fn()
+    categorize = _default_categorize_fn(pool)
     country_by_tour: dict[str, str] = {}
 
     try:

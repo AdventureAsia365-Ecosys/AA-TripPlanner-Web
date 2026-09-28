@@ -9,6 +9,7 @@ from backend.browse import handler as h
 from backend.browse import search as search_mod
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import TileError, build_tile_query, parse_tile_id
+from backend.shared import llm_gateway
 
 
 # --- FakePool ---------------------------------------------------------------
@@ -117,27 +118,41 @@ async def test_route_search_no_store_and_uses_embedder(monkeypatch):
     ])
     called = {"n": 0}
 
-    def fake_embed(text):
-        called["n"] += 1
-        return [0.0] * 8
+    recorded = []
 
-    monkeypatch.setattr(search_mod.bedrock_satellite, "embed", fake_embed)
+    async def fake_load_route(db, stage):
+        assert stage == "tp_search_embed"
+        return llm_gateway.builtin_route(stage)
+
+    def fake_embed_texts(route, texts, *, input_type):
+        called["n"] += 1
+        return [[0.0] * 8], llm_gateway.Call(route.stage, "embed", "cohere-embed-v4", "acc2",
+                                              3, 0, 0.0000004, False)
+
+    async def fake_record(db, call, quality_signal, **kw):
+        recorded.append((call.stage, quality_signal))
+
+    monkeypatch.setattr(search_mod.llm_gateway, "load_route", fake_load_route)
+    monkeypatch.setattr(search_mod.llm_gateway, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(search_mod.llm_gateway, "record", fake_record)
     resp = await h.route("GET", "/browse/search", {"q": "beach town"}, pool=pool)
     assert resp["statusCode"] == 200
     assert resp["headers"]["cache-control"] == "no-store"
     assert called["n"] == 1
     body = json.loads(resp["body"])
     assert body["destinations"][0]["name"] == "Hoi An"
+    # AA-685: every real search embed writes one llm_call_log row.
+    assert recorded == [("tp_search_embed", {"texts": 1, "query_len_chars": 10})]
 
 
 @pytest.mark.asyncio
 async def test_route_search_empty_query_returns_empty(monkeypatch):
     pool = FakePool()
 
-    def boom(text):
+    def boom(*args, **kwargs):
         raise AssertionError("embed should not be called for empty query")
 
-    monkeypatch.setattr(search_mod.bedrock_satellite, "embed", boom)
+    monkeypatch.setattr(search_mod.llm_gateway, "embed_texts", boom)
     resp = await h.route("GET", "/browse/search", {"q": ""}, pool=pool)
     assert json.loads(resp["body"]) == {"destinations": []}
 
