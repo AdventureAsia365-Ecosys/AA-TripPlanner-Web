@@ -93,9 +93,11 @@ async def run_extraction_event(spec: dict) -> dict:
         search = _searcher(http)
 
         async def link(places: list[str], country: str, tour_name: str) -> dict:
-            """Known places reuse their destination row; new ones are located in one call."""
+            """Places already located (locate.py, migration 005) reuse their row; new and legacy
+            rows are located in one call."""
             rows = await conn.fetch("SELECT id, lower(name) AS key FROM shared.destinations "
-                                    "WHERE lower(name) = ANY($1::text[])", [p.lower() for p in places])
+                                    "WHERE lower(name) = ANY($1::text[]) AND located_by IS NOT NULL",
+                                    [p.lower() for p in places])
             known = {r["key"]: str(r["id"]) for r in rows}
             out = {p: known[p.lower()] for p in places if p.lower() in known}
             new = [p for p in places if p.lower() not in known]

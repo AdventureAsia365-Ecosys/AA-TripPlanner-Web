@@ -130,11 +130,13 @@ async def locate_many(items: list[tuple[str, str, str]], generate: GenerateFn,
 
 
 UPSERT_SQL = """
-    INSERT INTO shared.destinations (name, country, lat, lng) VALUES ($1, $2, $3, $4)
-    ON CONFLICT (lower(name)) DO UPDATE SET country = EXCLUDED.country, lat = EXCLUDED.lat, lng = EXCLUDED.lng
+    INSERT INTO shared.destinations (name, country, lat, lng, located_by, located_at)
+    VALUES ($1, $2, $3, $4, $5, now())
+    ON CONFLICT (lower(name)) DO UPDATE SET country = EXCLUDED.country, lat = EXCLUDED.lat,
+        lng = EXCLUDED.lng, located_by = EXCLUDED.located_by, located_at = now()
     RETURNING id
 """
 
 
 async def upsert(db, name: str, loc: Located):
-    return await db.fetchval(UPSERT_SQL, name, loc.country, loc.lat, loc.lng)
+    return await db.fetchval(UPSERT_SQL, name, loc.country, loc.lat, loc.lng, loc.source)
