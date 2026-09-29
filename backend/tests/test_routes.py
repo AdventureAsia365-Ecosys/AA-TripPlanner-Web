@@ -17,6 +17,12 @@ def test_rank_prefers_the_asked_duration_then_fewer_transfers_and_one_per_tour_s
     assert out[1]["transfer_km"] == 12.3 and len(out) == 3       # t3+t4 kept once
 
 
+def test_rank_puts_a_whole_tour_before_a_cut_of_a_longer_one():
+    singles = [{"tour_id": "long", "day_from": 1, "day_to": 10, "days": 10, "places": 9, "whole": False},
+               {"tour_id": "whole", "day_from": 1, "day_to": 8, "days": 8, "places": 4, "whole": True}]
+    assert [p["segments"][0][0] for p in rt.rank(singles, [], 10)] == ["whole", "long"]
+
+
 def test_day_by_day_numbers_the_trip_and_carries_the_last_place_over_empty_days():
     stops = {"t1": [{"day_index": 1, "destination_id": "k", "name": "Kathmandu", "lat": 27.7, "lng": 85.3, "country": "Nepal"},
                     {"day_index": 3, "destination_id": "p", "name": "Pokhara", "lat": 28.2, "lng": 83.9, "country": "Nepal"}],
