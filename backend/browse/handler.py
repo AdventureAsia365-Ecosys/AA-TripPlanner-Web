@@ -4,6 +4,7 @@ Routes:
   GET /browse/tiles/{tile_id}
   GET /browse/destinations/{destination_id}
   GET /browse/search?q=...
+  GET /browse/routes?country=Nepal&days=10   (AA-674: whole-route proposals from real tours)
 
 Read routes (tiles, destinations) are CDN-cacheable with a fixed TTL;
 /search sends no-store. Never calls Bedrock except for the search
@@ -20,6 +21,7 @@ from typing import Any, Optional
 from backend import config
 from backend.browse import countries as countries_mod
 from backend.browse import destinations as dest_mod
+from backend.browse import routes as routes_mod
 from backend.browse import tiles as tiles_mod
 from backend.browse import search as search_mod
 from backend.browse.filters import BrowseFilters
@@ -30,6 +32,7 @@ _DEST_RE = re.compile(r"^/browse/destinations/([^/]+)$")
 _SEARCH_RE = re.compile(r"^/browse/search$")
 _COUNTRIES_RE = re.compile(r"^/browse/countries$")
 _BY_COUNTRY_RE = re.compile(r"^/browse/by-country$")
+_ROUTES_RE = re.compile(r"^/browse/routes$")
 
 _CACHE_HEADERS = {
     "content-type": "application/json",
@@ -63,6 +66,17 @@ async def route(
             data = await tiles_mod.query_tile(m.group(1), filters, pool=pool)
         except TileError as e:
             return _resp(400, {"error": str(e)}, _NO_STORE_HEADERS)
+        return _resp(200, data, _CACHE_HEADERS)
+
+    if _ROUTES_RE.match(path):
+        def _q(key: str) -> str:
+            v = query.get(key)
+            return str((v[0] if v else "") if isinstance(v, list) else (v or "")).strip()
+        country, days_raw = _q("country"), _q("days")
+        if not country or not days_raw.isdigit() or not 2 <= int(days_raw) <= 30:
+            return _resp(400, {"error": "country and days (2-30) required"}, _NO_STORE_HEADERS)
+        async with pool.acquire() as conn:
+            data = await routes_mod.proposals(conn, country, int(days_raw))
         return _resp(200, data, _CACHE_HEADERS)
 
     if _COUNTRIES_RE.match(path):

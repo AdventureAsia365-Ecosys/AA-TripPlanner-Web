@@ -26,6 +26,7 @@ from backend.assembly import events as events_mod
 from backend.assembly import master_content
 from backend.assembly import notify as notify_mod
 from backend.assembly import registration as reg_mod
+from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
 from backend.shared import llm_gateway
 
@@ -35,6 +36,7 @@ _REORDER_RE = re.compile(r"^/trip/([^/]+)/reorder$")
 _SEND_RE = re.compile(r"^/trip/([^/]+)/send-to-advisor$")
 _NARRATE_RE = re.compile(r"^/trip/([^/]+)/narrate$")
 _SUGGEST_RE = re.compile(r"^/trip/([^/]+)/suggestions$")
+_COVERAGE_RE = re.compile(r"^/trip/([^/]+)/coverage$")
 _TRIP_RE = re.compile(r"^/trip/([^/]+)$")
 
 _HEADERS = {"content-type": "application/json", "cache-control": "no-store"}
@@ -167,6 +169,11 @@ async def route(
         trip_id = m.group(1)
         result = await suggest_mod.suggest(conn, trip_id)
         return _resp(200, {"trip_id": trip_id, **result})
+
+    m = _COVERAGE_RE.match(path)
+    if m and method == "GET":
+        trip_id = m.group(1)
+        return _resp(200, {"trip_id": trip_id, **await coverage_mod.coverage(conn, trip_id)})
 
     return _resp(404, {"error": "not found"})
 
