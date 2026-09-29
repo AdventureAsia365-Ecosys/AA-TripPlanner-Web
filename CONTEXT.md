@@ -123,6 +123,10 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   assembly Lambda through a direct `lambda invoke` (`{"extraction": {"op": "list" | "tour_days" |
   "prune"}}`, not reachable over HTTP), driven by `backend/extraction/invoke_tour_days.py`.
   Unchanged tours are skipped (itinerary hash). It is the base of the Tour Graph (AA-673).
+  A night is linked through its **anchor** (the overnight place, or the day's end place when the
+  overnight is a hotel/lodge/camp; none in transit), located by `backend/extraction/locate.py`:
+  the model proposes coordinates, then Mapbox confirms within 25 km (Mapbox name search alone
+  misplaces Asian names). Op `"relink"` re-locates every anchor.
 - **Tour Graph (AA-673, migration 004)**: read model rebuilt in full from `tour_day` by extraction
   op `"tour_graph"` (`backend/extraction/tour_graph.py`, no model call; `invoke_tour_days.py` runs
   it after extracting). `tour_stop` = where each (tour, day) is (overnight destination, else the

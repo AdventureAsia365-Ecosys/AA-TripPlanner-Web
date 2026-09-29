@@ -197,7 +197,6 @@ def needs_model(blocks: list[DayBlock], rules: list[tuple]) -> bool:
 
 
 GenerateFn = Callable[[str, str], Awaitable[str]]          # (system, user) -> raw text
-GeocodeFn = Callable[[str, str], Awaitable[Optional[str]]]  # (place, country) -> destination id
 
 
 async def extract_tour(tour: dict, generate: Optional[GenerateFn]) -> list[DayRecord]:
@@ -231,22 +230,36 @@ def is_transit(place: Optional[str]) -> bool:
     return bool(place and _TRANSIT.search(place))
 
 
+# A hotel, lodge or camp is not on the map by name (Mapbox and the model both know towns, not
+# guesthouses): anchor the night on the day's end place instead. "Base camp" is a place.
+_LODGING = re.compile(
+    r"\b(hotel|lodge|(?<!base )camp|guest ?house|home ?stay|resort|hostel|farm ?stay|farmstead|inn|manor|"
+    r"tea ?house|ger)\b", re.I)
+
+
+def anchor_place(overnight: Optional[str], end: Optional[str]) -> Optional[str]:
+    """Where a night sits on the map: the overnight place, else (lodging) the day's end place.
+    None for a night in transit or with nothing usable."""
+    for p in (overnight, end):
+        if p and p.strip() and not is_transit(p) and not _LODGING.search(p):
+            return p.strip()
+    return None
+
+
+LinkFn = Callable[[list[str], str, str], Awaitable[dict]]  # (places, tour country, tour name) -> {place: dest id}
+
+
 async def persist_tour(db, tour_id: str, text_hash: str, records: list[DayRecord],
-                       country: str, geocode: Optional[GeocodeFn]) -> dict:
-    """Upserts the tour's days, geocodes each overnight place once, deletes stale days."""
-    dest_ids: dict[str, Optional[str]] = {}
-    geocode_failed = 0
-    for rec in records:
-        if is_transit(rec.overnight_place):
-            dest_ids.setdefault(rec.overnight_place, None)
-            continue
-        if rec.overnight_place and geocode is not None and rec.overnight_place not in dest_ids:
-            try:
-                dest_ids[rec.overnight_place] = await geocode(rec.overnight_place, country)
-            except Exception as e:  # noqa: BLE001 — keep the day, link the place later
-                dest_ids[rec.overnight_place] = None
-                geocode_failed += 1
-                print(f"[tour_days] geocode failed {rec.overnight_place!r}: {str(e)[:120]}")
+                       country: str, link: Optional[LinkFn], tour_name: str = "") -> dict:
+    """Upserts the tour's days, links each night's anchor place once, deletes stale days."""
+    anchors = {r.day_index: anchor_place(r.overnight_place, r.end_place) for r in records}
+    places = list(dict.fromkeys(a for a in anchors.values() if a))
+    dest_ids: dict = {}
+    if places and link is not None:
+        try:
+            dest_ids = await link(places, country, tour_name)
+        except Exception as e:  # noqa: BLE001 — keep the days, relink later
+            print(f"[tour_days] link failed for {tour_id}: {str(e)[:120]}")
     for rec in records:
         await db.execute(
             """
@@ -262,12 +275,13 @@ async def persist_tour(db, tour_id: str, text_hash: str, records: list[DayRecord
                 source_hash = excluded.source_hash, extracted_at = now()
             """,
             tour_id, rec.day_index, rec.title, rec.start_place, rec.end_place, rec.overnight_place,
-            dest_ids.get(rec.overnight_place or ""), rec.places, rec.extracted_by, text_hash)
+            dest_ids.get(anchors[rec.day_index] or ""), rec.places, rec.extracted_by, text_hash)
     max_day = max((r.day_index for r in records), default=0)
     await db.execute(
         "DELETE FROM tripplanner.tour_day WHERE source_tour_id = $1 AND day_index > $2", tour_id, max_day)
     return {"days": len(records), "overnight": sum(1 for r in records if r.overnight_place),
-            "linked": sum(1 for v in dest_ids.values() if v), "geocode_failed": geocode_failed,
+            "anchored": sum(1 for a in anchors.values() if a),
+            "linked": sum(1 for d, a in anchors.items() if a and dest_ids.get(a)),
             "by": {k: sum(1 for r in records if r.extracted_by == k) for k in ("rule", "llm", "rule+llm")}}
 
 
@@ -292,7 +306,7 @@ ACTIVE_TOURS_SQL = """
 
 
 async def run_tours(db, tour_ids: Optional[list[str]], generate: Optional[GenerateFn],
-                    geocode: Optional[GeocodeFn], force: bool = False) -> dict:
+                    link: Optional[LinkFn], force: bool = False) -> dict:
     """Extracts the given active tours (all when `tour_ids` is None). Skips a tour whose text hash
     matches what tour_day already holds, unless `force`."""
     sql = ACTIVE_TOURS_SQL + (" AND pt.tour_id::text = ANY($1::text[])" if tour_ids else "")
@@ -307,7 +321,8 @@ async def run_tours(db, tour_ids: Optional[list[str]], generate: Optional[Genera
                 skipped += 1
                 continue
         records = await extract_tour(dict(t), generate)
-        out[t["tour_id"]] = await persist_tour(db, t["tour_id"], h, records, t["country"] or "", geocode)
+        out[t["tour_id"]] = await persist_tour(db, t["tour_id"], h, records, t["country"] or "", link,
+                                               t["aa_name"] or "")
         done += 1
     return {"tours": len(tours), "extracted": done, "skipped_unchanged": skipped, "per_tour": out}
 
@@ -342,45 +357,48 @@ async def prune(db, include_components: bool = False) -> dict:
     return out
 
 
-REGEOCODE_SQL = """
-    SELECT DISTINCT d.id, d.name, d.country, d.lat, d.lng
-    FROM shared.destinations d
-    JOIN tripplanner.tour_day td ON td.overnight_destination_id = d.id
-    WHERE d.created_at >= $1::text::date AND d.name > $2  -- text: asyncpg binds ::date only from a date
-    ORDER BY d.name
-    LIMIT $3
-"""
+async def relink(db, generate, search, after: str = "", limit: int = 40) -> dict:
+    """Re-locates every night anchor of the active tours from scratch (model + Mapbox, see
+    locate.py) and relinks tour_day, one page of anchor names at a time (the Lambda's 60 s).
+    Page with the returned `last`; the first page also unlinks nights that have no anchor."""
+    from backend.extraction import locate
 
-
-async def regeocode(db, forward, since: str, after: str = "", limit: int = 60) -> dict:
-    """Re-geocodes the overnight destinations created since `since` with the current rules
-    (29/09/2026: the first run searched worldwide and labelled every place with the tour's country).
-    `forward(name, country)` -> (lat, lng, country). A transit "place" or a place with no result is
-    unlinked from its days (the text stays). Pages by name: pass the returned `last` as `after`."""
-    rows = await db.fetch(REGEOCODE_SQL, since, after, limit)
-    out = {"checked": len(rows), "moved": 0, "relabelled": 0, "unlinked": 0, "last": None, "changes": []}
-    for r in rows:
-        out["last"] = r["name"]
-        unlink = is_transit(r["name"])
-        if not unlink:
-            try:
-                lat, lng, country = await forward(r["name"], r["country"])
-            except Exception as e:  # noqa: BLE001 — no result in the AA countries
-                print(f"[regeocode] {r['name']!r}: {str(e)[:120]}")
-                unlink = True
-        if unlink:
-            await db.execute("UPDATE tripplanner.tour_day SET overnight_destination_id = NULL "
-                             "WHERE overnight_destination_id = $1", r["id"])
-            out["unlinked"] += 1
-            out["changes"].append({"name": r["name"], "unlinked": True})
+    tours = {r["tour_id"]: r for r in await fetch_catalog(db, ACTIVE_TOURS_SQL)}
+    if not tours:
+        return {"error": "no active tours visible"}
+    groups: dict[str, dict] = {}
+    unanchored = []
+    for r in await db.fetch("SELECT source_tour_id, day_index, overnight_place, end_place FROM tripplanner.tour_day"):
+        if r["source_tour_id"] not in tours:
             continue
-        moved = abs(lat - r["lat"]) > 0.01 or abs(lng - r["lng"]) > 0.01
-        relabelled = country != r["country"]
-        if moved or relabelled:
-            await db.execute("UPDATE shared.destinations SET lat = $2, lng = $3, country = $4 WHERE id = $1",
-                             r["id"], lat, lng, country)
-            out["moved"] += moved
-            out["relabelled"] += relabelled
-            out["changes"].append({"name": r["name"], "from": [round(r["lat"], 2), round(r["lng"], 2), r["country"]],
-                                   "to": [round(lat, 2), round(lng, 2), country]})
+        a = anchor_place(r["overnight_place"], r["end_place"])
+        if a is None:
+            unanchored.append((r["source_tour_id"], r["day_index"]))
+            continue
+        g = groups.setdefault(a.lower(), {"name": a, "days": [], "tour": r["source_tour_id"]})
+        g["days"].append((r["source_tour_id"], r["day_index"]))
+    keys = sorted(k for k in groups if k > after.lower())
+    page = keys[:limit]
+    set_sql = ("UPDATE tripplanner.tour_day SET overnight_destination_id = $3 "
+               "WHERE source_tour_id = $1 AND day_index = $2")
+    if not after and unanchored:
+        await db.executemany(set_sql, [(t, d, None) for t, d in unanchored])
+    items = [(groups[k]["name"], tours[groups[k]["tour"]]["country"] or "",
+              tours[groups[k]["tour"]]["aa_name"] or "") for k in page]
+    found = await locate.locate_many(items, generate, search)
+    out = {"anchors": len(groups), "unanchored_nights": len(unanchored), "page": len(page),
+           "mapbox": 0, "llm": 0, "unlinked": 0, "last": page[-1] if page else None,
+           "done": len(keys) <= limit, "samples": []}
+    for k in page:
+        name = groups[k]["name"]
+        loc = found.get(name)
+        dest = await locate.upsert(db, name, loc) if loc else None
+        await db.executemany(set_sql, [(t, d, dest) for t, d in groups[k]["days"]])
+        if loc:
+            out[loc.source] += 1
+        else:
+            out["unlinked"] += 1
+        if len(out["samples"]) < 12:
+            out["samples"].append([name, round(loc.lat, 3), round(loc.lng, 3), loc.country, loc.source]
+                                  if loc else [name, None])
     return out
