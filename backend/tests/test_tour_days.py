@@ -261,3 +261,8 @@ async def test_regeocode_moves_relabels_and_unlinks():
     assert out["last"] == "Thimphu"
     unlinked = [a[0] for s, a in db.updates if s.startswith("UPDATE tripplanner.tour_day")]
     assert unlinked == ["c", "d"]
+
+
+def test_regeocode_sql_takes_the_date_as_text():
+    # asyncpg refuses a str for a ::date parameter; the Lambda passes the date as a string
+    assert "$1::text::date" in td.REGEOCODE_SQL
