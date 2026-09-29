@@ -86,7 +86,12 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   **geographic** proximity to drive suggestions ("you liked X, and Y is nearby and similar").
   Since AA-590 (PR #46) "suggest next place" re-ranks by 0.6 taste (pgvector) + 0.4 distance to
   the trip's last stop (absolute km, ramp 150-1500 km) in `backend/assembly/suggestions.py`;
-  with no anchor stop it falls back to taste order only.
+  with no anchor stop it falls back to taste order only. Since AA-674 (step 2) the candidates are
+  **route-constrained**: what real tours do next from the trip's last stop. That means the
+  components of the days after any `tour_stop` within 150 km of it (same place, or a transfer to
+  another tour), up to that tour's next stop elsewhere. The response carries `mode`
+  (`route` | `taste`) and each suggestion a `tour_count`. When no tour passes near the last stop,
+  it falls back to taste within the trip's countries.
 - **Map extras (AA-589, PR #46)**: arrival/departure gateways are drawn on the map (airport
   marker + dashed arc to the first/last stop; `ALL_GATEWAYS` / `nearestGateway` in
   `frontend/lib/mapbox.ts`), and hovering a country in the country picker previews its highlight
