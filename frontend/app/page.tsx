@@ -98,7 +98,7 @@ function Layout() {
           🧳 Your trip
           {itinerary.length > 0 && (
             <span className="ml-1.5 rounded-full bg-aa-ink px-1.5 py-0.5 text-[10px] font-bold text-white">
-              {itinerary.length}
+              {new Set(itinerary.map((d) => d.day)).size}
             </span>
           )}
         </button>

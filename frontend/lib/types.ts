@@ -169,6 +169,26 @@ export const COUNTRY_GATEWAY: Record<string, Gateway[]> = {
     { iata: "BOM", city: "Mumbai", lng: 72.868, lat: 19.089 },
     { iata: "MAA", city: "Chennai", lng: 80.169, lat: 12.99 },
   ],
+  // AA-674: the other countries AA sells (Bhutan trips flew "into Kathmandu" without these).
+  Bhutan: [{ iata: "PBH", city: "Paro", lng: 89.425, lat: 27.403 }],
+  China: [
+    { iata: "PEK", city: "Beijing", lng: 116.585, lat: 40.08 },
+    { iata: "PVG", city: "Shanghai (Pudong)", lng: 121.805, lat: 31.144 },
+    { iata: "CTU", city: "Chengdu", lng: 103.947, lat: 30.578 },
+    { iata: "LXA", city: "Lhasa", lng: 90.912, lat: 29.298 },
+    { iata: "URC", city: "Urumqi", lng: 87.474, lat: 43.907 },
+  ],
+  Mongolia: [{ iata: "UBN", city: "Ulaanbaatar", lng: 106.819, lat: 47.646 }],
+  Thailand: [
+    { iata: "BKK", city: "Bangkok", lng: 100.747, lat: 13.69 },
+    { iata: "CNX", city: "Chiang Mai", lng: 98.962, lat: 18.767 },
+  ],
+  Taiwan: [{ iata: "TPE", city: "Taipei (Taoyuan)", lng: 121.233, lat: 25.08 }],
+  Vietnam: [
+    { iata: "HAN", city: "Hanoi", lng: 105.807, lat: 21.221 },
+    { iata: "SGN", city: "Ho Chi Minh City", lng: 106.652, lat: 10.819 },
+  ],
+  Cambodia: [{ iata: "REP", city: "Siem Reap", lng: 103.813, lat: 13.411 }],
 };
 
 // Activity iconography lives in components/ActivityIcon.tsx (line-style SVGs).

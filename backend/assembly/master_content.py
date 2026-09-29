@@ -118,7 +118,11 @@ def build_narration(
     """
     lines: list[str] = []
     missing: list[dict] = []
+    seen_days: set = set()
     for e in itinerary:
+        # Several activities of one AA tour day share a trip day (AA-674): narrate it once.
+        if e.get("day") in seen_days:
+            continue
         tid = e.get("source_tour_id")
         didx = e.get("source_day_index")
         text = None
@@ -131,6 +135,7 @@ def build_narration(
         # day number that contradicts the trip order; keep the title/prose.
         body = _strip_leading_day_header(text)
         lines.append(f"Day {e['day']}: {body}")
+        seen_days.add(e.get("day"))
     return "\n".join(lines), missing
 
 
