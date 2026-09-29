@@ -123,6 +123,16 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   assembly Lambda through a direct `lambda invoke` (`{"extraction": {"op": "list" | "tour_days" |
   "prune"}}`, not reachable over HTTP), driven by `backend/extraction/invoke_tour_days.py`.
   Unchanged tours are skipped (itinerary hash). It is the base of the Tour Graph (AA-673).
+- **Tour Graph (AA-673, migration 004)**: read model rebuilt in full from `tour_day` by extraction
+  op `"tour_graph"` (`backend/extraction/tour_graph.py`, no model call; `invoke_tour_days.py` runs
+  it after extracting). `tour_stop` = where each (tour, day) is (overnight destination, else the
+  day's main component destination); `tour_graph_node` = destinations with tours, activities,
+  intensity, seasons; `tour_graph_edge` = A→B steps of real tours, weighted by tour count;
+  `tour_leg` = every multi-day span of one tour (the sellable unit, with countries and
+  activities); `tour_junction` = destination pairs ≤ 150 km (tunable, both directions,
+  `cross_border` flagged) where legs of different tours chain; `tour_graph_build` = params + stats
+  per rebuild. Op `"neighbours"` is the sample "where next, still coverable by tours" query.
+  Route-constrained suggestions and multi-tour composition read it (AA-674).
 - `itinerary_components` is built by an offline extraction pipeline from CIS published tours and
   atoms. It is not refreshed automatically when new tours are published; the CIS data reset of
   16/09/2026 means it must be rebuilt after the CIS rerun (tracked in CIS Linear AA-600).

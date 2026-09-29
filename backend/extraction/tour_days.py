@@ -259,6 +259,18 @@ async def persist_tour(db, tour_id: str, text_hash: str, records: list[DayRecord
             "by": {k: sum(1 for r in records if r.extracted_by == k) for k in ("rule", "llm", "rule+llm")}}
 
 
+async def fetch_catalog(db, sql: str, *args) -> list:
+    """Reads CIS catalog tables (published_tours, raw_tours). Both enforce tenant RLS
+    (tenant_id = current_setting('app.tenant_id')), so without the AA tenant they return no rows.
+    SET LOCAL inside a transaction, as master_content.py does, so it never leaks to other queries
+    on a pooled connection."""
+    from backend import config
+
+    async with db.transaction():
+        await db.execute("SELECT set_config('app.tenant_id', $1, true)", config.MASTER_CONTENT_TENANT_ID)
+        return await db.fetch(sql, *args)
+
+
 ACTIVE_TOURS_SQL = """
     SELECT pt.tour_id::text AS tour_id, pt.aa_name, pt.aa_itineraries, rt.country
     FROM gold_aa_internal.published_tours pt
@@ -272,7 +284,7 @@ async def run_tours(db, tour_ids: Optional[list[str]], generate: Optional[Genera
     """Extracts the given active tours (all when `tour_ids` is None). Skips a tour whose text hash
     matches what tour_day already holds, unless `force`."""
     sql = ACTIVE_TOURS_SQL + (" AND pt.tour_id::text = ANY($1::text[])" if tour_ids else "")
-    tours = await (db.fetch(sql, tour_ids) if tour_ids else db.fetch(sql))
+    tours = await (fetch_catalog(db, sql, tour_ids) if tour_ids else fetch_catalog(db, sql))
     done, skipped, out = 0, 0, {}
     for t in tours:
         h = source_hash(t["aa_itineraries"] or "")
@@ -290,7 +302,7 @@ async def run_tours(db, tour_ids: Optional[list[str]], generate: Optional[Genera
 
 async def list_tours(db) -> list[dict]:
     """Active tours with `stale` = True when tour_day is missing or was built from other text."""
-    rows = await db.fetch(ACTIVE_TOURS_SQL)
+    rows = await fetch_catalog(db, ACTIVE_TOURS_SQL)
     out = []
     for r in rows:
         prev = await db.fetchval(
@@ -303,12 +315,16 @@ async def list_tours(db) -> list[dict]:
 async def prune(db, include_components: bool = False) -> dict:
     """Removes tour_day rows of tours that are no longer active. `include_components` also removes
     their itinerary_components — opt-in, because saved trips reference component ids in their
-    events (no FK), so old drafts would lose those stops."""
-    stale = """NOT EXISTS (SELECT 1 FROM gold_aa_internal.published_tours pt
-                           WHERE pt.tour_id::text = {col} AND pt.master_status = 'active')"""
-    out = {"tour_day": await db.execute(
-        f"DELETE FROM tripplanner.tour_day WHERE {stale.format(col='source_tour_id')}")}
+    events (no FK), so old drafts would lose those stops.
+
+    The active set is read first (tenant-scoped) and must not be empty: an empty read means RLS or
+    a CIS reset, and deleting "everything not active" would then wipe every row."""
+    active = [r["tour_id"] for r in await fetch_catalog(db, ACTIVE_TOURS_SQL)]
+    if not active:
+        return {"error": "no active tours visible; refusing to prune"}
+    out = {"active_tours": len(active), "tour_day": await db.execute(
+        "DELETE FROM tripplanner.tour_day WHERE NOT (source_tour_id = ANY($1::text[]))", active)}
     if include_components:
         out["itinerary_components"] = await db.execute(
-            f"DELETE FROM tripplanner.itinerary_components WHERE {stale.format(col='source_tour_id')}")
+            "DELETE FROM tripplanner.itinerary_components WHERE NOT (source_tour_id = ANY($1::text[]))", active)
     return out
