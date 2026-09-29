@@ -124,35 +124,34 @@ class _Db:
         return "OK"
 
 
-async def test_persist_geocodes_each_overnight_once_and_deletes_stale_days():
+async def test_persist_links_each_anchor_once_and_deletes_stale_days():
     db = _Db()
-    geocoded = []
+    calls = []
 
-    async def geocode(place, country):
-        geocoded.append(place)
-        return f"dest-{place}"
+    async def link(places, country, tour_name):
+        calls.append((places, country, tour_name))
+        return {p: f"dest-{p}" for p in places}
 
     recs = [td.DayRecord(1, "A", overnight_place="Stok"), td.DayRecord(2, "B", overnight_place="Stok"),
             td.DayRecord(3, "C", overnight_place="Sakti")]
-    stats = await td.persist_tour(db, "t1", "h", recs, "India", geocode)
-    assert geocoded == ["Stok", "Sakti"]
+    stats = await td.persist_tour(db, "t1", "h", recs, "India", link, "Ladakh")
+    assert calls == [(["Stok", "Sakti"], "India", "Ladakh")]          # one call per tour
     inserts = [a for s, a in db.sql if s.startswith("INSERT INTO tripplanner.tour_day")]
     assert [a[6] for a in inserts] == ["dest-Stok", "dest-Stok", "dest-Sakti"]
     assert db.sql[-1][0].startswith("DELETE FROM tripplanner.tour_day") and db.sql[-1][1] == ("t1", 3)
-    assert stats["linked"] == 2 and stats["overnight"] == 3
+    assert stats["linked"] == 3 and stats["anchored"] == 3
 
 
-async def test_persist_keeps_the_day_when_geocoding_fails():
+async def test_persist_keeps_the_days_when_linking_fails():
     db = _Db()
 
-    async def geocode(place, country):
-        raise RuntimeError("no result")
+    async def link(places, country, tour_name):
+        raise RuntimeError("model down")
 
-    stats = await td.persist_tour(db, "t1", "h", [td.DayRecord(1, "A", overnight_place="Nowhere")],
-                                  "Laos", geocode)
+    stats = await td.persist_tour(db, "t1", "h", [td.DayRecord(1, "A", overnight_place="Nowhere")], "Laos", link)
     inserts = [a for s, a in db.sql if s.startswith("INSERT")]
     assert inserts[0][5] == "Nowhere" and inserts[0][6] is None
-    assert stats["geocode_failed"] == 1
+    assert stats["linked"] == 0
 
 
 def test_source_hash_changes_with_the_text():
@@ -217,52 +216,69 @@ def test_is_transit_spots_nights_on_the_move():
     assert not td.is_transit("Alleppey houseboat") and not td.is_transit("Thimphu") and not td.is_transit(None)
 
 
-async def test_persist_does_not_geocode_a_transit_night():
+def test_anchor_place_uses_the_end_place_for_lodging_and_skips_transit():
+    assert td.anchor_place("Thimphu", "Punakha") == "Thimphu"
+    assert td.anchor_place("Kandyan Manor Home Stay", "Kandy") == "Kandy"
+    assert td.anchor_place("Ulziit Khishig camp", None) is None
+    assert td.anchor_place("Everest Base Camp", "Gorak Shep") == "Everest Base Camp"
+    assert td.anchor_place("overnight bullet train", "Xi'an") == "Xi'an"
+    assert td.anchor_place("Goldi Sands Hotel", "Negombo") == "Negombo"
+    assert td.anchor_place(None, None) is None
+
+
+async def test_persist_does_not_link_a_transit_night():
     db = _Db()
-    called = []
+    asked = []
 
-    async def geocode(place, country):
-        called.append(place)
-        return "dest"
+    async def link(places, country, tour_name):
+        asked.extend(places)
+        return {p: "dest" for p in places}
 
-    stats = await td.persist_tour(db, "t1", "h", [td.DayRecord(1, "A", overnight_place="overnight bullet train"),
-                                                   td.DayRecord(2, "B", overnight_place="Xi'an")], "China", geocode)
-    assert called == ["Xi'an"] and stats["geocode_failed"] == 0
+    await td.persist_tour(db, "t1", "h", [td.DayRecord(1, "A", overnight_place="overnight bullet train"),
+                                          td.DayRecord(2, "B", overnight_place="Xi'an")], "China", link)
+    assert asked == ["Xi'an"]
 
 
-class _RegeoDb:
-    def __init__(self, rows):
-        self.rows, self.updates = rows, []
+class _RelinkDb(_ListDb):
+    def __init__(self, tours, days):
+        super().__init__(tours, {})
+        self.days, self.many, self.upserts = days, [], []
 
     async def fetch(self, sql, *args):
-        return self.rows
+        if "FROM tripplanner.tour_day" in sql:
+            return self.days
+        return await super().fetch(sql, *args)
 
-    async def execute(self, sql, *args):
-        self.updates.append((" ".join(sql.split())[:40], args))
+    async def executemany(self, sql, rows):
+        self.many.extend(rows)
 
-
-async def test_regeocode_moves_relabels_and_unlinks():
-    rows = [{"id": "a", "name": "Jeju hotel", "country": "South Korea", "lat": 16.43, "lng": 120.6},
-            {"id": "b", "name": "Siem Reap", "country": "Thailand", "lat": 13.36, "lng": 103.86},
-            {"id": "c", "name": "overnight bullet train", "country": "China", "lat": 27.3, "lng": 128.5},
-            {"id": "d", "name": "Nowhere Lodge", "country": "Laos", "lat": 1.0, "lng": 1.0},
-            {"id": "e", "name": "Thimphu", "country": "Bhutan", "lat": 27.47, "lng": 89.64}]
-    answers = {"Jeju hotel": (33.5, 126.5, "South Korea"), "Siem Reap": (13.36, 103.86, "Cambodia"),
-               "Thimphu": (27.47, 89.64, "Bhutan")}
-
-    async def forward(name, country):
-        if name not in answers:
-            raise RuntimeError("no result")
-        return answers[name]
-
-    db = _RegeoDb(rows)
-    out = await td.regeocode(db, forward, "2026-09-29")
-    assert (out["checked"], out["moved"], out["relabelled"], out["unlinked"]) == (5, 1, 1, 2)
-    assert out["last"] == "Thimphu"
-    unlinked = [a[0] for s, a in db.updates if s.startswith("UPDATE tripplanner.tour_day")]
-    assert unlinked == ["c", "d"]
+    async def fetchval(self, sql, *args):
+        self.upserts.append(args)
+        return f"id-{args[0]}"
 
 
-def test_regeocode_sql_takes_the_date_as_text():
-    # asyncpg refuses a str for a ::date parameter; the Lambda passes the date as a string
-    assert "$1::text::date" in td.REGEOCODE_SQL
+async def test_relink_locates_each_anchor_once_and_relinks_its_nights():
+    from backend.extraction import locate
+
+    tours = [{"tour_id": "t1", "country": "Sri Lanka", "aa_name": "Sri Lanka Wild", "aa_itineraries": "x"}]
+    days = [{"source_tour_id": "t1", "day_index": 1, "overnight_place": "Goldi Sands Hotel", "end_place": "Negombo"},
+            {"source_tour_id": "t1", "day_index": 2, "overnight_place": "Negombo", "end_place": None},
+            {"source_tour_id": "t1", "day_index": 3, "overnight_place": "Arugam Bay", "end_place": None},
+            {"source_tour_id": "t1", "day_index": 4, "overnight_place": "sleeper train", "end_place": None},
+            {"source_tour_id": "gone", "day_index": 1, "overnight_place": "Paro", "end_place": None}]
+
+    async def generate(system, user):
+        assert "Negombo | tour country: Sri Lanka" in user
+        return '{"Arugam Bay": [6.84, 81.83, "Sri Lanka"], "Negombo": [7.21, 79.84, "Sri Lanka"]}'
+
+    async def search(name, lat, lng):
+        return []                                                  # Mapbox finds nothing nearby
+
+    db = _RelinkDb(tours, days)
+    out = await td.relink(db, generate, search)
+    assert (out["anchors"], out["unanchored_nights"], out["llm"], out["unlinked"]) == (2, 1, 2, 0)
+    assert out["done"] and out["last"] == "negombo"
+    links = {(t, d): dest for t, d, dest in db.many}
+    assert links == {("t1", 4): None, ("t1", 3): "id-Arugam Bay", ("t1", 1): "id-Negombo", ("t1", 2): "id-Negombo"}
+    assert [u[0] for u in db.upserts] == ["Arugam Bay", "Negombo"]
+    assert locate.BATCH == 40
