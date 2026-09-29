@@ -2,9 +2,13 @@
 import type {
   BrowseFilters,
   CountryOption,
+  Coverage,
+  CustomDay,
   DestinationDetail,
   DestinationPin,
   ItineraryDay,
+  RouteProposal,
+  StopActivity,
 } from "./types";
 
 function filterParams(f: BrowseFilters): string {
@@ -74,6 +78,7 @@ interface TripResponse {
   trip_id: string;
   itinerary: ItineraryDay[];
   status?: string;
+  custom_days?: CustomDay[];
 }
 
 export async function fetchTrip(tripId: string): Promise<TripResponse | null> {
@@ -185,16 +190,88 @@ export interface Suggestion {
   lng: number;
   country: string;
   component_count: number;
+  // AA-674: how many real AA tours go there next from the trip's last stop (0 = taste fallback).
+  tour_count?: number;
   why: string;
 }
 
 // Next-to-pin suggestions for the current trip (Assembly Lambda; per-visitor
 // state, never cached). Returns [] when the trip is empty or has no basis.
-export async function fetchSuggestions(tripId: string): Promise<Suggestion[]> {
-  const res = await fetch(
-    `/api/trip?resource=suggestions&trip_id=${encodeURIComponent(tripId)}`,
-  );
+// AA-674: candidates follow real AA tours; activity/intensity filters narrow them.
+export async function fetchSuggestions(
+  tripId: string,
+  filters: BrowseFilters = {},
+): Promise<Suggestion[]> {
+  const p = new URLSearchParams({ resource: "suggestions", trip_id: tripId });
+  if (filters.activity) p.set("activity", filters.activity);
+  if (filters.intensity_level) p.set("intensity_level", filters.intensity_level);
+  const res = await fetch(`/api/trip?${p}`);
   if (!res.ok) return [];
   const data = await res.json();
   return data.suggestions ?? [];
+}
+
+// --- AA-674 / Jira PR-11 ----------------------------------------------------
+
+// Whole-route proposals from real AA tours for a country and a number of days.
+export async function fetchRoutes(country: string, days: number): Promise<RouteProposal[]> {
+  const p = new URLSearchParams({ resource: "routes", country, days: String(days) });
+  const res = await fetch(`/api/browse?${p}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.proposals ?? [];
+}
+
+// The leg chain of real tours that covers the trip, plus added days.
+export async function fetchCoverage(tripId: string): Promise<Coverage | null> {
+  const res = await fetch(`/api/trip?resource=coverage&trip_id=${encodeURIComponent(tripId)}`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// What AA tours do at a stop; selecting one pins its component.
+export async function fetchStopActivities(tripId: string, destinationId: string): Promise<StopActivity[]> {
+  const p = new URLSearchParams({ resource: "activities", trip_id: tripId, destination_id: destinationId });
+  const res = await fetch(`/api/trip?${p}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.activities ?? [];
+}
+
+async function tripOp(body: Record<string, unknown>) {
+  const res = await fetch("/api/trip", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { ok: res.ok, data: await res.json().catch(() => ({})) };
+}
+
+// Start from a proposed route: pin its components in its day order.
+export async function applyRoute(
+  tripId: string,
+  sessionId: string,
+  componentIds: string[],
+): Promise<TripResponse | null> {
+  const { ok, data } = await tripOp({
+    op: "apply_route", trip_id: tripId, session_id: sessionId, component_ids: componentIds,
+  });
+  return ok ? data : null;
+}
+
+export async function addDay(
+  tripId: string,
+  sessionId: string,
+  kind: CustomDay["kind"],
+  afterComponentId?: string,
+): Promise<CustomDay[] | null> {
+  const { ok, data } = await tripOp({
+    op: "add_day", trip_id: tripId, session_id: sessionId, kind, after_component_id: afterComponentId,
+  });
+  return ok ? data.custom_days ?? [] : null;
+}
+
+export async function removeDay(tripId: string, sessionId: string, dayId: string): Promise<CustomDay[] | null> {
+  const { ok, data } = await tripOp({ op: "remove_day", trip_id: tripId, session_id: sessionId, day_id: dayId });
+  return ok ? data.custom_days ?? [] : null;
 }

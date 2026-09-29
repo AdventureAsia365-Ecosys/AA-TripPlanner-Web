@@ -39,6 +39,7 @@ _NARRATE_RE = re.compile(r"^/trip/([^/]+)/narrate$")
 _SUGGEST_RE = re.compile(r"^/trip/([^/]+)/suggestions$")
 _COVERAGE_RE = re.compile(r"^/trip/([^/]+)/coverage$")
 _DAYS_RE = re.compile(r"^/trip/([^/]+)/days$")
+_APPLY_ROUTE_RE = re.compile(r"^/trip/([^/]+)/apply-route$")
 _DAY_ITEM_RE = re.compile(r"^/trip/([^/]+)/days/([^/]+)$")
 _STOP_ACTIVITIES_RE = re.compile(r"^/trip/([^/]+)/stops/([^/]+)/activities$")
 _TRIP_RE = re.compile(r"^/trip/([^/]+)$")
@@ -175,6 +176,23 @@ async def route(
         filters = {k: body.get(k) for k in ("activity", "intensity_level") if body.get(k)}
         result = await suggest_mod.suggest(conn, trip_id, filters=filters)
         return _resp(200, {"trip_id": trip_id, **result})
+
+    m = _APPLY_ROUTE_RE.match(path)
+    if m and method == "POST":
+        # PR-11 point 1: start from a proposed AA route — pin its components in its day order.
+        trip_id = m.group(1)
+        session_id, ids = body.get("session_id"), body.get("component_ids")
+        if not session_id or not isinstance(ids, list) or not ids or len(ids) > 60:
+            return _resp(400, {"error": "session_id and component_ids (1-60) required"})
+        ids = list(dict.fromkeys(str(i) for i in ids))
+        present = {str(c["id"]) for c in await events_mod._current_components(conn, trip_id)}  # noqa: SLF001
+        for cid in ids:
+            if cid not in present:
+                await events_mod.append_event(conn, trip_id, session_id, "add_component", {"component_id": cid})
+        others = [c for c in present if c not in ids]
+        itinerary = await events_mod.append_event(conn, trip_id, session_id, "reorder",
+                                                  {"ordered_component_ids": ids + others})
+        return _resp(200, {"trip_id": trip_id, "itinerary": itinerary})
 
     m = _DAYS_RE.match(path)
     if m and method == "POST":

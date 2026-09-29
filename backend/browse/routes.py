@@ -13,7 +13,7 @@ asked duration, fewer transfers, more places seen. Stateless read, cacheable per
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 SLACK = 3
 MAX_PROPOSALS = 5
@@ -62,6 +62,14 @@ DAYS_SQL = """
     ORDER BY s.source_tour_id, s.day_index
 """
 
+COMPONENTS_SQL = """
+    SELECT source_tour_id AS tour_id, source_day_index AS day_index, destination_id::text AS destination_id,
+           id::text AS component_id
+    FROM tripplanner.itinerary_components
+    WHERE source_tour_id = ANY($1::text[]) AND embedding IS NOT NULL
+    ORDER BY source_tour_id, source_day_index, id
+"""
+
 TOUR_NAMES_SQL = """
     SELECT tour_id::text AS tour_id, aa_name FROM gold_aa_internal.published_tours
     WHERE tour_id::text = ANY($1::text[])
@@ -93,9 +101,13 @@ def rank(singles: list[dict], chains: list[dict], days: int, limit: int = MAX_PR
     return out
 
 
-def day_by_day(proposal: dict, stops: dict[str, list[dict]]) -> list[dict]:
+def day_by_day(proposal: dict, stops: dict[str, list[dict]],
+               components: Optional[dict[tuple, list[dict]]] = None) -> list[dict]:
     """The proposal's days in order, each with where the traveller is (for the map polyline).
-    A day without a stop of its own keeps the previous place."""
+    A day without a stop of its own keeps the previous place. `component_id` is a component of
+    that tour day to pin when the traveller starts from this route (one at the day's stop when
+    there is one), or None when the day has no component."""
+    components = components or {}
     out, day, last = [], 0, None
     for tour, d_from, d_to in proposal["segments"]:
         by_day = {s["day_index"]: s for s in stops.get(tour, [])}
@@ -103,7 +115,11 @@ def day_by_day(proposal: dict, stops: dict[str, list[dict]]) -> list[dict]:
             day += 1
             s = by_day.get(d) or last
             last = s or last
+            comps = components.get((tour, d), [])
+            here = [c for c in comps if s and c["destination_id"] == s["destination_id"]]
+            pick = (here or comps or [None])[0]
             out.append({"day": day, "tour_id": tour, "tour_day": d,
+                        "component_id": pick["component_id"] if pick else None,
                         **({k: s[k] for k in ("destination_id", "name", "lat", "lng", "country")} if s else {})})
     return out
 
@@ -116,6 +132,9 @@ async def proposals(conn: Any, country: str, days: int) -> dict:
     stops: dict[str, list[dict]] = {}
     for r in await conn.fetch(DAYS_SQL, tours) if tours else []:
         stops.setdefault(r["tour_id"], []).append(dict(r))
+    comps: dict[tuple, list[dict]] = {}
+    for r in await conn.fetch(COMPONENTS_SQL, tours) if tours else []:
+        comps.setdefault((r["tour_id"], r["day_index"]), []).append(dict(r))
     names: dict[str, str] = {}
     if tours:
         from backend.extraction.tour_days import fetch_catalog  # tenant-scoped (RLS)
@@ -126,5 +145,5 @@ async def proposals(conn: Any, country: str, days: int) -> dict:
                     "whole_tour": p["whole"],
                     "segments": [{"tour_id": t, "tour_name": names.get(t), "day_from": a, "day_to": b,
                                   "days": b - a + 1} for t, a, b in p["segments"]],
-                    "days": day_by_day(p, stops)})
+                    "days": day_by_day(p, stops, comps)})
     return {"country": country, "days": days, "proposals": out}

@@ -22,6 +22,8 @@ const TRIP_FLIGHT_SOURCE = "trip-flight-line";
 const TRIP_STOP_SOURCE = "trip-stops";
 const TRIP_GATEWAY_SOURCE = "trip-gateways";
 const COUNTRY_SOURCE = "country-boundaries";
+// AA-674: preview of a proposed AA route (hovered in the route planner).
+const ROUTE_PREVIEW_SOURCE = "route-preview";
 
 // Interpolate a great-circle arc between two [lng,lat] points (n segments).
 // A slight arc (vs a dead-straight segment) reads as "travel between", and
@@ -87,6 +89,7 @@ export default function MapView() {
     focusDestinationId,
     focusDestination,
     previewCountry,
+    routePreview,
   } = useTrip();
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -365,6 +368,45 @@ export default function MapView() {
         },
       });
 
+      // AA-674: a proposed route, drawn as a dashed ink line with numbered day dots.
+      map.addSource(ROUTE_PREVIEW_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: "route-preview-line",
+        type: "line",
+        source: ROUTE_PREVIEW_SOURCE,
+        filter: ["==", ["geometry-type"], "LineString"],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#1F2A37", "line-width": 3, "line-dasharray": [1.5, 1.5], "line-opacity": 0.85 },
+      });
+      map.addLayer({
+        id: "route-preview-stops",
+        type: "circle",
+        source: ROUTE_PREVIEW_SOURCE,
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": 9,
+          "circle-color": "#1F2A37",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2,
+        },
+      });
+      map.addLayer({
+        id: "route-preview-labels",
+        type: "symbol",
+        source: ROUTE_PREVIEW_SOURCE,
+        filter: ["==", ["geometry-type"], "Point"],
+        layout: {
+          "text-field": ["get", "label"],
+          "text-size": 10,
+          "text-font": ["DIN Offc Pro Medium", "Arial Unicode MS Regular"],
+          "text-allow-overlap": true,
+        },
+        paint: { "text-color": "#ffffff" },
+      });
+
       map.on("click", "unclustered", (e) => {
         const f = e.features?.[0];
         const id = f?.properties?.id as string | undefined;
@@ -620,6 +662,48 @@ export default function MapView() {
       cancelled = true;
     };
   }, [itinerary]);
+
+  // AA-674: draw (or clear) the previewed AA route and frame it.
+  useEffect(() => {
+    const map = mapRef.current;
+    const src = map?.getSource(ROUTE_PREVIEW_SOURCE) as mapboxgl.GeoJSONSource | undefined;
+    if (!map || !src) return;
+    const pts = (routePreview?.days ?? []).filter(
+      (d) => typeof d.lat === "number" && typeof d.lng === "number",
+    );
+    if (pts.length === 0) {
+      src.setData({ type: "FeatureCollection", features: [] });
+      return;
+    }
+    // One dot per stop (first day it is reached), labelled with that day number.
+    const stops: { day: number; coord: [number, number] }[] = [];
+    for (const d of pts) {
+      const coord: [number, number] = [d.lng as number, d.lat as number];
+      const last = stops[stops.length - 1];
+      if (!last || last.coord[0] !== coord[0] || last.coord[1] !== coord[1]) stops.push({ day: d.day, coord });
+    }
+    const line: [number, number][] = [];
+    for (let i = 0; i < stops.length - 1; i++) {
+      const seg = greatCircleSegment(stops[i].coord, stops[i + 1].coord, 8);
+      line.push(...(i === 0 ? seg : seg.slice(1)));
+    }
+    src.setData({
+      type: "FeatureCollection",
+      features: [
+        ...(line.length > 1
+          ? [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: line } }]
+          : []),
+        ...stops.map((st) => ({
+          type: "Feature" as const,
+          properties: { label: String(st.day) },
+          geometry: { type: "Point" as const, coordinates: st.coord },
+        })),
+      ],
+    });
+    const b = new mapboxgl.LngLatBounds(stops[0].coord, stops[0].coord);
+    for (const st of stops) b.extend(st.coord);
+    map.fitBounds(b, { padding: 80, maxZoom: 9, duration: 600 });
+  }, [routePreview]);
 
   // Open a destination's popup when something (e.g. a suggestion click) asks
   // to focus it, then clear the request. The user still picks a specific

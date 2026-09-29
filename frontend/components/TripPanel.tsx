@@ -4,6 +4,14 @@ import { useEffect, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { fetchRouteLegs, formatLeg, nearestGateway, type RouteLeg } from "@/lib/mapbox";
 import { COUNTRY_GATEWAY } from "@/lib/types";
+import RoutePlanner from "@/components/RoutePlanner";
+import StopActivities from "@/components/StopActivities";
+
+const DAY_KIND_LABEL: Record<string, string> = {
+  extra_night: "Extra night",
+  free_day: "Free day",
+  extend_end: "Extra day at the end",
+};
 
 const LONG_TRIP_WARN_DAYS = 25;
 
@@ -62,7 +70,14 @@ export default function TripPanel() {
     reorder,
     narrate,
     send,
+    coverage,
+    customDays,
+    addDay,
+    removeDay,
   } = useTrip();
+  // AA-674: which day card has its activity list open.
+  const [openStop, setOpenStop] = useState<string | null>(null);
+  const totalDays = itinerary.length + customDays.length;
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [showReg, setShowReg] = useState(false);
   const [reg, setReg] = useState({ name: "", phone: "", email: "" });
@@ -186,7 +201,7 @@ export default function TripPanel() {
               </span>
             )}
             <span className="rounded-full bg-aa-ink px-2.5 py-0.5 text-xs font-semibold text-white">
-              {itinerary.length} day{itinerary.length > 1 ? "s" : ""}
+              {totalDays} day{totalDays > 1 ? "s" : ""}
             </span>
           </div>
         )}
@@ -194,6 +209,7 @@ export default function TripPanel() {
 
       {itinerary.length === 0 ? (
         <div className="flex flex-1 flex-col justify-center px-5 py-8">
+          <RoutePlanner />
           <div className="text-center">
             <span aria-hidden className="text-3xl">🗺️</span>
             <p className="mt-3 text-sm font-semibold text-aa-ink">
@@ -251,9 +267,9 @@ export default function TripPanel() {
             {/* Trip summary: at-a-glance overview of the draft. */}
             <div className="mb-3 grid grid-cols-3 gap-2">
               <div className="rounded-xl border border-aa-line bg-white p-2.5 text-center">
-                <p className="text-base font-bold text-aa-ink">{itinerary.length}</p>
+                <p className="text-base font-bold text-aa-ink">{totalDays}</p>
                 <p className="text-[10px] uppercase tracking-wide text-aa-muted">
-                  {itinerary.length > 1 ? "Days" : "Day"}
+                  {totalDays > 1 ? "Days" : "Day"}
                 </p>
               </div>
               <div className="rounded-xl border border-aa-line bg-white p-2.5 text-center">
@@ -273,6 +289,45 @@ export default function TripPanel() {
                 </p>
               </div>
             </div>
+
+            <RoutePlanner compact />
+
+            {/* AA-674: the real Adventure Asia tours this trip is built from. */}
+            {coverage && coverage.legs.length > 0 && (
+              <div
+                className={`mb-3 rounded-xl border p-3 ${
+                  coverage.coverable ? "border-aa-line bg-white" : "border-red-200 bg-red-50"
+                }`}
+                aria-label="Built from Adventure Asia tours"
+              >
+                <p className="text-xs font-semibold text-aa-ink">
+                  {coverage.coverable
+                    ? `Built from ${coverage.tours} Adventure Asia tour${coverage.tours > 1 ? "s" : ""}`
+                    : "Part of this trip isn't covered by an AA tour"}
+                </p>
+                <ul className="mt-1.5 space-y-1">
+                  {coverage.legs.map((leg, i) => (
+                    <li key={`${leg.tour_id}-${leg.day_from}-${i}`} className="text-[11px] text-aa-ink-soft">
+                      <span className="font-medium text-aa-ink">{leg.tour_name ?? "AA tour"}</span>
+                      {" "}· tour day {leg.day_from}
+                      {leg.day_to !== leg.day_from ? `–${leg.day_to}` : ""}
+                      {coverage.transfers[i] && (
+                        <span className={coverage.transfers[i].ok ? "text-aa-muted" : "text-red-600"}>
+                          {" "}→ {coverage.transfers[i].ok ? "transfer" : "no AA link"}
+                          {coverage.transfers[i].km != null && ` (${Math.round(coverage.transfers[i].km as number)} km)`}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {coverage.gaps.map((g) => (
+                  <p key={`${g.from_pin}-${g.to_pin}`} role="alert" className="mt-1.5 text-[11px] text-red-600">
+                    {g.from_name} → {g.to_name}: {g.reason}. Your advisor can suggest a bridge, or pick
+                    places on the same route.
+                  </p>
+                ))}
+              </div>
+            )}
 
             {tooLong && (
               <div
@@ -328,6 +383,35 @@ export default function TripPanel() {
                           {d.rationale}
                         </p>
                       )}
+                      <div className="mt-1 flex gap-3">
+                        {d.destination_id && (
+                          <button
+                            onClick={() => setOpenStop(openStop === d.component_id ? null : d.component_id)}
+                            className="aa-focus text-[11px] font-medium text-aa-gold-dark"
+                          >
+                            {openStop === d.component_id ? "Hide activities" : "Activities here"}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => addDay("extra_night", d.component_id)}
+                          className="aa-focus text-[11px] text-aa-muted hover:text-aa-ink"
+                        >
+                          + extra night
+                        </button>
+                      </div>
+                      {openStop === d.component_id && d.destination_id && (
+                        <StopActivities destinationId={d.destination_id} />
+                      )}
+                      {customDays
+                        .filter((c) => c.kind === "extra_night" && c.after_component_id === d.component_id)
+                        .map((c) => (
+                          <p key={c.day_id} className="mt-1 text-[11px] text-aa-ink-soft">
+                            🌙 Extra night here <span className="text-aa-muted">(your addition)</span>{" "}
+                            <button onClick={() => removeDay(c.day_id)} className="aa-focus text-aa-muted hover:text-red-600">
+                              remove
+                            </button>
+                          </p>
+                        ))}
                     </div>
                     <button
                       onClick={() => remove(d.component_id)}
@@ -349,6 +433,34 @@ export default function TripPanel() {
                 </li>
               ))}
             </ol>
+
+            {/* AA-674 / PR-11 point 3: days added on top of the AA tours. */}
+            <div className="mt-2 rounded-xl border border-dashed border-aa-line p-2.5">
+              {customDays
+                .filter((c) => c.kind !== "extra_night")
+                .map((c) => (
+                  <p key={c.day_id} className="mb-1 text-[11px] text-aa-ink-soft">
+                    ➕ {DAY_KIND_LABEL[c.kind]} <span className="text-aa-muted">(your addition, not part of a tour)</span>{" "}
+                    <button onClick={() => removeDay(c.day_id)} className="aa-focus text-aa-muted hover:text-red-600">
+                      remove
+                    </button>
+                  </p>
+                ))}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => addDay("free_day")}
+                  className="aa-focus rounded-md border border-aa-line px-2 py-0.5 text-[11px] text-aa-ink hover:border-aa-gold/60"
+                >
+                  + free day
+                </button>
+                <button
+                  onClick={() => addDay("extend_end")}
+                  className="aa-focus rounded-md border border-aa-line px-2 py-0.5 text-[11px] text-aa-ink hover:border-aa-gold/60"
+                >
+                  + extra day at the end
+                </button>
+              </div>
+            </div>
 
             {/* Departure: transfer from the last stop to its nearest gateway. */}
             {departure && (
@@ -381,7 +493,9 @@ export default function TripPanel() {
                   You might also like
                 </p>
                 <p className="mt-0.5 text-[11px] text-aa-muted">
-                  Based on what you&apos;ve pinned.
+                  {suggestions.some((x) => (x.tour_count ?? 0) > 0)
+                    ? "Where Adventure Asia tours go next from your last stop."
+                    : "Based on what you've pinned."}
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {suggestions.map((s) => (

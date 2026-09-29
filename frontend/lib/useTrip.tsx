@@ -13,8 +13,11 @@ import * as api from "./api";
 import type {
   BrowseFilters,
   CountryOption,
+  Coverage,
+  CustomDay,
   DestinationPin,
   ItineraryDay,
+  RouteProposal,
 } from "./types";
 import type { Suggestion } from "./api";
 
@@ -69,6 +72,15 @@ interface TripState {
   send: (customer?: { name: string; phone: string; email: string }) => Promise<
     { ok: boolean; needsRegistration: boolean }
   >;
+  // AA-674 / Jira PR-11: routes of real AA tours.
+  coverage: Coverage | null;
+  customDays: CustomDay[];
+  // A proposed route drawn on the map as a preview (hover / selection), or null.
+  routePreview: RouteProposal | null;
+  setRoutePreview: (p: RouteProposal | null) => void;
+  applyRoute: (p: RouteProposal) => Promise<boolean>;
+  addDay: (kind: CustomDay["kind"], afterComponentId?: string) => Promise<void>;
+  removeDay: (dayId: string) => Promise<void>;
 }
 
 const TripContext = createContext<TripState | null>(null);
@@ -125,6 +137,9 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     null,
   );
   const [searching, setSearching] = useState<boolean>(false);
+  const [coverage, setCoverage] = useState<Coverage | null>(null);
+  const [customDays, setCustomDays] = useState<CustomDay[]>([]);
+  const [routePreview, setRoutePreview] = useState<RouteProposal | null>(null);
   const filtersRef = useRef<BrowseFilters>({});
   filtersRef.current = filters;
 
@@ -153,6 +168,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
         setItinerary(res.itinerary);
         if (res.status) setStatus(res.status);
       }
+      if (active && res?.custom_days) setCustomDays(res.custom_days);
     });
     return () => {
       active = false;
@@ -165,20 +181,70 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     .map((d) => d.component_id)
     .sort()
     .join(",");
+  // AA-674: the map's activity/intensity filters also narrow the suggestions.
+  const filterKey = `${filters.activity ?? ""}|${filters.intensity_level ?? ""}`;
   useEffect(() => {
     if (!suggestKey) {
       setSuggestions([]);
       return;
     }
     let active = true;
-    api.fetchSuggestions(tripId).then((s) => {
+    api.fetchSuggestions(tripId, filtersRef.current).then((s) => {
       if (active) setSuggestions(s);
     });
     return () => {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [suggestKey, tripId]);
+  }, [suggestKey, filterKey, tripId]);
+
+  // AA-674: which real tours cover the trip — refreshed when the day order or added days change.
+  const coverageKey = `${itinerary.map((d) => d.component_id).join(",")}|${customDays
+    .map((d) => d.day_id)
+    .join(",")}`;
+  useEffect(() => {
+    if (itinerary.length === 0 && customDays.length === 0) {
+      setCoverage(null);
+      return;
+    }
+    let active = true;
+    api.fetchCoverage(tripId).then((c) => {
+      if (active) setCoverage(c);
+    });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverageKey, tripId]);
+
+  const applyRoute = useCallback(
+    async (p: RouteProposal) => {
+      const ids = p.days.map((d) => d.component_id).filter((x): x is string => !!x);
+      if (ids.length === 0) return false;
+      const res = await api.applyRoute(tripId, sessionId, ids);
+      if (!res?.itinerary) return false;
+      setItinerary(res.itinerary);
+      setRoutePreview(null);
+      return true;
+    },
+    [tripId, sessionId],
+  );
+
+  const addDay = useCallback(
+    async (kind: CustomDay["kind"], afterComponentId?: string) => {
+      const days = await api.addDay(tripId, sessionId, kind, afterComponentId);
+      if (days) setCustomDays(days);
+    },
+    [tripId, sessionId],
+  );
+
+  const removeDay = useCallback(
+    async (dayId: string) => {
+      const days = await api.removeDay(tripId, sessionId, dayId);
+      if (days) setCustomDays(days);
+    },
+    [tripId, sessionId],
+  );
 
   const add = useCallback(
     async (componentId: string) => {
@@ -292,6 +358,13 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     reorder,
     narrate,
     send,
+    coverage,
+    customDays,
+    routePreview,
+    setRoutePreview,
+    applyRoute,
+    addDay,
+    removeDay,
   };
 
   return <TripContext.Provider value={value}>{children}</TripContext.Provider>;
