@@ -156,3 +156,13 @@ def test_jsonable_turns_uuids_into_strings():
     import uuid
     u = uuid.uuid4()
     assert tg.jsonable([{"a": u, "b": None, "c": 1}]) == [{"a": str(u), "b": None, "c": 1}]
+
+
+async def test_rebuild_keeps_the_previous_graph_when_no_active_tour_is_visible():
+    class _NoTenantDb(_Db):
+        async def fetch(self, sql, *args):
+            return []                                             # RLS without app.tenant_id
+
+    db = _NoTenantDb()
+    assert "error" in await tg.rebuild(db)
+    assert not [e for e in db.log if e[1].startswith("DELETE")]

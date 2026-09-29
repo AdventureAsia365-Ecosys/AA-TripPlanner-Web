@@ -4,6 +4,7 @@ No DB, no Mapbox, no Bedrock: the model and geocoder are stubs, the DB is a reco
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 
 from backend.extraction import tour_days as td
 
@@ -161,9 +162,22 @@ def test_source_hash_changes_with_the_text():
 class _ListDb:
     def __init__(self, tours, hashes):
         self.tours, self.hashes = tours, hashes
+        self.tenant = None
+        self.executed = []
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield
+
+    async def execute(self, sql, *args):
+        if "set_config('app.tenant_id'" in sql:
+            self.tenant = args[0]
+        self.executed.append((" ".join(sql.split()), args))
+        return "DELETE 0"
 
     async def fetch(self, sql, *args):
-        return self.tours
+        # published_tours / raw_tours are tenant RLS: nothing is visible without app.tenant_id
+        return self.tours if self.tenant else []
 
     async def fetchval(self, sql, tour_id):
         return self.hashes.get(tour_id)
@@ -176,3 +190,23 @@ async def test_list_tours_marks_changed_or_missing_itineraries_stale():
     db = _ListDb(tours, {"a": td.source_hash("x"), "b": td.source_hash("old")})
     stale = {t["tour_id"]: t["stale"] for t in await td.list_tours(db)}
     assert stale == {"a": False, "b": True, "c": True}
+
+
+async def test_catalog_reads_set_the_aa_tenant_for_rls():
+    db = _ListDb([{"tour_id": "a", "country": "Laos", "aa_name": "A", "aa_itineraries": "x"}], {})
+    assert len(await td.list_tours(db)) == 1
+    assert db.tenant == "00000000-0000-0000-0000-000000000001"
+
+
+async def test_prune_deletes_only_rows_outside_the_active_set():
+    db = _ListDb([{"tour_id": "a", "country": "Laos", "aa_name": "A", "aa_itineraries": "x"}], {})
+    out = await td.prune(db)
+    delete = [e for e in db.executed if e[0].startswith("DELETE")]
+    assert out["active_tours"] == 1
+    assert delete == [("DELETE FROM tripplanner.tour_day WHERE NOT (source_tour_id = ANY($1::text[]))", (["a"],))]
+
+
+async def test_prune_refuses_when_no_active_tour_is_visible():
+    db = _ListDb([], {})
+    assert "error" in await td.prune(db, include_components=True)
+    assert not [e for e in db.executed if e[0].startswith("DELETE")]

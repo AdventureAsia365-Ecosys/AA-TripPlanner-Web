@@ -36,7 +36,7 @@ def main() -> None:
     ap.add_argument("--profile", default="aa365-admin")
     args = ap.parse_args()
 
-    client = boto3.Session(profile_name=args.profile, region_name="us-west-1").client("lambda")
+    client = (boto3.Session(profile_name=args.profile, region_name="us-west-1") if args.profile else boto3.Session(region_name="us-west-1")).client("lambda")
     tours = _invoke(client, {"op": "list"})["tours"]
     if args.country:
         tours = [t for t in tours if (t["country"] or "").lower() == args.country.lower()]

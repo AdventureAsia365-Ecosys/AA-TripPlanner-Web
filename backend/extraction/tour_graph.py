@@ -24,16 +24,17 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from backend.assembly.sequencing import _haversine  # noqa: PLC2701 — same great-circle km everywhere
+from backend.extraction import tour_days
 
 DEFAULT_JUNCTION_KM = 150.0
 INTENSITY_ORDER = ["leisurely", "moderate", "active", "strenuous"]
 
-# Every day of an active tour, with its overnight destination and the main component destination
-# (most components that day, ties by name). Components of unpublished tours are ignored.
+# Every day of an active tour ($1 = active tour ids, read tenant-scoped by tour_days.fetch_catalog),
+# with its overnight destination and the main component destination (most components that day,
+# ties by name). Components of unpublished tours are ignored.
 STOP_ROWS_SQL = """
     WITH active AS (
-        SELECT pt.tour_id::text AS tour_id FROM gold_aa_internal.published_tours pt
-        WHERE pt.master_status = 'active'
+        SELECT unnest($1::text[]) AS tour_id
     ), comp AS (
         SELECT c.source_tour_id, c.source_day_index, c.destination_id,
                row_number() OVER (PARTITION BY c.source_tour_id, c.source_day_index
@@ -56,8 +57,7 @@ COMPONENT_ROWS_SQL = """
     SELECT c.source_tour_id AS tour_id, c.source_day_index AS day_index, c.destination_id,
            c.activity, c.intensity_level, c.season_months
     FROM tripplanner.itinerary_components c
-    JOIN gold_aa_internal.published_tours pt
-      ON pt.tour_id::text = c.source_tour_id AND pt.master_status = 'active'
+    WHERE c.source_tour_id = ANY($1::text[])
 """
 
 DESTINATIONS_SQL = """
@@ -269,8 +269,11 @@ async def persist_graph(db, g: Graph, dests: dict, params: dict) -> None:
 
 
 async def rebuild(db, junction_km: float = DEFAULT_JUNCTION_KM) -> dict:
-    stop_rows = [dict(r) for r in await db.fetch(STOP_ROWS_SQL)]
-    components = [dict(r) for r in await db.fetch(COMPONENT_ROWS_SQL)]
+    active = [r["tour_id"] for r in await tour_days.fetch_catalog(db, tour_days.ACTIVE_TOURS_SQL)]
+    if not active:  # RLS or a CIS reset: keep the previous graph rather than replace it with nothing
+        return {"error": "no active tours visible; graph not rebuilt"}
+    stop_rows = [dict(r) for r in await db.fetch(STOP_ROWS_SQL, active)]
+    components = [dict(r) for r in await db.fetch(COMPONENT_ROWS_SQL, active)]
     ids = {r["overnight_destination_id"] for r in stop_rows} | {r["component_destination_id"] for r in stop_rows}
     ids.discard(None)
     dests = {r["id"]: dict(r) for r in await db.fetch(DESTINATIONS_SQL, list(ids))} if ids else {}
