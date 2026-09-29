@@ -9,7 +9,9 @@ its destination (itinerary_components). A small dynamic programme picks one opti
 minimising, in order:
   1. gaps: a hop between tours longer than JUNCTION_KM (the trip is not coverable there);
   2. transfers: changes of tour (fewer tours are easier to book);
-  3. days: total days of the legs used.
+  3. moved pins: pins served by another (tour, day) than the one their component comes from
+     (a pinned component already says which tour day it is; only move it to save a transfer);
+  4. days: total days of the legs used.
 Staying on the same tour on the same or a later day continues the current leg; anything else
 starts a new leg. Deterministic, no model call.
 """
@@ -53,25 +55,29 @@ def solve(pins: list[dict], options: dict[str, set], junction_km: float = JUNCTI
         choices.append(sorted(opts))
 
     # best[i][k] = (cost tuple, back pointer) for pin i served by choices[i][k]
-    best: list[list[tuple]] = [[((0, 0, 1), None) for _ in choices[0]]]
+    own = [(p.get("source_tour_id"), int(p["source_day_index"]) if p.get("source_day_index") is not None else None)
+           for p in pins]
+    # cost = (gaps, transfers, moved pins, days)
+    best: list[list[tuple]] = [[((0, 0, int(o != own[0]), 1), None) for o in choices[0]]]
     for i in range(1, len(pins)):
         hop = _km(pins[i - 1], pins[i])
         row = []
         for t2, d2 in choices[i]:
+            moved = int((t2, d2) != own[i])
             cand = []
             for k, (t1, d1) in enumerate(choices[i - 1]):
-                (gaps, transfers, days), _ = best[i - 1][k]
+                (gaps, transfers, moves, days), _ = best[i - 1][k]
                 if t1 == t2 and d2 >= d1:
-                    cand.append(((gaps, transfers, days + d2 - d1), k))
+                    cand.append(((gaps, transfers, moves + moved, days + d2 - d1), k))
                 else:
                     gap = 1 if hop is None or hop > junction_km else 0
-                    cand.append(((gaps + gap, transfers + 1, days + 1), k))
-            row.append(min(cand) if cand else ((len(pins), len(pins), 0), None))
+                    cand.append(((gaps + gap, transfers + 1, moves + moved, days + 1), k))
+            row.append(min(cand) if cand else ((len(pins), len(pins), len(pins), 0), None))
         best.append(row)
 
     # walk back
     k = min(range(len(best[-1])), key=lambda j: best[-1][j][0])
-    (gaps, transfers, total_days), _ = best[-1][k]
+    _cost, _ = best[-1][k]
     picked = [None] * len(pins)
     for i in range(len(pins) - 1, -1, -1):
         picked[i] = choices[i][k]
