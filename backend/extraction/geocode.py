@@ -75,38 +75,73 @@ def _mapbox_token() -> str:
     return _token_cache[arn]
 
 
+# ISO 3166-1 alpha-2 of the countries AA sells (Mapbox `country` filter). Tibet is geocoded in China.
+COUNTRY_ISO = {
+    "bhutan": "bt", "cambodia": "kh", "china": "cn", "india": "in", "japan": "jp", "laos": "la",
+    "mongolia": "mn", "myanmar": "mm", "nepal": "np", "south korea": "kr", "sri lanka": "lk",
+    "taiwan": "tw", "thailand": "th", "tibet": "cn", "vietnam": "vn",
+}
+ISO_COUNTRY = {iso: name.title() for name, iso in COUNTRY_ISO.items() if name != "tibet"}
+ISO_COUNTRY.update({"kr": "South Korea", "lk": "Sri Lanka"})
+# Every search is limited to these: a multi-country tour can sleep in a neighbour (Siem Reap on a
+# Thailand tour), but never on another continent.
+AA_ISOS = ",".join(sorted(set(COUNTRY_ISO.values())))
+# No "region": a hotel or valley that only matches a province would land on the province centroid
+# (29/09/2026: seven Korean hotels shared one point in the Philippines).
+_TYPES = "place,locality,district,poi"
+
+
+def country_iso(country: str) -> str:
+    return COUNTRY_ISO.get((country or "").strip().lower(), "")
+
+
+def _feature_iso(feature: dict) -> str:
+    if "country" in (feature.get("place_type") or []):
+        return (feature.get("properties", {}).get("short_code") or "").lower()
+    for ctx in feature.get("context") or []:
+        if str(ctx.get("id", "")).startswith("country."):
+            return (ctx.get("short_code") or "").lower()
+    return ""
+
+
+def pick_feature(features: list[dict], iso: str) -> Optional[dict]:
+    """The best match, preferring the tour's own country among equally relevant results."""
+    if not features:
+        return None
+    top = max(f.get("relevance", 0) for f in features)
+    best = [f for f in features if f.get("relevance", 0) >= top - 1e-9]
+    return next((f for f in best if iso and _feature_iso(f) == iso), best[0])
+
+
 async def _mapbox_forward(
     http: httpx.AsyncClient, name: str, country: str, region: str = ""
-) -> tuple[float, float]:
-    """Return (lat, lng) for a place name. Raises GeocodeError on no match.
+) -> tuple[float, float, str]:
+    """Return (lat, lng, country) for a place name. Raises GeocodeError on no match.
 
-    `region` (e.g. the tour's country/area, derived from its name) is
-    appended to the query text to disambiguate — without it Mapbox often
-    returns a same-named place on the wrong continent.
+    One search limited to the AA countries (Mapbox `country` filter), never the whole world where
+    a same-named place on another continent would win; among the equally relevant results the
+    tour's own country wins. The returned country is where Mapbox put the place (Siem Reap ->
+    Cambodia even on a Thailand tour). `region` (free text, older callers) is used only when
+    `country` has no ISO code.
     """
     token = _mapbox_token()
     if not token:
         raise GeocodeError("MAPBOX_GEOCODING_TOKEN is not set.")
     from urllib.parse import quote
 
-    query = f"{name}, {region}" if region else name
-    url = f"{config.MAPBOX_GEOCODING_URL}/{quote(query)}.json"
-    params = {
-        "access_token": token,
-        "limit": "1",
-        "types": "place,locality,region,poi",
-    }
+    iso = country_iso(country) or country_iso(region)
+    url = f"{config.MAPBOX_GEOCODING_URL}/{quote(name)}.json"
+    params = {"access_token": token, "limit": "5", "types": _TYPES, "country": AA_ISOS}
     resp = await http.get(url, params=params)
     resp.raise_for_status()
-    data = resp.json()
-    features = data.get("features") or []
-    if not features:
-        raise GeocodeError(f"No geocoding result for {name!r} ({country})")
-    center = features[0].get("center")  # [lng, lat]
+    feature = pick_feature(resp.json().get("features") or [], iso)
+    if feature is None:
+        raise GeocodeError(f"No geocoding result for {name!r} in the AA countries")
+    center = feature.get("center")  # [lng, lat]
     if not center or len(center) != 2:
         raise GeocodeError(f"Malformed geocoding result for {name!r}")
-    lng, lat = float(center[0]), float(center[1])
-    return lat, lng
+    found = ISO_COUNTRY.get(_feature_iso(feature), "")
+    return float(center[1]), float(center[0]), found or country
 
 
 async def preload_cache(pool: _Pool) -> dict[str, Destination]:
@@ -152,7 +187,7 @@ async def geocode_place(
             return cached
 
     normalized_country = normalize_country(country)
-    lat, lng = await _mapbox_forward(http, name, normalized_country, region)
+    lat, lng, found_country = await _mapbox_forward(http, name, normalized_country, region)
 
     row = await pool.fetchrow(
         "INSERT INTO shared.destinations (name, country, lat, lng) "
@@ -160,7 +195,7 @@ async def geocode_place(
         "ON CONFLICT (lower(name)) DO UPDATE SET name = shared.destinations.name "
         "RETURNING id, name, country, lat, lng",
         name,
-        normalized_country,
+        found_country or normalized_country,
         lat,
         lng,
     )

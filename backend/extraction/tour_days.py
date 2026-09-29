@@ -222,12 +222,24 @@ async def extract_tour(tour: dict, generate: Optional[GenerateFn]) -> list[DayRe
     return records
 
 
+# A night on a train, bus, ferry or flight has no place to put on the map (29/09/2026: "overnight
+# bullet train" was geocoded to a point in the sea). The text stays in overnight_place.
+_TRANSIT = re.compile(r"\b(train|sleeper|flight|plane|bus|ferry|in transit)\b", re.I)
+
+
+def is_transit(place: Optional[str]) -> bool:
+    return bool(place and _TRANSIT.search(place))
+
+
 async def persist_tour(db, tour_id: str, text_hash: str, records: list[DayRecord],
                        country: str, geocode: Optional[GeocodeFn]) -> dict:
     """Upserts the tour's days, geocodes each overnight place once, deletes stale days."""
     dest_ids: dict[str, Optional[str]] = {}
     geocode_failed = 0
     for rec in records:
+        if is_transit(rec.overnight_place):
+            dest_ids.setdefault(rec.overnight_place, None)
+            continue
         if rec.overnight_place and geocode is not None and rec.overnight_place not in dest_ids:
             try:
                 dest_ids[rec.overnight_place] = await geocode(rec.overnight_place, country)
@@ -327,4 +339,48 @@ async def prune(db, include_components: bool = False) -> dict:
     if include_components:
         out["itinerary_components"] = await db.execute(
             "DELETE FROM tripplanner.itinerary_components WHERE NOT (source_tour_id = ANY($1::text[]))", active)
+    return out
+
+
+REGEOCODE_SQL = """
+    SELECT DISTINCT d.id, d.name, d.country, d.lat, d.lng
+    FROM shared.destinations d
+    JOIN tripplanner.tour_day td ON td.overnight_destination_id = d.id
+    WHERE d.created_at >= $1::date AND d.name > $2
+    ORDER BY d.name
+    LIMIT $3
+"""
+
+
+async def regeocode(db, forward, since: str, after: str = "", limit: int = 60) -> dict:
+    """Re-geocodes the overnight destinations created since `since` with the current rules
+    (29/09/2026: the first run searched worldwide and labelled every place with the tour's country).
+    `forward(name, country)` -> (lat, lng, country). A transit "place" or a place with no result is
+    unlinked from its days (the text stays). Pages by name: pass the returned `last` as `after`."""
+    rows = await db.fetch(REGEOCODE_SQL, since, after, limit)
+    out = {"checked": len(rows), "moved": 0, "relabelled": 0, "unlinked": 0, "last": None, "changes": []}
+    for r in rows:
+        out["last"] = r["name"]
+        unlink = is_transit(r["name"])
+        if not unlink:
+            try:
+                lat, lng, country = await forward(r["name"], r["country"])
+            except Exception as e:  # noqa: BLE001 — no result in the AA countries
+                print(f"[regeocode] {r['name']!r}: {str(e)[:120]}")
+                unlink = True
+        if unlink:
+            await db.execute("UPDATE tripplanner.tour_day SET overnight_destination_id = NULL "
+                             "WHERE overnight_destination_id = $1", r["id"])
+            out["unlinked"] += 1
+            out["changes"].append({"name": r["name"], "unlinked": True})
+            continue
+        moved = abs(lat - r["lat"]) > 0.01 or abs(lng - r["lng"]) > 0.01
+        relabelled = country != r["country"]
+        if moved or relabelled:
+            await db.execute("UPDATE shared.destinations SET lat = $2, lng = $3, country = $4 WHERE id = $1",
+                             r["id"], lat, lng, country)
+            out["moved"] += moved
+            out["relabelled"] += relabelled
+            out["changes"].append({"name": r["name"], "from": [round(r["lat"], 2), round(r["lng"], 2), r["country"]],
+                                   "to": [round(lat, 2), round(lng, 2), country]})
     return out
