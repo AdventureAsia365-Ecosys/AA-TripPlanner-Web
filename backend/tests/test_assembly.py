@@ -574,3 +574,16 @@ def test_query_string_reaches_get_routes():
     event = {"requestContext": {"http": {"method": "GET", "path": "/trip/t1/suggestions"}},
              "queryStringParameters": {"activity": "trekking"}}
     assert handler._extract_request(event)[2] == {"activity": "trekking"}
+
+
+@pytest.mark.asyncio
+async def test_apply_route_pins_components_in_route_order():
+    conn = FakeConn()
+    ids = [k for k in CATALOG][:3]
+    r = await handler.route("POST", "/trip/t9/apply-route",
+                            {"session_id": "s1", "component_ids": list(reversed(ids)) + [ids[0]]}, conn=conn)
+    assert r["statusCode"] == 200
+    assert [d["component_id"] for d in json.loads(r["body"])["itinerary"]] == list(reversed(ids))
+    assert [e["event_type"] for e in conn.events] == ["add_component"] * 3 + ["reorder"]
+    bad = await handler.route("POST", "/trip/t9/apply-route", {"session_id": "s1", "component_ids": []}, conn=conn)
+    assert bad["statusCode"] == 400

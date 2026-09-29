@@ -171,6 +171,9 @@ async def current_itinerary(conn: _Conn, trip_id: str) -> list[dict]:
             "text_extract": e.get("text_extract", ""),
             "source_tour_id": e.get("source_tour_id"),
             "source_day_index": e.get("source_day_index"),
+            "destination_id": str(e["destination_id"]) if e.get("destination_id") else None,
+            "lat": e.get("lat"),
+            "lng": e.get("lng"),
         }
         for e in itinerary
     ]

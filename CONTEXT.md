@@ -92,6 +92,16 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   another tour), up to that tour's next stop elsewhere. The response carries `mode`
   (`route` | `taste`) and each suggestion a `tour_count`. When no tour passes near the last stop,
   it falls back to taste within the trip's countries.
+- **Planner on AA routes (AA-674, Jira PR-11)**:
+  - The trip panel starts with a route planner: "Heading to" + days → proposals from real AA
+    tours (`/browse/routes`), previewed on the map. "Start with this route" pins them
+    (`POST /trip/{id}/apply-route`).
+  - A coverage block shows the AA tours the trip is built from (`/trip/{id}/coverage`: legs,
+    transfers, gaps with a reason).
+  - Each day card lists "Activities here" (`/trip/{id}/stops/{dest}/activities`); checking one
+    pins its component.
+  - Days can be added (extra night, free day, extra day at the end; events `add_day` /
+    `remove_day`, migration 006) and are shown as the traveller's additions, not part of a tour.
 - **Map extras (AA-589, PR #46)**: arrival/departure gateways are drawn on the map (airport
   marker + dashed arc to the first/last stop; `ALL_GATEWAYS` / `nearestGateway` in
   `frontend/lib/mapbox.ts`), and hovering a country in the country picker previews its highlight
@@ -162,7 +172,10 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 
 - It does not run the content pipeline (Atom/Segment/Route/Slate/Piece/publish) — that is
   AA-CIS-App's domain entirely.
-- It does not own or migrate `shared.destinations` — read-only from here.
+- It does not own the `shared` schema (CIS does). It does write into `shared.destinations`, which
+  it created (migration 002): the extraction inserts newly located places and corrects their
+  coordinates, and migration 005 added `located_by` / `located_at`. It must not change other
+  `shared` tables.
 - It does not provision its own AWS resources or OIDC roles — those live in AA-CIS-Infra.
 - **Agents must not merge to the production branch directly.** Ship via PR and let the human
   merge (matches this repo's stated policy and the ecosystem program rules). This repo has no

@@ -45,6 +45,10 @@ export async function GET(req: NextRequest) {
     upstreamPath = `/browse/search?${filters}`;
   } else if (resource === "countries") {
     upstreamPath = `/browse/countries`;
+  } else if (resource === "routes") {
+    // AA-674 / PR-11: whole-route proposals from real AA tours.
+    const r = new URLSearchParams({ country: q.get("country") ?? "", days: q.get("days") ?? "" });
+    upstreamPath = `/browse/routes?${r}`;
   } else if (resource === "by-country") {
     const country = q.get("country") ?? "";
     upstreamPath = `/browse/by-country?country=${encodeURIComponent(country)}`;

@@ -36,6 +36,8 @@ export interface ItineraryDay {
   // draw the day-order path on the map. Optional so older callers still typecheck.
   lat?: number;
   lng?: number;
+  // AA-674: the component's destination (activity toggles per stop).
+  destination_id?: string | null;
 }
 
 export interface BrowseFilters {
@@ -189,3 +191,87 @@ export const INTENSITIES = [
   "active",
   "strenuous",
 ] as const;
+
+// --- AA-674 / Jira PR-11: routes from real AA tours --------------------------
+
+// One day of a proposed route: where the traveller is, from which tour day.
+export interface RouteDay {
+  day: number;
+  tour_id: string;
+  tour_day: number;
+  component_id: string | null;
+  destination_id?: string;
+  name?: string;
+  lat?: number;
+  lng?: number;
+  country?: string;
+}
+
+export interface RouteSegment {
+  tour_id: string;
+  tour_name: string | null;
+  day_from: number;
+  day_to: number;
+  days: number;
+}
+
+// A whole route proposal: one tour leg, or two tours chained at a junction.
+export interface RouteProposal {
+  total_days: number;
+  transfers: number;
+  transfer_km: number;
+  whole_tour: boolean;
+  segments: RouteSegment[];
+  days: RouteDay[];
+}
+
+export interface CoverageLeg {
+  tour_id: string;
+  tour_name?: string | null;
+  day_from: number;
+  day_to: number;
+  days: number;
+  pins: string[];
+}
+
+export interface CoverageTransfer {
+  from_pin: string;
+  to_pin: string;
+  from_name?: string | null;
+  to_name?: string | null;
+  km: number | null;
+  ok: boolean;
+  reason?: string;
+}
+
+// A day the traveller added on top of the AA legs (not part of any tour).
+export interface CustomDay {
+  day_id: string;
+  kind: "extra_night" | "free_day" | "extend_end";
+  after_component_id: string | null;
+  note: string | null;
+  customization: true;
+}
+
+export interface Coverage {
+  coverable: boolean;
+  legs: CoverageLeg[];
+  transfers: CoverageTransfer[];
+  gaps: CoverageTransfer[];
+  leg_days: number;
+  total_days: number;
+  tours: number;
+  custom_days: CustomDay[];
+}
+
+// An activity AA tours offer at a stop; selecting it pins its component.
+export interface StopActivity {
+  component_id: string;
+  name: string;
+  activity: string;
+  intensity_level: string | null;
+  duration_hint: string | null;
+  text_extract: string | null;
+  tour_count: number;
+  selected: boolean;
+}

@@ -42,3 +42,11 @@ async def test_routes_endpoint_validates_its_query():
 
     out = await handler.route("GET", "/browse/routes", {"country": "Nepal", "days": "99"}, pool=_Pool())
     assert out["statusCode"] == 400
+
+
+def test_day_by_day_picks_a_component_at_the_days_stop():
+    stops = {"t1": [{"day_index": 1, "destination_id": "k", "name": "Kathmandu", "lat": 27.7, "lng": 85.3, "country": "Nepal"}]}
+    comps = {("t1", 1): [{"destination_id": "x", "component_id": "c-elsewhere"},
+                         {"destination_id": "k", "component_id": "c-here"}]}
+    days = rt.day_by_day({"segments": [("t1", 1, 2)]}, stops, comps)
+    assert [d["component_id"] for d in days] == ["c-here", None]
