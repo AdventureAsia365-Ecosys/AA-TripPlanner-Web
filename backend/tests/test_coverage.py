@@ -53,3 +53,10 @@ def test_going_back_in_the_same_tour_starts_a_new_leg():
 
 def test_empty_trip_is_trivially_coverable():
     assert cv.solve([], {})["coverable"] is True
+
+
+def test_keeps_each_pin_on_its_own_tour_day_when_nothing_is_saved():
+    # t1 also visits Thimphu on day 2, but the pinned Thimphu component is t1 day 5
+    pins = [_pin("a", "paro", *PARO, "t1", 1), _pin("b", "thimphu", *THIMPHU, "t1", 5)]
+    out = cv.solve(pins, {"thimphu": {("t1", 2), ("t1", 5)}})
+    assert out["legs"] == [{"tour_id": "t1", "day_from": 1, "day_to": 5, "pins": ["a", "b"], "days": 5}]
