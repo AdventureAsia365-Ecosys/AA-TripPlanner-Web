@@ -9,6 +9,8 @@ ops:
              locate call for new places); the operator script loops over tours.
   list       {} — active tours and whether each one's itinerary changed since its last extraction.
   prune      {"include_components": false} — delete rows of tours that are no longer active.
+  components {"tour_ids": [...]} — AA-674: rebuild itinerary_components of these active tours from
+             their atoms (deterministic mapping, locate new places, embed); one tour per invoke.
   relink     {"after": "", "limit": 40} — re-locate every night anchor of the active tours from
              scratch (model + Mapbox, locate.py) and relink tour_day; page with the returned "last".
   tour_graph {"junction_km": 150} — AA-673: rebuild the Tour Graph from tour_day (no model call).
@@ -25,11 +27,11 @@ from typing import Optional
 import httpx
 
 from backend import config
-from backend.extraction import locate, tour_days, tour_graph
+from backend.extraction import components, locate, tour_days, tour_graph
 from backend.extraction.geocode import AA_ISOS, _TYPES, _mapbox_token
 from backend.shared import llm_gateway
 
-OPS = ["list", "tour_days", "prune", "relink", "tour_graph", "neighbours"]
+OPS = ["list", "tour_days", "prune", "components", "relink", "tour_graph", "neighbours"]
 
 
 def _generator(conn, route, op: str):
@@ -53,6 +55,24 @@ def _searcher(http: httpx.AsyncClient):
         resp.raise_for_status()
         return resp.json().get("features") or []
     return search
+
+
+def _linker(conn, generate, search):
+    async def link(places: list[str], country: str, tour_name: str) -> dict:
+        """Places already located (locate.py, migration 005) reuse their row; new and legacy rows
+        are located in one model call per 40 names."""
+        rows = await conn.fetch("SELECT id, lower(name) AS key FROM shared.destinations "
+                                "WHERE lower(name) = ANY($1::text[]) AND located_by IS NOT NULL",
+                                [p.lower() for p in places])
+        known = {r["key"]: str(r["id"]) for r in rows}
+        out = {p: known[p.lower()] for p in places if p.lower() in known}
+        new = [p for p in places if p.lower() not in known]
+        found = await locate.locate_many([(p, country, tour_name) for p in new], generate, search)
+        for p in new:
+            if found.get(p):
+                out[p] = str(await locate.upsert(conn, p, found[p]))
+        return out
+    return link
 
 
 async def run_extraction_event(spec: dict) -> dict:
@@ -83,6 +103,22 @@ async def run_extraction_event(spec: dict) -> dict:
             result = await tour_days.relink(conn, _generator(conn, route, "relink"), _searcher(http),
                                             spec.get("after") or "", int(spec.get("limit") or locate.BATCH))
         return {"op": op, "seconds": round(time.monotonic() - started, 1), **result}
+    if op == "components":
+        async with httpx.AsyncClient(timeout=15) as http, pool.acquire() as conn:
+            extract_route = await llm_gateway.load_route(conn, "tp_extract")
+            embed_route = await llm_gateway.load_route(conn, "tp_component_embed")
+            link = _linker(conn, _generator(conn, extract_route, "components"), _searcher(http))
+
+            async def embed(texts: list[str]) -> list[list[float]]:
+                vectors, call = llm_gateway.embed_texts(embed_route, texts, input_type="search_document")
+                await llm_gateway.record(conn, call, {"op": "components", "texts": len(texts)})
+                return vectors
+
+            wanted = set(spec.get("tour_ids") or [])
+            tours = [dict(t) for t in await tour_days.fetch_catalog(conn, tour_days.ACTIVE_TOURS_SQL)
+                     if t["tour_id"] in wanted]
+            per = {t["tour_id"]: await components.rebuild_tour(conn, t, link, embed) for t in tours}
+        return {"op": op, "seconds": round(time.monotonic() - started, 1), "per_tour": per}
     if op != "tour_days":
         return {"error": f"unknown extraction op {op!r}", "ops": OPS}
 
@@ -92,20 +128,6 @@ async def run_extraction_event(spec: dict) -> dict:
         generate = _generator(conn, route, "tour_days")
         search = _searcher(http)
 
-        async def link(places: list[str], country: str, tour_name: str) -> dict:
-            """Places already located (locate.py, migration 005) reuse their row; new and legacy
-            rows are located in one call."""
-            rows = await conn.fetch("SELECT id, lower(name) AS key FROM shared.destinations "
-                                    "WHERE lower(name) = ANY($1::text[]) AND located_by IS NOT NULL",
-                                    [p.lower() for p in places])
-            known = {r["key"]: str(r["id"]) for r in rows}
-            out = {p: known[p.lower()] for p in places if p.lower() in known}
-            new = [p for p in places if p.lower() not in known]
-            found = await locate.locate_many([(p, country, tour_name) for p in new], generate, search)
-            for p in new:
-                if found.get(p):
-                    out[p] = str(await locate.upsert(conn, p, found[p]))
-            return out
-
+        link = _linker(conn, generate, search)
         result = await tour_days.run_tours(conn, tour_ids, generate, link, force=bool(spec.get("force")))
     return {"op": op, "seconds": round(time.monotonic() - started, 1), **result}
