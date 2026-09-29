@@ -210,3 +210,54 @@ async def test_prune_refuses_when_no_active_tour_is_visible():
     db = _ListDb([], {})
     assert "error" in await td.prune(db, include_components=True)
     assert not [e for e in db.executed if e[0].startswith("DELETE")]
+
+
+def test_is_transit_spots_nights_on_the_move():
+    assert td.is_transit("overnight bullet train") and td.is_transit("Sleeper bus to Pokhara")
+    assert not td.is_transit("Alleppey houseboat") and not td.is_transit("Thimphu") and not td.is_transit(None)
+
+
+async def test_persist_does_not_geocode_a_transit_night():
+    db = _Db()
+    called = []
+
+    async def geocode(place, country):
+        called.append(place)
+        return "dest"
+
+    stats = await td.persist_tour(db, "t1", "h", [td.DayRecord(1, "A", overnight_place="overnight bullet train"),
+                                                   td.DayRecord(2, "B", overnight_place="Xi'an")], "China", geocode)
+    assert called == ["Xi'an"] and stats["geocode_failed"] == 0
+
+
+class _RegeoDb:
+    def __init__(self, rows):
+        self.rows, self.updates = rows, []
+
+    async def fetch(self, sql, *args):
+        return self.rows
+
+    async def execute(self, sql, *args):
+        self.updates.append((" ".join(sql.split())[:40], args))
+
+
+async def test_regeocode_moves_relabels_and_unlinks():
+    rows = [{"id": "a", "name": "Jeju hotel", "country": "South Korea", "lat": 16.43, "lng": 120.6},
+            {"id": "b", "name": "Siem Reap", "country": "Thailand", "lat": 13.36, "lng": 103.86},
+            {"id": "c", "name": "overnight bullet train", "country": "China", "lat": 27.3, "lng": 128.5},
+            {"id": "d", "name": "Nowhere Lodge", "country": "Laos", "lat": 1.0, "lng": 1.0},
+            {"id": "e", "name": "Thimphu", "country": "Bhutan", "lat": 27.47, "lng": 89.64}]
+    answers = {"Jeju hotel": (33.5, 126.5, "South Korea"), "Siem Reap": (13.36, 103.86, "Cambodia"),
+               "Thimphu": (27.47, 89.64, "Bhutan")}
+
+    async def forward(name, country):
+        if name not in answers:
+            raise RuntimeError("no result")
+        return answers[name]
+
+    db = _RegeoDb(rows)
+    out = await td.regeocode(db, forward, "2026-09-29")
+    assert (out["checked"], out["moved"], out["relabelled"], out["unlinked"]) == (5, 1, 1, 2)
+    assert out["last"] == "Thimphu"
+    unlinked = [a[0] for s, a in db.updates if s.startswith("UPDATE tripplanner.tour_day")]
+    assert unlinked == ["c", "d"]
