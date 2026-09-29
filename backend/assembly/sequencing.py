@@ -63,14 +63,21 @@ def sequence(components: list[dict]) -> list[dict]:
 def group_into_days(ordered: list[dict]) -> list[dict]:
     """Assign a 1-based day index to each component in visiting order.
 
-    MVP rule: one component per day, in sequence. duration_hint could later
-    pack multiple short components per day, but per scope we keep it simple
-    and deterministic. Returns [{day, component_id, name, ...}].
+    One component per day, except that consecutive components from the same AA tour day
+    (same source_tour_id and source_day_index) share that day. A route started from an AA
+    tour therefore keeps its real day structure: several activities on one day (AA-674).
+    Returns [{day, component_id, name, ...}].
     """
     out: list[dict] = []
-    for i, c in enumerate(ordered, start=1):
+    day = 0
+    prev_key = None
+    for c in ordered:
+        key = (c.get("source_tour_id"), c.get("source_day_index"))
+        if not (key[0] is not None and key[1] is not None and key == prev_key):
+            day += 1
+        prev_key = key
         entry = dict(c)
-        entry["day"] = i
+        entry["day"] = day
         entry["component_id"] = str(c["id"])
         out.append(entry)
     return out

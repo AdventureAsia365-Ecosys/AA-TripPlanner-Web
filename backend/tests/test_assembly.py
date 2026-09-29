@@ -587,3 +587,17 @@ async def test_apply_route_pins_components_in_route_order():
     assert [e["event_type"] for e in conn.events] == ["add_component"] * 3 + ["reorder"]
     bad = await handler.route("POST", "/trip/t9/apply-route", {"session_id": "s1", "component_ids": []}, conn=conn)
     assert bad["statusCode"] == 400
+
+
+def test_components_of_one_tour_day_share_a_trip_day_and_are_narrated_once():
+    from backend.assembly import sequencing
+    comps = [{"id": "a", "source_tour_id": "t", "source_day_index": 2},
+             {"id": "b", "source_tour_id": "t", "source_day_index": 2},
+             {"id": "c", "source_tour_id": "t", "source_day_index": 3},
+             {"id": "d", "source_tour_id": None, "source_day_index": None},
+             {"id": "e", "source_tour_id": None, "source_day_index": None}]
+    days = sequencing.group_into_days(comps)
+    assert [d["day"] for d in days] == [1, 1, 2, 3, 4]
+    narration, missing = master_content.build_narration(days, {("t", 2): "Day 2 — Haa: valley walk", ("t", 3): "Day 3 — Paro"})
+    assert narration.count("Day 1:") == 1 and "Day 2: Paro" in narration
+    assert [m["component_id"] for m in missing] == ["d", "e"]

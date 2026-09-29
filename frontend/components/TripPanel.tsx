@@ -77,7 +77,9 @@ export default function TripPanel() {
   } = useTrip();
   // AA-674: which day card has its activity list open.
   const [openStop, setOpenStop] = useState<string | null>(null);
-  const totalDays = itinerary.length + customDays.length;
+  // Several activities of one AA tour day share a day (AA-674), so count distinct days.
+  const tripDays = new Set(itinerary.map((d) => d.day)).size;
+  const totalDays = tripDays + customDays.length;
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [showReg, setShowReg] = useState(false);
   const [reg, setReg] = useState({ name: "", phone: "", email: "" });
@@ -185,7 +187,7 @@ export default function TripPanel() {
     }
   };
 
-  const tooLong = itinerary.length > LONG_TRIP_WARN_DAYS;
+  const tooLong = tripDays > LONG_TRIP_WARN_DAYS;
   const sent = status === "sent";
 
   return (
@@ -334,7 +336,7 @@ export default function TripPanel() {
                 role="alert"
                 className="mb-3 rounded-xl border border-aa-gold/40 bg-aa-gold-soft p-2.5 text-xs text-aa-gold-dark"
               >
-                This trip is {itinerary.length} days — quite long. You can keep
+                This trip is {tripDays} days — quite long. You can keep
                 adding, but consider trimming for a smoother journey.
               </div>
             )}

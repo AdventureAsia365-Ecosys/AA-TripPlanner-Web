@@ -79,6 +79,13 @@ export function haversineKm(a: [number, number], b: [number, number]): number {
 // than draw a snaking line and quote a meaningless distance.
 const MAX_ROAD_DETOUR_RATIO = 1.8; // road km / straight km
 const MAX_DRIVE_KM = 350; // beyond this, call it a flight regardless
+// AA-674: mountain roads wind. Thimphu -> Haa over Chele La is ~2.5x the straight line and was
+// shown as "Flight or transfer". Short hops may detour much more and still be a real drive.
+const SHORT_HOP_KM = 150;
+const SHORT_HOP_DETOUR_RATIO = 3.5;
+function detourRatio(straightKm: number): number {
+  return straightKm < SHORT_HOP_KM ? SHORT_HOP_DETOUR_RATIO : MAX_ROAD_DETOUR_RATIO;
+}
 
 /**
  * Resolve each consecutive pair of stops into a travel leg. For each pair we
@@ -133,7 +140,7 @@ export async function fetchRouteLegs(
         roadKm > 0 &&
         Array.isArray(geo) &&
         geo.length >= 2 &&
-        roadKm <= Math.max(straight * MAX_ROAD_DETOUR_RATIO, straight + 20);
+        roadKm <= Math.max(straight * detourRatio(straight), straight + 20);
       if (!ok) {
         legs.push(flightLeg(a, b));
         continue;
