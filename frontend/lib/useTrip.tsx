@@ -81,6 +81,19 @@ interface TripState {
   applyRoute: (p: RouteProposal) => Promise<boolean>;
   addDay: (kind: CustomDay["kind"], afterComponentId?: string) => Promise<void>;
   removeDay: (dayId: string) => Promise<void>;
+  // Planner screens (Trip.com-style): what the traveller asked for on the start screen.
+  intent: PlanIntent;
+  setIntent: (i: PlanIntent) => void;
+  // The day tab open in the editor (null = overview). The map frames that day.
+  selectedDay: number | null;
+  setSelectedDay: (d: number | null) => void;
+}
+
+export interface PlanIntent {
+  country: string;
+  days: number;
+  activity?: string;
+  intensity_level?: string;
 }
 
 const TripContext = createContext<TripState | null>(null);
@@ -140,6 +153,8 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   const [coverage, setCoverage] = useState<Coverage | null>(null);
   const [customDays, setCustomDays] = useState<CustomDay[]>([]);
   const [routePreview, setRoutePreview] = useState<RouteProposal | null>(null);
+  const [intent, setIntent] = useState<PlanIntent>({ country: "", days: 7 });
+  const [selectedDay, setSelectedDay] = useState<number | null>(null);
   const filtersRef = useRef<BrowseFilters>({});
   filtersRef.current = filters;
 
@@ -365,6 +380,10 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     applyRoute,
     addDay,
     removeDay,
+    intent,
+    setIntent,
+    selectedDay,
+    setSelectedDay,
   };
 
   return <TripContext.Provider value={value}>{children}</TripContext.Provider>;
