@@ -531,3 +531,46 @@ async def test_handler_send_allows_edit_after_sent(monkeypatch):
     assert resp["statusCode"] == 200
     # projection stays 'sent' (edit allowed, not auto-re-notified)
     assert conn.drafts["t1"]["status"] == "sent"
+
+
+# --- AA-674 / PR-11: added days and activity selection -----------------------
+
+@pytest.mark.asyncio
+async def test_add_and_remove_a_day_are_customizations_in_the_trip():
+    conn = FakeConn()
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    r = await handler.route("POST", "/trip/t1/days", {"session_id": "s1", "kind": "extra_night",
+                                                      "after_component_id": "c1"}, conn=conn)
+    assert r["statusCode"] == 200
+    day_id = json.loads(r["body"])["day_id"]
+    await handler.route("POST", "/trip/t1/days", {"session_id": "s1", "kind": "extend_end"}, conn=conn)
+    trip = json.loads((await handler.route("GET", "/trip/t1", {}, conn=conn))["body"])
+    assert [d["kind"] for d in trip["custom_days"]] == ["extra_night", "extend_end"]
+    assert all(d["customization"] for d in trip["custom_days"])
+    r = await handler.route("DELETE", f"/trip/t1/days/{day_id}", {"session_id": "s1"}, conn=conn)
+    assert [d["kind"] for d in json.loads(r["body"])["custom_days"]] == ["extend_end"]
+    assert [e["event_type"] for e in conn.events][-3:] == ["add_day", "add_day", "remove_day"]  # reaches the advisor log
+
+
+@pytest.mark.asyncio
+async def test_add_day_rejects_unknown_kind_and_an_extra_night_off_the_trip():
+    conn = FakeConn()
+    bad = await handler.route("POST", "/trip/t1/days", {"session_id": "s1", "kind": "holiday"}, conn=conn)
+    assert bad["statusCode"] == 400
+    off = await handler.route("POST", "/trip/t1/days", {"session_id": "s1", "kind": "extra_night",
+                                                        "after_component_id": "c9"}, conn=conn)
+    assert off["statusCode"] == 400
+    gone = await handler.route("DELETE", "/trip/t1/days/nope", {"session_id": "s1"}, conn=conn)
+    assert gone["statusCode"] == 404
+
+
+def test_suggestion_filters_ignore_unknown_values():
+    from backend.assembly import suggestions
+    assert suggestions.clean_filters({"activity": "trekking", "intensity_level": "extreme"}) == ("trekking", None)
+    assert suggestions.clean_filters(None) == (None, None)
+
+
+def test_query_string_reaches_get_routes():
+    event = {"requestContext": {"http": {"method": "GET", "path": "/trip/t1/suggestions"}},
+             "queryStringParameters": {"activity": "trekking"}}
+    assert handler._extract_request(event)[2] == {"activity": "trekking"}

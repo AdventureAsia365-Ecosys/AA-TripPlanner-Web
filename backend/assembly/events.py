@@ -17,7 +17,12 @@ from typing import Any, Optional, Protocol
 from backend import config
 from backend.assembly import sequencing
 
-VALID_EVENTS = {"add_component", "remove_component", "reorder", "sent"}
+VALID_EVENTS = {"add_component", "remove_component", "reorder", "sent", "add_day", "remove_day"}
+
+# AA-674 / PR-11 point 3: a day the traveller adds on top of the AA legs. It is not part of any
+# tour, so the Trip Case shows it as a customization. kind: extra_night (stay one more night at a
+# stop) | free_day | extend_end (one more day after the last stop).
+DAY_KINDS = {"extra_night", "free_day", "extend_end"}
 
 
 class _Conn(Protocol):
@@ -86,6 +91,28 @@ async def _current_components(conn: _Conn, trip_id: str) -> list[dict]:
     by_id = {str(r["id"]): dict(r) for r in comp_rows}
     # preserve add order for stable fallback
     return [by_id[cid] for cid in present if cid in by_id]
+
+
+async def current_custom_days(conn: _Conn, trip_id: str) -> list[dict]:
+    """Fold add_day / remove_day events into the trip's added days, in the order added.
+    Each: {day_id, kind, after_component_id, note}."""
+    rows = await conn.fetch(
+        "SELECT event_type, payload FROM tripplanner.trip_events "
+        "WHERE trip_id = $1 AND event_type IN ('add_day', 'remove_day') ORDER BY id ASC",
+        trip_id,
+    )
+    days: dict[str, dict] = {}
+    for r in rows:
+        payload = r["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if r["event_type"] == "add_day":
+            days[payload["day_id"]] = {"day_id": payload["day_id"], "kind": payload["kind"],
+                                       "after_component_id": payload.get("after_component_id"),
+                                       "note": payload.get("note"), "customization": True}
+        elif r["event_type"] == "remove_day":
+            days.pop(payload.get("day_id"), None)
+    return list(days.values())
 
 
 async def _latest_explicit_order(conn: _Conn, trip_id: str) -> Optional[list[str]]:

@@ -104,7 +104,7 @@ def solve(pins: list[dict], options: dict[str, set], junction_km: float = JUNCTI
 async def coverage(conn: Any, trip_id: str) -> dict:
     components = await events_mod._current_components(conn, trip_id)  # noqa: SLF001
     if not components:
-        return solve([], {})
+        return {**solve([], {}), "custom_days": [], "leg_days": 0}
     explicit = await events_mod._latest_explicit_order(conn, trip_id)  # noqa: SLF001
     order = [str(e["component_id"]) for e in events_mod._project_itinerary(components, explicit)]  # noqa: SLF001
     by_id = {str(c["id"]): c for c in components}
@@ -114,6 +114,11 @@ async def coverage(conn: Any, trip_id: str) -> dict:
     for r in await conn.fetch(OPTIONS_SQL, dests):
         options.setdefault(r["destination_id"], set()).add((r["source_tour_id"], int(r["source_day_index"])))
     result = solve(pins, options)
+    # PR-11 point 3: days the traveller added are customizations on top of the legs.
+    custom = await events_mod.current_custom_days(conn, trip_id)
+    result["custom_days"] = custom
+    result["leg_days"] = result["total_days"]
+    result["total_days"] += len(custom)
     tour_ids = sorted({leg["tour_id"] for leg in result["legs"]})
     if tour_ids:
         from backend.extraction.tour_days import fetch_catalog  # tenant-scoped (RLS)

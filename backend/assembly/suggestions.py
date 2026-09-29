@@ -94,6 +94,8 @@ ROUTE_CANDIDATES_SQL = f"""
      AND c.source_day_index > nx.from_day AND c.source_day_index <= nx.to_day
     JOIN shared.destinations d ON d.id = c.destination_id
     WHERE nx.to_day IS NOT NULL AND c.embedding IS NOT NULL AND d.id <> ALL($5::uuid[])
+      AND ($7::text IS NULL OR c.activity = $7::text)
+      AND ($8::text IS NULL OR c.intensity_level = $8::text)
     GROUP BY d.id, d.name, d.lat, d.lng, d.country
     ORDER BY best_distance ASC
     LIMIT $6
@@ -174,7 +176,18 @@ def _avg_vector_literal(vectors: list[list[float]]) -> Optional[str]:
     return "[" + ",".join(repr(x / n) for x in acc) + "]"
 
 
-async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT) -> dict:
+def clean_filters(filters: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
+    """(activity, intensity_level) from request filters; unknown values are ignored."""
+    from backend.shared.schemas import Activity, Intensity
+
+    f = filters or {}
+    activity = f.get("activity") if f.get("activity") in {a.value for a in Activity} else None
+    intensity = f.get("intensity_level") if f.get("intensity_level") in {i.value for i in Intensity} else None
+    return activity, intensity
+
+
+async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT,
+                  filters: Optional[dict] = None) -> dict:
     """Return {suggestions: [{id, name, lat, lng, component_count, why}]}.
 
     Empty list when the trip has no pinned components with embeddings (we
@@ -210,13 +223,14 @@ async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT) -> dict
 
     dest_exclude = list(pinned_dest_ids) or ["00000000-0000-0000-0000-000000000000"]
     candidate_limit = int(limit) * CANDIDATE_MULTIPLIER
+    activity, intensity = clean_filters(filters)
     last_stop = _last_stop_coord(components)
 
     # Route-constrained first: what real tours do next from here (AA-674).
     if last_stop is not None:
         route = [dict(r) for r in await conn.fetch(
             ROUTE_CANDIDATES_SQL, taste, last_stop[0], last_stop[1], JUNCTION_KM,
-            dest_exclude, candidate_limit)]
+            dest_exclude, candidate_limit, activity, intensity)]
         if route:
             return {"suggestions": _rerank_by_route(route, last_stop, int(limit)), "mode": "route"}
 
@@ -225,10 +239,18 @@ async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT) -> dict
     # If the trip touches no known country, fall back to global ranking. Pull
     # a WIDER pool than we return so the geography re-rank below has room to
     # promote a nearby-but-slightly-less-similar place.
-    country_filter = "AND d.country = ANY($3::text[])" if countries else ""
     params: list[Any] = [taste, dest_exclude]
+    extra = []
     if countries:
         params.append(countries)
+        extra.append(f"AND d.country = ANY(${len(params)}::text[])")
+    if activity:
+        params.append(activity)
+        extra.append(f"AND c.activity = ${len(params)}::text")
+    if intensity:
+        params.append(intensity)
+        extra.append(f"AND c.intensity_level = ${len(params)}::text")
+    country_filter = " ".join(extra)
     sql = f"""
         SELECT d.id, d.name, d.lat, d.lng, d.country,
                COUNT(c.id) AS component_count,

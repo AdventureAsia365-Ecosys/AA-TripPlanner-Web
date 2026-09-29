@@ -26,6 +26,7 @@ from backend.assembly import events as events_mod
 from backend.assembly import master_content
 from backend.assembly import notify as notify_mod
 from backend.assembly import registration as reg_mod
+from backend.assembly import activities as activities_mod
 from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
 from backend.shared import llm_gateway
@@ -37,6 +38,9 @@ _SEND_RE = re.compile(r"^/trip/([^/]+)/send-to-advisor$")
 _NARRATE_RE = re.compile(r"^/trip/([^/]+)/narrate$")
 _SUGGEST_RE = re.compile(r"^/trip/([^/]+)/suggestions$")
 _COVERAGE_RE = re.compile(r"^/trip/([^/]+)/coverage$")
+_DAYS_RE = re.compile(r"^/trip/([^/]+)/days$")
+_DAY_ITEM_RE = re.compile(r"^/trip/([^/]+)/days/([^/]+)$")
+_STOP_ACTIVITIES_RE = re.compile(r"^/trip/([^/]+)/stops/([^/]+)/activities$")
 _TRIP_RE = re.compile(r"^/trip/([^/]+)$")
 
 _HEADERS = {"content-type": "application/json", "cache-control": "no-store"}
@@ -65,7 +69,8 @@ async def route(
     if m and method == "GET":
         trip_id = m.group(1)
         itinerary = await events_mod.current_itinerary(conn, trip_id)
-        return _resp(200, {"trip_id": trip_id, "itinerary": itinerary})
+        custom_days = await events_mod.current_custom_days(conn, trip_id)
+        return _resp(200, {"trip_id": trip_id, "itinerary": itinerary, "custom_days": custom_days})
 
     m = _COMPONENTS_RE.match(path)
     if m and method == "POST":
@@ -167,8 +172,46 @@ async def route(
     m = _SUGGEST_RE.match(path)
     if m and method == "GET":
         trip_id = m.group(1)
-        result = await suggest_mod.suggest(conn, trip_id)
+        filters = {k: body.get(k) for k in ("activity", "intensity_level") if body.get(k)}
+        result = await suggest_mod.suggest(conn, trip_id, filters=filters)
         return _resp(200, {"trip_id": trip_id, **result})
+
+    m = _DAYS_RE.match(path)
+    if m and method == "POST":
+        trip_id = m.group(1)
+        session_id, kind = body.get("session_id"), body.get("kind")
+        if not session_id or kind not in events_mod.DAY_KINDS:
+            return _resp(400, {"error": "session_id and kind required",
+                               "kinds": sorted(events_mod.DAY_KINDS)})
+        after = body.get("after_component_id")
+        if kind == "extra_night":
+            pinned = {str(c["id"]) for c in await events_mod._current_components(conn, trip_id)}  # noqa: SLF001
+            if not after or str(after) not in pinned:
+                return _resp(400, {"error": "extra_night needs after_component_id, a pinned stop"})
+        import uuid
+        day_id = str(uuid.uuid4())
+        await events_mod.append_event(conn, trip_id, session_id, "add_day",
+                                      {"day_id": day_id, "kind": kind, "after_component_id": after,
+                                       "note": (body.get("note") or "")[:500] or None})
+        return _resp(200, {"trip_id": trip_id, "day_id": day_id,
+                           "custom_days": await events_mod.current_custom_days(conn, trip_id)})
+
+    m = _DAY_ITEM_RE.match(path)
+    if m and method == "DELETE":
+        trip_id, day_id = m.group(1), m.group(2)
+        session_id = body.get("session_id")
+        if not session_id:
+            return _resp(400, {"error": "session_id required"})
+        if day_id not in {d["day_id"] for d in await events_mod.current_custom_days(conn, trip_id)}:
+            return _resp(404, {"error": "no such added day"})
+        await events_mod.append_event(conn, trip_id, session_id, "remove_day", {"day_id": day_id})
+        return _resp(200, {"trip_id": trip_id,
+                           "custom_days": await events_mod.current_custom_days(conn, trip_id)})
+
+    m = _STOP_ACTIVITIES_RE.match(path)
+    if m and method == "GET":
+        trip_id, destination_id = m.group(1), m.group(2)
+        return _resp(200, {"trip_id": trip_id, **await activities_mod.at_stop(conn, trip_id, destination_id)})
 
     m = _COVERAGE_RE.match(path)
     if m and method == "GET":
@@ -280,6 +323,11 @@ def _extract_request(event: dict) -> tuple[str, str, dict]:
         body = json.loads(raw_body) if isinstance(raw_body, str) else raw_body
     except json.JSONDecodeError:
         body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # GET routes read their options from the query string (e.g. suggestion filters).
+    for k, v in (event.get("queryStringParameters") or {}).items():
+        body.setdefault(k, v)
     return method, path, body
 
 
