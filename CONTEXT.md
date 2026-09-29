@@ -116,6 +116,13 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 - Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 primary → acc1
   fallback** (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md`).
   Cohere embeddings run directly on acc2 (no satellite).
+- **`tour_day` (AA-675, migration 003)**: one row per (published tour, itinerary day): start,
+  end and **overnight place** (geocoded into `shared.destinations`), plus other places. Built from
+  `published_tours.aa_itineraries` by rules + one `tp_extract` call per tour, with every model
+  place grounded in that day's text (`backend/extraction/tour_days.py`). It runs inside the
+  assembly Lambda through a direct `lambda invoke` (`{"extraction": {"op": "list" | "tour_days" |
+  "prune"}}`, not reachable over HTTP), driven by `backend/extraction/invoke_tour_days.py`.
+  Unchanged tours are skipped (itinerary hash). It is the base of the Tour Graph (AA-673).
 - `itinerary_components` is built by an offline extraction pipeline from CIS published tours and
   atoms. It is not refreshed automatically when new tours are published; the CIS data reset of
   16/09/2026 means it must be rebuilt after the CIS rerun (tracked in CIS Linear AA-600).
