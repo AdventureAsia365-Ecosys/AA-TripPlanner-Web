@@ -9,6 +9,8 @@ ops:
              geocodes); the operator script loops over tours.
   list       {} — active tours and whether each one's itinerary changed since its last extraction.
   prune      {"include_components": false} — delete rows of tours that are no longer active.
+  tour_graph {"junction_km": 150} — AA-673: rebuild the Tour Graph from tour_day (no model call).
+  neighbours {"destination_id": "<uuid>", "limit": 20} — AA-673 sample query, with its latency.
 
 The assembly Lambda has the Bedrock satellite role (tp_extract, logged to shared.llm_call_log via
 the Model Gateway) and reads the Mapbox token from Secrets Manager (MAPBOX_GEOCODING_TOKEN_ARN).
@@ -20,7 +22,7 @@ from typing import Optional
 
 import httpx
 
-from backend.extraction import tour_days
+from backend.extraction import tour_days, tour_graph
 from backend.extraction.geocode import geocode_place
 from backend.shared import llm_gateway
 
@@ -37,8 +39,19 @@ async def run_extraction_event(spec: dict) -> dict:
     if op == "list":
         async with pool.acquire() as conn:
             return {"op": op, "tours": await tour_days.list_tours(conn)}
+    if op == "tour_graph":
+        async with pool.acquire() as conn:
+            stats = await tour_graph.rebuild(conn, float(spec.get("junction_km") or tour_graph.DEFAULT_JUNCTION_KM))
+        return {"op": op, "seconds": round(time.monotonic() - started, 1), "stats": stats}
+    if op == "neighbours":
+        async with pool.acquire() as conn:
+            t0 = time.perf_counter()
+            rows = await tour_graph.neighbours(conn, spec["destination_id"], int(spec.get("limit") or 20))
+            ms = round((time.perf_counter() - t0) * 1000, 1)
+        return {"op": op, "query_ms": ms, "neighbours": tour_graph.jsonable(rows)}
     if op != "tour_days":
-        return {"error": f"unknown extraction op {op!r}", "ops": ["list", "tour_days", "prune"]}
+        return {"error": f"unknown extraction op {op!r}",
+                "ops": ["list", "tour_days", "prune", "tour_graph", "neighbours"]}
 
     tour_ids: Optional[list[str]] = spec.get("tour_ids") or None
     async with httpx.AsyncClient(timeout=15) as http, pool.acquire() as conn:
