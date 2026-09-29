@@ -10,6 +10,7 @@ live HTTP call or need a database.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 
@@ -54,6 +55,26 @@ async def _lookup_cached(pool: _Pool, name: str) -> Optional[Destination]:
     )
 
 
+_token_cache: dict[str, str] = {}
+
+
+def _mapbox_token() -> str:
+    """The Mapbox token: MAPBOX_GEOCODING_TOKEN locally; in the assembly Lambda (AA-675) the
+    Secrets Manager secret named by MAPBOX_GEOCODING_TOKEN_ARN, read once per container."""
+    if config.MAPBOX_GEOCODING_TOKEN:
+        return config.MAPBOX_GEOCODING_TOKEN
+    arn = os.environ.get("MAPBOX_GEOCODING_TOKEN_ARN")
+    if not arn:
+        return ""
+    if arn not in _token_cache:
+        import boto3  # lazy: tests and local runs never hit this branch
+
+        value = boto3.client("secretsmanager", region_name=config.BEDROCK_REGION).get_secret_value(
+            SecretId=arn).get("SecretString") or ""
+        _token_cache[arn] = "" if value == "REPLACE_ME" else value
+    return _token_cache[arn]
+
+
 async def _mapbox_forward(
     http: httpx.AsyncClient, name: str, country: str, region: str = ""
 ) -> tuple[float, float]:
@@ -63,14 +84,15 @@ async def _mapbox_forward(
     appended to the query text to disambiguate — without it Mapbox often
     returns a same-named place on the wrong continent.
     """
-    if not config.MAPBOX_GEOCODING_TOKEN:
+    token = _mapbox_token()
+    if not token:
         raise GeocodeError("MAPBOX_GEOCODING_TOKEN is not set.")
     from urllib.parse import quote
 
     query = f"{name}, {region}" if region else name
     url = f"{config.MAPBOX_GEOCODING_URL}/{quote(query)}.json"
     params = {
-        "access_token": config.MAPBOX_GEOCODING_TOKEN,
+        "access_token": token,
         "limit": "1",
         "types": "place,locality,region,poi",
     }

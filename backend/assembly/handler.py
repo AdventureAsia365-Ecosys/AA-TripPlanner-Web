@@ -282,6 +282,12 @@ def handler(event, context):  # pragma: no cover - thin AWS adapter
     from backend.shared import auth
     from backend.shared.db import get_pool
 
+    # AA-675: operator-only extraction, reached by a direct `lambda invoke` (IAM-authorised).
+    # API Gateway events always carry requestContext, so this branch is not reachable over HTTP.
+    if "extraction" in event and "requestContext" not in event:
+        from backend.extraction.lambda_entry import run_extraction_event
+        return asyncio.get_event_loop().run_until_complete(run_extraction_event(event["extraction"]))
+
     denied = auth.check_event(event)
     if denied is not None:
         return denied
