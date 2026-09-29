@@ -346,7 +346,7 @@ REGEOCODE_SQL = """
     SELECT DISTINCT d.id, d.name, d.country, d.lat, d.lng
     FROM shared.destinations d
     JOIN tripplanner.tour_day td ON td.overnight_destination_id = d.id
-    WHERE d.created_at >= $1::date AND d.name > $2
+    WHERE d.created_at >= $1::text::date AND d.name > $2  -- text: asyncpg binds ::date only from a date
     ORDER BY d.name
     LIMIT $3
 """
