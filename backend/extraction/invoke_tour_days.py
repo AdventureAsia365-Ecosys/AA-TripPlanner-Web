@@ -33,6 +33,8 @@ def main() -> None:
     ap.add_argument("--country", default=None)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--no-graph", action="store_true", help="skip the Tour Graph rebuild (AA-673)")
+    ap.add_argument("--components", action="store_true",
+                    help="AA-674: rebuild itinerary_components (from atoms) instead of tour_day")
     ap.add_argument("--relink", action="store_true", help="only re-locate night anchors (op relink), page by page")
     ap.add_argument("--pages", type=int, default=0, help="with --relink: stop after N pages (a trial)")
     ap.add_argument("--junction-km", type=float, default=150.0)
@@ -60,7 +62,7 @@ def main() -> None:
         tours = _invoke(client, {"op": "list"})["tours"]
     if args.country:
         tours = [t for t in tours if (t["country"] or "").lower() == args.country.lower()]
-    if args.only_stale and not args.force:
+    if args.only_stale and not args.force and not args.components:
         tours = [t for t in tours if t["stale"]]
     if args.limit:
         tours = tours[: args.limit]
@@ -69,6 +71,11 @@ def main() -> None:
     totals = {"days": 0, "overnight": 0, "anchored": 0, "linked": 0, "errors": 0}
     for i, t in enumerate(tours, 1):
         try:
+            if args.components:
+                r = _invoke(client, {"op": "components", "tour_ids": [t["tour_id"]]})
+                per = r.get("per_tour", {}).get(t["tour_id"])
+                print(f"[{i}/{len(tours)}] {t['name'][:50]:<50} {r.get('seconds')}s {per}")
+                continue
             r = _invoke(client, {"op": "tour_days", "tour_ids": [t["tour_id"]], "force": args.force})
             per = r.get("per_tour", {}).get(t["tour_id"])
             if per:
