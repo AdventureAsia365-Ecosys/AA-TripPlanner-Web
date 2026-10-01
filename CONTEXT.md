@@ -111,6 +111,12 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 - Schema ownership: everything under `tripplanner.*` is owned by this repo's migrations.
   `shared.destinations` is **read-shared** reference data owned by the CIS side — treat it as
   read-only from here; do not migrate or mutate it from this repo.
+- **Only CIS writes content** (root ADR 0002, 01/10/2026). This repo writes only `tripplanner.*`
+  user state (sessions, drafts, customers, trip events) and `shared.llm_call_log`. The DB role
+  `tripplanner` has no INSERT/UPDATE on `shared.destinations` any more (CIS migration 201), so the
+  extraction scripts that geocode / insert / re-geocode places (`extraction/geocode.py`, `locate.py`,
+  `regeocode_outliers.py`, `backfill_country.py`) are **frozen**. The place pipeline (itinerary
+  extraction, geocoding, tour graph) moves to CIS (AA-712); this repo then reads it through views.
 - Photos (AA-708, 01/10/2026): AA marketing photos are synced and matched by CIS (`photo_sync`,
   `shared.place_photo`). This repo reads them only through `shared.v_destination_photos` /
   `shared.v_tour_photos` and `shared.destinations.cover_image_url` (set by CIS from the photo
