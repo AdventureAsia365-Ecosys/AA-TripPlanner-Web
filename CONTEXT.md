@@ -111,6 +111,12 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 - Schema ownership: everything under `tripplanner.*` is owned by this repo's migrations.
   `shared.destinations` is **read-shared** reference data owned by the CIS side — treat it as
   read-only from here; do not migrate or mutate it from this repo.
+- Photos (AA-708, 01/10/2026): AA marketing photos are synced and matched by CIS (`photo_sync`,
+  `shared.place_photo`). This repo reads them only through `shared.v_destination_photos` /
+  `shared.v_tour_photos` and `shared.destinations.cover_image_url` (set by CIS from the photo
+  matched to a place on the tour's own itinerary). Image URL = CIS public API base + view `path`
+  + `?size=large|small`. Cover matching for a country runs after this repo re-extracts its tours'
+  places (`itinerary_components` / `tour_stop`) — see `docs/ecosystem-architecture.md` §4.5.
 
 ### AI (Bedrock)
 
