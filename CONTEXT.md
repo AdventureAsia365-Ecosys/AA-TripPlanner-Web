@@ -45,7 +45,7 @@ Postgres (the shared RDS in acc2)
   ├─ tripplanner.*        (owned here — itinerary_components, customers, sessions,
   │                        trip_events, trip_drafts; pgvector)
   ├─ shared.destinations  (shared reference data, geocoded lat/lng)
-  └─ read-only: acp_contract.tour_atoms, gold_aa_internal.published_tours (CIS-owned)
+  └─ read-only: acp_contract.v_active_tour_atoms, gold_aa_internal.published_tours (CIS-owned)
       │
       ▼
 Amazon Bedrock  — Cohere Embed v4 called directly in acc2;
@@ -184,14 +184,24 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   `AdventureAsia365-Ecosys*/...` wildcard form; a plain `repo:Ecosys/...` subject fails
   AccessDenied. This is the same OIDC fact that AA-588 corrected in Infra.
 
+## Contracts with other apps
+
+| Other side | This repo reads | This repo writes | Granted by |
+|---|---|---|---|
+| AA-CIS-App (content) | `gold_aa_internal.published_tours` (tenant RLS, AA tenant set per transaction), `acp_contract.v_active_tour_atoms` (place/activity columns), `shared.destinations`, `shared.v_destination_photos` / `v_tour_photos` | — | CIS migrations 180 / 216, 201 |
+| AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
+| AA-Booking (planned) | — | hand-off `inquiry.submitted` with the leg chain: a sent draft becomes a Trip Case (AA-676 / AA-681). Today Send-to-advisor emails an advisor and records a `sent` event (idempotent, AA-731) | ecosystem ADR 0001 decision 6 (outbox) |
+| AA-CIS-Infra | — | — | owns the Lambdas, API Gateway, OIDC deploy role, secrets and the DB Migrate workflow that applies `migrations/` |
+
+Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
+
 ## Boundaries — what this repo does NOT do
 
 - It does not run the content pipeline (Atom/Segment/Route/Slate/Piece/publish) — that is
   AA-CIS-App's domain entirely.
-- It does not own the `shared` schema (CIS does). It does write into `shared.destinations`, which
-  it created (migration 002): the extraction inserts newly located places and corrects their
-  coordinates, and migration 005 added `located_by` / `located_at`. It must not change other
-  `shared` tables.
+- It does not own the `shared` schema (CIS does). It created `shared.destinations` (migrations
+  002 / 005), but since ADR 0002 / CIS migration 201 the table is CIS-owned and read-only from here;
+  the only `shared` table it writes is `shared.llm_call_log`.
 - It does not provision its own AWS resources or OIDC roles — those live in AA-CIS-Infra.
 - **Agents must not merge to the production branch directly.** Ship via PR and let the human
   merge (matches this repo's stated policy and the ecosystem program rules). This repo has no
