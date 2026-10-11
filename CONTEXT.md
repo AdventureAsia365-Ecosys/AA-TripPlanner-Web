@@ -108,7 +108,11 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   (custom listbox — a native `<option>` does not fire hover events). The gateway table covers
   only 6 countries so far (Laos, Sri Lanka, South Korea, Nepal, Japan, India); other countries
   snap to the nearest listed gateway.
-- Schema ownership: everything under `tripplanner.*` is owned by this repo's migrations.
+- Schema ownership: everything under `tripplanner.*` is owned by this repo's migrations
+  (ecosystem rules: `AA-Ecosys/docs/database/schema-ownership.md`). Every migration registers itself
+  in `shared.schema_versions` with the `tp-NNN` key (from tp-007, which also backfills tp-001..006
+  for objects that exist) and is applied through AA-CIS-Infra **DB Migrate** from an identical copy
+  in `db/migrations/tripplanner/`.
   `shared.destinations` is **read-shared** reference data owned by the CIS side — treat it as
   read-only from here; do not migrate or mutate it from this repo.
 - **Only CIS writes content** (root ADR 0002, 01/10/2026). This repo writes only `tripplanner.*`
