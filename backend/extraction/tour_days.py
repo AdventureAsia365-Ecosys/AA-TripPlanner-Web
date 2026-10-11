@@ -357,6 +357,23 @@ async def prune(db, include_components: bool = False) -> dict:
     return out
 
 
+async def orphans(db) -> dict:
+    """AA-731 read-only check: rows still pointing at tours that are no longer active (e.g. after a
+    rerun wave or a Master trash). Expected 0 after `prune`; components need
+    `prune {"include_components": true}` (see prune for why that is opt-in)."""
+    active = [r["tour_id"] for r in await fetch_catalog(db, ACTIVE_TOURS_SQL)]
+    if not active:
+        return {"error": "no active tours visible"}
+    rows = await db.fetch(
+        "SELECT source_tour_id, count(*) AS n FROM tripplanner.itinerary_components "
+        "WHERE NOT (source_tour_id = ANY($1::text[])) GROUP BY source_tour_id ORDER BY n DESC", active)
+    tour_day = await db.fetchval(
+        "SELECT count(*) FROM tripplanner.tour_day WHERE NOT (source_tour_id = ANY($1::text[]))", active)
+    return {"active_tours": len(active), "orphan_components": sum(r["n"] for r in rows),
+            "orphan_component_tours": [r["source_tour_id"] for r in rows][:50],
+            "orphan_tour_day": tour_day}
+
+
 async def relink(db, generate, search, after: str = "", limit: int = 40) -> dict:
     """Re-locates every night anchor of the active tours from scratch (model + Mapbox, see
     locate.py) and relinks tour_day, one page of anchor names at a time (the Lambda's 60 s).

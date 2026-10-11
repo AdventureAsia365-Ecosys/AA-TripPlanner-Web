@@ -5,7 +5,7 @@ The components on Dev were built from the pre-reset tour set: 0 rows for the 121
 "suggest next" only know old tours.
 
 Per tour (one Lambda invoke, extraction op "components"):
-  1. read its atoms (acp_contract.tour_atoms, column grant: CIS migration 180);
+  1. read its atoms (acp_contract.v_active_tour_atoms, column grant: CIS migration 216);
   2. map each pinnable atom to one component with the deterministic categorizer (no model call:
      atoms already carry place + activity_type); skip lodging and transit "places";
   3. link each place to shared.destinations (known names reuse their row, new names go through
@@ -21,14 +21,17 @@ from __future__ import annotations
 from typing import Awaitable, Callable, Optional
 
 from backend.extraction.deterministic import categorize_atom
-from backend.extraction.tour_days import anchor_place
+from backend.extraction.tour_days import anchor_place, fetch_catalog
 
 EMBED_BATCH = 96
 
+# AA-731: the active-atom contract (CIS migration 203; grant 216). The view already drops deleted
+# atoms, empty markers and atoms of tours not active in Master Content, so a trashed tour can
+# no longer produce pinnable components.
 ATOMS_SQL = """
     SELECT atom_id, itinerary_day, place, activity_type, text
-    FROM acp_contract.tour_atoms
-    WHERE tour_id::text = $1 AND deleted = false AND NOT coalesce(is_empty_marker, false)
+    FROM acp_contract.v_active_tour_atoms
+    WHERE tour_id::text = $1
       AND place IS NOT NULL AND itinerary_day IS NOT NULL
     ORDER BY itinerary_day, atom_id
 """
@@ -62,7 +65,8 @@ def vector_literal(vec: list[float]) -> str:
 
 
 async def rebuild_tour(db, tour: dict, link: Optional[LinkFn], embed: Optional[EmbedFn]) -> dict:
-    atoms = [dict(r) for r in await db.fetch(ATOMS_SQL, tour["tour_id"])]
+    # The view joins published_tours (tenant RLS): read with the AA tenant set, like the catalog.
+    atoms = [dict(r) for r in await fetch_catalog(db, ATOMS_SQL, tour["tour_id"])]
     comps, skipped = build_components(atoms)
     places = list(dict.fromkeys(c["name"] for c in comps))
     dest_ids = await link(places, tour["country"] or "", tour["aa_name"] or "") if (places and link) else {}

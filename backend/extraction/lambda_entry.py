@@ -9,6 +9,8 @@ ops:
              locate call for new places); the operator script loops over tours.
   list       {} — active tours and whether each one's itinerary changed since its last extraction.
   prune      {"include_components": false} — delete rows of tours that are no longer active.
+  orphans    {} — AA-731 read-only check: components / tour_day rows of tours no longer active
+             (run after each rerun wave or Master trash; expected 0 after prune).
   components {"tour_ids": [...]} — AA-674: rebuild itinerary_components of these active tours from
              their atoms (deterministic mapping, locate new places, embed); one tour per invoke.
   relink     {"after": "", "limit": 40} — re-locate every night anchor of the active tours from
@@ -31,7 +33,7 @@ from backend.extraction import components, locate, tour_days, tour_graph
 from backend.extraction.geocode import AA_ISOS, _TYPES, _mapbox_token
 from backend.shared import llm_gateway
 
-OPS = ["list", "tour_days", "prune", "components", "relink", "tour_graph", "neighbours"]
+OPS = ["list", "tour_days", "prune", "orphans", "components", "relink", "tour_graph", "neighbours"]
 
 
 def _generator(conn, route, op: str):
@@ -84,6 +86,9 @@ async def run_extraction_event(spec: dict) -> dict:
     if op == "prune":
         async with pool.acquire() as conn:
             return {"op": op, **await tour_days.prune(conn, bool(spec.get("include_components")))}
+    if op == "orphans":
+        async with pool.acquire() as conn:
+            return {"op": op, **await tour_days.orphans(conn)}
     if op == "list":
         async with pool.acquire() as conn:
             return {"op": op, "tours": await tour_days.list_tours(conn)}

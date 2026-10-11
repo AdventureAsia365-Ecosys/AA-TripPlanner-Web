@@ -128,6 +128,9 @@ class FakeConn:
                 return None
             last = rows[-1]
             return {"event_type": last["event_type"], "payload": last["payload"]}
+        if q.startswith("SELECT id, event_type FROM tripplanner.trip_events") and "ORDER BY id DESC" in q:
+            rows = [e for e in self.events if e["trip_id"] == args[0]]
+            return {"id": rows[-1]["id"], "event_type": rows[-1]["event_type"]} if rows else None
         if q.startswith("SELECT customer_id FROM tripplanner.sessions"):
             sid = args[0]
             return self.sessions.get(sid)
@@ -418,6 +421,76 @@ async def test_handler_send_registers_then_sends_and_notifies(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_handler_send_twice_is_one_handoff_and_one_email(monkeypatch):
+    """AA-731: a double click / retry after a lost response must not create a second hand-off."""
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
+    conn = FakeConn()
+    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    sender = notify.LoggingSender()
+    req = {"session_id": "s1", "customer": {"name": "Jo", "email": "jo@x.com"}}
+    first = json.loads((await handler.route("POST", "/trip/t1/send-to-advisor", req,
+                                            conn=conn, sender=sender))["body"])
+    second = json.loads((await handler.route("POST", "/trip/t1/send-to-advisor", req,
+                                             conn=conn, sender=sender))["body"])
+    assert first["already_sent"] is False and second["already_sent"] is True
+    assert first["handoff_id"] == second["handoff_id"]
+    assert len(sender.sent) == 1
+    assert [e["event_type"] for e in conn.events].count("sent") == 1
+    assert len(conn.customers) == 1
+
+
+@pytest.mark.asyncio
+async def test_handler_send_after_a_real_edit_is_a_new_handoff(monkeypatch):
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
+    conn = FakeConn()
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    sender = notify.LoggingSender()
+    first = json.loads((await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"},
+                                            conn=conn, sender=sender))["body"])
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c3"})
+    second = json.loads((await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"},
+                                             conn=conn, sender=sender))["body"])
+    assert second["already_sent"] is False and second["handoff_id"] != first["handoff_id"]
+    assert len(sender.sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_handler_send_takes_the_per_trip_lock_first(monkeypatch):
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
+    conn = FakeConn()
+    seen = []
+    orig = conn.execute
+
+    async def spy(query, *args):
+        seen.append((" ".join(query.split()), args))
+        return await orig(query, *args)
+
+    conn.execute = spy
+    await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"}, conn=conn,
+                        sender=notify.LoggingSender())
+    assert seen[0] == ("SELECT pg_advisory_xact_lock(hashtext($1))", ("tp_send:t1",))
+
+
+@pytest.mark.asyncio
+async def test_handler_narrate_replaces_a_day_with_an_invented_number():
+    """AA-731: an LLM figure no component text supports never reaches the customer."""
+    conn = FakeConn()
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    itinerary = await events.current_itinerary(conn, "t1")
+    name = itinerary[0]["name"]
+
+    def fake_narrator(it):
+        yield "Day 1: Admire the 22-meter reclining Buddha, a 900-year-old marvel."
+
+    resp = await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
+                               conn=conn, narrator=fake_narrator)
+    narration = json.loads(resp["body"])["narration"]
+    assert "22" not in narration and "900" not in narration
+    assert narration == f"Day 1: {name}."
+
+
+@pytest.mark.asyncio
 async def test_handler_narrate_returns_narration():
     conn = FakeConn()
     await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
@@ -601,3 +674,30 @@ def test_components_of_one_tour_day_share_a_trip_day_and_are_narrated_once():
     narration, missing = master_content.build_narration(days, {("t", 2): "Day 2 — Haa: valley walk", ("t", 3): "Day 3 — Paro"})
     assert narration.count("Day 1:") == 1 and "Day 2: Paro" in narration
     assert [m["component_id"] for m in missing] == ["d", "e"]
+
+
+# --- grounding (AA-731) --------------------------------------------------------
+
+def test_novel_numbers_matches_cis_rules():
+    from backend.assembly import grounding
+    src = ["Trek to 4,460m base camp over 3 days"]
+    assert grounding.novel_numbers("Day 2: reach the 4460 m camp in 3 days", src) == []
+    assert grounding.novel_numbers("Day 2: a 5,000m pass", src) == ["5000"]
+    assert grounding.novel_numbers("Day 7: free time", src) == []          # Day label is not a claim
+
+
+def test_ground_narration_keeps_supported_lines_and_checks_each_day_against_its_own_text():
+    from backend.assembly import grounding
+    it = [{"day": 1, "name": "Hoi An", "text_extract": "Lantern walk at 6pm"},
+          {"day": 2, "name": "My Son", "text_extract": "Temples from the 4th century"}]
+    text = "Day 1: Lanterns glow from 6pm.\nDay 2: Ruins built 6 centuries ago.\nSee you on day 2!"
+    out, removed = grounding.ground_narration(text, it)
+    assert out.splitlines() == ["Day 1: Lanterns glow from 6pm.", "Day 2: My Son.", "See you on day 2!"]
+    assert removed == [{"line": "Day 2: Ruins built 6 centuries ago.", "numbers": ["6"]}]
+
+
+def test_ground_narration_drops_a_free_line_with_an_invented_figure():
+    from backend.assembly import grounding
+    it = [{"day": 1, "name": "Hoi An", "text_extract": "Old town"}]
+    out, removed = grounding.ground_narration("Day 1: Old town.\nOver 1,000 shops await.", it)
+    assert out == "Day 1: Old town." and removed[0]["numbers"] == ["1000"]
