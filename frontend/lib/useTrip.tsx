@@ -69,7 +69,7 @@ interface TripState {
   remove: (componentId: string) => Promise<void>;
   reorder: (orderedIds: string[]) => Promise<void>;
   narrate: (mode?: "compose" | "renarrate") => Promise<void>;
-  send: (customer?: { name: string; phone: string; email: string }) => Promise<
+  send: (customer?: { name: string; phone: string; email: string; consent: boolean }) => Promise<
     { ok: boolean; needsRegistration: boolean }
   >;
   // AA-674 / Jira PR-11: routes of real AA tours.
@@ -312,7 +312,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   );
 
   const send = useCallback(
-    async (customer?: { name: string; phone: string; email: string }) => {
+    async (customer?: { name: string; phone: string; email: string; consent: boolean }) => {
       const { status: code, body } = await api.sendToAdvisor(
         tripId,
         sessionId,

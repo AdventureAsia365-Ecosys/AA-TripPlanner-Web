@@ -14,6 +14,7 @@ from backend import config
 from backend.assembly import (
     agent,
     events,
+    handoff,
     handler,
     master_content,
     notify,
@@ -76,6 +77,7 @@ class FakeConn:
         self.drafts: dict[str, dict] = {}
         self.customers: list[dict] = []
         self.sessions: dict[str, dict] = {}
+        self.outbox: list[dict] = []
 
     def transaction(self):
         return FakeTxn()
@@ -99,6 +101,15 @@ class FakeConn:
                 "id": trip_id, "session_id": session_id,
                 "status": new_status, "itinerary": itinerary_json,
             }
+        elif q.startswith("INSERT INTO tripplanner.outbox"):
+            event, version, key, aggregate_id, payload = args
+            if not any(r["idempotency_key"] == key for r in self.outbox):
+                self.outbox.append({"event": event, "schema_version": version, "idempotency_key": key,
+                                    "aggregate_id": aggregate_id, "payload": json.loads(payload)})
+        elif q.startswith("UPDATE tripplanner.customers SET contact_consent"):
+            for c in self.customers:
+                if c["id"] == args[0] and not c.get("contact_consent"):
+                    c["contact_consent"], c["contact_consent_at"] = True, "2026-10-11T00:00:00+00:00"
         elif q.startswith("UPDATE tripplanner.sessions"):
             customer_id, session_id = args
             self.sessions.setdefault(session_id, {"id": session_id})
@@ -131,6 +142,14 @@ class FakeConn:
         if q.startswith("SELECT id, event_type FROM tripplanner.trip_events") and "ORDER BY id DESC" in q:
             rows = [e for e in self.events if e["trip_id"] == args[0]]
             return {"id": rows[-1]["id"], "event_type": rows[-1]["event_type"]} if rows else None
+        if q.startswith("SELECT c.id, c.name, c.phone, c.email, c.contact_consent"):
+            cid = (self.sessions.get(args[0]) or {}).get("customer_id")
+            for c in self.customers:
+                if c["id"] == cid:
+                    return {"id": c["id"], "name": c["name"], "phone": c.get("phone"),
+                            "email": c.get("email"), "contact_consent": c.get("contact_consent", False),
+                            "contact_consent_at": c.get("contact_consent_at")}
+            return None
         if q.startswith("SELECT customer_id FROM tripplanner.sessions"):
             sid = args[0]
             return self.sessions.get(sid)
@@ -701,3 +720,68 @@ def test_ground_narration_drops_a_free_line_with_an_invented_figure():
     it = [{"day": 1, "name": "Hoi An", "text_extract": "Old town"}]
     out, removed = grounding.ground_narration("Day 1: Old town.\nOver 1,000 shops await.", it)
     assert out == "Day 1: Old town." and removed[0]["numbers"] == ["1000"]
+
+
+# --- AA-676: inquiry.submitted outbox ----------------------------------------
+
+def test_leg_chain_groups_consecutive_days_of_the_same_tour():
+    itinerary = [
+        {"day": 1, "source_tour_id": "T1", "source_day_index": 2},
+        {"day": 1, "source_tour_id": "T1", "source_day_index": 2},   # two activities, same tour day
+        {"day": 2, "source_tour_id": "T1", "source_day_index": 3},
+        {"day": 3, "source_tour_id": "T2", "source_day_index": 1},
+        {"day": 4, "source_tour_id": "T1", "source_day_index": 7},   # back to T1, not contiguous
+    ]
+    assert handoff.leg_chain(itinerary) == [
+        {"position": 1, "source_tour_id": "T1", "day_from": 2, "day_to": 3},
+        {"position": 2, "source_tour_id": "T2", "day_from": 1, "day_to": 1},
+        {"position": 3, "source_tour_id": "T1", "day_from": 7, "day_to": 7},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_writes_one_inquiry_outbox_row_with_consent(monkeypatch):
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
+    conn = FakeConn()
+    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    req = {"session_id": "s1", "customer": {"name": "Jo", "email": "jo@x.com", "consent": True}}
+    first = json.loads((await handler.route("POST", "/trip/t1/send-to-advisor", req, conn=conn,
+                                            sender=notify.LoggingSender()))["body"])
+    await handler.route("POST", "/trip/t1/send-to-advisor", req, conn=conn,
+                        sender=notify.LoggingSender())                       # double click
+    assert len(conn.outbox) == 1
+    row = conn.outbox[0]
+    assert row["event"] == "inquiry.submitted" and row["schema_version"] == 1
+    assert row["idempotency_key"] == f"t1:{first['handoff_id']}"
+    p = row["payload"]
+    assert p["contract"] == "inquiry.submitted" and p["trip_id"] == "t1"
+    assert p["customer"]["email"] == "jo@x.com" and p["customer"]["consent"] is True
+    assert [d["component_id"] for d in p["itinerary"]["days"]] == ["c1"]
+
+
+@pytest.mark.asyncio
+async def test_send_without_consent_records_false(monkeypatch):
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
+    conn = FakeConn()
+    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    await handler.route("POST", "/trip/t1/send-to-advisor",
+                        {"session_id": "s1", "customer": {"name": "Jo", "email": "jo@x.com"}},
+                        conn=conn, sender=notify.LoggingSender())
+    assert conn.outbox[0]["payload"]["customer"]["consent"] is False
+
+
+@pytest.mark.asyncio
+async def test_resend_after_edit_is_a_new_outbox_row(monkeypatch):
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
+    conn = FakeConn()
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"}, conn=conn,
+                        sender=notify.LoggingSender())
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c3"})
+    await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"}, conn=conn,
+                        sender=notify.LoggingSender())
+    assert len(conn.outbox) == 2
+    assert conn.outbox[0]["idempotency_key"] != conn.outbox[1]["idempotency_key"]
+    assert conn.outbox[1]["payload"]["customer"] is None          # guest hand-off
