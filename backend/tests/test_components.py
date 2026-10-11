@@ -24,9 +24,14 @@ def test_build_components_maps_pinnable_atoms_and_skips_lodging_transit():
 
 class _Db:
     def __init__(self, atoms):
-        self.atoms, self.log, self.in_tx = atoms, [], False
+        self.atoms, self.log, self.in_tx, self.reads = atoms, [], False, []
+
+    def writes(self):
+        """Log without the tenant SET LOCAL that scopes the atom read."""
+        return [e for e in self.log if "set_config('app.tenant_id'" not in e[1]]
 
     async def fetch(self, sql, *args):
+        self.reads.append((" ".join(sql.split()), self.in_tx))
         return self.atoms
 
     @asynccontextmanager
@@ -60,8 +65,9 @@ async def test_rebuild_tour_links_embeds_in_batches_and_replaces_in_one_transact
     assert out == {"atoms": 6, "components": 2, "skipped": 3, "places": 3, "linked_places": 2, "embedded": 2}
     assert embed_calls == [2]
     assert all(entry[3] for entry in db.log)
-    assert db.log[0][1] == "DELETE FROM tripplanner.itinerary_components WHERE source_tour_id = $1"
-    rows = db.log[1][2]
+    writes = db.writes()
+    assert writes[0][1] == "DELETE FROM tripplanner.itinerary_components WHERE source_tour_id = $1"
+    rows = writes[1][2]
     assert [r[2] for r in rows] == ["d-paro", "d-tn"] and rows[0][9] == "[0.5,0.25]"
 
 
@@ -69,4 +75,14 @@ async def test_rebuild_tour_without_pinnable_atoms_still_clears_the_tour():
     db = _Db([ATOMS[1]])
     out = await cp.rebuild_tour(db, {"tour_id": "t1", "country": "Bhutan", "aa_name": ""}, None, None)
     assert out["components"] == 0
-    assert [e[0] for e in db.log] == ["execute"]                   # delete only
+    assert [e[0] for e in db.writes()] == ["execute"]              # delete only
+
+
+async def test_rebuild_tour_reads_the_active_atom_view_with_the_aa_tenant_set():
+    """AA-731: atoms come from v_active_tour_atoms (trashed/inactive tours drop out), read inside
+    a transaction with app.tenant_id set because the view joins published_tours (tenant RLS)."""
+    db = _Db([])
+    await cp.rebuild_tour(db, {"tour_id": "t1", "country": "", "aa_name": ""}, None, None)
+    sql, in_tx = db.reads[0]
+    assert "FROM acp_contract.v_active_tour_atoms" in sql and "acp_contract.tour_atoms" not in sql
+    assert in_tx and "set_config('app.tenant_id'" in db.log[0][1]

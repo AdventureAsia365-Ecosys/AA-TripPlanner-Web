@@ -23,6 +23,7 @@ from typing import Any, Optional
 from backend import config
 from backend.assembly import agent as agent_mod
 from backend.assembly import events as events_mod
+from backend.assembly import grounding as grounding_mod
 from backend.assembly import master_content
 from backend.assembly import notify as notify_mod
 from backend.assembly import registration as reg_mod
@@ -118,26 +119,41 @@ async def route(
         if not session_id:
             return _resp(400, {"error": "session_id required"})
         customer = body.get("customer") or {}
-        registered = await _is_registered(conn, session_id)
 
-        if config.REQUIRE_REGISTRATION_BEFORE_HANDOFF and not registered:
-            if not (customer.get("name") and (customer.get("phone") or customer.get("email"))):
-                return _resp(
-                    422,
-                    {"error": "registration_required",
-                     "detail": "name and phone or email required before sending"},
+        # AA-731: idempotent hand-off. One transaction, serialized per trip by an advisory lock;
+        # if the trip's latest event is already `sent` (no edit since), this is a double click or
+        # a retry after a lost response: answer with that hand-off, no second event or email.
+        # Sending again after a real edit is a new hand-off by design. The email goes out inside
+        # the transaction, so a failed send rolls the `sent` event back and the retry resends.
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"tp_send:{trip_id}")
+            last = await _last_event(conn, trip_id)
+            if last and last["event_type"] == "sent":
+                itinerary = await events_mod.current_itinerary(conn, trip_id)
+                return _resp(200, {"trip_id": trip_id, "status": "sent", "handoff_id": last["id"],
+                                   "already_sent": True, "itinerary": itinerary})
+
+            registered = await _is_registered(conn, session_id)
+            if config.REQUIRE_REGISTRATION_BEFORE_HANDOFF and not registered:
+                if not (customer.get("name") and (customer.get("phone") or customer.get("email"))):
+                    return _resp(
+                        422,
+                        {"error": "registration_required",
+                         "detail": "name and phone or email required before sending"},
+                    )
+                await reg_mod.register_and_claim(
+                    conn, session_id, customer.get("name", ""),
+                    customer.get("phone", ""), customer.get("email", ""),
                 )
-            await reg_mod.register_and_claim(
-                conn, session_id, customer.get("name", ""),
-                customer.get("phone", ""), customer.get("email", ""),
-            )
 
-        itinerary = await events_mod.append_event(
-            conn, trip_id, session_id, "sent", {"session_id": session_id},
-        )
-        event_log = await _event_log(conn, trip_id)
-        await notify_mod.notify_advisor(trip_id, event_log, sender=sender)
-        return _resp(200, {"trip_id": trip_id, "status": "sent", "itinerary": itinerary})
+            itinerary = await events_mod.append_event(
+                conn, trip_id, session_id, "sent", {"session_id": session_id},
+            )
+            handoff = await _last_event(conn, trip_id)
+            event_log = await _event_log(conn, trip_id)
+            await notify_mod.notify_advisor(trip_id, event_log, sender=sender)
+        return _resp(200, {"trip_id": trip_id, "status": "sent", "handoff_id": handoff["id"],
+                           "already_sent": False, "itinerary": itinerary})
 
     m = _NARRATE_RE.match(path)
     if m and method == "POST":
@@ -159,13 +175,15 @@ async def route(
         calls: list = []
         narrate_fn = await _resolve_narrator(mode, narrator, conn, calls)
         try:
-            narration, source = await _narrate(conn, itinerary, narrate_fn)
+            narration, source, ungrounded = await _narrate(conn, itinerary, narrate_fn)
         except Exception as e:  # noqa: BLE001 — surface Bedrock failure as 502
             return _resp(502, {"error": "narration_failed", "detail": str(e)})
         for call in calls:  # AA-685: one llm_call_log row per model call
-            await llm_gateway.record(conn, call, {
-                "mode": mode, "source": source, "days": len(itinerary),
-                "output_len_chars": len(narration)})
+            signal = {"mode": mode, "source": source, "days": len(itinerary),
+                      "output_len_chars": len(narration)}
+            if ungrounded:  # AA-731: invented figures removed before the customer saw them
+                signal["ungrounded_lines"] = len(ungrounded)
+            await llm_gateway.record(conn, call, signal)
 
         return _resp(200, {"trip_id": trip_id, "mode": mode, "source": source,
                            "narration": narration, "itinerary": itinerary})
@@ -251,7 +269,7 @@ async def _resolve_narrator(mode: str, narrator: Optional[Any], conn, calls: lis
     return functools.partial(fn, route=route, calls=calls)
 
 
-async def _narrate(conn, itinerary: list[dict], narrate_fn) -> tuple[str, str]:
+async def _narrate(conn, itinerary: list[dict], narrate_fn) -> tuple[str, str, list[dict]]:
     """Build day-by-day narration, preferring AA's authored master itinerary
     text over an LLM rewrite.
 
@@ -262,8 +280,9 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn) -> tuple[str, str]:
       3. Only the remaining days (unstructured itineraries, etc.) are sent
          to the LLM, then merged back in trip-day order.
 
-    Returns (narration, source) where source is 'master' (all days authored),
-    'llm' (none authored), or 'mixed'.
+    Returns (narration, source, ungrounded) where source is 'master' (all days authored),
+    'llm' (none authored), or 'mixed', and ungrounded lists the LLM lines removed or replaced
+    because they stated a figure no component text supports (AA-731, grounding.py).
     """
     tour_ids = [e.get("source_tour_id") for e in itinerary if e.get("source_tour_id")]
     try:
@@ -277,16 +296,16 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn) -> tuple[str, str]:
 
     # All days resolved from authored content — no Bedrock call at all.
     if not missing:
-        return master_narr, "master"
+        return master_narr, "master", []
 
     # Some (or all) days need the LLM. Narrate only the missing days, then
     # merge with any authored lines, preserving trip-day order.
-    llm_text = "".join(narrate_fn(missing))
+    llm_text, ungrounded = grounding_mod.ground_narration("".join(narrate_fn(missing)), missing)
     if not master_narr:
-        return llm_text, "llm"
+        return llm_text, "llm", ungrounded
 
     merged = _merge_by_day(master_narr, llm_text)
-    return merged, "mixed"
+    return merged, "mixed", ungrounded
 
 
 def _merge_by_day(master_narr: str, llm_narr: str) -> str:
@@ -312,6 +331,14 @@ async def _is_registered(conn, session_id: str) -> bool:
         "SELECT customer_id FROM tripplanner.sessions WHERE id = $1", session_id
     )
     return bool(row and row["customer_id"])
+
+
+async def _last_event(conn, trip_id: str):
+    return await conn.fetchrow(
+        "SELECT id, event_type FROM tripplanner.trip_events "
+        "WHERE trip_id = $1 ORDER BY id DESC LIMIT 1",
+        trip_id,
+    )
 
 
 async def _event_log(conn, trip_id: str) -> list[dict]:

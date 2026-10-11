@@ -282,3 +282,33 @@ async def test_relink_locates_each_anchor_once_and_relinks_its_nights():
     assert links == {("t1", 4): None, ("t1", 3): "id-Arugam Bay", ("t1", 1): "id-Negombo", ("t1", 2): "id-Negombo"}
     assert [u[0] for u in db.upserts] == ["Arugam Bay", "Negombo"]
     assert locate.BATCH == 40
+
+
+async def test_orphans_counts_rows_of_tours_no_longer_active(monkeypatch):
+    """AA-731: read-only check after a rerun wave / Master trash."""
+    from backend.extraction import tour_days as td
+
+    async def fake_catalog(db, sql, *args):
+        return [{"tour_id": "a"}, {"tour_id": "b"}]
+
+    class Db:
+        async def fetch(self, sql, active):
+            assert active == ["a", "b"] and "NOT (source_tour_id = ANY" in sql
+            return [{"source_tour_id": "gone", "n": 4}]
+
+        async def fetchval(self, sql, active):
+            return 2
+
+    monkeypatch.setattr(td, "fetch_catalog", fake_catalog)
+    assert await td.orphans(Db()) == {"active_tours": 2, "orphan_components": 4,
+                                      "orphan_component_tours": ["gone"], "orphan_tour_day": 2}
+
+
+async def test_orphans_refuses_when_no_active_tour_is_visible(monkeypatch):
+    from backend.extraction import tour_days as td
+
+    async def empty(db, sql, *args):
+        return []
+
+    monkeypatch.setattr(td, "fetch_catalog", empty)
+    assert await td.orphans(object()) == {"error": "no active tours visible"}
