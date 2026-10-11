@@ -24,6 +24,7 @@ from backend import config
 from backend.assembly import agent as agent_mod
 from backend.assembly import events as events_mod
 from backend.assembly import grounding as grounding_mod
+from backend.assembly import handoff as handoff_mod
 from backend.assembly import master_content
 from backend.assembly import notify as notify_mod
 from backend.assembly import registration as reg_mod
@@ -144,12 +145,18 @@ async def route(
                 await reg_mod.register_and_claim(
                     conn, session_id, customer.get("name", ""),
                     customer.get("phone", ""), customer.get("email", ""),
+                    consent=customer.get("consent") is True,
                 )
 
             itinerary = await events_mod.append_event(
                 conn, trip_id, session_id, "sent", {"session_id": session_id},
             )
             handoff = await _last_event(conn, trip_id)
+            # AA-676: the inquiry.submitted outbox row commits with the `sent` event (same transaction).
+            await handoff_mod.write_inquiry(
+                conn, trip_id=trip_id, handoff_id=handoff["id"], session_id=session_id,
+                itinerary=itinerary, custom_days=await events_mod.current_custom_days(conn, trip_id),
+            )
             event_log = await _event_log(conn, trip_id)
             await notify_mod.notify_advisor(trip_id, event_log, sender=sender)
         return _resp(200, {"trip_id": trip_id, "status": "sent", "handoff_id": handoff["id"],

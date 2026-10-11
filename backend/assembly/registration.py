@@ -33,9 +33,12 @@ async def register_and_claim(
     name: str,
     phone: str,
     email: str,
+    consent: bool = False,
 ) -> str:
     """Return the customer_id (existing or newly created) and attach it to
-    the session. Idempotent w.r.t. an already-registered phone/email."""
+    the session. Idempotent w.r.t. an already-registered phone/email.
+
+    AA-676: an explicit contact consent is recorded once (first time given), with its time."""
     phone = (phone or "").strip() or None
     email = (email or "").strip() or None
     if not name or not (phone or email):
@@ -54,6 +57,13 @@ async def register_and_claim(
                 email,
             )
             customer_id = str(row["id"])
+
+        if consent:
+            await conn.execute(
+                "UPDATE tripplanner.customers SET contact_consent = true, contact_consent_at = now() "
+                "WHERE id = $1 AND NOT contact_consent",
+                customer_id,
+            )
 
         # Attach to the EXISTING session; clear guest expiry (indefinite).
         await conn.execute(

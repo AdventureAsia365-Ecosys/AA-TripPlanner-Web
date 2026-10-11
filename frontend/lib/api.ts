@@ -168,7 +168,7 @@ export async function narrate(
 export async function sendToAdvisor(
   tripId: string,
   sessionId: string,
-  customer?: { name: string; phone: string; email: string },
+  customer?: { name: string; phone: string; email: string; consent: boolean },
 ): Promise<{ status: number; body: TripResponse & { error?: string } }> {
   const res = await fetch("/api/trip", {
     method: "POST",

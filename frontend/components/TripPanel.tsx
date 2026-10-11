@@ -82,7 +82,7 @@ export default function TripPanel() {
   const totalDays = tripDays + customDays.length;
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [showReg, setShowReg] = useState(false);
-  const [reg, setReg] = useState({ name: "", phone: "", email: "" });
+  const [reg, setReg] = useState({ name: "", phone: "", email: "", consent: false });
   const [sentMsg, setSentMsg] = useState<string | null>(null);
   // Per-leg travel estimates between consecutive days (index i = day i -> i+1).
   const [legs, setLegs] = useState<RouteLeg[]>([]);
@@ -620,9 +620,19 @@ export default function TripPanel() {
                   onChange={(e) => setReg({ ...reg, email: e.target.value })}
                   className="aa-focus w-full rounded-lg border border-aa-line px-3 py-2 text-sm text-aa-ink placeholder:text-aa-muted"
                 />
+                {/* AA-676: explicit contact consent travels with the hand-off to AA-Booking. */}
+                <label className="flex items-start gap-2 text-xs text-aa-muted">
+                  <input
+                    type="checkbox"
+                    checked={reg.consent}
+                    onChange={(e) => setReg({ ...reg, consent: e.target.checked })}
+                    className="aa-focus mt-0.5"
+                  />
+                  <span>An Adventure Asia advisor may contact me about this trip.</span>
+                </label>
                 <button
                   onClick={() => handleSend(true)}
-                  disabled={!reg.name || (!reg.phone && !reg.email)}
+                  disabled={!reg.name || (!reg.phone && !reg.email) || !reg.consent}
                   className="aa-focus w-full rounded-xl bg-aa-gold px-3 py-2.5 text-sm font-semibold text-white shadow-aa-sm transition hover:bg-aa-gold-dark disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Register &amp; send
