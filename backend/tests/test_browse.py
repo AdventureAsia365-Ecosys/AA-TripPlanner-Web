@@ -48,8 +48,29 @@ class _NoTxn:
 # --- tile id parsing --------------------------------------------------------
 
 def test_parse_tile_id_ok():
-    assert parse_tile_id("22_103") == (22, 103)
-    assert parse_tile_id("-8_115") == (-8, 115)
+    assert parse_tile_id("22_103") == (22, 103, 1)
+    assert parse_tile_id("-8_115") == (-8, 115, 1)
+
+
+def test_parse_tile_id_sized():
+    # AA-812 hotfix: coarse tiles for low zoom ("<lat>_<lng>_<size>").
+    assert parse_tile_id("10_100_10") == (10, 100, 10)
+    assert parse_tile_id("-90_-180_90") == (-90, -180, 90)
+    assert parse_tile_id("0_90_30") == (0, 90, 30)
+    assert parse_tile_id("22_103_1") == (22, 103, 1)
+
+
+@pytest.mark.parametrize("bad", [
+    "12_100_10",   # corner off the 10-degree grid
+    "10_100_7",    # size not allowed
+    "60_0_90",     # 60 is not on the 90 grid
+    "90_0_10",     # cell would end above the pole
+    "0_180_10",    # cell would end past the antimeridian
+    "1_2_3_4",
+])
+def test_parse_tile_id_sized_rejects_bad(bad):
+    with pytest.raises(TileError):
+        parse_tile_id(bad)
 
 
 def test_parse_tile_id_rejects_bad():
@@ -94,6 +115,11 @@ def test_build_tile_query_bounds_and_filters():
     assert params[4] == "trekking"
     assert "d.lat >= $1 AND d.lat < $2" in sql
     assert "c.activity = $5" in sql
+
+
+def test_build_tile_query_sized_bounds():
+    sql, params = build_tile_query(0, 90, BrowseFilters(), 30)
+    assert params == [0, 30, 90, 120]
 
 
 # --- routing ----------------------------------------------------------------

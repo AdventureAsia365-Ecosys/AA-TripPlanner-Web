@@ -82,7 +82,12 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   edge/CDN layer without correctness risk. Keep new read-only endpoints here. Since AA-812 it
   also serves the public catalog under `/browse/catalog/*` (tours, tour by slug, countries,
   country page, sitemap), reading **only** the CIS catalog views (`catalog.v_*`, ADR 0001), and
-  `/browse/tour-route` (one tour's whole route for "Customise this trip"). Its one model
+  `/browse/tour-route` (one tour's whole route for "Customise this trip": the Tour Graph under the
+  current or the linked tour_id, else built from the tour's catalog places onto planner experiences
+  at those places, `match` = `tour_graph` | `places`; a 404 carries the tour's title and day list).
+  Map tiles (`/browse/tiles/{lat}_{lng}[_{size}]`) are fixed-grid cells of 1–90 degrees; the map
+  (`frontend/lib/tileLoader.ts`) picks the finest grid that covers the view in ≤ 16 cells, caches
+  them, runs ≤ 4 requests at a time and has a request budget (AA-812 hotfix). Its one model
   call is the embedding for free-text search (`/browse/search`, not cached).
 - **assembly Lambda** — **stateful**, owns all trip mutations, and is the only side that calls
   **Claude**. Building/AI-narrating a trip is a write that also incurs model cost, so it is

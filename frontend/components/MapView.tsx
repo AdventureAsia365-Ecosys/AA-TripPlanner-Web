@@ -3,15 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { fetchByCountry, fetchTile } from "@/lib/api";
+import { fetchByCountry, fetchTile, tileScope } from "@/lib/api";
 import {
   fetchRouteLegs,
   hasMapboxToken,
   MAPBOX_TOKEN,
   nearestGateway,
-  tileIdFor,
 } from "@/lib/mapbox";
-import type { DestinationPin } from "@/lib/types";
+import { TileLoader, planTiles } from "@/lib/tileLoader";
+import type { BrowseFilters, DestinationPin } from "@/lib/types";
 import { COUNTRY_BBOX, COUNTRY_ISO } from "@/lib/types";
 import { useTrip } from "@/lib/useTrip";
 import DestinationPopup from "./DestinationPopup";
@@ -66,20 +66,12 @@ function greatCircleSegment(
   return out;
 }
 
-// Enumerate the integer 1° tiles covering the current map bounds.
-function tilesForBounds(b: mapboxgl.LngLatBounds): string[] {
-  const out: string[] = [];
-  const latMin = Math.floor(b.getSouth());
-  const latMax = Math.floor(b.getNorth());
-  const lngMin = Math.floor(b.getWest());
-  const lngMax = Math.floor(b.getEast());
-  for (let lat = latMin; lat <= latMax; lat++) {
-    for (let lng = lngMin; lng <= lngMax; lng++) {
-      out.push(`${lat}_${lng}`);
-    }
-  }
-  return out;
-}
+// AA-812 hotfix (D1): tiles are planned by lib/tileLoader (bounded per view, coarse cells at low
+// zoom) instead of one request per 1-degree cell. Wait this long after the last moveend.
+const MOVE_DEBOUNCE_MS = 250;
+// A partial view (a tile failed, or the request budget ran out) keeps the previous pins and is
+// retried once after this delay (or after the budget window frees up, if later).
+const PARTIAL_RETRY_MS = 3_000;
 
 export default function MapView() {
   const {
@@ -117,26 +109,73 @@ export default function MapView() {
     });
   }, []);
 
-  const refreshVisibleTiles = useCallback(async () => {
-    const map = mapRef.current;
-    if (!map) return;
-    // In search mode the map shows the ranked results, not tiles — don't let
-    // a pan/zoom overwrite them.
-    if (searchResultsRef.current) return;
-    const bounds = map.getBounds();
-    if (!bounds) return;
-    const tiles = tilesForBounds(bounds);
-    const results = await Promise.all(
-      tiles.map((t) => fetchTile(t, filtersRef.current)),
+  // One loader per map: in-memory tile cache (per filter set), at most 4 requests in flight, the
+  // previous view's requests aborted on a new view, and a request budget as a loop guard.
+  // The fetcher gets the filters load() was called with, so a tile is never cached under a
+  // scope built from different filters than the request used.
+  const loaderRef = useRef<TileLoader<DestinationPin, BrowseFilters> | null>(null);
+  if (!loaderRef.current) {
+    loaderRef.current = new TileLoader<DestinationPin, BrowseFilters>(
+      (id, signal, f) => fetchTile(id, f, signal),
+      {
+        concurrency: 4,
+        onBudgetExceeded: () => {
+          // eslint-disable-next-line no-console
+          console.warn("[map] tile request budget reached; skipping tile loads for a few seconds");
+        },
+      },
     );
-    // Dedup by destination id across tiles.
-    const merged = pinsRef.current;
-    merged.clear();
-    for (const pins of results) {
-      for (const p of pins) merged.set(p.id, p);
-    }
-    setSourceData(Array.from(merged.values()));
-  }, [setSourceData]);
+  }
+
+  // Scope (filter query string) of the pins currently drawn, and the pending one-shot retry.
+  const drawnScopeRef = useRef<string | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshVisibleTiles = useCallback(
+    async (opts?: { retry?: boolean }) => {
+      const map = mapRef.current;
+      const loader = loaderRef.current;
+      if (!map || !loader) return;
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      // In search mode the map shows the ranked results, not tiles — don't let
+      // a pan/zoom overwrite them.
+      if (searchResultsRef.current) return;
+      const bounds = map.getBounds();
+      if (!bounds) return;
+      const plan = planTiles({
+        west: bounds.getWest(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        north: bounds.getNorth(),
+      });
+      const f = filtersRef.current;
+      const scope = tileScope(f);
+      const res = await loader.loadView(plan.ids, scope, f);
+      // null: a newer view superseded this one; keep the pins that view will draw.
+      if (res === null || searchResultsRef.current) return;
+      // Dedup by destination id across tiles. A partial result under the same filters is merged
+      // into the pins already drawn instead of replacing them, so a failed tile or an exhausted
+      // budget never blanks the map.
+      const merged = pinsRef.current;
+      if (res.complete || drawnScopeRef.current !== scope) merged.clear();
+      for (const p of res.pins) merged.set(p.id, p);
+      drawnScopeRef.current = scope;
+      setSourceData(Array.from(merged.values()));
+      if (!res.complete && opts?.retry !== true) {
+        retryTimerRef.current = setTimeout(
+          () => {
+            retryTimerRef.current = null;
+            void refreshVisibleTiles({ retry: true });
+          },
+          Math.max(PARTIAL_RETRY_MS, res.retryAfterMs),
+        );
+      }
+    },
+    [setSourceData],
+  );
 
   useEffect(() => {
     if (!hasMapboxToken() || !containerRef.current || mapRef.current) return;
@@ -166,6 +205,16 @@ export default function MapView() {
     });
     const ro = new ResizeObserver(() => map.resize());
     ro.observe(containerRef.current);
+
+    // Debounced: a fitBounds/flyTo or a drag ends with one refresh, not one per moveend.
+    let moveTimer: ReturnType<typeof setTimeout> | null = null;
+    const onMoveEnd = () => {
+      if (moveTimer) clearTimeout(moveTimer);
+      moveTimer = setTimeout(() => {
+        moveTimer = null;
+        void refreshVisibleTiles();
+      }, MOVE_DEBOUNCE_MS);
+    };
 
     map.on("load", () => {
       map.resize(); // ensure canvas matches container after first layout
@@ -431,12 +480,16 @@ export default function MapView() {
         map.getCanvas().style.cursor = "";
       });
 
-      map.on("moveend", refreshVisibleTiles);
+      map.on("moveend", onMoveEnd);
       refreshVisibleTiles();
     });
 
     return () => {
       cancelAnimationFrame(raf1);
+      if (moveTimer) clearTimeout(moveTimer);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+      loaderRef.current?.abort();
       ro.disconnect();
       map.remove();
       mapRef.current = null;

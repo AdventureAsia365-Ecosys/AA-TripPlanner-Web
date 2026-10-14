@@ -9,6 +9,7 @@ import type {
   ItineraryDay,
   RouteProposal,
   StopActivity,
+  TourRouteFallback,
 } from "./types";
 import type { TourList, TourSort } from "./catalogTypes";
 
@@ -21,15 +22,23 @@ function filterParams(f: BrowseFilters): string {
   return p.toString();
 }
 
+export function tileScope(filters: BrowseFilters): string {
+  return filterParams(filters);
+}
+
+// AA-812 hotfix: throws on a non-2xx (e.g. 503 under Lambda throttling) so the tile loader does not
+// cache a failed tile as empty; it retries it on the next view instead.
 export async function fetchTile(
   tileId: string,
   filters: BrowseFilters,
+  signal?: AbortSignal,
 ): Promise<DestinationPin[]> {
   const qs = filterParams(filters);
   const res = await fetch(
     `/api/browse?resource=tiles&tile_id=${encodeURIComponent(tileId)}&${qs}`,
+    { signal },
   );
-  if (!res.ok) return [];
+  if (!res.ok) throw new Error(`tile ${tileId}: HTTP ${res.status}`);
   const data = await res.json();
   return data.destinations ?? [];
 }
@@ -301,21 +310,30 @@ export async function fetchCatalogTours(q: {
   }
 }
 
-// One tour's whole route as a route proposal (for "Customise this trip"). "missing" = the tour is
-// not on the planner's Tour Graph yet; "error" = the read failed.
+// One tour's whole route as a route proposal (for "Customise this trip"). `missing` = the planner
+// has nothing for the tour (carries the tour's title and day list when the catalog knows it);
+// "error" = the read failed.
+export type TourRouteResult =
+  | RouteProposal
+  | { missing: true; tour: TourRouteFallback | null }
+  | "error";
+
 export async function fetchTourRoute(
   tourId: string | undefined,
   sourceId?: string,
-): Promise<RouteProposal | "missing" | "error"> {
+): Promise<TourRouteResult> {
   try {
     const p = new URLSearchParams({ resource: "tour-route" });
     if (tourId) p.set("tour_id", tourId);
     if (sourceId) p.set("source_id", sourceId);
     const res = await fetch(`/api/browse?${p}`);
-    if (res.status === 404) return "missing";
+    if (res.status === 404) {
+      const body = await res.json().catch(() => null);
+      return { missing: true, tour: (body?.tour as TourRouteFallback | undefined) ?? null };
+    }
     if (!res.ok) return "error";
     const data = await res.json();
-    return (data.proposal as RouteProposal) ?? "missing";
+    return (data.proposal as RouteProposal | undefined) ?? { missing: true, tour: null };
   } catch {
     return "error";
   }

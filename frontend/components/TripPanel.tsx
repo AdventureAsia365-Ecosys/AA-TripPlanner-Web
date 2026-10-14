@@ -6,6 +6,7 @@ import { fetchRouteLegs, formatLeg, nearestGateway, type RouteLeg } from "@/lib/
 import { COUNTRY_GATEWAY } from "@/lib/types";
 import RoutePlanner from "@/components/RoutePlanner";
 import StopActivities from "@/components/StopActivities";
+import { Icon } from "@/ui/Icon";
 
 const DAY_KIND_LABEL: Record<string, string> = {
   extra_night: "Extra night",
@@ -213,7 +214,7 @@ export default function TripPanel() {
         <div className="flex flex-1 flex-col justify-center px-5 py-8">
           <RoutePlanner />
           <div className="text-center">
-            <span aria-hidden className="text-3xl">🗺️</span>
+            <Icon name="map" className="mx-auto h-8 w-8 text-aa-gold-dark" />
             <p className="mt-3 text-sm font-semibold text-aa-ink">
               Start building your trip
             </p>
@@ -258,7 +259,8 @@ export default function TripPanel() {
           </ol>
 
           <p className="mt-6 rounded-xl border border-aa-line bg-aa-gold-soft/40 px-3 py-2.5 text-center text-[11px] leading-relaxed text-aa-muted">
-            💡 Tip: try the search box to find experiences by activity, like
+            <Icon name="info" className="mr-1 inline h-3.5 w-3.5 align-[-2px] text-aa-gold-dark" />
+            Tip: try the search box to find experiences by activity, like
             <span className="font-medium text-aa-ink"> “tea plantation trek”</span> or
             <span className="font-medium text-aa-ink"> “temple visit”</span>.
           </p>

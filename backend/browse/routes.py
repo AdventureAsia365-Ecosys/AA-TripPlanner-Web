@@ -13,6 +13,7 @@ asked duration, fewer transfers, more places seen. Stateless read, cacheable per
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 SLACK = 3
@@ -157,6 +158,43 @@ TOUR_TITLE_SQL = "SELECT title FROM catalog.v_tour WHERE tour_id = $1::uuid"
 # so a cached or bookmarked "Customise" link still finds the CURRENT tour_id.
 TOUR_ID_BY_SOURCE_SQL = "SELECT tour_id::text FROM catalog.v_tour WHERE source_id = $1 LIMIT 1"
 
+# AA-812 hotfix (D2). The Tour Graph (tour_stop / itinerary_components) is keyed by the published
+# tour_id of the day it was extracted, and covers only the tours extracted so far (~650 tour_day
+# rows against ~890 live catalog tours); a CIS re-upload gives the tour a NEW tour_id the graph
+# does not know. So the graph lookup alone answered 404 for most tours. Second way in: the tour's
+# own places from the catalog (catalog.v_tour_place, destination_id = shared.destinations, the same
+# ids the planner's components use) and the planner's experiences at those places.
+TOUR_ROUTE_PLACES_SQL = """
+    SELECT day_number, position, destination_id::text AS destination_id, destination_name AS name,
+           lat, lng, country
+    FROM catalog.v_tour_place
+    WHERE tour_id = $1::uuid AND day_number IS NOT NULL AND destination_id IS NOT NULL
+      AND lat IS NOT NULL AND lng IS NOT NULL
+    ORDER BY day_number, position
+"""
+# Planner experiences at those places; the tour's own components (any of its known ids) first.
+PLACE_COMPONENTS_SQL = """
+    SELECT destination_id::text AS destination_id, id::text AS component_id
+    FROM tripplanner.itinerary_components
+    WHERE destination_id = ANY($1::uuid[]) AND embedding IS NOT NULL
+    ORDER BY destination_id, (source_tour_id = ANY($2::text[])) DESC, source_tour_id, source_day_index, id
+"""
+# A places-built route must pin at least this share of the tour's days (AA-712 fills the rest).
+PLACES_MIN_DAY_SHARE = 0.5
+TOUR_DAYS_COUNT_SQL = """
+    SELECT GREATEST(COALESCE(t.duration_days, 0),
+                    (SELECT count(*) FROM catalog.v_tour_day d WHERE d.tour_id = t.tour_id))
+    FROM catalog.v_tour t WHERE t.tour_id = $1::uuid
+"""
+# The tour's day titles, for the planner's "not on the map yet" message.
+TOUR_FALLBACK_SQL = """
+    SELECT t.title, t.country, t.duration_days,
+           COALESCE((SELECT json_agg(json_build_object('day', d.day_number, 'title', d.title)
+                                     ORDER BY d.day_number)
+                     FROM catalog.v_tour_day d WHERE d.tour_id = t.tour_id), '[]'::json)::text AS days
+    FROM catalog.v_tour t WHERE t.tour_id = $1::uuid
+"""
+
 
 async def resolve_tour_id(conn: Any, tour_id: Optional[str], source_id: Optional[str]) -> Optional[str]:
     """The current catalog tour_id: by source_id when given and known, else the tour_id passed."""
@@ -167,22 +205,98 @@ async def resolve_tour_id(conn: Any, tour_id: Optional[str], source_id: Optional
     return tour_id
 
 
-async def tour_route(conn: Any, tour_id: str) -> Optional[dict]:
-    """The tour's first to last stop as one proposal, or None when the planner has no stops for it
-    (not extracted into the Tour Graph yet)."""
-    stops_rows = [dict(r) for r in await conn.fetch(DAYS_SQL, [tour_id])]
-    if not stops_rows:
-        return None
+def _proposal(tour_id: str, title: Optional[str], stops_rows: list[dict],
+              comps: dict[tuple, list[dict]], match: str) -> dict:
     first = min(r["day_index"] for r in stops_rows)
     last = max(r["day_index"] for r in stops_rows)
-    comps: dict[tuple, list[dict]] = {}
-    for r in await conn.fetch(COMPONENTS_SQL, [tour_id]):
-        comps.setdefault((r["tour_id"], r["day_index"]), []).append(dict(r))
-    if not comps:
-        return None
-    title = await conn.fetchval(TOUR_TITLE_SQL, tour_id)
     p = {"segments": [(tour_id, first, last)]}
     return {"total_days": last - first + 1, "transfers": 0, "transfer_km": 0.0, "whole_tour": True,
+            "match": match,
             "segments": [{"tour_id": tour_id, "tour_name": title, "day_from": first, "day_to": last,
                           "days": last - first + 1}],
             "days": day_by_day(p, {tour_id: stops_rows}, comps)}
+
+
+async def _graph_route(conn: Any, key: str, tour_id: str) -> Optional[tuple[list[dict], dict]]:
+    """Stops + components from the Tour Graph under one tour key, relabelled to `tour_id`."""
+    stops_rows = [dict(r) for r in await conn.fetch(DAYS_SQL, [key])]
+    if not stops_rows:
+        return None
+    comps: dict[tuple, list[dict]] = {}
+    for r in await conn.fetch(COMPONENTS_SQL, [key]):
+        comps.setdefault((tour_id, r["day_index"]), []).append(dict(r))
+    if not comps:
+        return None
+    for r in stops_rows:
+        r["tour_id"] = tour_id
+    return stops_rows, comps
+
+
+async def _places_route(conn: Any, tour_id: str, keys: list[str]) -> Optional[tuple[list[dict], dict]]:
+    """Stops from the catalog's places per day; each day pinned to a planner experience at its
+    place. None when no place of the tour has a planner experience."""
+    places = [dict(r) for r in await conn.fetch(TOUR_ROUTE_PLACES_SQL, tour_id)]
+    if not places:
+        return None
+    dest_ids = list(dict.fromkeys(p["destination_id"] for p in places))
+    by_dest: dict[str, list[str]] = {}
+    for r in await conn.fetch(PLACE_COMPONENTS_SQL, dest_ids, keys):
+        by_dest.setdefault(r["destination_id"], []).append(r["component_id"])
+    if not by_dest:
+        return None
+    by_day: dict[int, list[dict]] = {}
+    for p in places:
+        by_day.setdefault(p["day_number"], []).append(p)
+    stops_rows: list[dict] = []
+    comps: dict[tuple, list[dict]] = {}
+    used: set[str] = set()
+    for day in sorted(by_day):
+        # The day's first place the planner has experiences at, else its first place (shown, unpinned).
+        ps = by_day[day]
+        stop = next((p for p in ps if p["destination_id"] in by_dest), ps[0])
+        stops_rows.append({"tour_id": tour_id, "day_index": day, "destination_id": stop["destination_id"],
+                           "name": stop["name"], "lat": stop["lat"], "lng": stop["lng"],
+                           "country": stop["country"]})
+        cands = by_dest.get(stop["destination_id"], [])
+        # A different experience per day where the place has several (a 3-night stay is not one pin).
+        pick = next((c for c in cands if c not in used), cands[0] if cands else None)
+        if pick:
+            used.add(pick)
+            comps[(tour_id, day)] = [{"destination_id": stop["destination_id"], "component_id": pick}]
+    # S236 (Nghiệp): only offer a places-built route when it pins at least half of the tour's days;
+    # a thinner one (e.g. 2 of 10) misrepresents the tour, so the planner shows the day list instead.
+    total_days = await conn.fetchval(TOUR_DAYS_COUNT_SQL, tour_id) or len(by_day)
+    if len(comps) < PLACES_MIN_DAY_SHARE * total_days:
+        return None
+    return stops_rows, comps
+
+
+async def tour_route(conn: Any, tour_id: str, also: tuple[Optional[str], ...] = ()) -> Optional[dict]:
+    """The tour's first to last day as one proposal, or None when the planner has nothing for it.
+
+    1. the Tour Graph under the current tour_id, then under the other ids the link carried (an older
+       tour_id the graph was extracted under) — match "tour_graph";
+    2. else the tour's catalog places mapped onto planner experiences at those places — match
+       "places"."""
+    keys = list(dict.fromkeys(k for k in (tour_id, *also) if k))
+    title = None
+    for key in keys:
+        found = await _graph_route(conn, key, tour_id)
+        if found:
+            title = await conn.fetchval(TOUR_TITLE_SQL, tour_id)
+            return _proposal(tour_id, title, found[0], found[1], "tour_graph")
+    found = await _places_route(conn, tour_id, keys)
+    if found:
+        title = await conn.fetchval(TOUR_TITLE_SQL, tour_id)
+        return _proposal(tour_id, title, found[0], found[1], "places")
+    return None
+
+
+async def tour_fallback(conn: Any, tour_id: str) -> Optional[dict]:
+    """What the planner shows when a tour has no route: its title, country, length and day titles."""
+    row = await conn.fetchrow(TOUR_FALLBACK_SQL, tour_id)
+    if not row:
+        return None
+    days = row["days"]
+    return {"title": row["title"], "country": row["country"], "duration_days": row["duration_days"],
+            "days": json.loads(days) if isinstance(days, str) else (days or [])}

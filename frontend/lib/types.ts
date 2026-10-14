@@ -241,8 +241,19 @@ export interface RouteProposal {
   transfers: number;
   transfer_km: number;
   whole_tour: boolean;
+  // AA-812 (tour-route only): "tour_graph" = the tour's own extracted route; "places" = built from
+  // the tour's catalog places, each day pinned to a planner experience at that place.
+  match?: "tour_graph" | "places";
   segments: RouteSegment[];
   days: RouteDay[];
+}
+
+// AA-812: what tour-route returns with a 404 when the planner has nothing for the tour.
+export interface TourRouteFallback {
+  title: string | null;
+  country: string | null;
+  duration_days: number | null;
+  days: { day: number; title: string | null }[];
 }
 
 export interface CoverageLeg {

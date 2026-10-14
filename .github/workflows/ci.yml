@@ -61,6 +61,9 @@ jobs:
       - name: Type-check
         run: npm run typecheck
 
+      - name: Unit tests
+        run: npm test
+
       - name: Build
         # Build must pass without any secrets. NEXT_PUBLIC_MAPBOX_TOKEN is
         # intentionally unset here — the app builds and degrades gracefully.
