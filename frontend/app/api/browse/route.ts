@@ -52,6 +52,17 @@ export async function GET(req: NextRequest) {
   } else if (resource === "by-country") {
     const country = q.get("country") ?? "";
     upstreamPath = `/browse/by-country?country=${encodeURIComponent(country)}`;
+  } else if (resource === "catalog-tours") {
+    // AA-812: tour cards from the CIS catalog views (planner list view).
+    const r = new URLSearchParams();
+    for (const k of ["country", "min_days", "max_days", "month", "sort", "limit", "offset"]) {
+      const v = q.get(k);
+      if (v) r.set(k, v);
+    }
+    upstreamPath = `/browse/catalog/tours${r.toString() ? `?${r}` : ""}`;
+  } else if (resource === "tour-route") {
+    // AA-812: one tour's whole route ("Customise this trip").
+    upstreamPath = `/browse/tour-route?tour_id=${encodeURIComponent(q.get("tour_id") ?? "")}`;
   } else {
     return NextResponse.json({ error: "unknown resource" }, { status: 400 });
   }

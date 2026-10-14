@@ -5,7 +5,7 @@
 // from real Adventure Asia tours (one tour, or two chained at a junction). Hovering a route
 // previews it on the map; "Start with this route" pins it, then the traveller edits it.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { fetchRoutes } from "@/lib/api";
 import type { RouteProposal } from "@/lib/types";
@@ -19,9 +19,10 @@ function placesLine(p: RouteProposal): string {
 }
 
 export default function RoutePlanner({ compact = false }: { compact?: boolean }) {
-  const { countries, filters, applyRoute, setRoutePreview } = useTrip();
-  const [country, setCountry] = useState<string>(filters.country ?? "");
-  const [days, setDays] = useState<number>(7);
+  const { countries, filters, applyRoute, setRoutePreview, intent } = useTrip();
+  // AA-812: pre-filled from the home search / a tour page (/plan?country=&days=&travellers=).
+  const [country, setCountry] = useState<string>(intent.country ?? filters.country ?? "");
+  const [days, setDays] = useState<number>(Math.max(2, Math.min(30, intent.days ?? 7)));
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState<number | null>(null);
   const [proposals, setProposals] = useState<RouteProposal[] | null>(null);
@@ -37,6 +38,16 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
       setLoading(false);
     }
   };
+
+  // AA-812: arriving from the home search with a destination, show its routes at once (the full
+  // finder only; a tour page's pre-fill pins that tour instead).
+  const autoFound = useRef(false);
+  useEffect(() => {
+    if (compact || autoFound.current || !intent.country || intent.tourId) return;
+    autoFound.current = true;
+    void find();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const start = async (p: RouteProposal, i: number) => {
     setApplying(i);
@@ -70,6 +81,7 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
       </div>
       <p className="mt-0.5 text-[11px] text-aa-muted">
         Routes built only from our real tours — pick one, then make it yours.
+        {intent.travellers ? ` Planning for ${intent.travellers} traveller${intent.travellers > 1 ? "s" : ""}.` : ""}
       </p>
       <div className="mt-2 flex gap-2">
         <select
@@ -79,6 +91,8 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
           className="aa-focus min-w-0 flex-1 rounded-lg border border-aa-line px-2 py-1.5 text-xs text-aa-ink"
         >
           <option value="">Heading to…</option>
+          {/* AA-812: a country pre-filled from the home page that the planner list does not have yet */}
+          {country && !countries.some((c) => c.country === country) && <option value={country}>{country}</option>}
           {countries.map((c) => (
             <option key={c.country} value={c.country}>
               {c.country}
