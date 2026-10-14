@@ -94,7 +94,21 @@ export function planTiles(b: Bounds, maxTiles: number = MAX_TILES): TilePlan {
   return { size, ids: cellsFor(b, size) };
 }
 
-export type TileFetcher<T> = (id: string, signal: AbortSignal) => Promise<T[]>;
+// `ctx` is whatever load() was given (e.g. the filters the cache scope was built from), so the
+// request and its cache key always describe the same filter set.
+export type TileFetcher<T, C = undefined> = (
+  id: string,
+  signal: AbortSignal,
+  ctx: C,
+) => Promise<T[]>;
+
+export interface TileLoadResult<T> {
+  pins: T[];
+  // false when a tile failed or the request budget skipped some tiles.
+  complete: boolean;
+  // When incomplete: how long until the budget window frees a slot (0 = retry any time).
+  retryAfterMs: number;
+}
 
 export interface TileLoaderOptions {
   concurrency?: number;
@@ -106,8 +120,8 @@ export interface TileLoaderOptions {
   onBudgetExceeded?: () => void;
 }
 
-export class TileLoader<T> {
-  private readonly fetcher: TileFetcher<T>;
+export class TileLoader<T, C = undefined> {
+  private readonly fetcher: TileFetcher<T, C>;
   private readonly concurrency: number;
   private readonly cacheSize: number;
   private readonly budget: number;
@@ -119,7 +133,7 @@ export class TileLoader<T> {
   private sent: number[] = [];
   requests = 0; // total network requests issued (for tests / diagnostics)
 
-  constructor(fetcher: TileFetcher<T>, opts: TileLoaderOptions = {}) {
+  constructor(fetcher: TileFetcher<T, C>, opts: TileLoaderOptions = {}) {
     this.fetcher = fetcher;
     this.concurrency = opts.concurrency ?? 4;
     this.cacheSize = opts.cacheSize ?? 256;
@@ -137,6 +151,11 @@ export class TileLoader<T> {
     return true;
   }
 
+  private budgetRetryMs(): number {
+    if (this.sent.length < this.budget) return 0;
+    return Math.max(0, this.sent[0] + this.budgetWindowMs - this.now());
+  }
+
   private remember(key: string, pins: T[]) {
     this.cache.delete(key);
     this.cache.set(key, pins);
@@ -149,7 +168,14 @@ export class TileLoader<T> {
 
   // Load the given tiles (cache key = scope + id, scope = the filter query string). Resolves with
   // the pins of every tile it could load, or null when a newer load() / abort() superseded it.
-  async load(ids: string[], scope = ""): Promise<T[] | null> {
+  async load(ids: string[], scope = "", ctx?: C): Promise<T[] | null> {
+    const r = await this.loadView(ids, scope, ctx as C);
+    return r ? r.pins : null;
+  }
+
+  // Same as load(), but also says whether every tile loaded, so the caller can keep its previous
+  // pins and retry instead of drawing a partial view.
+  async loadView(ids: string[], scope: string, ctx: C): Promise<TileLoadResult<T> | null> {
     this.current?.abort();
     const ctrl = new AbortController();
     this.current = ctrl;
@@ -167,21 +193,23 @@ export class TileLoader<T> {
     }
     let next = 0;
     let budgetHit = false;
+    let failed = false;
     const worker = async () => {
       while (next < missing.length && !ctrl.signal.aborted) {
-        const id = missing[next++];
         if (!this.takeBudget()) {
           budgetHit = true;
           return;
         }
+        const id = missing[next++];
         this.requests++;
         try {
-          const pins = await this.fetcher(id, ctrl.signal);
+          const pins = await this.fetcher(id, ctrl.signal, ctx);
           if (ctrl.signal.aborted) return;
           this.remember(`${scope}|${id}`, pins);
           out.push(...pins);
         } catch {
           // A failed or aborted tile counts as empty; it is not cached, so a later view retries it.
+          failed = true;
         }
       }
     };
@@ -189,7 +217,8 @@ export class TileLoader<T> {
     if (budgetHit) this.onBudgetExceeded?.();
     if (ctrl.signal.aborted) return null;
     if (this.current === ctrl) this.current = null;
-    return out;
+    const complete = !budgetHit && !failed;
+    return { pins: out, complete, retryAfterMs: budgetHit ? this.budgetRetryMs() : 0 };
   }
 
   abort() {

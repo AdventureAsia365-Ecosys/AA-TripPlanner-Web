@@ -11,7 +11,7 @@ import {
   nearestGateway,
 } from "@/lib/mapbox";
 import { TileLoader, planTiles } from "@/lib/tileLoader";
-import type { DestinationPin } from "@/lib/types";
+import type { BrowseFilters, DestinationPin } from "@/lib/types";
 import { COUNTRY_BBOX, COUNTRY_ISO } from "@/lib/types";
 import { useTrip } from "@/lib/useTrip";
 import DestinationPopup from "./DestinationPopup";
@@ -69,6 +69,9 @@ function greatCircleSegment(
 // AA-812 hotfix (D1): tiles are planned by lib/tileLoader (bounded per view, coarse cells at low
 // zoom) instead of one request per 1-degree cell. Wait this long after the last moveend.
 const MOVE_DEBOUNCE_MS = 250;
+// A partial view (a tile failed, or the request budget ran out) keeps the previous pins and is
+// retried once after this delay (or after the budget window frees up, if later).
+const PARTIAL_RETRY_MS = 3_000;
 
 export default function MapView() {
   const {
@@ -108,10 +111,12 @@ export default function MapView() {
 
   // One loader per map: in-memory tile cache (per filter set), at most 4 requests in flight, the
   // previous view's requests aborted on a new view, and a request budget as a loop guard.
-  const loaderRef = useRef<TileLoader<DestinationPin> | null>(null);
+  // The fetcher gets the filters load() was called with, so a tile is never cached under a
+  // scope built from different filters than the request used.
+  const loaderRef = useRef<TileLoader<DestinationPin, BrowseFilters> | null>(null);
   if (!loaderRef.current) {
-    loaderRef.current = new TileLoader<DestinationPin>(
-      (id, signal) => fetchTile(id, filtersRef.current, signal),
+    loaderRef.current = new TileLoader<DestinationPin, BrowseFilters>(
+      (id, signal, f) => fetchTile(id, f, signal),
       {
         concurrency: 4,
         onBudgetExceeded: () => {
@@ -122,30 +127,55 @@ export default function MapView() {
     );
   }
 
-  const refreshVisibleTiles = useCallback(async () => {
-    const map = mapRef.current;
-    const loader = loaderRef.current;
-    if (!map || !loader) return;
-    // In search mode the map shows the ranked results, not tiles — don't let
-    // a pan/zoom overwrite them.
-    if (searchResultsRef.current) return;
-    const bounds = map.getBounds();
-    if (!bounds) return;
-    const plan = planTiles({
-      west: bounds.getWest(),
-      south: bounds.getSouth(),
-      east: bounds.getEast(),
-      north: bounds.getNorth(),
-    });
-    const pins = await loader.load(plan.ids, tileScope(filtersRef.current));
-    // null: a newer view superseded this one; keep the pins that view will draw.
-    if (pins === null || searchResultsRef.current) return;
-    // Dedup by destination id across tiles.
-    const merged = pinsRef.current;
-    merged.clear();
-    for (const p of pins) merged.set(p.id, p);
-    setSourceData(Array.from(merged.values()));
-  }, [setSourceData]);
+  // Scope (filter query string) of the pins currently drawn, and the pending one-shot retry.
+  const drawnScopeRef = useRef<string | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshVisibleTiles = useCallback(
+    async (opts?: { retry?: boolean }) => {
+      const map = mapRef.current;
+      const loader = loaderRef.current;
+      if (!map || !loader) return;
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      // In search mode the map shows the ranked results, not tiles — don't let
+      // a pan/zoom overwrite them.
+      if (searchResultsRef.current) return;
+      const bounds = map.getBounds();
+      if (!bounds) return;
+      const plan = planTiles({
+        west: bounds.getWest(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        north: bounds.getNorth(),
+      });
+      const f = filtersRef.current;
+      const scope = tileScope(f);
+      const res = await loader.loadView(plan.ids, scope, f);
+      // null: a newer view superseded this one; keep the pins that view will draw.
+      if (res === null || searchResultsRef.current) return;
+      // Dedup by destination id across tiles. A partial result under the same filters is merged
+      // into the pins already drawn instead of replacing them, so a failed tile or an exhausted
+      // budget never blanks the map.
+      const merged = pinsRef.current;
+      if (res.complete || drawnScopeRef.current !== scope) merged.clear();
+      for (const p of res.pins) merged.set(p.id, p);
+      drawnScopeRef.current = scope;
+      setSourceData(Array.from(merged.values()));
+      if (!res.complete && opts?.retry !== true) {
+        retryTimerRef.current = setTimeout(
+          () => {
+            retryTimerRef.current = null;
+            void refreshVisibleTiles({ retry: true });
+          },
+          Math.max(PARTIAL_RETRY_MS, res.retryAfterMs),
+        );
+      }
+    },
+    [setSourceData],
+  );
 
   useEffect(() => {
     if (!hasMapboxToken() || !containerRef.current || mapRef.current) return;
@@ -457,6 +487,8 @@ export default function MapView() {
     return () => {
       cancelAnimationFrame(raf1);
       if (moveTimer) clearTimeout(moveTimer);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
       loaderRef.current?.abort();
       ro.disconnect();
       map.remove();

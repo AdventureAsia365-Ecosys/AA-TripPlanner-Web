@@ -7,13 +7,6 @@ export function hasMapboxToken(): boolean {
   return MAPBOX_TOKEN.length > 0;
 }
 
-// Fixed 1-degree grid tile id from lat/lng (matches backend TILE_DEGREES).
-export function tileIdFor(lat: number, lng: number): string {
-  const latCell = Math.floor(lat);
-  const lngCell = Math.floor(lng);
-  return `${latCell}_${lngCell}`;
-}
-
 // Mapbox Directions: max coordinates per request for the driving profile.
 const MAX_DIRECTIONS_WAYPOINTS = 25;
 

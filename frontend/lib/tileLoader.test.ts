@@ -131,3 +131,36 @@ test("loop guard: a refresh loop cannot exceed the request budget", async () => 
   assert.equal(log.length, 20);
   assert.ok(exceeded > 0);
 });
+
+test("loadView reports a partial view (failed tile / budget) and when to retry", async () => {
+  const log: string[] = [];
+  const plan = planTiles(WORLD_Z3);
+  const failing = new TileLoader(fakeFetcher(log, { fail: new Set([plan.ids[0]]) }).fetcher);
+  const r1 = await failing.loadView(plan.ids, "", undefined);
+  assert.equal(r1?.complete, false);
+  assert.equal(r1?.retryAfterMs, 0);
+
+  let t = 1_000;
+  const capped = new TileLoader(fakeFetcher([]).fetcher, {
+    budget: 3,
+    budgetWindowMs: 10_000,
+    now: () => t,
+  });
+  const r2 = await capped.loadView(plan.ids, "", undefined);
+  assert.equal(r2?.complete, false);
+  assert.equal(r2?.pins.length, 3);
+  assert.equal(r2?.retryAfterMs, 10_000);
+  t += 10_000;
+  const r3 = await capped.loadView(plan.ids.slice(0, 3), "", undefined);
+  assert.equal(r3?.complete, true); // all three are cached now
+});
+
+test("the fetcher gets the context load() was called with (no filter/cache-key race)", async () => {
+  const seen: string[] = [];
+  const loader = new TileLoader<{ id: string }, { activity: string }>(async (id, _signal, ctx) => {
+    seen.push(ctx.activity);
+    return [{ id }];
+  });
+  await loader.loadView(planTiles(CITY).ids, "activity=trekking", { activity: "trekking" });
+  assert.ok(seen.length > 0 && seen.every((a) => a === "trekking"));
+});
