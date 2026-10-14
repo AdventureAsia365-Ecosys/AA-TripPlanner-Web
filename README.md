@@ -83,7 +83,11 @@ Read them in the database, read-only, through the usual ECS exec pattern of the 
   `count(*)` rows, `sum(hits)` reuses, `count(*) FILTER (WHERE hits > 0)` rows reused at least once,
   `max(last_hit_at)` last reuse. Only narrations that used the model (`source` `llm` / `mixed`) are
   stored; a trip made only of AA master day text is never cached, so it never shows a hit. A cached
-  answer also carries `"cached": true` in the `/narrate` response.
+  answer also carries `"cached": true` in the `/narrate` response. `hits` counts reuses since the row
+  was last written: an entry older than `NARRATION_CACHE_TTL_HOURS` (default 168) is not served, and
+  the next model narration overwrites it with `hits = 0`, so `sum(hits)` is a recent-window figure,
+  not a lifetime total. Expired rows stay in the table until then, so filter on `created_at` for the
+  live entries.
 - **Daily spend vs the cap** — `tripplanner.llm_spend_daily` (UTC `day` x `stage`: `cost_usd`,
   `calls`, `unpriced_calls`). The cap compares today's sum over `tp_compose` + `tp_search_embed`
   with `TP_DAILY_SPEND_CAP_USD` (code default 5.0 when the Lambda env does not set it). Over the
