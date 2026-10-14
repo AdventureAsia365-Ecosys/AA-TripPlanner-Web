@@ -135,6 +135,9 @@ class FakeConn:
         if q.startswith("SELECT event_type, payload FROM tripplanner.trip_events") and "ORDER BY id DESC" in q:
             trip_id = args[0]
             rows = [e for e in self.events if e["trip_id"] == trip_id]
+            if "event_type IN ('reorder', 'add_component', 'remove_component')" in q:
+                rows = [e for e in rows if e["event_type"] in ("reorder", "add_component",
+                                                               "remove_component")]
             if not rows:
                 return None
             last = rows[-1]
@@ -150,6 +153,9 @@ class FakeConn:
                             "email": c.get("email"), "contact_consent": c.get("contact_consent", False),
                             "contact_consent_at": c.get("contact_consent_at")}
             return None
+        if q.startswith("SELECT session_id FROM tripplanner.trip_drafts"):
+            d = self.drafts.get(args[0])
+            return {"session_id": d["session_id"]} if d else None
         if q.startswith("SELECT customer_id FROM tripplanner.sessions"):
             sid = args[0]
             return self.sessions.get(sid)
@@ -578,7 +584,7 @@ async def test_handler_narrate_logs_each_model_call(monkeypatch):
         assert stage == "tp_compose"
         return llm_gateway.builtin_route(stage)
 
-    def fake_generate_text(route, system, user, max_tokens):
+    def fake_generate_text(route, system, user, max_tokens, **kw):
         return "Day 1: Arrive.", llm_gateway.Call(route.stage, "writer", "sonnet", "acc3",
                                                   120, 30, 0.00081, False, "end_turn")
 
@@ -788,6 +794,7 @@ async def test_send_writes_one_inquiry_outbox_row_with_consent(monkeypatch):
     assert row["idempotency_key"] == f"t1:{first['handoff_id']}"
     p = row["payload"]
     assert p["contract"] == "inquiry.submitted" and p["trip_id"] == "t1"
+    assert p["version"] == 1.1                     # AA-805: contract v1.1 (number, enum [1, 1.1])
     assert p["customer"]["email"] == "jo@x.com" and p["customer"]["consent"] is True
     assert [d["component_id"] for d in p["itinerary"]["days"]] == ["c1"]
 
@@ -855,3 +862,238 @@ async def test_resend_after_edit_is_a_new_outbox_row(monkeypatch):
     assert len(conn.outbox) == 2
     assert conn.outbox[0]["idempotency_key"] != conn.outbox[1]["idempotency_key"]
     assert conn.outbox[1]["payload"]["customer"] is None          # guest hand-off
+
+
+# --- AA-805: leg order (S235 E2E sent one tour as days 3-4, 7, 2, 1) ---------
+
+# One Bhutan-like tour whose geography runs AGAINST its day order: the west-most stop is day 3,
+# so the old west-first nearest-neighbour projection produced days 3, 4, 7, 2, 1.
+S235_TOUR = "22174c35-6cab-408d-b0f1-1d5c6e6c2885"
+S235_COMPONENTS = {
+    "b1": {"id": "b1", "name": "Paro arrival", "source_tour_id": S235_TOUR, "source_day_index": 1,
+           "lat": 27.40, "lng": 89.90},
+    "b2": {"id": "b2", "name": "Thimphu", "source_tour_id": S235_TOUR, "source_day_index": 2,
+           "lat": 27.47, "lng": 89.64},
+    "b3": {"id": "b3", "name": "Haa valley", "source_tour_id": S235_TOUR, "source_day_index": 3,
+           "lat": 27.37, "lng": 89.00},
+    "b4": {"id": "b4", "name": "Chele La", "source_tour_id": S235_TOUR, "source_day_index": 4,
+           "lat": 27.38, "lng": 89.10},
+    "b7": {"id": "b7", "name": "Tiger's Nest", "source_tour_id": S235_TOUR, "source_day_index": 7,
+           "lat": 27.49, "lng": 89.36},
+}
+
+
+@pytest.fixture
+def s235_catalog(monkeypatch):
+    for k, v in S235_COMPONENTS.items():
+        monkeypatch.setitem(CATALOG, k, v)
+
+
+def _legs(itinerary):
+    return [(leg["day_from"], leg["day_to"]) for leg in handoff.leg_chain(itinerary)]
+
+
+def test_old_geography_order_reproduces_the_s235_legs():
+    """Guard the fixture: plain west-first nearest neighbour over single pins gives S235's order."""
+    from backend.assembly.sequencing import _anchor_key, _haversine
+    comps = list(S235_COMPONENTS.values())
+    order = [min(comps, key=_anchor_key)]
+    rest = [c for c in comps if c is not order[0]]
+    while rest:
+        nxt = min(rest, key=lambda c: (_haversine(order[-1]["lat"], order[-1]["lng"], c["lat"], c["lng"]),
+                                       c["id"]))
+        rest.remove(nxt)
+        order.append(nxt)
+    assert [c["source_day_index"] for c in order] == [3, 4, 7, 2, 1]
+
+
+def test_sequence_keeps_a_tour_in_its_own_day_order():
+    shuffled = [S235_COMPONENTS[k] for k in ("b7", "b3", "b1", "b4", "b2")]
+    days = sequencing.sequence_and_group(shuffled)
+    assert [d["source_day_index"] for d in days] == [1, 2, 3, 4, 7]
+    assert _legs(days) == [(1, 4), (7, 7)]
+
+
+def test_sequence_places_free_pins_and_other_tours_as_whole_blocks():
+    comps = [
+        {"id": "x", "lat": 27.45, "lng": 90.50},                                    # free pin, east
+        {"id": "t2b", "source_tour_id": "T2", "source_day_index": 2, "lat": 27.0, "lng": 88.0},
+        {"id": "t2a", "source_tour_id": "T2", "source_day_index": 1, "lat": 27.0, "lng": 88.5},
+        *S235_COMPONENTS.values(),
+    ]
+    ids = [c["id"] for c in sequencing.sequence(comps)]
+    # T2's first stop is the west-most block start; T2 stays day 1 -> 2, then the S235 tour in its
+    # day order, then the free pin. Deterministic across input order.
+    assert ids == ["t2a", "t2b", "b1", "b2", "b3", "b4", "b7", "x"]
+    assert ids == [c["id"] for c in sequencing.sequence(list(reversed(comps)))]
+
+
+@pytest.mark.asyncio
+async def test_apply_route_order_survives_send_to_advisor(monkeypatch, s235_catalog):
+    """The S235 path: apply-route (reorder event in day order), then send-to-advisor. The `sent`
+    event must not drop the route's order, so the outbox carries the tour's legs in day order."""
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
+    conn = FakeConn()
+    ids = ["b1", "b2", "b3", "b4", "b7"]
+    r = await handler.route("POST", "/trip/t235/apply-route", {"session_id": "s1", "component_ids": ids},
+                            conn=conn)
+    assert [d["component_id"] for d in json.loads(r["body"])["itinerary"]] == ids
+    sent = await handler.route("POST", "/trip/t235/send-to-advisor", {"session_id": "s1"}, conn=conn,
+                               sender=notify.LoggingSender())
+    assert [d["component_id"] for d in json.loads(sent["body"])["itinerary"]] == ids
+    legs = conn.outbox[0]["payload"]["itinerary"]["legs"]
+    assert [(leg["day_from"], leg["day_to"]) for leg in legs] == [(1, 4), (7, 7)]
+    assert {leg["source_tour_id"] for leg in legs} == {S235_TOUR}
+
+
+@pytest.mark.asyncio
+async def test_manual_order_survives_added_days_but_not_a_new_pin(s235_catalog):
+    conn = FakeConn()
+    for cid in ("b1", "b2", "b3"):
+        await events.append_event(conn, "t", "s1", "add_component", {"component_id": cid})
+    await events.append_event(conn, "t", "s1", "reorder", {"ordered_component_ids": ["b3", "b1", "b2"]})
+    await events.append_event(conn, "t", "s1", "add_day", {"day_id": "d1", "kind": "free_day"})
+    assert [e["component_id"] for e in await events.current_itinerary(conn, "t")] == ["b3", "b1", "b2"]
+    # a set change invalidates the manual order; the tour falls back to its own day order
+    await events.append_event(conn, "t", "s1", "add_component", {"component_id": "b4"})
+    assert [e["component_id"] for e in await events.current_itinerary(conn, "t")] == ["b1", "b2", "b3", "b4"]
+
+
+# --- AA-805: /narrate ownership, cache, spend cap, failed-call logging ---------
+
+class AiConn(FakeConn):
+    """FakeConn plus the tp-010 tables: narration_cache and the daily spend total."""
+
+    def __init__(self, spent: float = 0.0):
+        super().__init__()
+        self.cache: dict[str, dict] = {}
+        self.spent = spent
+
+    async def execute(self, query, *args):
+        q = " ".join(query.split())
+        if q.startswith("INSERT INTO tripplanner.narration_cache"):
+            key, mode, narration, source, days = args
+            self.cache[key] = {"narration": narration, "source": source, "mode": mode}
+            return "OK"
+        return await super().execute(query, *args)
+
+    async def fetchrow(self, query, *args):
+        q = " ".join(query.split())
+        if q.startswith("UPDATE tripplanner.narration_cache"):
+            return self.cache.get(args[0])
+        if "FROM tripplanner.llm_spend_daily" in q:
+            return {"spent": self.spent}
+        return await super().fetchrow(query, *args)
+
+
+def _counting_narrator(counter):
+    def narrator(it):
+        counter.append(len(it))
+        yield "\n".join(f"Day {e['day']}: lovely." for e in it)
+    return narrator
+
+
+@pytest.mark.asyncio
+async def test_narrate_rejects_another_session_with_403():
+    conn = AiConn()
+    await events.append_event(conn, "t1", "owner", "add_component", {"component_id": "c1"})
+    resp = await handler.route("POST", "/trip/t1/narrate", {"session_id": "intruder"}, conn=conn,
+                               narrator=lambda it: iter(["Day 1: x."]))
+    assert resp["statusCode"] == 403
+    ok = await handler.route("POST", "/trip/t1/narrate", {"session_id": "owner"}, conn=conn,
+                             narrator=lambda it: iter(["Day 1: x."]))
+    assert ok["statusCode"] == 200
+
+
+@pytest.mark.asyncio
+async def test_narrate_reuses_the_cached_narration_for_the_same_itinerary():
+    conn = AiConn()
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    calls: list = []
+    first = json.loads((await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
+                                            conn=conn, narrator=_counting_narrator(calls)))["body"])
+    second = json.loads((await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
+                                             conn=conn, narrator=_counting_narrator(calls)))["body"])
+    assert calls == [1]                                      # the model ran once
+    assert first["cached"] is False and second["cached"] is True
+    assert second["narration"] == first["narration"] and second["ai_generated"] is True
+    # a different itinerary is a different key
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c3"})
+    await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"}, conn=conn,
+                        narrator=_counting_narrator(calls))
+    assert calls == [1, 2]
+
+
+def test_itinerary_hash_depends_on_content_and_mode_not_on_trip():
+    from backend.assembly import narration_cache
+    it = [{"day": 1, "component_id": "c1", "name": "Hanoi", "text_extract": "Old quarter"}]
+    h = narration_cache.itinerary_hash(it, "compose")
+    assert h == narration_cache.itinerary_hash([dict(it[0], trip_id="other")], "compose")
+    assert h != narration_cache.itinerary_hash(it, "renarrate")
+    assert h != narration_cache.itinerary_hash([dict(it[0], text_extract="New text")], "compose")
+
+
+def test_itinerary_hash_changes_when_the_master_day_text_changes():
+    """AA-805 review: a CIS edit to a tour's authored itinerary must miss the cache, not serve a
+    stale 'mixed' narration until the TTL ends."""
+    from backend.assembly import narration_cache
+    it = [{"day": 1, "component_id": "c1", "name": "Hanoi", "text_extract": "Old quarter",
+           "source_tour_id": "T1", "source_day_index": 2}]
+    before = narration_cache.itinerary_hash(it, "compose", {("T1", 2): "Day 2: Hanoi walk"})
+    after = narration_cache.itinerary_hash(it, "compose", {("T1", 2): "Day 2: Hanoi cyclo"})
+    assert before != after
+    # Text of days this itinerary does not use does not change the key.
+    assert before == narration_cache.itinerary_hash(
+        it, "compose", {("T1", 2): "Day 2: Hanoi walk", ("T1", 9): "Day 9: other"})
+    assert narration_cache.itinerary_hash(it, "compose") == narration_cache.itinerary_hash(
+        it, "compose", {})
+
+
+def test_basic_narration_keeps_a_day_with_no_names_through_the_merge():
+    """AA-805 review: a nameless day used to render 'Day N.' (no colon) and the merge dropped it."""
+    basic = handler._basic_narration([{"day": 2, "name": ""}, {"day": 3, "name": "Hue"}])
+    assert basic == "Day 2: free day.\nDay 3: Hue."
+    merged = handler._merge_by_day("Day 1: Hanoi.", basic)
+    assert merged.splitlines() == ["Day 1: Hanoi.", "Day 2: free day.", "Day 3: Hue."]
+
+
+@pytest.mark.asyncio
+async def test_narrate_over_the_daily_cap_makes_no_model_call(monkeypatch):
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    conn = AiConn(spent=5.0)
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    calls: list = []
+    body = json.loads((await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
+                                           conn=conn, narrator=_counting_narrator(calls)))["body"])
+    assert calls == []
+    assert body["source"] == "basic" and body["ai_generated"] is False
+    assert body["ai_budget_exhausted"] is True
+    assert body["narration"] == "Day 1: Hanoi."
+    assert conn.cache == {}                                  # a fallback is never cached
+
+
+@pytest.mark.asyncio
+async def test_narrate_logs_failed_attempts_even_when_it_returns_502(monkeypatch):
+    from backend.shared import llm_gateway
+
+    conn = AiConn()
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    recorded = []
+
+    async def fake_load_route(db, stage):
+        return llm_gateway.builtin_route(stage)
+
+    def failing_generate_text(route, system, user, max_tokens, failures=None):
+        for acct in ("acc3", "acc1"):
+            failures.append(llm_gateway._failed(route, route.models[0], acct, 0, "throttled"))
+        raise llm_gateway.BedrockError("All models failed")
+
+    async def fake_record(db, call, quality_signal, **kw):
+        recorded.append((call.account, call.failed, call.stop_reason))
+
+    monkeypatch.setattr(handler.llm_gateway, "load_route", fake_load_route)
+    monkeypatch.setattr(agent.llm_gateway, "generate_text", failing_generate_text)
+    monkeypatch.setattr(handler.llm_gateway, "record", fake_record)
+    resp = await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"}, conn=conn)
+    assert resp["statusCode"] == 502
+    assert recorded == [("acc3", True, "error"), ("acc1", True, "error")]

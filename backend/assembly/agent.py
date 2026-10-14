@@ -6,8 +6,8 @@ renarrate — narration for a customer's MANUAL reorder. It receives the
             only write connective copy for the order given.
 
 Both run through the Model Gateway stage `tp_compose` (AA-685): the model and failover order
-come from the shared gateway tables, and every successful call is appended to `calls` so the
-handler can write its llm_call_log row. An `invoker` can be injected so tests don't call AWS.
+come from the shared gateway tables, and every call attempt (failed ones too, AA-805) is appended
+to `calls` so the handler can write its llm_call_log rows. An `invoker` can be injected so tests don't call AWS.
 """
 from __future__ import annotations
 
@@ -84,9 +84,10 @@ def _run(system: str, itinerary: list[dict], invoker: Optional[Invoker],
     if invoker is not None:
         text = _text_from_response(invoker(STAGE, body))
     else:
+        # AA-805: failed attempts land in `calls` too (before a raise), so they get logged.
         text, call = llm_gateway.generate_text(
             route or llm_gateway.builtin_route(STAGE), body["system"],
-            body["messages"][0]["content"], body["max_tokens"])
+            body["messages"][0]["content"], body["max_tokens"], failures=calls)
         if calls is not None:
             calls.append(call)
     if text:

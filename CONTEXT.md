@@ -133,7 +133,8 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 - **Every model call goes through the ecosystem Model Gateway** (AA-685,
   `backend/shared/llm_gateway.py`). The model, fallback order and price for each stage come
   from the gateway tables that AA-CIS-App owns in the shared RDS (`shared.llm_role_config`,
-  `shared.llm_model_catalog`). Every successful call writes one `shared.llm_call_log` row,
+  `shared.llm_model_catalog`). Every call attempt writes one `shared.llm_call_log` row (failed
+  attempts too, with `stop_reason = 'error'`; a model with no catalog price logs `cost_usd` NULL),
   tagged `quality_signal.app = "tripplanner"`, so it shows on the CIS External Spend page. The
   `tripplanner` DB role has SELECT on the two config tables and INSERT on the log (CIS
   migration 173). If the tables cannot be read, built-in routes keep the previous models.
@@ -143,7 +144,18 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   - `tp_extract` / `tp_component_embed`: the offline extraction pipeline.
 
   An admin can change a stage's model on the CIS admin Settings page (TripPlanner group) without
-  a TripPlanner deploy; the Lambdas pick the change up within 60 s.
+  a TripPlanner deploy; the Lambdas pick the change up within 60 s. Shadow config on a tp_* stage
+  is not run here (a warning is printed): a consumer app does not pay for shadows.
+- **AI guards (AA-805, migration tp-010)**: a daily hard stop on **customer-facing** model spend
+  only — stages `tp_compose` + `tp_search_embed` (`llm_gateway.ONLINE_STAGES`,
+  `TP_DAILY_SPEND_CAP_USD`, counted in `tripplanner.llm_spend_daily` by the gateway — the role
+  cannot read `shared.llm_call_log`). Offline stages (`tp_extract`, `tp_component_embed`) are
+  logged but neither counted nor capped here, so a backfill never takes search/narration down.
+  Over the cap narration falls back to AA text + neutral day lines and search answers 503.
+  `/narrate` is limited to the session that created the trip and reuses
+  `tripplanner.narration_cache` for an identical itinerary (the key includes the AA master day
+  text, so CIS edits miss the cache). Search embeds the query as `search_query` and ranks only
+  components of active, not soft-deleted tours.
 - Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 primary → acc1
   fallback** (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md`).
   Cohere embeddings run directly on acc2 (no satellite).
@@ -190,7 +202,7 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 |---|---|---|---|
 | AA-CIS-App (content) | `gold_aa_internal.published_tours` (tenant RLS, AA tenant set per transaction), `acp_contract.v_active_tour_atoms` (place/activity columns), `shared.destinations`, `shared.v_destination_photos` / `v_tour_photos` | — | CIS migrations 180 / 216, 201 |
 | AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
-| AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.json` | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
+| AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.1.json` (payload `version` 1.1 since AA-805; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
 | AA-CIS-Infra | — | — | owns the Lambdas, API Gateway, OIDC deploy role, secrets and the DB Migrate workflow that applies `migrations/` |
 
 Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.

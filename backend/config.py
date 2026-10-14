@@ -97,3 +97,13 @@ GUEST_SESSION_DAYS = 90
 REQUIRE_REGISTRATION_BEFORE_HANDOFF = (
     _get("REQUIRE_REGISTRATION_BEFORE_HANDOFF", "true").lower() == "true"
 )
+
+# --- AI Phase 0 guards (AA-805) ---
+# Daily hard stop on TripPlanner model spend (all tp_* stages together, UTC day), counted in
+# tripplanner.llm_spend_daily (migration tp-010). PLACEHOLDER default — the business cap is an
+# open question for Nghiệp; override with the env var on both Lambdas. When reached, narration
+# falls back to AA text + neutral day lines and free-text search answers 503.
+TP_DAILY_SPEND_CAP_USD = float(_get("TP_DAILY_SPEND_CAP_USD", "5.0"))
+
+# How long a narration in tripplanner.narration_cache is reused for the same itinerary.
+NARRATION_CACHE_TTL_HOURS = int(_get("NARRATION_CACHE_TTL_HOURS", "168"))

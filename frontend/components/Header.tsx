@@ -16,6 +16,13 @@ export default function Header() {
           alt="Adventure Asia"
           className="h-9 w-auto"
         />
+        {/* AA-805: AI Phase 0 — say plainly, next to the AA mark, that the planner uses AI. */}
+        <span
+          title="Suggestions, search and some narration are AI-assisted. An Adventure Asia advisor reviews every trip."
+          className="shrink-0 rounded-full border border-aa-gold/40 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-aa-gold-dark"
+        >
+          AI-assisted
+        </span>
         <div className="hidden leading-tight sm:block">
           <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-aa-gold">
             Trip Planner

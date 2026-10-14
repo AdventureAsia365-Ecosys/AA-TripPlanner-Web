@@ -252,3 +252,134 @@ async def test_record_writes_one_row_tagged_with_the_app():
 async def test_record_never_raises():
     call = gw.Call("tp_compose", "writer", "sonnet", "acc3", 1, 1, 0.0, False)
     await gw.record(FakeDb(fail_execute=True), call, {})
+
+
+# --- AA-805: fork defects ---------------------------------------------------------
+
+def test_failed_attempts_are_reported_for_logging():
+    factory = make_factory({"acc3": StubBedrock(fail=True),
+                            "acc1": StubBedrock(response=_claude_reply())}, [])
+    failures: list = []
+    _, call = gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory, failures=failures)
+    assert call.account == "acc1" and not call.failed
+    assert [(f.account, f.failed, f.stop_reason, f.cost_usd) for f in failures] == \
+        [("acc3", True, "error", 0.0)]
+    assert "simulated failure" in failures[0].extra["error"]
+
+
+def test_all_failed_attempts_are_reported_before_the_raise():
+    factory = make_factory({"acc3": StubBedrock(fail=True), "acc1": StubBedrock(fail=True)}, [])
+    failures: list = []
+    with pytest.raises(bs.BedrockError):
+        gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory, failures=failures)
+    assert [f.account for f in failures] == ["acc3", "acc1"]
+
+
+def test_embed_failed_attempt_is_reported():
+    failures: list = []
+    with pytest.raises(bs.BedrockError):
+        gw.embed_texts(gw.builtin_route("tp_search_embed"), ["x"],
+                       client_factory=make_factory({"acc2": StubBedrock(fail=True)}, []),
+                       failures=failures)
+    assert len(failures) == 1 and failures[0].stage == "tp_search_embed"
+
+
+def test_missing_catalog_price_is_null_not_zero():
+    unpriced = gw.Model("new", "anthropic", "anthropic_native", {"acc3": "g.new"}, None, None)
+    acc3 = StubBedrock(response=_claude_reply(tin=100, tout=20))
+    _, call = gw.generate_text(gw.Route("tp_compose", "writer", (unpriced,), "acc3"), "s", "u", 50,
+                               client_factory=make_factory({"acc3": acc3}, []))
+    assert call.cost_usd is None
+    # an embedding needs no output price
+    emb = gw.Model("e", "cohere", "embed", {"acc2": "e"}, 0.12, None)
+    assert gw._cost(emb, 1000, 0) == pytest.approx(0.00012)
+
+
+async def test_load_route_keeps_a_null_price_and_notes_a_shadow(capsys):
+    db = FakeDb(
+        role_rows=[{"role": "writer", "model_id": "sonnet", "fallback_model_ids": [],
+                    "account_route": "acc3", "shadow_model_id": "sonnet-5", "shadow_sample_pct": 10}],
+        catalog_rows=[{"model_key": "sonnet", "vendor": "anthropic", "api_style": "anthropic_native",
+                       "bedrock_profile_ids": {"acc3": "g.s"}, "price_in_per_mtok": None,
+                       "price_out_per_mtok": 15, "price_cache_read_per_mtok": None,
+                       "price_cache_write_per_mtok": None, "enabled": True}])
+    route = await gw.load_route(db, "tp_compose")
+    assert route.models[0].price_in is None and route.models[0].price_out == 15.0
+    assert route.shadow_model == "sonnet-5"
+    assert "does not run shadows" in capsys.readouterr().out
+
+
+async def test_record_logs_null_cost_and_failed_flag_and_counts_spend():
+    db = FakeDb()
+    failed = gw._failed(ROUTE, SONNET, "acc3", 0, "AccessDenied")
+    await gw.record(db, failed, {"mode": "compose"})
+    sql, args = db.executed[0]
+    assert args[6] == 0.0 and args[8] == "error"
+    signal = json.loads(args[7])
+    assert signal["failed"] is True and signal["error"] == "AccessDenied"
+    assert "tripplanner.llm_spend_daily" in db.executed[1][0]
+
+    db = FakeDb()
+    await gw.record(db, gw.Call("tp_compose", "writer", "new", "acc3", 10, 5, None, False), {})
+    assert db.executed[0][1][6] is None                       # NULL, not 0
+    assert db.executed[1][1] == ("tp_compose", 0.0, 1)        # adds nothing, counted as unpriced
+
+
+class SpendDb:
+    def __init__(self, spent=None, fail=False):
+        self.spent, self.fail = spent, fail
+
+    async def fetchrow(self, sql, *args):
+        if self.fail:
+            raise RuntimeError('relation "tripplanner.llm_spend_daily" does not exist')
+        return {"spent": self.spent}
+
+
+async def test_budget_status_against_the_cap(monkeypatch):
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    assert (await gw.budget_status(SpendDb(1.25)))["exhausted"] is False
+    assert (await gw.budget_status(SpendDb(5.0)))["exhausted"] is True
+    open_ = await gw.budget_status(SpendDb(fail=True))         # fails open, spent unknown
+    assert open_ == {"spent_usd": None, "cap_usd": 5.0, "exhausted": False}
+
+
+class SpendLedgerDb:
+    """In-memory llm_call_log + llm_spend_daily: upserts add per stage, the read sums the
+    stages passed as $1 (mirrors _SPEND_UPSERT_SQL / _SPEND_TODAY_SQL)."""
+
+    def __init__(self):
+        self.by_stage: dict[str, float] = {}
+        self.logged: list[str] = []
+
+    async def execute(self, sql, *args):
+        if "shared.llm_call_log" in sql:
+            self.logged.append(args[1])
+        elif "tripplanner.llm_spend_daily" in sql:
+            stage, cost, _unpriced = args
+            self.by_stage[stage] = self.by_stage.get(stage, 0.0) + cost
+
+    async def fetchrow(self, sql, *args):
+        assert "stage = ANY($1" in sql
+        return {"spent": sum(v for k, v in self.by_stage.items() if k in args[0])}
+
+
+async def test_offline_stages_never_exhaust_the_customer_budget(monkeypatch):
+    """AA-805 review: an extraction/embedding backfill over the cap must not 503 search or drop
+    narration to 'basic' — only ONLINE_STAGES count."""
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    db = SpendLedgerDb()
+    await gw.record(db, gw.Call("tp_extract", "writer", "sonnet", "acc3", 1, 1, 40.0, False), {})
+    await gw.record(db, gw.Call("tp_component_embed", "embed", "cohere", None, 1, 0, 9.0, False), {})
+    assert db.logged == ["tp_extract", "tp_component_embed"]   # still in llm_call_log
+    assert db.by_stage == {}                                    # but not in the spend counter
+    status = await gw.budget_status(db)
+    assert status["exhausted"] is False and status["spent_usd"] == 0.0
+
+    await gw.record(db, gw.Call("tp_compose", "writer", "sonnet", "acc3", 1, 1, 3.0, False), {})
+    await gw.record(db, gw.Call("tp_search_embed", "embed", "cohere", None, 1, 0, 2.0, False), {})
+    assert (await gw.budget_status(db))["exhausted"] is True
+
+
+def test_online_stages_are_the_customer_facing_routes():
+    assert set(gw.ONLINE_STAGES) == {"tp_compose", "tp_search_embed"}
+    assert all(s in gw.BUILTIN_ROUTES for s in gw.ONLINE_STAGES)
