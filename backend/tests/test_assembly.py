@@ -584,7 +584,7 @@ async def test_handler_narrate_logs_each_model_call(monkeypatch):
         assert stage == "tp_compose"
         return llm_gateway.builtin_route(stage)
 
-    def fake_generate_text(route, system, user, max_tokens):
+    def fake_generate_text(route, system, user, max_tokens, **kw):
         return "Day 1: Arrive.", llm_gateway.Call(route.stage, "writer", "sonnet", "acc3",
                                                   120, 30, 0.00081, False, "end_turn")
 
@@ -794,6 +794,7 @@ async def test_send_writes_one_inquiry_outbox_row_with_consent(monkeypatch):
     assert row["idempotency_key"] == f"t1:{first['handoff_id']}"
     p = row["payload"]
     assert p["contract"] == "inquiry.submitted" and p["trip_id"] == "t1"
+    assert p["version"] == 1.1                     # AA-805: contract v1.1 (number, enum [1, 1.1])
     assert p["customer"]["email"] == "jo@x.com" and p["customer"]["consent"] is True
     assert [d["component_id"] for d in p["itinerary"]["days"]] == ["c1"]
 
@@ -956,3 +957,119 @@ async def test_manual_order_survives_added_days_but_not_a_new_pin(s235_catalog):
     # a set change invalidates the manual order; the tour falls back to its own day order
     await events.append_event(conn, "t", "s1", "add_component", {"component_id": "b4"})
     assert [e["component_id"] for e in await events.current_itinerary(conn, "t")] == ["b1", "b2", "b3", "b4"]
+
+
+# --- AA-805: /narrate ownership, cache, spend cap, failed-call logging ---------
+
+class AiConn(FakeConn):
+    """FakeConn plus the tp-010 tables: narration_cache and the daily spend total."""
+
+    def __init__(self, spent: float = 0.0):
+        super().__init__()
+        self.cache: dict[str, dict] = {}
+        self.spent = spent
+
+    async def execute(self, query, *args):
+        q = " ".join(query.split())
+        if q.startswith("INSERT INTO tripplanner.narration_cache"):
+            key, mode, narration, source, days = args
+            self.cache[key] = {"narration": narration, "source": source, "mode": mode}
+            return "OK"
+        return await super().execute(query, *args)
+
+    async def fetchrow(self, query, *args):
+        q = " ".join(query.split())
+        if q.startswith("UPDATE tripplanner.narration_cache"):
+            return self.cache.get(args[0])
+        if "FROM tripplanner.llm_spend_daily" in q:
+            return {"spent": self.spent}
+        return await super().fetchrow(query, *args)
+
+
+def _counting_narrator(counter):
+    def narrator(it):
+        counter.append(len(it))
+        yield "\n".join(f"Day {e['day']}: lovely." for e in it)
+    return narrator
+
+
+@pytest.mark.asyncio
+async def test_narrate_rejects_another_session_with_403():
+    conn = AiConn()
+    await events.append_event(conn, "t1", "owner", "add_component", {"component_id": "c1"})
+    resp = await handler.route("POST", "/trip/t1/narrate", {"session_id": "intruder"}, conn=conn,
+                               narrator=lambda it: iter(["Day 1: x."]))
+    assert resp["statusCode"] == 403
+    ok = await handler.route("POST", "/trip/t1/narrate", {"session_id": "owner"}, conn=conn,
+                             narrator=lambda it: iter(["Day 1: x."]))
+    assert ok["statusCode"] == 200
+
+
+@pytest.mark.asyncio
+async def test_narrate_reuses_the_cached_narration_for_the_same_itinerary():
+    conn = AiConn()
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    calls: list = []
+    first = json.loads((await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
+                                            conn=conn, narrator=_counting_narrator(calls)))["body"])
+    second = json.loads((await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
+                                             conn=conn, narrator=_counting_narrator(calls)))["body"])
+    assert calls == [1]                                      # the model ran once
+    assert first["cached"] is False and second["cached"] is True
+    assert second["narration"] == first["narration"] and second["ai_generated"] is True
+    # a different itinerary is a different key
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c3"})
+    await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"}, conn=conn,
+                        narrator=_counting_narrator(calls))
+    assert calls == [1, 2]
+
+
+def test_itinerary_hash_depends_on_content_and_mode_not_on_trip():
+    from backend.assembly import narration_cache
+    it = [{"day": 1, "component_id": "c1", "name": "Hanoi", "text_extract": "Old quarter"}]
+    h = narration_cache.itinerary_hash(it, "compose")
+    assert h == narration_cache.itinerary_hash([dict(it[0], trip_id="other")], "compose")
+    assert h != narration_cache.itinerary_hash(it, "renarrate")
+    assert h != narration_cache.itinerary_hash([dict(it[0], text_extract="New text")], "compose")
+
+
+@pytest.mark.asyncio
+async def test_narrate_over_the_daily_cap_makes_no_model_call(monkeypatch):
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    conn = AiConn(spent=5.0)
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    calls: list = []
+    body = json.loads((await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
+                                           conn=conn, narrator=_counting_narrator(calls)))["body"])
+    assert calls == []
+    assert body["source"] == "basic" and body["ai_generated"] is False
+    assert body["ai_budget_exhausted"] is True
+    assert body["narration"] == "Day 1: Hanoi."
+    assert conn.cache == {}                                  # a fallback is never cached
+
+
+@pytest.mark.asyncio
+async def test_narrate_logs_failed_attempts_even_when_it_returns_502(monkeypatch):
+    from backend.shared import llm_gateway
+
+    conn = AiConn()
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    recorded = []
+
+    async def fake_load_route(db, stage):
+        return llm_gateway.builtin_route(stage)
+
+    def failing_generate_text(route, system, user, max_tokens, failures=None):
+        for acct in ("acc3", "acc1"):
+            failures.append(llm_gateway._failed(route, route.models[0], acct, 0, "throttled"))
+        raise llm_gateway.BedrockError("All models failed")
+
+    async def fake_record(db, call, quality_signal, **kw):
+        recorded.append((call.account, call.failed, call.stop_reason))
+
+    monkeypatch.setattr(handler.llm_gateway, "load_route", fake_load_route)
+    monkeypatch.setattr(agent.llm_gateway, "generate_text", failing_generate_text)
+    monkeypatch.setattr(handler.llm_gateway, "record", fake_record)
+    resp = await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"}, conn=conn)
+    assert resp["statusCode"] == 502
+    assert recorded == [("acc3", True, "error"), ("acc1", True, "error")]

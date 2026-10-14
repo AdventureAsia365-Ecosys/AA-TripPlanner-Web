@@ -26,6 +26,7 @@ from backend.assembly import events as events_mod
 from backend.assembly import grounding as grounding_mod
 from backend.assembly import handoff as handoff_mod
 from backend.assembly import master_content
+from backend.assembly import narration_cache
 from backend.assembly import notify as notify_mod
 from backend.assembly import registration as reg_mod
 from backend.assembly import activities as activities_mod
@@ -47,6 +48,9 @@ _STOP_ACTIVITIES_RE = re.compile(r"^/trip/([^/]+)/stops/([^/]+)/activities$")
 _TRIP_RE = re.compile(r"^/trip/([^/]+)$")
 
 _HEADERS = {"content-type": "application/json", "cache-control": "no-store"}
+
+# Narration sources that contain model-written text (frontend AI badge, cache eligibility).
+_AI_SOURCES = ("llm", "mixed")
 
 
 def _resp(status: int, body: dict) -> dict:
@@ -183,26 +187,47 @@ async def route(
         if mode not in ("compose", "renarrate"):
             return _resp(400, {"error": "mode must be 'compose' or 'renarrate'"})
 
+        # AA-805: narration costs model spend — only the session that created the trip may ask.
+        owner = await _trip_owner(conn, trip_id)
+        if owner is not None and str(owner) != str(session_id):
+            return _resp(403, {"error": "forbidden", "detail": "this trip belongs to another session"})
+
         itinerary = await events_mod.current_itinerary(conn, trip_id)
         if not itinerary:
             return _resp(400, {"error": "empty_trip",
                                "detail": "pin at least one component before narrating"})
 
+        # AA-805: an identical itinerary reuses its narration (no model call, no log row).
+        cache_key = narration_cache.itinerary_hash(itinerary, mode)
+        cached = await narration_cache.get(conn, cache_key)
+        if cached is not None:
+            return _resp(200, {"trip_id": trip_id, "mode": mode, "source": cached["source"],
+                               "ai_generated": cached["source"] in _AI_SOURCES, "cached": True,
+                               "narration": cached["narration"], "itinerary": itinerary})
+
+        # AA-805: daily spend hard stop. Exhausted -> no model call; days without AA text get a
+        # neutral line built from the components' names.
+        budget = await llm_gateway.budget_status(conn)
         calls: list = []
-        narrate_fn = await _resolve_narrator(mode, narrator, conn, calls)
+        narrate_fn = None if budget["exhausted"] else await _resolve_narrator(mode, narrator, conn, calls)
         try:
             narration, source, ungrounded = await _narrate(conn, itinerary, narrate_fn)
         except Exception as e:  # noqa: BLE001 — surface Bedrock failure as 502
+            await _record_calls(conn, calls, {"mode": mode, "days": len(itinerary)})
             return _resp(502, {"error": "narration_failed", "detail": str(e)})
-        for call in calls:  # AA-685: one llm_call_log row per model call
-            signal = {"mode": mode, "source": source, "days": len(itinerary),
-                      "output_len_chars": len(narration)}
-            if ungrounded:  # AA-731: invented figures removed before the customer saw them
-                signal["ungrounded_lines"] = len(ungrounded)
-            await llm_gateway.record(conn, call, signal)
+        signal = {"mode": mode, "source": source, "days": len(itinerary),
+                  "output_len_chars": len(narration)}
+        if ungrounded:  # AA-731: invented figures removed before the customer saw them
+            signal["ungrounded_lines"] = len(ungrounded)
+        await _record_calls(conn, calls, signal)  # AA-685: one llm_call_log row per model call
+        await narration_cache.put(conn, cache_key, mode, narration, source, len(itinerary))
 
-        return _resp(200, {"trip_id": trip_id, "mode": mode, "source": source,
-                           "narration": narration, "itinerary": itinerary})
+        out = {"trip_id": trip_id, "mode": mode, "source": source,
+               "ai_generated": source in _AI_SOURCES, "cached": False,
+               "narration": narration, "itinerary": itinerary}
+        if budget["exhausted"]:
+            out["ai_budget_exhausted"] = True
+        return _resp(200, out)
 
     m = _SUGGEST_RE.match(path)
     if m and method == "GET":
@@ -285,6 +310,30 @@ async def _resolve_narrator(mode: str, narrator: Optional[Any], conn, calls: lis
     return functools.partial(fn, route=route, calls=calls)
 
 
+async def _trip_owner(conn, trip_id: str) -> Optional[str]:
+    """The session that created the trip (trip_drafts.session_id is never changed by the upsert),
+    or None when the trip has no draft yet."""
+    row = await conn.fetchrow("SELECT session_id FROM tripplanner.trip_drafts WHERE id = $1", trip_id)
+    return row["session_id"] if row else None
+
+
+async def _record_calls(conn, calls: list, signal: dict) -> None:
+    """One llm_call_log row per model call attempt, failed attempts included (AA-805)."""
+    for call in calls:
+        await llm_gateway.record(conn, call, signal)
+
+
+def _basic_narration(entries: list[dict]) -> str:
+    """Neutral 'Day N: <names>.' lines — no model, no invented facts (budget fallback)."""
+    by_day: dict[int, list[str]] = {}
+    for e in entries:
+        by_day.setdefault(int(e["day"]), []).append(e.get("name") or "")
+    return "\n".join(
+        f"Day {d}: {', '.join(n for n in names if n)}." if any(names) else f"Day {d}."
+        for d, names in sorted(by_day.items())
+    )
+
+
 async def _narrate(conn, itinerary: list[dict], narrate_fn) -> tuple[str, str, list[dict]]:
     """Build day-by-day narration, preferring AA's authored master itinerary
     text over an LLM rewrite.
@@ -299,6 +348,9 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn) -> tuple[str, str, l
     Returns (narration, source, ungrounded) where source is 'master' (all days authored),
     'llm' (none authored), or 'mixed', and ungrounded lists the LLM lines removed or replaced
     because they stated a figure no component text supports (AA-731, grounding.py).
+
+    narrate_fn None (AA-805 daily spend cap reached): the remaining days get neutral name lines
+    and source is 'basic' — no AI text at all.
     """
     tour_ids = [e.get("source_tour_id") for e in itinerary if e.get("source_tour_id")]
     try:
@@ -313,6 +365,10 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn) -> tuple[str, str, l
     # All days resolved from authored content — no Bedrock call at all.
     if not missing:
         return master_narr, "master", []
+
+    if narrate_fn is None:
+        basic = _basic_narration(missing)
+        return (_merge_by_day(master_narr, basic) if master_narr else basic), "basic", []
 
     # Some (or all) days need the LLM. Narrate only the missing days, then
     # merge with any authored lines, preserving trip-day order.

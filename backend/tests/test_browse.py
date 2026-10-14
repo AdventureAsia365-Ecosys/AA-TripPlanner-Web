@@ -29,6 +29,21 @@ class FakePool:
         # crude: first fetchrow returns dest row, subsequent handled by fetch
         return self._fetchrow_row
 
+    async def execute(self, query, *args):
+        self.calls.append((query, args))
+        return "OK"
+
+    def transaction(self):
+        return _NoTxn()
+
+
+class _NoTxn:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
 
 # --- tile id parsing --------------------------------------------------------
 
@@ -124,7 +139,8 @@ async def test_route_search_no_store_and_uses_embedder(monkeypatch):
         assert stage == "tp_search_embed"
         return llm_gateway.builtin_route(stage)
 
-    def fake_embed_texts(route, texts, *, input_type):
+    def fake_embed_texts(route, texts, *, input_type, failures=None):
+        assert input_type == "search_query"  # AA-805: query side of Cohere's asymmetric pair
         called["n"] += 1
         return [[0.0] * 8], llm_gateway.Call(route.stage, "embed", "cohere-embed-v4", "acc2",
                                               3, 0, 0.0000004, False)
@@ -143,6 +159,48 @@ async def test_route_search_no_store_and_uses_embedder(monkeypatch):
     assert body["destinations"][0]["name"] == "Hoi An"
     # AA-685: every real search embed writes one llm_call_log row.
     assert recorded == [("tp_search_embed", {"texts": 1, "query_len_chars": 10})]
+    # AA-805: active tours only, read with the AA tenant set (published_tours RLS)
+    sql = next(q for q, _ in pool.calls if "best_distance" in q)
+    assert "pt.master_status = 'active'" in sql
+    assert any("set_config('app.tenant_id'" in q for q, _ in pool.calls)
+
+
+@pytest.mark.asyncio
+async def test_route_search_over_the_daily_cap_is_503_without_a_model_call(monkeypatch):
+    from backend import config
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 1.0)
+    pool = FakePool(fetchrow_row={"spent": 1.5})
+
+    def boom(*args, **kwargs):
+        raise AssertionError("no embed over the cap")
+
+    monkeypatch.setattr(search_mod.llm_gateway, "embed_texts", boom)
+    resp = await h.route("GET", "/browse/search", {"q": "beach"}, pool=pool)
+    assert resp["statusCode"] == 503
+    assert json.loads(resp["body"])["error"] == "search_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_route_search_logs_failed_embed_attempts(monkeypatch):
+    pool = FakePool()
+    recorded = []
+
+    async def fake_load_route(db, stage):
+        return llm_gateway.builtin_route(stage)
+
+    def failing(route, texts, *, input_type, failures=None):
+        failures.append(llm_gateway._failed(route, route.models[0], "acc2", 0, "throttled"))
+        raise llm_gateway.BedrockError("All models failed")
+
+    async def fake_record(db, call, quality_signal, **kw):
+        recorded.append((call.stage, call.failed))
+
+    monkeypatch.setattr(search_mod.llm_gateway, "load_route", fake_load_route)
+    monkeypatch.setattr(search_mod.llm_gateway, "embed_texts", failing)
+    monkeypatch.setattr(search_mod.llm_gateway, "record", fake_record)
+    with pytest.raises(llm_gateway.BedrockError):
+        await search_mod.search("beach", BrowseFilters(), pool=pool)
+    assert recorded == [("tp_search_embed", True)]
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ send-to-advisor calls write_inquiry() inside its own transaction, right after th
 so the outbox row and the hand-off commit or roll back together. AA-Booking reads
 tripplanner.v_inquiry_outbox and keeps its own inbox keyed by idempotency_key; it never writes here.
 
-Contract: AA-Ecosys docs/contracts/inquiry.submitted.v1.json. Narration is not part of v1: it is
+Contract: AA-Ecosys docs/contracts/inquiry.submitted.v1.1.json (payload version 1.1, AA-805). Narration is not part of v1: it is
 not persisted server-side (the frontend asks for it on demand), and a client-sent copy would be
 untrusted text.
 
@@ -23,7 +23,12 @@ from typing import Any, Optional, Protocol
 from backend.assembly.registration import normalise_contact
 
 EVENT = "inquiry.submitted"
-SCHEMA_VERSION = 1
+# Payload `version` (major.minor). AA-Ecosys docs/contracts/inquiry.submitted.v1.1.json declares it
+# as the NUMBER 1.1 (enum [1, 1.1]); v1.1 is additive over v1 (customer.verified, nullable
+# customer_id), which this module already sends (S235). AA-805.
+SCHEMA_VERSION = 1.1
+# tripplanner.outbox.schema_version is an INT column: it carries the major only.
+SCHEMA_MAJOR = 1
 
 
 class _Conn(Protocol):
@@ -166,6 +171,6 @@ async def write_inquiry(
     await conn.execute(
         "INSERT INTO tripplanner.outbox (event, schema_version, idempotency_key, aggregate_id, payload) "
         "VALUES ($1, $2, $3, $4, $5::jsonb) ON CONFLICT (idempotency_key) DO NOTHING",
-        EVENT, SCHEMA_VERSION, key, trip_id, json.dumps(payload, default=str),
+        EVENT, SCHEMA_MAJOR, key, trip_id, json.dumps(payload, default=str),
     )
     return key

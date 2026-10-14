@@ -15,6 +15,16 @@ available on acc2 (channel-program account), so an acc2 attempt for them simply 
 
 If the tables cannot be read, BUILTIN_ROUTES keeps the models this app used before AA-685, so a
 DB problem never stops narration or search.
+
+AA-805 (fork defects vs. the CIS client):
+  - Failed attempts are logged too: `generate_text` / `embed_texts` append one failed `Call` per
+    model x account attempt to `failures`, and `record()` writes it with stop_reason 'error'.
+  - A missing catalog price is NULL, never 0: the call logs cost_usd NULL and prints a warning.
+  - Shadow config (`shadow_model_id` / `shadow_sample_pct`) is read but NOT run here: a shadow
+    would double the spend of a consumer app and needs INSERT on shared.llm_shadow_log, which the
+    `tripplanner` role does not have. `load_route` prints a warning when one is configured.
+  - Daily spend hard stop: `record()` adds each priced tp_* call to tripplanner.llm_spend_daily
+    (migration tp-010); `budget_status()` compares today's total with TP_DAILY_SPEND_CAP_USD.
 """
 from __future__ import annotations
 
@@ -37,8 +47,8 @@ class Model:
     vendor: str
     api_style: str
     profiles: dict
-    price_in: float = 0.0
-    price_out: float = 0.0
+    price_in: Optional[float] = None
+    price_out: Optional[float] = None
     price_cache_read: Optional[float] = None
     price_cache_write: Optional[float] = None
     enabled: bool = True
@@ -50,21 +60,24 @@ class Route:
     role: str
     models: tuple
     account_route: Optional[str] = None
+    shadow_model: Optional[str] = None
 
 
 @dataclass
 class Call:
-    """One successful model call, ready for `record()`."""
+    """One model call attempt, ready for `record()`. `failed` attempts carry the error in
+    `extra["error"]`; `cost_usd` is None when the catalog has no price for the model."""
     stage: str
     role: str
     model: str
     account: str
     tokens_in: int
     tokens_out: int
-    cost_usd: float
+    cost_usd: Optional[float]
     fallback_used: bool
     stop_reason: Optional[str] = None
     extra: dict = field(default_factory=dict)
+    failed: bool = False
 
     @property
     def provider(self) -> str:
@@ -105,8 +118,8 @@ async def load_route(db: Any, stage: str) -> Route:
         return cached[0]
     try:
         rows = await db.fetch(
-            "SELECT role, model_id, fallback_model_ids, account_route "
-            "FROM shared.llm_role_config WHERE stage = $1 AND is_active", stage)
+            "SELECT role, model_id, fallback_model_ids, account_route, shadow_model_id, "
+            "shadow_sample_pct FROM shared.llm_role_config WHERE stage = $1 AND is_active", stage)
         if not rows:
             raise LookupError(f"no active llm_role_config row for {stage!r}")
         cfg = rows[0]
@@ -122,13 +135,17 @@ async def load_route(db: Any, stage: str) -> Route:
                 profiles = json.loads(profiles)
             by_key[r["model_key"]] = Model(
                 r["model_key"], r["vendor"], r["api_style"], dict(profiles or {}),
-                _num(r["price_in_per_mtok"]) or 0.0, _num(r["price_out_per_mtok"]) or 0.0,
+                _num(r["price_in_per_mtok"]), _num(r["price_out_per_mtok"]),
                 _num(r["price_cache_read_per_mtok"]), _num(r["price_cache_write_per_mtok"]),
                 bool(r["enabled"]))
         models = tuple(by_key[k] for k in keys if k in by_key)
         if not models:
             raise LookupError(f"none of {keys} is in llm_model_catalog")
-        route = Route(stage, cfg["role"], models, cfg["account_route"])
+        shadow = cfg.get("shadow_model_id") if (cfg.get("shadow_sample_pct") or 0) > 0 else None
+        if shadow:
+            print(f"[llm_gateway] {stage}: shadow {shadow!r} is configured but TripPlanner does not "
+                  "run shadows (AA-805); only the primary route is called")
+        route = Route(stage, cfg["role"], models, cfg["account_route"], shadow)
     except Exception as e:  # noqa: BLE001 — a DB problem must not stop the call
         print(f"[llm_gateway] route for {stage} unreadable ({e}); using builtin")
         route = builtin_route(stage)
@@ -155,11 +172,28 @@ def _runtime(account: str, client_factory: ClientFactory) -> Any:
     return bedrock_satellite.bedrock_for_account(*target, client_factory)
 
 
-def _cost(model: Model, tin: int, tout: int, cache_read: int = 0, cache_write: int = 0) -> float:
-    cr = model.price_cache_read if model.price_cache_read is not None else model.price_in * 0.1
-    cw = model.price_cache_write if model.price_cache_write is not None else model.price_in * 1.25
-    total = tin * model.price_in + tout * model.price_out + cache_read * cr + cache_write * cw
+def _cost(model: Model, tin: int, tout: int, cache_read: int = 0,
+          cache_write: int = 0) -> Optional[float]:
+    """USD for one call, or None when a price this call needs is missing from the catalog.
+    A price is needed only when its token count is non-zero (an embedding has no output price)."""
+    price_in, price_out = model.price_in, model.price_out
+    if price_in is None and (tin or cache_read or cache_write):
+        print(f"[llm_gateway] {model.key}: no input price in llm_model_catalog; cost logged as NULL")
+        return None
+    if price_out is None and tout:
+        print(f"[llm_gateway] {model.key}: no output price in llm_model_catalog; cost logged as NULL")
+        return None
+    price_in, price_out = price_in or 0.0, price_out or 0.0
+    cr = model.price_cache_read if model.price_cache_read is not None else price_in * 0.1
+    cw = model.price_cache_write if model.price_cache_write is not None else price_in * 1.25
+    total = tin * price_in + tout * price_out + cache_read * cr + cache_write * cw
     return round(total / 1_000_000, 6)
+
+
+def _failed(route: Route, model: Model, account: str, position: int, error: str) -> Call:
+    """A failed attempt: nothing billed, the error kept for the log row."""
+    return Call(route.stage, route.role, model.key, account, 0, 0, 0.0, fallback_used=position > 0,
+                stop_reason="error", extra={"error": error[:500]}, failed=True)
 
 
 def _read_body(resp: dict) -> dict:
@@ -197,8 +231,10 @@ def _text_call(model: Model, account: str, system: str, user: str, max_tokens: i
 
 def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
                   client_factory: ClientFactory = bedrock_satellite.default_client_factory,
+                  failures: Optional[list] = None,
                   ) -> tuple[str, Call]:
-    """Runs the route: each enabled model in order, each of its accounts in order."""
+    """Runs the route: each enabled model in order, each of its accounts in order.
+    Every failed attempt is appended to `failures` (when given) so the caller logs it too."""
     errors = []
     for position, model in enumerate(route.models):
         if not model.enabled or model.api_style == "embed":
@@ -210,9 +246,13 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
                                                client_factory)
             except Exception as e:  # noqa: BLE001 — fail over to the next account/model
                 errors.append(f"{model.key}@{account}: {str(e)[:200]}")
+                if failures is not None:
+                    failures.append(_failed(route, model, account, position, str(e)))
                 continue
             if not text:
                 errors.append(f"{model.key}@{account}: empty response")
+                if failures is not None:
+                    failures.append(_failed(route, model, account, position, "empty response"))
                 continue
             return text, Call(
                 route.stage, route.role, model.key, account, usage["in"], usage["out"],
@@ -223,6 +263,7 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
 
 def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_document",
                 client_factory: ClientFactory = bedrock_satellite.default_client_factory,
+                failures: Optional[list] = None,
                 ) -> tuple[list[list[float]], Call]:
     """Cohere Embed v4 request shape (the only embedding vendor in the catalog)."""
     errors = []
@@ -243,6 +284,8 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
                     raise BedrockError("malformed embedding response")
             except Exception as e:  # noqa: BLE001
                 errors.append(f"{model.key}@{account}: {str(e)[:200]}")
+                if failures is not None:
+                    failures.append(_failed(route, model, account, position, str(e)))
                 continue
             header = (resp.get("ResponseMetadata", {}).get("HTTPHeaders", {})
                       .get("x-amzn-bedrock-input-token-count"))
@@ -255,8 +298,11 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
 
 async def record(db: Any, call: Call, quality_signal: dict, *,
                  tenant_id: Optional[str] = None) -> None:
-    """Writes the shared.llm_call_log row. Never raises: a lost log row must not fail a request."""
+    """Writes the shared.llm_call_log row (and, for tp_* stages, today's spend counter).
+    Never raises: a lost log row must not fail a request."""
     signal = {"app": APP, **call.extra, **quality_signal}
+    if call.failed:
+        signal["failed"] = True
     try:
         await db.execute(
             "INSERT INTO shared.llm_call_log (tenant_id, stage, role, model, tokens_in, tokens_out, "
@@ -267,3 +313,47 @@ async def record(db: Any, call: Call, quality_signal: dict, *,
             call.fallback_used, call.provider)
     except Exception as e:  # noqa: BLE001
         print(f"[llm_gateway] llm_call_log write failed for {call.stage}: {e}")
+    if call.stage.startswith("tp_"):
+        await _add_spend(db, call)
+
+
+# --- Daily spend hard stop (AA-805) -------------------------------------------------------------
+
+_SPEND_UPSERT_SQL = """
+    INSERT INTO tripplanner.llm_spend_daily (day, stage, cost_usd, calls, unpriced_calls)
+    VALUES ((now() AT TIME ZONE 'UTC')::date, $1, $2, 1, $3)
+    ON CONFLICT (day, stage) DO UPDATE
+       SET cost_usd = tripplanner.llm_spend_daily.cost_usd + EXCLUDED.cost_usd,
+           calls = tripplanner.llm_spend_daily.calls + 1,
+           unpriced_calls = tripplanner.llm_spend_daily.unpriced_calls + EXCLUDED.unpriced_calls,
+           updated_at = now()
+"""
+
+_SPEND_TODAY_SQL = """
+    SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM tripplanner.llm_spend_daily
+    WHERE day = (now() AT TIME ZONE 'UTC')::date
+"""
+
+
+async def _add_spend(db: Any, call: Call) -> None:
+    unpriced = 1 if call.cost_usd is None else 0
+    try:
+        await db.execute(_SPEND_UPSERT_SQL, call.stage, call.cost_usd or 0.0, unpriced)
+    except Exception as e:  # noqa: BLE001 — e.g. tp-010 not applied yet
+        print(f"[llm_gateway] llm_spend_daily update failed for {call.stage}: {e}")
+
+
+async def budget_status(db: Any) -> dict:
+    """Today's (UTC) TripPlanner model spend against TP_DAILY_SPEND_CAP_USD.
+
+    Returns {"spent_usd", "cap_usd", "exhausted"}. Fails OPEN when the counter cannot be read
+    (tp-010 not applied, permission): `exhausted` False and `spent_usd` None, with a warning —
+    the cap must never take narration down by itself. Calls with no catalog price add nothing."""
+    cap = float(config.TP_DAILY_SPEND_CAP_USD)
+    try:
+        row = await db.fetchrow(_SPEND_TODAY_SQL)
+        spent = float(row["spent"]) if row and row["spent"] is not None else 0.0
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm_gateway] daily spend unreadable ({e}); TripPlanner spend cap NOT enforced")
+        return {"spent_usd": None, "cap_usd": cap, "exhausted": False}
+    return {"spent_usd": round(spent, 6), "cap_usd": cap, "exhausted": spent >= cap}
