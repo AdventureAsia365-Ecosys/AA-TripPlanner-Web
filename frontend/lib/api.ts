@@ -10,6 +10,7 @@ import type {
   RouteProposal,
   StopActivity,
 } from "./types";
+import type { TourList, TourSort } from "./catalogTypes";
 
 function filterParams(f: BrowseFilters): string {
   const p = new URLSearchParams();
@@ -274,4 +275,48 @@ export async function addDay(
 export async function removeDay(tripId: string, sessionId: string, dayId: string): Promise<CustomDay[] | null> {
   const { ok, data } = await tripOp({ op: "remove_day", trip_id: tripId, session_id: sessionId, day_id: dayId });
   return ok ? data.custom_days ?? [] : null;
+}
+
+// --- AA-812: catalog reads for the planner (list view, tour pre-fill) -------------------------
+
+// Tour cards from the CIS catalog (via the browse Lambda). null = the read failed (show an error
+// state), not "no tours".
+export async function fetchCatalogTours(q: {
+  country?: string;
+  sort?: TourSort;
+  limit?: number;
+  offset?: number;
+}): Promise<TourList | null> {
+  const p = new URLSearchParams({ resource: "catalog-tours" });
+  if (q.country) p.set("country", q.country);
+  if (q.sort) p.set("sort", q.sort);
+  if (q.limit) p.set("limit", String(q.limit));
+  if (q.offset) p.set("offset", String(q.offset));
+  try {
+    const res = await fetch(`/api/browse?${p}`);
+    if (!res.ok) return null;
+    return (await res.json()) as TourList;
+  } catch {
+    return null;
+  }
+}
+
+// One tour's whole route as a route proposal (for "Customise this trip"). "missing" = the tour is
+// not on the planner's Tour Graph yet; "error" = the read failed.
+export async function fetchTourRoute(
+  tourId: string | undefined,
+  sourceId?: string,
+): Promise<RouteProposal | "missing" | "error"> {
+  try {
+    const p = new URLSearchParams({ resource: "tour-route" });
+    if (tourId) p.set("tour_id", tourId);
+    if (sourceId) p.set("source_id", sourceId);
+    const res = await fetch(`/api/browse?${p}`);
+    if (res.status === 404) return "missing";
+    if (!res.ok) return "error";
+    const data = await res.json();
+    return (data.proposal as RouteProposal) ?? "missing";
+  } catch {
+    return "error";
+  }
 }

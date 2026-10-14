@@ -37,3 +37,9 @@ body {
 .aa-animate-in {
   animation: aaFadeInUp 0.18s ease-out both;
 }
+
+/* AA-812: kit pages own the page background in both themes (overscroll included). */
+body:has(.aa-site) {
+  background-color: var(--aa-bg);
+  color: var(--aa-body);
+}

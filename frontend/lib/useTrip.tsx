@@ -82,6 +82,22 @@ interface TripState {
   applyRoute: (p: RouteProposal) => Promise<boolean>;
   addDay: (kind: CustomDay["kind"], afterComponentId?: string) => Promise<void>;
   removeDay: (dayId: string) => Promise<void>;
+  // AA-812: what the visitor asked for before reaching the planner (home search or a tour page),
+  // from the /plan query string. Pre-fills the route finder; never changes the trip on its own.
+  intent: PlanIntent;
+  // True once the saved trip (if any) has been restored, so a pre-fill never races the restore.
+  ready: boolean;
+}
+
+export interface PlanIntent {
+  country?: string;
+  days?: number;
+  travellers?: number;
+  // catalog tour_id of a tour page's "Customise this trip" / "Ask an advisor"
+  tourId?: string;
+  // its stable catalog source_id: resolves the CURRENT tour_id if the tour was re-uploaded
+  sourceId?: string;
+  ask?: boolean;
 }
 
 const TripContext = createContext<TripState | null>(null);
@@ -114,15 +130,26 @@ function loadOrCreateIds(): { sessionId: string; tripId: string } {
   return ids;
 }
 
-export function TripProvider({ children }: { children: React.ReactNode }) {
+export function TripProvider({
+  children,
+  initialIntent = {},
+}: {
+  children: React.ReactNode;
+  initialIntent?: PlanIntent;
+}) {
   const idsRef = useRef<{ sessionId: string; tripId: string }>();
   if (!idsRef.current) {
     idsRef.current = loadOrCreateIds();
   }
   const { sessionId, tripId } = idsRef.current;
 
+  const [intent] = useState<PlanIntent>(initialIntent);
+  const [ready, setReady] = useState(false);
   const [itinerary, setItinerary] = useState<ItineraryDay[]>([]);
-  const [filters, setFilters] = useState<BrowseFilters>({});
+  // AA-812: a destination chosen on the home page focuses the map on that country.
+  const [filters, setFilters] = useState<BrowseFilters>(
+    initialIntent.country ? { country: initialIntent.country } : {},
+  );
   const [status, setStatus] = useState<string>("draft");
   const [countries, setCountries] = useState<CountryOption[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -164,12 +191,13 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   // rebuilds the itinerary from its event log, so a reload brings it back.
   useEffect(() => {
     let active = true;
-    api.fetchTrip(tripId).then((res) => {
+    api.fetchTrip(tripId).catch(() => null).then((res) => {
       if (active && res?.itinerary && res.itinerary.length > 0) {
         setItinerary(res.itinerary);
         if (res.status) setStatus(res.status);
       }
       if (active && res?.custom_days) setCustomDays(res.custom_days);
+      if (active) setReady(true);
     });
     return () => {
       active = false;
@@ -366,6 +394,8 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     applyRoute,
     addDay,
     removeDay,
+    intent,
+    ready,
   };
 
   return <TripContext.Provider value={value}>{children}</TripContext.Provider>;

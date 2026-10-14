@@ -147,3 +147,42 @@ async def proposals(conn: Any, country: str, days: int) -> dict:
                                   "days": b - a + 1} for t, a, b in p["segments"]],
                     "days": day_by_day(p, stops, comps)})
     return {"country": country, "days": days, "proposals": out}
+
+
+# AA-812: the whole route of ONE tour, so its page can open the planner pre-filled ("Customise this
+# trip"). Same proposal shape as `proposals()`; the title comes from the CIS catalog view (ADR 0001),
+# not gold_aa_internal. catalog.v_tour has no RLS for readers (the view reads with its owner's rights).
+TOUR_TITLE_SQL = "SELECT title FROM catalog.v_tour WHERE tour_id = $1::uuid"
+# tour_id changes when CIS re-uploads a tour; source_id does not. A tour page's link carries both,
+# so a cached or bookmarked "Customise" link still finds the CURRENT tour_id.
+TOUR_ID_BY_SOURCE_SQL = "SELECT tour_id::text FROM catalog.v_tour WHERE source_id = $1 LIMIT 1"
+
+
+async def resolve_tour_id(conn: Any, tour_id: Optional[str], source_id: Optional[str]) -> Optional[str]:
+    """The current catalog tour_id: by source_id when given and known, else the tour_id passed."""
+    if source_id:
+        current = await conn.fetchval(TOUR_ID_BY_SOURCE_SQL, source_id)
+        if current:
+            return current
+    return tour_id
+
+
+async def tour_route(conn: Any, tour_id: str) -> Optional[dict]:
+    """The tour's first to last stop as one proposal, or None when the planner has no stops for it
+    (not extracted into the Tour Graph yet)."""
+    stops_rows = [dict(r) for r in await conn.fetch(DAYS_SQL, [tour_id])]
+    if not stops_rows:
+        return None
+    first = min(r["day_index"] for r in stops_rows)
+    last = max(r["day_index"] for r in stops_rows)
+    comps: dict[tuple, list[dict]] = {}
+    for r in await conn.fetch(COMPONENTS_SQL, [tour_id]):
+        comps.setdefault((r["tour_id"], r["day_index"]), []).append(dict(r))
+    if not comps:
+        return None
+    title = await conn.fetchval(TOUR_TITLE_SQL, tour_id)
+    p = {"segments": [(tour_id, first, last)]}
+    return {"total_days": last - first + 1, "transfers": 0, "transfer_km": 0.0, "whole_tour": True,
+            "segments": [{"tour_id": tour_id, "tour_name": title, "day_from": first, "day_to": last,
+                          "days": last - first + 1}],
+            "days": day_by_day(p, {tour_id: stops_rows}, comps)}

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 // Top brand bar — Adventure Asia wordmark + tagline. Kept slim so the map
 // dominates the viewport (map-first product).
 export default function Header() {
@@ -9,13 +11,15 @@ export default function Header() {
       style={{ height: "56px", flexShrink: 0 }}
     >
       <div className="flex items-center gap-3">
-        {/* Official Adventure Asia logo */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src="/brand/logo.png"
-          alt="Adventure Asia"
-          className="h-9 w-auto"
-        />
+        {/* Official Adventure Asia logo — AA-812: links back to the search-first home. */}
+        <Link href="/" aria-label="Adventure Asia Trip Planner — home" className="aa-focus">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/brand/logo.png"
+            alt="Adventure Asia"
+            className="h-9 w-auto"
+          />
+        </Link>
         {/* AA-805: AI Phase 0 — say plainly, next to the AA mark, that the planner uses AI. */}
         <span
           title="Suggestions, search and some narration are AI-assisted. An Adventure Asia advisor reviews every trip."

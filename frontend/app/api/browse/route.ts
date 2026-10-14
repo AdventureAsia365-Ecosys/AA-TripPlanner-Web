@@ -52,6 +52,23 @@ export async function GET(req: NextRequest) {
   } else if (resource === "by-country") {
     const country = q.get("country") ?? "";
     upstreamPath = `/browse/by-country?country=${encodeURIComponent(country)}`;
+  } else if (resource === "catalog-tours") {
+    // AA-812: tour cards from the CIS catalog views (planner list view).
+    const r = new URLSearchParams();
+    for (const k of ["country", "min_days", "max_days", "month", "sort", "limit", "offset"]) {
+      const v = q.get(k);
+      if (v) r.set(k, v);
+    }
+    upstreamPath = `/browse/catalog/tours${r.toString() ? `?${r}` : ""}`;
+  } else if (resource === "tour-route") {
+    // AA-812: one tour's whole route ("Customise this trip").
+    // source_id (stable) lets the Lambda resolve the current tour_id after a CIS re-upload.
+    const r = new URLSearchParams();
+    for (const k of ["tour_id", "source_id"]) {
+      const v = q.get(k);
+      if (v) r.set(k, v);
+    }
+    upstreamPath = `/browse/tour-route?${r}`;
   } else {
     return NextResponse.json({ error: "unknown resource" }, { status: 400 });
   }
