@@ -74,6 +74,33 @@ Names only — values come from Secrets Manager / Lambda config (AA-CIS-Infra) o
 `ADVISOR_NOTIFY_EMAIL` still defaults to a test address and the sender is a logging stub — switch
 both before real customers (AA-731).
 
+## Reading the AI guards (AA-805)
+
+There is no public endpoint for these on purpose (the browse/trip APIs only carry the edge key).
+Read them in the database, read-only, through the usual ECS exec pattern of the root workspace.
+
+- **Narration cache hits** — `tripplanner.narration_cache`, one row per cached itinerary:
+  `count(*)` rows, `sum(hits)` reuses, `count(*) FILTER (WHERE hits > 0)` rows reused at least once,
+  `max(last_hit_at)` last reuse. Only narrations that used the model (`source` `llm` / `mixed`) are
+  stored; a trip made only of AA master day text is never cached, so it never shows a hit. A cached
+  answer also carries `"cached": true` in the `/narrate` response. `hits` counts reuses since the row
+  was last written: an entry older than `NARRATION_CACHE_TTL_HOURS` (default 168) is not served, and
+  the next model narration overwrites it with `hits = 0`, so `sum(hits)` is a recent-window figure,
+  not a lifetime total. Expired rows stay in the table until then, so filter on `created_at` for the
+  live entries.
+- **Daily spend vs the cap** — `tripplanner.llm_spend_daily` (UTC `day` x `stage`: `cost_usd`,
+  `calls`, `unpriced_calls`). The cap compares today's sum over `tp_compose` + `tp_search_embed`
+  with `TP_DAILY_SPEND_CAP_USD` (code default 5.0 when the Lambda env does not set it). Over the
+  cap, `/narrate` answers with `"ai_budget_exhausted": true` and `/browse/search` with 503.
+- **Throttling** — API Gateway route settings (AA-CIS-Infra): `POST /trip/{trip_id}/narrate`
+  2 rps / burst 5, `GET /browse/search` 10 / 20. A throttled call gets 429 before the Lambda runs.
+- **Search on inactive tours** — `backend/tests/fixtures/search_labelled_30.json` is the labelled
+  30-query set for live runs: every destination returned must have at least one embedded component
+  of a tour with `published_tours.master_status = 'active'` and `deleted_at IS NULL`. Join exactly as
+  `backend/browse/search.py` `ACTIVE_TOUR_SQL` does (`pt.tour_id::text = c.source_tour_id`, AA tenant
+  set for RLS); a component whose `source_tour_id` matches no `published_tours.tour_id` is dropped from
+  search, so count those separately rather than reading them as inactive-tour hits.
+
 ## Program rules
 
 - Ship through a PR; merging to `main` is Nghiệp's call (he may delegate it per session).
