@@ -538,6 +538,14 @@ export default function TripPanel() {
                       AA + AI
                     </span>
                   )}
+                  {narration && narrationSource === "llm" && (
+                    <span
+                      title="Written by AI from the tour descriptions. Your advisor confirms every detail."
+                      className="rounded-full border border-aa-gold/40 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-aa-gold-dark"
+                    >
+                      AI narration
+                    </span>
+                  )}
                 </div>
                 <button
                   onClick={() => narrate("compose")}
