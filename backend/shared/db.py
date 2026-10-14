@@ -1,9 +1,10 @@
 """Async Postgres connection pool (asyncpg), shared by both Lambdas.
 
 The same RDS instance is shared with AA-CIS-App. This module only ever
-connects; the SQL it runs is confined to tripplanner.* (read/write),
-shared.destinations (read/write), and gold_aa_internal / acp_contract
-(read-only, extraction pipeline only).
+connects; the SQL it writes is confined to tripplanner.* user state and
+shared.llm_call_log. shared.destinations, the frozen tripplanner place
+tables and the CIS catalog / gold / acp_contract sources are read-only
+(the place pipeline moved to CIS, AA-712 / ADR 0007).
 """
 from __future__ import annotations
 

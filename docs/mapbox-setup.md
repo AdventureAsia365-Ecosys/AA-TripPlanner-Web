@@ -1,16 +1,14 @@
 # Mapbox setup (AA-TripPlanner-Web)
 
-This project uses Mapbox for two distinct things, and they need **two
-different tokens** with different security postures:
+This project uses Mapbox for the browser map only. (Until AA-712 slice 6a the backend also
+forward-geocoded place names with a second, server-side token; geocoding now runs in CIS,
+ADR 0007, so the backend no longer needs a Mapbox token.)
 
 | Where | What it does | Token type | Exposed to browser? |
 |---|---|---|---|
 | `frontend/` (Mapbox GL JS) | Renders the map, tiles, clustering | **Public** token, URL-restricted | Yes (unavoidable) |
-| `backend/extraction/geocode.py` | Forward-geocodes place names during the offline pipeline | **Secret** token (or a public token kept server-side) | No — server-side only |
 
-Mapbox's free tier covers both map loads and Geocoding within monthly
-limits, which is enough for this MVP (31 tours → a few hundred geocode
-calls, cached so each place is only geocoded once).
+Mapbox's free tier covers map loads within monthly limits, which is enough for this MVP.
 
 ## 1. Create a Mapbox account
 1. Go to https://account.mapbox.com/auth/signup/ and sign up (email +
@@ -39,20 +37,7 @@ calls, cached so each place is only geocoded once).
    restrictions set. It still goes in a `NEXT_PUBLIC_*` env var (see
    below) because GL JS runs client-side.
 
-## 3. Get the token for the extraction pipeline (secret token)
-The geocoding step runs offline on a trusted machine, never in the
-browser, so it should use a token that is never exposed:
-1. Go to **Tokens** → **Create a token**.
-2. Name it e.g. `tripplanner-geocode`.
-3. Public scopes default is fine for the Geocoding API. (Geocoding does
-   not require a secret scope, but keeping this token server-side and
-   out of the frontend bundle is the point — do not put it in a
-   `NEXT_PUBLIC_*` var.)
-4. Optionally create it as a **secret** token (starts with `sk.`) if you
-   want scoped, revocable server credentials. A secret token is shown
-   only once at creation — copy it immediately.
-
-## 4. Where the tokens go
+## 3. Where the token goes
 
 ### Frontend (Vercel / local)
 `frontend/.env.local` (git-ignored):
@@ -62,29 +47,11 @@ NEXT_PUBLIC_MAPBOX_TOKEN=pk.your_public_token_here
 In production these are set in the Vercel project's Environment
 Variables, not committed.
 
-### Extraction pipeline (local / CI runner that runs the batch job)
-`backend/.env` (git-ignored) or your shell environment:
-```
-MAPBOX_GEOCODING_TOKEN=sk.your_secret_token_here   # or a pk. token kept server-side
-```
-`geocode.py` reads this from the environment. It must never be imported
-into any `NEXT_PUBLIC_*` variable or shipped to the client.
-
-## 5. Free-tier limits to keep an eye on
-- Map loads (GL JS) and Geocoding requests each have a monthly free
-  allowance; beyond that they are billed. For this MVP the volume is
-  tiny and cached, so cost should stay at zero.
-- The geocode cache in `shared.destinations` (unique index on
-  `lower(name)`) guarantees each place name is geocoded at most once —
-  re-running extraction does not re-bill geocoding for known places.
-
-## 6. Quick verification
-Forward-geocode test (replace the token):
-```bash
-curl "https://api.mapbox.com/geocoding/v5/mapbox.places/Sapa.json?access_token=YOUR_TOKEN&limit=1"
-```
-A 200 with a `features[0].center` `[lng, lat]` pair means the token and
-Geocoding access work.
+## 4. Free-tier limits to keep an eye on
+- Map loads (GL JS) have a monthly free allowance; beyond that they are
+  billed. For this MVP the volume is tiny, so cost should stay at zero.
+- Place geocoding is no longer done here: CIS geocodes places (ADR 0007,
+  AA-712) and this app reads the result.
 
 ---
 Sources (Mapbox official docs, content rephrased for compliance):
