@@ -135,6 +135,9 @@ class FakeConn:
         if q.startswith("SELECT event_type, payload FROM tripplanner.trip_events") and "ORDER BY id DESC" in q:
             trip_id = args[0]
             rows = [e for e in self.events if e["trip_id"] == trip_id]
+            if "event_type IN ('reorder', 'add_component', 'remove_component')" in q:
+                rows = [e for e in rows if e["event_type"] in ("reorder", "add_component",
+                                                               "remove_component")]
             if not rows:
                 return None
             last = rows[-1]
@@ -150,6 +153,9 @@ class FakeConn:
                             "email": c.get("email"), "contact_consent": c.get("contact_consent", False),
                             "contact_consent_at": c.get("contact_consent_at")}
             return None
+        if q.startswith("SELECT session_id FROM tripplanner.trip_drafts"):
+            d = self.drafts.get(args[0])
+            return {"session_id": d["session_id"]} if d else None
         if q.startswith("SELECT customer_id FROM tripplanner.sessions"):
             sid = args[0]
             return self.sessions.get(sid)
@@ -855,3 +861,98 @@ async def test_resend_after_edit_is_a_new_outbox_row(monkeypatch):
     assert len(conn.outbox) == 2
     assert conn.outbox[0]["idempotency_key"] != conn.outbox[1]["idempotency_key"]
     assert conn.outbox[1]["payload"]["customer"] is None          # guest hand-off
+
+
+# --- AA-805: leg order (S235 E2E sent one tour as days 3-4, 7, 2, 1) ---------
+
+# One Bhutan-like tour whose geography runs AGAINST its day order: the west-most stop is day 3,
+# so the old west-first nearest-neighbour projection produced days 3, 4, 7, 2, 1.
+S235_TOUR = "22174c35-6cab-408d-b0f1-1d5c6e6c2885"
+S235_COMPONENTS = {
+    "b1": {"id": "b1", "name": "Paro arrival", "source_tour_id": S235_TOUR, "source_day_index": 1,
+           "lat": 27.40, "lng": 89.90},
+    "b2": {"id": "b2", "name": "Thimphu", "source_tour_id": S235_TOUR, "source_day_index": 2,
+           "lat": 27.47, "lng": 89.64},
+    "b3": {"id": "b3", "name": "Haa valley", "source_tour_id": S235_TOUR, "source_day_index": 3,
+           "lat": 27.37, "lng": 89.00},
+    "b4": {"id": "b4", "name": "Chele La", "source_tour_id": S235_TOUR, "source_day_index": 4,
+           "lat": 27.38, "lng": 89.10},
+    "b7": {"id": "b7", "name": "Tiger's Nest", "source_tour_id": S235_TOUR, "source_day_index": 7,
+           "lat": 27.49, "lng": 89.36},
+}
+
+
+@pytest.fixture
+def s235_catalog(monkeypatch):
+    for k, v in S235_COMPONENTS.items():
+        monkeypatch.setitem(CATALOG, k, v)
+
+
+def _legs(itinerary):
+    return [(leg["day_from"], leg["day_to"]) for leg in handoff.leg_chain(itinerary)]
+
+
+def test_old_geography_order_reproduces_the_s235_legs():
+    """Guard the fixture: plain west-first nearest neighbour over single pins gives S235's order."""
+    from backend.assembly.sequencing import _anchor_key, _haversine
+    comps = list(S235_COMPONENTS.values())
+    order = [min(comps, key=_anchor_key)]
+    rest = [c for c in comps if c is not order[0]]
+    while rest:
+        nxt = min(rest, key=lambda c: (_haversine(order[-1]["lat"], order[-1]["lng"], c["lat"], c["lng"]),
+                                       c["id"]))
+        rest.remove(nxt)
+        order.append(nxt)
+    assert [c["source_day_index"] for c in order] == [3, 4, 7, 2, 1]
+
+
+def test_sequence_keeps_a_tour_in_its_own_day_order():
+    shuffled = [S235_COMPONENTS[k] for k in ("b7", "b3", "b1", "b4", "b2")]
+    days = sequencing.sequence_and_group(shuffled)
+    assert [d["source_day_index"] for d in days] == [1, 2, 3, 4, 7]
+    assert _legs(days) == [(1, 4), (7, 7)]
+
+
+def test_sequence_places_free_pins_and_other_tours_as_whole_blocks():
+    comps = [
+        {"id": "x", "lat": 27.45, "lng": 90.50},                                    # free pin, east
+        {"id": "t2b", "source_tour_id": "T2", "source_day_index": 2, "lat": 27.0, "lng": 88.0},
+        {"id": "t2a", "source_tour_id": "T2", "source_day_index": 1, "lat": 27.0, "lng": 88.5},
+        *S235_COMPONENTS.values(),
+    ]
+    ids = [c["id"] for c in sequencing.sequence(comps)]
+    # T2's first stop is the west-most block start; T2 stays day 1 -> 2, then the S235 tour in its
+    # day order, then the free pin. Deterministic across input order.
+    assert ids == ["t2a", "t2b", "b1", "b2", "b3", "b4", "b7", "x"]
+    assert ids == [c["id"] for c in sequencing.sequence(list(reversed(comps)))]
+
+
+@pytest.mark.asyncio
+async def test_apply_route_order_survives_send_to_advisor(monkeypatch, s235_catalog):
+    """The S235 path: apply-route (reorder event in day order), then send-to-advisor. The `sent`
+    event must not drop the route's order, so the outbox carries the tour's legs in day order."""
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
+    conn = FakeConn()
+    ids = ["b1", "b2", "b3", "b4", "b7"]
+    r = await handler.route("POST", "/trip/t235/apply-route", {"session_id": "s1", "component_ids": ids},
+                            conn=conn)
+    assert [d["component_id"] for d in json.loads(r["body"])["itinerary"]] == ids
+    sent = await handler.route("POST", "/trip/t235/send-to-advisor", {"session_id": "s1"}, conn=conn,
+                               sender=notify.LoggingSender())
+    assert [d["component_id"] for d in json.loads(sent["body"])["itinerary"]] == ids
+    legs = conn.outbox[0]["payload"]["itinerary"]["legs"]
+    assert [(leg["day_from"], leg["day_to"]) for leg in legs] == [(1, 4), (7, 7)]
+    assert {leg["source_tour_id"] for leg in legs} == {S235_TOUR}
+
+
+@pytest.mark.asyncio
+async def test_manual_order_survives_added_days_but_not_a_new_pin(s235_catalog):
+    conn = FakeConn()
+    for cid in ("b1", "b2", "b3"):
+        await events.append_event(conn, "t", "s1", "add_component", {"component_id": cid})
+    await events.append_event(conn, "t", "s1", "reorder", {"ordered_component_ids": ["b3", "b1", "b2"]})
+    await events.append_event(conn, "t", "s1", "add_day", {"day_id": "d1", "kind": "free_day"})
+    assert [e["component_id"] for e in await events.current_itinerary(conn, "t")] == ["b3", "b1", "b2"]
+    # a set change invalidates the manual order; the tour falls back to its own day order
+    await events.append_event(conn, "t", "s1", "add_component", {"component_id": "b4"})
+    assert [e["component_id"] for e in await events.current_itinerary(conn, "t")] == ["b1", "b2", "b3", "b4"]

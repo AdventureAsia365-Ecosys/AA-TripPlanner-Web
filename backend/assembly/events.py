@@ -6,8 +6,8 @@ append. Rule enforced here: you cannot update the projection without
 appending the corresponding event — both happen inside append_event().
 
 The projection's itinerary is recomputed from the current component set
-using deterministic sequencing; manual reorder events pin an explicit
-order that overrides the algorithm until the component set changes again.
+using deterministic sequencing (tour blocks in day order, AA-805); manual reorder events pin an
+explicit order that overrides the algorithm until the component set changes again.
 """
 from __future__ import annotations
 
@@ -116,12 +116,17 @@ async def current_custom_days(conn: _Conn, trip_id: str) -> list[dict]:
 
 
 async def _latest_explicit_order(conn: _Conn, trip_id: str) -> Optional[list[str]]:
-    """Return the ordered_component_ids from the most recent reorder event
-    IF no add/remove happened after it (a later set-change invalidates a
-    manual order)."""
+    """Return the ordered_component_ids of the most recent reorder event IF no add/remove happened
+    after it (a later set-change invalidates a manual order). `sent`, `add_day` and `remove_day`
+    leave the set, and therefore the order, as it was.
+
+    AA-805: an apply-route pins a route in its day order through a reorder event; the `sent` event
+    that follows must not drop that order, or the hand-off is re-sequenced by geography (S235:
+    legs 3-4, 7, 2, 1 of one tour)."""
     row = await conn.fetchrow(
         "SELECT event_type, payload FROM tripplanner.trip_events "
-        "WHERE trip_id = $1 ORDER BY id DESC LIMIT 1",
+        "WHERE trip_id = $1 AND event_type IN ('reorder', 'add_component', 'remove_component') "
+        "ORDER BY id DESC LIMIT 1",
         trip_id,
     )
     if row is None or row["event_type"] != "reorder":
