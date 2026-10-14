@@ -10,30 +10,40 @@ relevant places surface first.
 
 AA-805: the query is embedded with input_type "search_query" (components were embedded as
 "search_document" — Cohere's asymmetric retrieval pair); only components of ACTIVE tours
-(published_tours.master_status = 'active', not soft-deleted — the v_active_tour_atoms rule) are ranked, read tenant-scoped like fetch_catalog;
-the daily TripPlanner spend cap stops the embed call (SearchUnavailable -> 503); failed embed
-attempts are logged.
+(published_tours.master_status = 'active', not soft-deleted — the v_active_tour_atoms rule) are
+ranked, read tenant-scoped like fetch_catalog; the daily TripPlanner spend cap stops the embed call
+(SearchUnavailable -> 503); failed embed attempts are logged.
+
+AA-712: ranking goes through backend.shared.vector_topk — the nearest components come from the HNSW
+index (ORDER BY embedding <=> q LIMIT k) and are grouped per destination afterwards, instead of
+MIN(embedding <=> q) over every component (a full scan of every vector per search).
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional, Protocol
 
 from backend.browse.filters import BrowseFilters
-from backend.extraction.tour_days import fetch_catalog
-from backend.shared import llm_gateway
+from backend.extraction.tour_days import set_catalog_tenant
+from backend.shared import llm_gateway, vector_topk
 
 STAGE = "tp_search_embed"
+log = logging.getLogger(__name__)
 
 
 class _Pool(Protocol):
     async def fetch(self, query: str, *args: Any) -> Any: ...
     async def execute(self, query: str, *args: Any) -> Any: ...
+    async def fetchval(self, query: str, *args: Any) -> Any: ...
+
+    def transaction(self) -> Any: ...
 
 
 # Injectable embedder so tests don't call Bedrock.
 Embedder = Callable[[str], list[float]]
 
 SEARCH_LIMIT = 60
+DEST_COLS = ("id", "name", "lat", "lng")
 QUERY_INPUT_TYPE = "search_query"
 
 
@@ -46,32 +56,27 @@ def _vector_literal(vec: list[float]) -> str:
     return "[" + ",".join(repr(float(x)) for x in vec) + "]"
 
 
-def build_search_query(
-    filters: BrowseFilters, limit: int = SEARCH_LIMIT
-) -> tuple[str, int]:
-    """Build the search SQL. The query embedding is $1; filters continue
-    from $2; the LIMIT is the returned int (bound separately by caller).
-    Returns (sql, next_param_index_for_limit)."""
-    where_frag, _ = filters.where_sql(start_index=2)
-    # We need the actual filter params at call time; here we only need the
-    # SQL text. The distance operator <=> is cosine distance.
-    sql = f"""
-        SELECT d.id, d.name, d.lat, d.lng,
-               COUNT(c.id) AS component_count,
-               MIN(c.embedding <=> $1::vector) AS best_distance
-        FROM shared.destinations d
-        JOIN tripplanner.itinerary_components c ON c.destination_id = d.id
-        WHERE c.embedding IS NOT NULL
-          AND EXISTS (SELECT 1 FROM gold_aa_internal.published_tours pt
-                      WHERE pt.tour_id::text = c.source_tour_id
-                        AND pt.master_status = 'active'
-                        AND pt.deleted_at IS NULL)
-          {where_frag}
-        GROUP BY d.id, d.name, d.lat, d.lng
-        ORDER BY best_distance ASC
-        LIMIT {int(limit)}
-    """
-    return sql, 0
+# Only components of ACTIVE tours (AA-805); reads published_tours, so it is applied after the
+# index-ordered scan (vector_topk keep_where).
+ACTIVE_TOUR_SQL = """
+    AND EXISTS (SELECT 1 FROM gold_aa_internal.published_tours pt
+                WHERE pt.tour_id::text = c.source_tour_id
+                  AND pt.master_status = 'active'
+                  AND pt.deleted_at IS NULL)
+"""
+
+
+def search_where(filters: BrowseFilters) -> tuple[str, str, list[Any]]:
+    """(scan_where, keep_where, filter_params) for vector_topk; the query embedding is $1, filter
+    params follow from $2."""
+    frag, filter_params = filters.component_where_sql(start_index=2)
+    return f"c.embedding IS NOT NULL {frag}", ACTIVE_TOUR_SQL, filter_params
+
+
+def exact_first_for(filters: BrowseFilters) -> bool:
+    """A country filter bounds the candidates to one country's components: the exact aggregate is
+    cheap there and the top-k passes would mostly come up short (AA-712 review finding 1)."""
+    return filters.country is not None
 
 
 async def search(
@@ -105,18 +110,26 @@ async def search(
         await llm_gateway.record(pool, call, signal)
     vec_literal = _vector_literal(vec)
 
-    sql, _ = build_search_query(filters, limit=limit)
-    _, filter_params = filters.where_sql(start_index=2)
-    params: list[Any] = [vec_literal]
-    params.extend(filter_params)
+    scan_where, keep_where, filter_params = search_where(filters)
+    params: list[Any] = [vec_literal, *filter_params]
 
-    # published_tours enforces tenant RLS: run the query with the AA tenant set (SET LOCAL in a
-    # transaction on one connection), or the active-tour filter would match nothing.
+    # published_tours enforces tenant RLS: run with the AA tenant set (SET LOCAL in a transaction on
+    # one connection), or the active-tour filter would match nothing. The same transaction scopes
+    # hnsw.ef_search (AA-712).
+    async def _run(conn) -> list:
+        async with conn.transaction():
+            await set_catalog_tenant(conn)
+            rows, mode = await vector_topk.ranked_destinations(
+                conn, scan_where=scan_where, keep_where=keep_where, params=params,
+                dest_cols=DEST_COLS, limit=limit, exact_first=exact_first_for(filters))
+        log.info("browse search: %d destinations via %s", len(rows), mode)
+        return rows
+
     if hasattr(pool, "acquire"):
         async with pool.acquire() as conn:
-            rows = await fetch_catalog(conn, sql, *params)
+            rows = await _run(conn)
     else:
-        rows = await fetch_catalog(pool, sql, *params)
+        rows = await _run(pool)
     return {
         "destinations": [
             {
