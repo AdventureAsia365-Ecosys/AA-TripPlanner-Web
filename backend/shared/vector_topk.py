@@ -21,6 +21,12 @@ list, so the slow path is only taken where it is not slow.
 ``component_count`` keeps its old meaning (every matching component of the destination, not only
 those in the top-k): it is counted per returned destination through the destination_id index.
 
+``exact_first=True`` skips the top-k passes and runs the exact aggregate directly. Callers set it when
+the filters already bound the candidate set to one country's components (search with a country
+filter, the suggestion fallback inside the trip's countries): there the exact aggregate is cheap,
+and the top-k passes would usually come up short anyway and only add round trips (on pgvector 0.8
+each short pass can walk up to ``hnsw.max_scan_tuples`` index tuples before giving up).
+
 Callers pass two WHERE fragments over the alias ``c`` (query vector = ``$1``):
   * ``scan_where`` — conditions on ``itinerary_components`` columns only (they stay inside the
     index-ordered scan; use ``c.destination_id = ANY(ARRAY(SELECT ...))`` for destination
@@ -129,9 +135,14 @@ async def ranked_destinations(
     dest_cols: Sequence[str],
     limit: int,
     passes: Optional[Sequence[int]] = None,
+    exact_first: bool = False,
 ) -> tuple[list, str]:
     """Return (rows, mode) — rows best-first with ``dest_cols`` + component_count + best_distance;
-    mode is ``topk:<k>`` or ``exact``. Run inside a transaction."""
+    mode is ``topk:<k>`` or ``exact``. Run inside a transaction. ``exact_first`` skips the top-k
+    passes (a candidate set already bounded to a country — see the module docstring)."""
+    if exact_first:
+        rows = list(await conn.fetch(exact_sql(scan_where, keep_where, dest_cols, limit), *params))
+        return rows, "exact"
     sql = topk_sql(scan_where, keep_where, dest_cols, len(params) + 1, limit)
     if await iterative_scan_supported(conn):
         # relaxed_order is enough: the k rows are re-ordered by MIN(distance) per destination

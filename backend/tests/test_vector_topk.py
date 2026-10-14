@@ -123,3 +123,54 @@ async def test_version_is_checked_once_per_process():
     await vt.ranked_destinations(conn, scan_where=SCAN, keep_where=KEEP, params=["[1]"],
                                  dest_cols=("id",), limit=1)
     assert vt._iterative is False
+
+
+async def test_exact_first_runs_one_query_and_no_top_k_pass():
+    conn = _Conn([3])
+    rows, mode = await vt.ranked_destinations(conn, scan_where=SCAN, keep_where=KEEP, params=["[1]", "trekking"],
+                                              dest_cols=("id",), limit=60, exact_first=True)
+    assert (len(rows), mode) == (3, "exact")
+    assert conn.calls == [("exact", None)]  # no ef_search / iterative_scan settings either
+
+
+def test_country_filter_goes_exact_first_other_filters_do_not():
+    assert search_mod.exact_first_for(BrowseFilters(country="Laos")) is True
+    assert search_mod.exact_first_for(BrowseFilters(country="Laos", activity="trekking")) is True
+    assert search_mod.exact_first_for(BrowseFilters(activity="trekking", season=4)) is False
+    assert search_mod.exact_first_for(BrowseFilters()) is False
+
+
+class _Pool(_Conn):
+    async def fetch(self, sql, *args):
+        rows = await super().fetch(sql, *args)
+        return [{"id": r["id"], "name": "P", "lat": 1.0, "lng": 2.0, "component_count": 1} for r in rows]
+
+    def transaction(self):
+        return _Txn()
+
+
+class _Txn:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+async def test_country_filtered_search_runs_exactly_one_ranking_query(monkeypatch):
+    async def no_tenant(_conn):
+        return None
+    monkeypatch.setattr(search_mod, "set_catalog_tenant", no_tenant)
+    pool = _Pool([2])
+    out = await search_mod.search("x", BrowseFilters(country="Bhutan"), pool=pool, embedder=lambda _q: [0.1, 0.2])
+    assert len(out["destinations"]) == 2
+    assert [c[0] for c in pool.calls] == ["exact"]  # no top-k pass, no ef_search setting
+
+
+async def test_unfiltered_search_starts_with_the_index_pass(monkeypatch):
+    async def no_tenant(_conn):
+        return None
+    monkeypatch.setattr(search_mod, "set_catalog_tenant", no_tenant)
+    pool = _Pool([60])
+    await search_mod.search("x", BrowseFilters(), pool=pool, embedder=lambda _q: [0.1, 0.2])
+    assert [c[0] for c in pool.calls] == ["set", "topk"]

@@ -22,11 +22,14 @@ state, so it must never be cached across visitors.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional, Protocol
 
 from backend.assembly import events as events_mod
 from backend.assembly import sequencing
 from backend.shared import vector_topk
+
+log = logging.getLogger(__name__)
 
 
 class _Conn(Protocol):
@@ -256,11 +259,15 @@ async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT,
         params.append(intensity)
         extra.append(f"AND c.intensity_level = ${len(params)}::text")
     scan_where = f"c.embedding IS NOT NULL AND c.destination_id <> ALL($2::uuid[]) {' '.join(extra)}"
-    # Transaction scopes hnsw.ef_search (SET LOCAL).
+    # Transaction scopes hnsw.ef_search (SET LOCAL). Inside the trip's countries the candidate set
+    # is already one country's components: the exact aggregate is cheap there, so skip the top-k
+    # passes (they would mostly come up short for small countries, e.g. Bhutan with a 12-24 pool).
     async with conn.transaction():
-        rows, _mode = await vector_topk.ranked_destinations(
+        rows, mode = await vector_topk.ranked_destinations(
             conn, scan_where=scan_where, keep_where="", params=params,
-            dest_cols=("id", "name", "lat", "lng", "country"), limit=candidate_limit)
+            dest_cols=("id", "name", "lat", "lng", "country"), limit=candidate_limit,
+            exact_first=bool(countries))
+    log.info("suggest fallback: %d candidates via %s", len(rows), mode)
     candidates = [dict(r) for r in rows]
     if not candidates:
         return {"suggestions": [], "mode": "taste"}

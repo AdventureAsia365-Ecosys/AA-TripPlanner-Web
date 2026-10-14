@@ -73,9 +73,24 @@ async def test_falls_back_to_taste_in_the_trip_countries_when_no_tour_passes(mon
     conn = _Conn([], [_cand("d-bumthang", "Bumthang", 27.55, 90.75)])
     out = await _suggest(monkeypatch, conn)
     assert out["mode"] == "taste"
-    # one candidate < the 12-row pool: both top-k passes come up short, then the exact aggregate
+    # AA-712 review: inside the trip's countries the exact aggregate runs directly — one query,
+    # no top-k passes that a small country (12-row pool here) would never fill
+    assert [c[0] for c in conn.calls] == ["route", "exact"]
+    assert conn.calls[1][1][2] == ["Bhutan"]
+    assert out["suggestions"][0]["tour_count"] == 0
+
+
+async def test_taste_fallback_without_trip_countries_uses_the_index_passes(monkeypatch):
+    conn = _Conn([], [_cand("d-bumthang", "Bumthang", 27.55, 90.75)])
+
+    async def no_country_fetch(sql, *args, _orig=conn.fetch):
+        if "SELECT c.embedding, d.country" in sql:
+            return [{"embedding": "[1.0,0.0]", "country": None}]
+        return await _orig(sql, *args)
+    conn.fetch = no_country_fetch
+    out = await _suggest(monkeypatch, conn)
+    assert out["mode"] == "taste"
+    # global ranking: both top-k passes come up short (1 < 12), then the exact aggregate
     assert [c[0] for c in conn.calls] == ["route", "execute", "topk", "execute", "topk", "exact"]
     assert [c[1] for c in conn.calls if c[0] == "execute"] == [("400",), ("1000",)]  # ef_search
-    assert conn.calls[2][1][2] == ["Bhutan"]
     assert conn.calls[2][1][-1] == 200 and conn.calls[4][1][-1] == 1000            # k
-    assert out["suggestions"][0]["tour_count"] == 0

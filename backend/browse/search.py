@@ -73,6 +73,12 @@ def search_where(filters: BrowseFilters) -> tuple[str, str, list[Any]]:
     return f"c.embedding IS NOT NULL {frag}", ACTIVE_TOUR_SQL, filter_params
 
 
+def exact_first_for(filters: BrowseFilters) -> bool:
+    """A country filter bounds the candidates to one country's components: the exact aggregate is
+    cheap there and the top-k passes would mostly come up short (AA-712 review finding 1)."""
+    return filters.country is not None
+
+
 async def search(
     q: str,
     filters: BrowseFilters,
@@ -115,7 +121,7 @@ async def search(
             await set_catalog_tenant(conn)
             rows, mode = await vector_topk.ranked_destinations(
                 conn, scan_where=scan_where, keep_where=keep_where, params=params,
-                dest_cols=DEST_COLS, limit=limit)
+                dest_cols=DEST_COLS, limit=limit, exact_first=exact_first_for(filters))
         log.info("browse search: %d destinations via %s", len(rows), mode)
         return rows
 
