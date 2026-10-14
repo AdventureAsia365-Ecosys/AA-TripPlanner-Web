@@ -102,7 +102,7 @@ unit-tested directly; a thin `handler()` adapts the API Gateway event.
   heuristic, not routing).
 - `agent.py` — `compose` / `renarrate` narration via Bedrock. **Buffered
   invoke** (not streaming) — the route returns the full narration as JSON.
-- `registration.py` — customer dedupe by phone/email + session claim.
+- `registration.py` — customer dedupe by phone/email (email lower-cased) + session claim for a first-time contact only; a match with an existing customer is never linked (unverified) — the hand-off carries the submitted contact instead.
 - `notify.py` — advisor notification (v1 = logging stub; real email
   deferred).
 - `handler.py` — routes add/remove/reorder/send-to-advisor/**narrate**;

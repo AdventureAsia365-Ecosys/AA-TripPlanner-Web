@@ -7,12 +7,20 @@ tripplanner.v_inquiry_outbox and keeps its own inbox keyed by idempotency_key; i
 Contract: AA-Ecosys docs/contracts/inquiry.submitted.v1.json. Narration is not part of v1: it is
 not persisted server-side (the frontend asks for it on demand), and a client-sent copy would be
 untrusted text.
+
+Identity (S235 security fix): no customer field is verified — TripPlanner has no OTP; AA-Booking will
+own identity and verification. Every customer object therefore carries `verified: false`. When the
+submitted phone/email matched someone else's stored customer, the session is not linked to it
+(registration.py) and the payload carries the submitted contact with `customer_id: null` — never the
+stored identity of another person. Contract delta (verified, nullable customer_id) goes into v1.1.
 """
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol
+
+from backend.assembly.registration import normalise_contact
 
 EVENT = "inquiry.submitted"
 SCHEMA_VERSION = 1
@@ -111,6 +119,25 @@ async def load_customer(conn: _Conn, session_id: str) -> Optional[dict]:
         "email": row["email"],
         "consent": bool(row["contact_consent"]),
         "consent_at": at.isoformat() if hasattr(at, "isoformat") else at,
+        "verified": False,
+    }
+
+
+def submitted_contact(
+    *, name: str, phone: Optional[str], email: Optional[str], consent: bool,
+    submitted_at: Optional[datetime] = None,
+) -> dict:
+    """The contact exactly as submitted in this request, not linked to any stored customer."""
+    phone, email = normalise_contact(phone, email)
+    at = (submitted_at or datetime.now(timezone.utc)).isoformat() if consent else None
+    return {
+        "customer_id": None,
+        "name": (name or "").strip(),
+        "phone": phone,
+        "email": email,
+        "consent": bool(consent),
+        "consent_at": at,
+        "verified": False,
     }
 
 
@@ -122,11 +149,17 @@ async def write_inquiry(
     session_id: str,
     itinerary: list[dict],
     custom_days: list[dict],
+    submitted: Optional[dict] = None,
 ) -> str:
     """Append the inquiry.submitted row. Caller holds the transaction. Returns the idempotency key.
 
+    `submitted` (submitted_contact) is used when the session has no customer of its own — i.e. the
+    contact in this request matched an existing customer and was deliberately not linked.
+
     ON CONFLICT DO NOTHING: the same hand-off can never produce two rows."""
     customer = await load_customer(conn, session_id)
+    if customer is None and submitted is not None:
+        customer = submitted
     payload = build_payload(trip_id=trip_id, handoff_id=handoff_id, customer=customer,
                             itinerary=itinerary, custom_days=custom_days)
     key = payload["idempotency_key"]

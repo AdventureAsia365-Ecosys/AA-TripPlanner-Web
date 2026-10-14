@@ -1,9 +1,15 @@
-"""Customer dedupe by phone/email + session claim on registration.
+"""Registration on send-to-advisor: customer dedupe by phone/email + session claim.
 
-On registration we MUST check tripplanner.customers for an existing
-phone or email BEFORE inserting, reusing the existing customer_id if
-found. Then we attach that customer_id to the visitor's EXISTING session
-(and clear its guest expiry) so the trip built as a guest is not lost.
+S235 security fix (Phase 0, until AA-Booking owns customer identity + OTP): typing a phone or email
+proves nothing. So a submission that matches an EXISTING tripplanner.customers row is never attached
+to that row — the session stays a guest, the stored customer is left untouched (no consent update),
+and the hand-off carries only what was submitted in this request, flagged unverified
+(handoff.submitted_contact). A new customer row cannot be created for it either: phone and email
+are UNIQUE. Only a first-time contact (no match at all) creates a customer and claims the session
+(clearing its guest expiry) so the trip built as a guest is kept.
+
+Email is matched and stored as lower(trim()); matching uses lower(email) so rows written before
+this fix with mixed case still count as a match.
 """
 from __future__ import annotations
 
@@ -16,11 +22,18 @@ class _Conn(Protocol):
     def transaction(self) -> Any: ...
 
 
+def normalise_contact(phone: Optional[str], email: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Phone trimmed; email trimmed and lower-cased. Empty → None."""
+    phone = (phone or "").strip() or None
+    email = (email or "").strip().lower() or None
+    return phone, email
+
+
 async def _find_existing(conn: _Conn, phone: Optional[str], email: Optional[str]):
     return await conn.fetchrow(
         "SELECT id FROM tripplanner.customers "
         "WHERE (phone IS NOT NULL AND phone = $1) "
-        "   OR (email IS NOT NULL AND email = $2) "
+        "   OR (email IS NOT NULL AND lower(email) = $2) "
         "LIMIT 1",
         phone,
         email,
@@ -34,29 +47,31 @@ async def register_and_claim(
     phone: str,
     email: str,
     consent: bool = False,
-) -> str:
-    """Return the customer_id (existing or newly created) and attach it to
-    the session. Idempotent w.r.t. an already-registered phone/email.
+) -> Optional[str]:
+    """Create a customer for a first-time contact and attach it to the session; return its id.
 
-    AA-676: an explicit contact consent is recorded once (first time given), with its time."""
-    phone = (phone or "").strip() or None
-    email = (email or "").strip() or None
+    Returns None when the phone or email already belongs to a customer: the session is NOT
+    attached to that customer (unverified match) and nothing about it is changed. The caller
+    hands off the submitted contact instead (handoff.submitted_contact).
+
+    AA-676: an explicit contact consent is recorded on the new customer, with its time."""
+    name = (name or "").strip()
+    phone, email = normalise_contact(phone, email)
     if not name or not (phone or email):
         raise ValueError("registration requires name and at least phone or email")
 
     async with conn.transaction():
-        existing = await _find_existing(conn, phone, email)
-        if existing is not None:
-            customer_id = str(existing["id"])
-        else:
-            row = await conn.fetchrow(
-                "INSERT INTO tripplanner.customers (name, phone, email) "
-                "VALUES ($1, $2, $3) RETURNING id",
-                name,
-                phone,
-                email,
-            )
-            customer_id = str(row["id"])
+        if await _find_existing(conn, phone, email) is not None:
+            return None
+
+        row = await conn.fetchrow(
+            "INSERT INTO tripplanner.customers (name, phone, email) "
+            "VALUES ($1, $2, $3) RETURNING id",
+            name,
+            phone,
+            email,
+        )
+        customer_id = str(row["id"])
 
         if consent:
             await conn.execute(

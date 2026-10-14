@@ -156,7 +156,9 @@ class FakeConn:
         if q.startswith("SELECT id FROM tripplanner.customers"):
             phone, email = args
             for c in self.customers:
-                if (phone and c.get("phone") == phone) or (email and c.get("email") == email):
+                # mirrors SQL: phone = $1 OR lower(email) = $2 (email arrives normalised)
+                if (phone and c.get("phone") == phone) or (
+                        email and c.get("email") and c["email"].lower() == email):
                     return {"id": c["id"]}
             return None
         if q.startswith("INSERT INTO tripplanner.customers"):
@@ -227,12 +229,42 @@ async def test_registration_creates_and_claims():
 
 
 @pytest.mark.asyncio
-async def test_registration_dedupes_existing_email():
+async def test_registration_never_claims_an_existing_customer_on_unverified_match():
+    """S235: typing someone else's email must not attach this session to their customer."""
     conn = FakeConn()
     conn.sessions["s1"] = {"id": "s1"}
-    conn.customers.append({"id": "existing", "name": "Jo", "phone": None, "email": "jo@x.com"})
-    cid = await registration.register_and_claim(conn, "s1", "Jo", "", "jo@x.com")
-    assert cid == "existing"  # reused, not a new insert
+    conn.customers.append({"id": "existing", "name": "Victim", "phone": None, "email": "jo@x.com"})
+    cid = await registration.register_and_claim(conn, "s1", "Mallory", "", "jo@x.com", consent=True)
+    assert cid is None
+    assert conn.sessions["s1"].get("customer_id") is None          # session stays a guest
+    assert len(conn.customers) == 1                                # no insert (UNIQUE email)
+    assert conn.customers[0]["name"] == "Victim"
+    assert not conn.customers[0].get("contact_consent")            # stored customer untouched
+
+
+@pytest.mark.asyncio
+async def test_registration_email_match_is_case_insensitive_and_stored_lowercase():
+    conn = FakeConn()
+    conn.sessions["s1"] = {"id": "s1"}
+    cid = await registration.register_and_claim(conn, "s1", "Jo", "", "  Jo@X.com ")
+    assert cid == "cust-1" and conn.customers[0]["email"] == "jo@x.com"
+    conn.sessions["s2"] = {"id": "s2"}
+    # same address, different case → a match, so not claimed and no second row
+    assert await registration.register_and_claim(conn, "s2", "Jo", "", "JO@x.COM") is None
+    assert len(conn.customers) == 1
+    # a legacy mixed-case row (written before normalisation) still matches
+    conn.customers.append({"id": "legacy", "name": "Al", "phone": None, "email": "Al@Y.com"})
+    conn.sessions["s3"] = {"id": "s3"}
+    assert await registration.register_and_claim(conn, "s3", "Al", "", "al@y.com") is None
+
+
+@pytest.mark.asyncio
+async def test_registration_existing_phone_is_not_claimed():
+    conn = FakeConn()
+    conn.sessions["s1"] = {"id": "s1"}
+    conn.customers.append({"id": "existing", "name": "Victim", "phone": "123", "email": None})
+    assert await registration.register_and_claim(conn, "s1", "Mallory", " 123 ", "m@x.com") is None
+    assert conn.sessions["s1"].get("customer_id") is None
 
 
 @pytest.mark.asyncio
@@ -770,6 +802,44 @@ async def test_send_without_consent_records_false(monkeypatch):
                         {"session_id": "s1", "customer": {"name": "Jo", "email": "jo@x.com"}},
                         conn=conn, sender=notify.LoggingSender())
     assert conn.outbox[0]["payload"]["customer"]["consent"] is False
+
+
+@pytest.mark.asyncio
+async def test_send_with_someone_elses_email_hands_off_only_the_submitted_contact(monkeypatch):
+    """S235: the payload carries exactly what this request submitted, flagged unverified —
+    never the stored name/phone/consent of the existing customer with that email."""
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
+    conn = FakeConn()
+    conn.customers.append({"id": "victim", "name": "Victim", "phone": "999", "email": "jo@x.com",
+                           "contact_consent": True, "contact_consent_at": "2026-01-01T00:00:00+00:00"})
+    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    resp = await handler.route(
+        "POST", "/trip/t1/send-to-advisor",
+        {"session_id": "s1", "customer": {"name": "Mallory", "email": "JO@x.com", "consent": False}},
+        conn=conn, sender=notify.LoggingSender(),
+    )
+    assert resp["statusCode"] == 200
+    assert conn.sessions["s1"]["customer_id"] is None               # not linked to the victim
+    c = conn.outbox[0]["payload"]["customer"]
+    assert c == {"customer_id": None, "name": "Mallory", "phone": None, "email": "jo@x.com",
+                 "consent": False, "consent_at": None, "verified": False}
+    assert conn.customers[0]["name"] == "Victim" and len(conn.customers) == 1
+
+
+@pytest.mark.asyncio
+async def test_first_time_registration_payload_is_the_new_customer_unverified(monkeypatch):
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
+    conn = FakeConn()
+    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
+    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    await handler.route("POST", "/trip/t1/send-to-advisor",
+                        {"session_id": "s1", "customer": {"name": "Jo", "email": "Jo@X.com"}},
+                        conn=conn, sender=notify.LoggingSender())
+    assert conn.sessions["s1"]["customer_id"] == "cust-1"
+    c = conn.outbox[0]["payload"]["customer"]
+    assert c["customer_id"] == "cust-1" and c["name"] == "Jo" and c["email"] == "jo@x.com"
+    assert c["verified"] is False
 
 
 @pytest.mark.asyncio

@@ -135,6 +135,7 @@ async def route(
                                    "already_sent": True, "itinerary": itinerary})
 
             registered = await _is_registered(conn, session_id)
+            submitted = None
             if config.REQUIRE_REGISTRATION_BEFORE_HANDOFF and not registered:
                 if not (customer.get("name") and (customer.get("phone") or customer.get("email"))):
                     return _resp(
@@ -142,11 +143,18 @@ async def route(
                         {"error": "registration_required",
                          "detail": "name and phone or email required before sending"},
                     )
-                await reg_mod.register_and_claim(
+                claimed = await reg_mod.register_and_claim(
                     conn, session_id, customer.get("name", ""),
                     customer.get("phone", ""), customer.get("email", ""),
                     consent=customer.get("consent") is True,
                 )
+                if claimed is None:
+                    # S235: the contact matched an existing customer. Unverified, so the session is
+                    # not linked to it; hand off exactly what this request submitted instead.
+                    submitted = handoff_mod.submitted_contact(
+                        name=customer.get("name", ""), phone=customer.get("phone"),
+                        email=customer.get("email"), consent=customer.get("consent") is True,
+                    )
 
             itinerary = await events_mod.append_event(
                 conn, trip_id, session_id, "sent", {"session_id": session_id},
@@ -156,6 +164,7 @@ async def route(
             await handoff_mod.write_inquiry(
                 conn, trip_id=trip_id, handoff_id=handoff["id"], session_id=session_id,
                 itinerary=itinerary, custom_days=await events_mod.current_custom_days(conn, trip_id),
+                submitted=submitted,
             )
             event_log = await _event_log(conn, trip_id)
             await notify_mod.notify_advisor(trip_id, event_log, sender=sender)
