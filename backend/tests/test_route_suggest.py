@@ -19,8 +19,26 @@ class _Conn:
         if "tripplanner.tour_stop" in sql:
             self.calls.append(("route", args))
             return self.route_rows
-        self.calls.append(("taste", args))
+        # AA-712: index-served top-k passes, then the exact aggregate when they come up short
+        self.calls.append(("topk" if "WITH scan AS" in sql else "exact", args))
         return self.taste_rows
+
+    async def execute(self, sql, *args):
+        self.calls.append(("execute", args))
+
+    async def fetchval(self, sql, *args):
+        return "0.7.4"  # pgvector before iterative scans
+
+    def transaction(self):
+        return _Txn()
+
+
+class _Txn:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
 
 
 def _cand(i, name, lat, lng, **kw):
@@ -28,6 +46,8 @@ def _cand(i, name, lat, lng, **kw):
 
 
 async def _suggest(monkeypatch, conn):
+    monkeypatch.setattr(sg.vector_topk, "_iterative", None)
+
     async def comps(_conn, _trip):
         return PINNED
     monkeypatch.setattr(sg.events_mod, "_current_components", comps)
@@ -53,6 +73,9 @@ async def test_falls_back_to_taste_in_the_trip_countries_when_no_tour_passes(mon
     conn = _Conn([], [_cand("d-bumthang", "Bumthang", 27.55, 90.75)])
     out = await _suggest(monkeypatch, conn)
     assert out["mode"] == "taste"
-    assert [c[0] for c in conn.calls] == ["route", "taste"]
-    assert conn.calls[1][1][2] == ["Bhutan"]
+    # one candidate < the 12-row pool: both top-k passes come up short, then the exact aggregate
+    assert [c[0] for c in conn.calls] == ["route", "execute", "topk", "execute", "topk", "exact"]
+    assert [c[1] for c in conn.calls if c[0] == "execute"] == [("400",), ("1000",)]  # ef_search
+    assert conn.calls[2][1][2] == ["Bhutan"]
+    assert conn.calls[2][1][-1] == 200 and conn.calls[4][1][-1] == 1000            # k
     assert out["suggestions"][0]["tour_count"] == 0

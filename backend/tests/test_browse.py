@@ -33,6 +33,10 @@ class FakePool:
         self.calls.append((query, args))
         return "OK"
 
+    async def fetchval(self, query, *args):
+        self.calls.append((query, args))
+        return None
+
     def transaction(self):
         return _NoTxn()
 

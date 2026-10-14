@@ -26,11 +26,13 @@ from typing import Any, Optional, Protocol
 
 from backend.assembly import events as events_mod
 from backend.assembly import sequencing
+from backend.shared import vector_topk
 
 
 class _Conn(Protocol):
     async def fetch(self, query: str, *args: Any) -> Any: ...
     async def fetchrow(self, query: str, *args: Any) -> Any: ...
+    async def fetchval(self, query: str, *args: Any) -> Any: ...
 
     def transaction(self) -> Any: ...
     async def execute(self, query: str, *args: Any) -> Any: ...
@@ -239,32 +241,27 @@ async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT,
     # If the trip touches no known country, fall back to global ranking. Pull
     # a WIDER pool than we return so the geography re-rank below has room to
     # promote a nearby-but-slightly-less-similar place.
+    # AA-712: every clause reads only itinerary_components (alias c), so the top-k scan stays
+    # index-ordered (HNSW) — the country as an InitPlan array of destination ids, not a join.
     params: list[Any] = [taste, dest_exclude]
     extra = []
     if countries:
         params.append(countries)
-        extra.append(f"AND d.country = ANY(${len(params)}::text[])")
+        extra.append(f"AND c.destination_id = ANY(ARRAY(SELECT dc.id FROM shared.destinations dc "
+                     f"WHERE dc.country = ANY(${len(params)}::text[])))")
     if activity:
         params.append(activity)
         extra.append(f"AND c.activity = ${len(params)}::text")
     if intensity:
         params.append(intensity)
         extra.append(f"AND c.intensity_level = ${len(params)}::text")
-    country_filter = " ".join(extra)
-    sql = f"""
-        SELECT d.id, d.name, d.lat, d.lng, d.country,
-               COUNT(c.id) AS component_count,
-               MIN(c.embedding <=> $1::vector) AS best_distance
-        FROM shared.destinations d
-        JOIN tripplanner.itinerary_components c ON c.destination_id = d.id
-        WHERE c.embedding IS NOT NULL
-          AND d.id <> ALL($2::uuid[])
-          {country_filter}
-        GROUP BY d.id, d.name, d.lat, d.lng, d.country
-        ORDER BY best_distance ASC
-        LIMIT {candidate_limit}
-    """
-    candidates = [dict(r) for r in await conn.fetch(sql, *params)]
+    scan_where = f"c.embedding IS NOT NULL AND c.destination_id <> ALL($2::uuid[]) {' '.join(extra)}"
+    # Transaction scopes hnsw.ef_search (SET LOCAL).
+    async with conn.transaction():
+        rows, _mode = await vector_topk.ranked_destinations(
+            conn, scan_where=scan_where, keep_where="", params=params,
+            dest_cols=("id", "name", "lat", "lng", "country"), limit=candidate_limit)
+    candidates = [dict(r) for r in rows]
     if not candidates:
         return {"suggestions": [], "mode": "taste"}
 
