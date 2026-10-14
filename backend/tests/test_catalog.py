@@ -274,10 +274,11 @@ async def test_tour_route_graph_under_older_tour_id():
     assert all(d["tour_id"] == t["tour_id"] for d in p["days"])
 
 
-async def test_tour_route_from_catalog_places_when_not_in_graph():
+async def test_tour_route_from_catalog_places_when_not_in_graph(monkeypatch):
     # AA-812 D2: Sri Lanka is not in the Tour Graph at all, but its places (catalog.v_tour_place ->
     # shared.destinations) have planner experiences from another tour: the route is built from them.
     t = fx.TOURS[2]
+    monkeypatch.setitem(t, "duration_days", 3)  # 2 pinned days of 3 clears the half-of-days bar
     status, body, _ = await _get("/browse/tour-route", {"tour_id": t["tour_id"], "source_id": t["source_id"]})
     assert status == 200
     p = body["proposal"]
@@ -290,8 +291,21 @@ async def test_tour_route_from_catalog_places_when_not_in_graph():
     assert [d["lat"] for d in p["days"]] == [fx.DESTS[fx.KANDY][2], fx.DESTS[fx.ELLA][2]]
 
 
-async def test_tour_route_places_prefers_the_tours_own_components():
+async def test_tour_route_places_needs_half_of_the_days(monkeypatch):
+    # S236: a places-built route that pins under half of the tour's days is not offered; the
+    # planner gets the 404 with the day list instead (AA-712 fills the Tour Graph later).
     t = fx.TOURS[2]
+    monkeypatch.setitem(t, "duration_days", 10)  # 2 pinned days of 10
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": t["tour_id"]})
+    assert status == 404 and body["tour"]["title"] == "Sri Lanka Hill Country Trek"
+    monkeypatch.setitem(t, "duration_days", 4)  # 2 of 4 = half: offered
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": t["tour_id"]})
+    assert status == 200 and body["proposal"]["match"] == "places"
+
+
+async def test_tour_route_places_prefers_the_tours_own_components(monkeypatch):
+    t = fx.TOURS[2]
+    monkeypatch.setitem(t, "duration_days", 3)  # 2 pinned days of 3 clears the half-of-days bar
     own = {"id": "c3000000-0000-4000-8000-000000000001", "source_tour_id": t["tour_id"],
            "source_day_index": 1, "destination_id": fx.KANDY, "embedding": True}
     pool = fx.FakeCatalogPool(stops=[], components=fx.PLANNER_COMPONENTS + [own])
@@ -299,9 +313,10 @@ async def test_tour_route_places_prefers_the_tours_own_components():
     assert status == 200 and body["proposal"]["days"][0]["component_id"] == own["id"]
 
 
-async def test_tour_route_places_spread_a_stay_over_several_experiences():
+async def test_tour_route_places_spread_a_stay_over_several_experiences(monkeypatch):
     # Two days at Kandy pin two different experiences, not the same one twice.
     t = fx.TOURS[2]
+    monkeypatch.setitem(t, "duration_days", 3)  # 2 pinned days of 3 clears the half-of-days bar
     extra = [{"tour_id": t["tour_id"], "day_number": 2, "position": 0, "place_name": "Kandy",
               "destination_id": fx.KANDY, "destination_name": "Kandy", "lat": fx.DESTS[fx.KANDY][2],
               "lng": fx.DESTS[fx.KANDY][3], "country": "Sri Lanka"}]

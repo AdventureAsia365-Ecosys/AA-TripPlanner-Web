@@ -279,6 +279,9 @@ class FakeCatalogPool:
             return t["title"] if t else None
         if _norm(query) == _norm(routes_mod.TOUR_ID_BY_SOURCE_SQL):
             return next((t["tour_id"] for t in self.tours if t["source_id"] == args[0]), None)
+        if _norm(query) == _norm(routes_mod.TOUR_DAYS_COUNT_SQL):
+            t = self._by_id(args[0])
+            return (t["duration_days"] or 0) if t else None
         return None
 
     def acquire(self):

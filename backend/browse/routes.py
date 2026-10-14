@@ -179,6 +179,13 @@ PLACE_COMPONENTS_SQL = """
     WHERE destination_id = ANY($1::uuid[]) AND embedding IS NOT NULL
     ORDER BY destination_id, (source_tour_id = ANY($2::text[])) DESC, source_tour_id, source_day_index, id
 """
+# A places-built route must pin at least this share of the tour's days (AA-712 fills the rest).
+PLACES_MIN_DAY_SHARE = 0.5
+TOUR_DAYS_COUNT_SQL = """
+    SELECT GREATEST(COALESCE(t.duration_days, 0),
+                    (SELECT count(*) FROM catalog.v_tour_day d WHERE d.tour_id = t.tour_id))
+    FROM catalog.v_tour t WHERE t.tour_id = $1::uuid
+"""
 # The tour's day titles, for the planner's "not on the map yet" message.
 TOUR_FALLBACK_SQL = """
     SELECT t.title, t.country, t.duration_days,
@@ -256,6 +263,11 @@ async def _places_route(conn: Any, tour_id: str, keys: list[str]) -> Optional[tu
         if pick:
             used.add(pick)
             comps[(tour_id, day)] = [{"destination_id": stop["destination_id"], "component_id": pick}]
+    # S236 (Nghiệp): only offer a places-built route when it pins at least half of the tour's days;
+    # a thinner one (e.g. 2 of 10) misrepresents the tour, so the planner shows the day list instead.
+    total_days = await conn.fetchval(TOUR_DAYS_COUNT_SQL, tour_id) or len(by_day)
+    if len(comps) < PLACES_MIN_DAY_SHARE * total_days:
+        return None
     return stops_rows, comps
 
 
