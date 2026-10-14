@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { fetchRoutes } from "@/lib/api";
+import { Icon } from "@/ui/Icon";
 import type { RouteProposal } from "@/lib/types";
 
 function placesLine(p: RouteProposal): string {
@@ -64,7 +65,8 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
         onClick={() => setOpen(true)}
         className="aa-focus mb-3 w-full rounded-xl border border-dashed border-aa-gold/60 px-3 py-2 text-xs font-semibold text-aa-gold-dark transition hover:bg-aa-gold-soft"
       >
-        🧭 Start from an Adventure Asia route
+        <Icon name="compass" className="mr-1 inline h-3.5 w-3.5 align-[-2px]" />
+        Start from an Adventure Asia route
       </button>
     );
   }

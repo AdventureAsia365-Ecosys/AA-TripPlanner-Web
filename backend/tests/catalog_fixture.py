@@ -11,6 +11,7 @@ realistic rows.
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -126,10 +127,38 @@ STOPS = [
      "lat": DESTS[did][2], "lng": DESTS[did][3], "country": "Vietnam"}
     for d, did in ((1, HANOI), (2, HALONG), (3, HALONG), (4, HANOI))
 ]
+
+# AA-812 hotfix (D2), shaped like Dev: the Tour Graph is keyed by the published tour_id of the day it
+# was extracted. Tour 1 (Mekong) was extracted under an OLDER tour_id and re-uploaded since (catalog
+# tour_id is newer); its tour page link carries the tour_id it was rendered with.
+MEKONG_OLD_ID = "0e1f2a3b-4c5d-4e6f-8a7b-8c9d0e1f2a3b"
+STOPS.append({"tour_id": MEKONG_OLD_ID, "day_index": 1, "destination_id": CANTHO, "name": "Can Tho",
+              "lat": DESTS[CANTHO][2], "lng": DESTS[CANTHO][3], "country": "Vietnam"})
+# Sri Lanka (tour 2) was never extracted into the graph, but another (older, unpublished) Sri Lanka
+# tour left planner experiences at Kandy (two) and Ella; Nuwara Eliya has no shared.destinations row.
+OTHER_SL_TOUR = "4d5e6f7a-8b9c-4d0e-8f1a-2b3c4d5e6f7a"
+
+# tripplanner.itinerary_components rows (embedding NULL = not searchable, ignored by the reads).
+PLANNER_COMPONENTS: list[dict] = (
+    [{"id": f"c0000000-0000-4000-8000-00000000000{s['day_index']}", "source_tour_id": TOURS[0]["tour_id"],
+      "source_day_index": s["day_index"], "destination_id": s["destination_id"], "embedding": True}
+     for s in STOPS if s["tour_id"] == TOURS[0]["tour_id"]]
+    + [{"id": "c1000000-0000-4000-8000-000000000001", "source_tour_id": MEKONG_OLD_ID,
+        "source_day_index": 1, "destination_id": CANTHO, "embedding": True},
+       {"id": "c2000000-0000-4000-8000-000000000001", "source_tour_id": OTHER_SL_TOUR,
+        "source_day_index": 3, "destination_id": KANDY, "embedding": True},
+       {"id": "c2000000-0000-4000-8000-000000000002", "source_tour_id": OTHER_SL_TOUR,
+        "source_day_index": 4, "destination_id": KANDY, "embedding": True},
+       {"id": "c2000000-0000-4000-8000-000000000003", "source_tour_id": OTHER_SL_TOUR,
+        "source_day_index": 5, "destination_id": ELLA, "embedding": True},
+       {"id": "c2000000-0000-4000-8000-000000000009", "source_tour_id": OTHER_SL_TOUR,
+        "source_day_index": 6, "destination_id": ELLA, "embedding": None}]
+)
+# Kept for older tests: tour 0's components in the graph-read shape.
 COMPONENTS = [
-    {"tour_id": TOURS[0]["tour_id"], "day_index": s["day_index"], "destination_id": s["destination_id"],
-     "component_id": f"c0000000-0000-4000-8000-00000000000{s['day_index']}"}
-    for s in STOPS
+    {"tour_id": c["source_tour_id"], "day_index": c["source_day_index"], "destination_id": c["destination_id"],
+     "component_id": c["id"]}
+    for c in PLANNER_COMPONENTS if c["source_tour_id"] == TOURS[0]["tour_id"]
 ]
 
 
@@ -149,8 +178,11 @@ class FakeCatalogPool:
     """Answers the exact query constants of backend.browse.catalog / routes from the rows above.
     An unknown query returns no rows (so the planner's other reads show their empty states)."""
 
-    def __init__(self, tours: list[dict] | None = None):
+    def __init__(self, tours: list[dict] | None = None, stops: list[dict] | None = None,
+                 components: list[dict] | None = None):
         self.tours = TOURS if tours is None else tours
+        self.stops = STOPS if stops is None else stops
+        self.components = PLANNER_COMPONENTS if components is None else components
         self.calls: list[tuple[str, tuple]] = []
 
     def _by_id(self, tid: str) -> dict | None:
@@ -199,13 +231,38 @@ class FakeCatalogPool:
         if q == _norm(cat.SITEMAP_SQL):
             return sorted([t for t in self.tours if _visible(t)], key=lambda t: t["slug"])
         if q == _norm(routes_mod.DAYS_SQL):
-            return [s for s in STOPS if s["tour_id"] in args[0]]
+            return sorted([s for s in self.stops if s["tour_id"] in args[0]],
+                          key=lambda s: (s["tour_id"], s["day_index"]))
         if q == _norm(routes_mod.COMPONENTS_SQL):
-            return [c for c in COMPONENTS if c["tour_id"] in args[0]]
+            return [{"tour_id": c["source_tour_id"], "day_index": c["source_day_index"],
+                     "destination_id": c["destination_id"], "component_id": c["id"]}
+                    for c in sorted(self.components, key=lambda c: (c["source_tour_id"], c["source_day_index"], c["id"]))
+                    if c["source_tour_id"] in args[0] and c["embedding"]]
+        if q == _norm(routes_mod.TOUR_ROUTE_PLACES_SQL):
+            rows = sorted([p for p in PLACES if p["tour_id"] == args[0] and p["day_number"] is not None
+                           and p["destination_id"] and p["lat"] is not None],
+                          key=lambda p: (p["day_number"], p["position"]))
+            return [{"day_number": p["day_number"], "position": p["position"],
+                     "destination_id": p["destination_id"], "name": p["destination_name"],
+                     "lat": p["lat"], "lng": p["lng"], "country": p["country"]} for p in rows]
+        if q == _norm(routes_mod.PLACE_COMPONENTS_SQL):
+            dests, keys = set(args[0]), set(args[1])
+            rows = [c for c in self.components if c["destination_id"] in dests and c["embedding"]]
+            rows.sort(key=lambda c: (c["destination_id"], c["source_tour_id"] not in keys, c["source_tour_id"],
+                                     c["source_day_index"], c["id"]))
+            return [{"destination_id": c["destination_id"], "component_id": c["id"]} for c in rows]
         return []
 
     async def fetchrow(self, query: str, *args: Any) -> dict | None:
         self.calls.append((query, args))
+        if _norm(query) == _norm(routes_mod.TOUR_FALLBACK_SQL):
+            t = self._by_id(args[0])
+            if not t:
+                return None
+            days = [{"day": d["day_number"], "title": d["title"]}
+                    for d in sorted(DAYS, key=lambda d: d["day_number"]) if d["tour_id"] == t["tour_id"]]
+            return {"title": t["title"], "country": t["country"], "duration_days": t["duration_days"],
+                    "days": json.dumps(days)}
         if _norm(query) == _norm(cat.TOUR_BY_SLUG_SQL):
             slug, suffix = args
             hit = next((t for t in self.tours if t["slug"] == slug), None)

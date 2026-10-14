@@ -9,6 +9,7 @@ import TourListPane from "@/components/TourListPane";
 import PlanPrefill from "@/components/PlanPrefill";
 import { TripProvider, useTrip, type PlanIntent } from "@/lib/useTrip";
 import { pinLightTheme } from "@/ui/theme";
+import { Icon } from "@/ui/Icon";
 
 // Below this width we stack map/trip and toggle between them, so neither
 // gets squeezed on a phone. Above it, the classic side-by-side layout.
@@ -122,7 +123,8 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
               : "text-aa-muted"
           }`}
         >
-          🗺️ Explore
+          <Icon name="map" className="mr-1 inline h-4 w-4 align-[-3px]" />
+          Explore
         </button>
         <button
           onClick={() => setMobileView("trip")}
@@ -132,7 +134,8 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
               : "text-aa-muted"
           }`}
         >
-          🧳 Your trip
+          <Icon name="route" className="mr-1 inline h-4 w-4 align-[-3px]" />
+          Your trip
           {itinerary.length > 0 && (
             <span className="ml-1.5 rounded-full bg-aa-ink px-1.5 py-0.5 text-[10px] font-bold text-white">
               {new Set(itinerary.map((d) => d.day)).size}

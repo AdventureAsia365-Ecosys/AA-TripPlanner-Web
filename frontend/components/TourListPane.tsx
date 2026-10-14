@@ -72,8 +72,8 @@ export default function TourListPane() {
     } finally {
       setBusy(null);
     }
-    if (p === "missing") say(t.tour_id, "Not on the planner map yet — ask an advisor.");
-    else if (p === "error") say(t.tour_id, "Couldn't load this route. Try again.");
+    if (p === "error") say(t.tour_id, "Couldn't load this route. Try again.");
+    else if ("missing" in p) say(t.tour_id, "Not on the planner map yet — ask an advisor.");
     // A trip with stops is asked first: apply-route merges into it (never deletes).
     else if (itinerary.length > 0) setConfirm({ tourId: t.tour_id, p });
     else await add(t.tour_id, p);

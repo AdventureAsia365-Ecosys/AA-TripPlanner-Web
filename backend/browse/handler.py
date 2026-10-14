@@ -139,9 +139,13 @@ async def route(
             return _resp(400, {"error": "tour_id (uuid) or source_id required"}, _NO_STORE_HEADERS)
         async with pool.acquire() as conn:
             current = await routes_mod.resolve_tour_id(conn, tid or None, sid or None)
-            proposal = await routes_mod.tour_route(conn, current) if current else None
+            # AA-812 hotfix: the tour_id the link carried may be the one the Tour Graph knows.
+            proposal = await routes_mod.tour_route(conn, current, (tid or None,)) if current else None
+            fallback = await routes_mod.tour_fallback(conn, current) if current and proposal is None else None
         if proposal is None:
-            return _resp(404, {"error": "no planner route for this tour"}, _NO_STORE_HEADERS)
+            # The planner pre-fills country + days and shows the tour's day list from `tour`.
+            return _resp(404, {"error": "no planner route for this tour", "tour": fallback},
+                         _NO_STORE_HEADERS)
         return _resp(200, {"tour_id": current, "proposal": proposal}, _CACHE_HEADERS)
 
     if _COUNTRIES_RE.match(path):

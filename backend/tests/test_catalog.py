@@ -255,8 +255,87 @@ async def test_tour_route_whole_tour_in_day_order():
     assert [d["name"] for d in p["days"]] == ["Hanoi", "Ha Long Bay", "Ha Long Bay", "Hanoi"]
 
 
-async def test_tour_route_not_in_planner_is_404():
-    status, _, _ = await _get("/browse/tour-route", {"tour_id": fx.TOURS[2]["tour_id"]})
+async def test_tour_route_graph_match_is_labelled():
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": fx.TOURS[0]["tour_id"]})
+    assert status == 200 and body["proposal"]["match"] == "tour_graph"
+
+
+async def test_tour_route_graph_under_older_tour_id():
+    # AA-812 D2: the Tour Graph was extracted under the tour's previous tour_id; the catalog (and the
+    # source_id) now resolve to the re-uploaded one. The link's tour_id still finds the graph route,
+    # relabelled to the current id.
+    t = fx.TOURS[1]
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": fx.MEKONG_OLD_ID, "source_id": t["source_id"]})
+    assert status == 200
+    p = body["proposal"]
+    assert body["tour_id"] == t["tour_id"] and p["match"] == "tour_graph"
+    assert p["segments"][0]["tour_id"] == t["tour_id"] and p["segments"][0]["tour_name"] == t["title"]
+    assert [d["component_id"] for d in p["days"]] == ["c1000000-0000-4000-8000-000000000001"]
+    assert all(d["tour_id"] == t["tour_id"] for d in p["days"])
+
+
+async def test_tour_route_from_catalog_places_when_not_in_graph():
+    # AA-812 D2: Sri Lanka is not in the Tour Graph at all, but its places (catalog.v_tour_place ->
+    # shared.destinations) have planner experiences from another tour: the route is built from them.
+    t = fx.TOURS[2]
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": t["tour_id"], "source_id": t["source_id"]})
+    assert status == 200
+    p = body["proposal"]
+    assert p["match"] == "places" and p["total_days"] == 2 and p["whole_tour"]
+    assert p["segments"][0]["tour_name"] == "Sri Lanka Hill Country Trek"
+    assert [d["name"] for d in p["days"]] == ["Kandy", "Ella"]
+    # day 1 Kandy -> first Kandy experience; day 2 Ella (Nuwara Eliya has no destination row)
+    assert [d["component_id"] for d in p["days"]] == ["c2000000-0000-4000-8000-000000000001",
+                                                      "c2000000-0000-4000-8000-000000000003"]
+    assert [d["lat"] for d in p["days"]] == [fx.DESTS[fx.KANDY][2], fx.DESTS[fx.ELLA][2]]
+
+
+async def test_tour_route_places_prefers_the_tours_own_components():
+    t = fx.TOURS[2]
+    own = {"id": "c3000000-0000-4000-8000-000000000001", "source_tour_id": t["tour_id"],
+           "source_day_index": 1, "destination_id": fx.KANDY, "embedding": True}
+    pool = fx.FakeCatalogPool(stops=[], components=fx.PLANNER_COMPONENTS + [own])
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": t["tour_id"]}, pool=pool)
+    assert status == 200 and body["proposal"]["days"][0]["component_id"] == own["id"]
+
+
+async def test_tour_route_places_spread_a_stay_over_several_experiences():
+    # Two days at Kandy pin two different experiences, not the same one twice.
+    t = fx.TOURS[2]
+    extra = [{"tour_id": t["tour_id"], "day_number": 2, "position": 0, "place_name": "Kandy",
+              "destination_id": fx.KANDY, "destination_name": "Kandy", "lat": fx.DESTS[fx.KANDY][2],
+              "lng": fx.DESTS[fx.KANDY][3], "country": "Sri Lanka"}]
+    fx.PLACES.extend(extra)
+    try:
+        status, body, _ = await _get("/browse/tour-route", {"tour_id": t["tour_id"]})
+    finally:
+        del fx.PLACES[-1]
+    ids = [d["component_id"] for d in body["proposal"]["days"]]
+    assert status == 200 and ids[0] != ids[1] and len(ids) == 2
+
+
+async def test_tour_route_none_at_all_is_404_with_tour_days():
+    # Truly nothing in the planner for this tour: 404, but with what the planner needs to help
+    # (title, country, length, day titles), never a bare error.
+    t = fx.TOURS[2]
+    pool = fx.FakeCatalogPool(stops=[], components=[])
+    status, body, headers = await _get("/browse/tour-route", {"tour_id": t["tour_id"]}, pool=pool)
+    assert status == 404 and headers["cache-control"] == "no-store"
+    assert body["tour"]["title"] == "Sri Lanka Hill Country Trek"
+    assert body["tour"]["country"] == "Sri Lanka" and body["tour"]["duration_days"] == 7
+    assert body["tour"]["days"] == [{"day": 1, "title": "Kandy"}, {"day": 2, "title": "Kandy to Ella"}]
+
+
+async def test_tour_route_unknown_tour_is_404_without_tour():
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": "00000000-0000-4000-8000-00000000abcd"})
+    assert status == 404 and body["tour"] is None
+
+
+async def test_tour_route_ignores_components_without_embedding():
+    t = fx.TOURS[2]
+    only_unembedded = [c for c in fx.PLANNER_COMPONENTS if c["embedding"] is None]
+    pool = fx.FakeCatalogPool(stops=[], components=only_unembedded)
+    status, _, _ = await _get("/browse/tour-route", {"tour_id": t["tour_id"]}, pool=pool)
     assert status == 404
 
 
