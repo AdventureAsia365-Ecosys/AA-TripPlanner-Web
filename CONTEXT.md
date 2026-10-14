@@ -190,7 +190,7 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 |---|---|---|---|
 | AA-CIS-App (content) | `gold_aa_internal.published_tours` (tenant RLS, AA tenant set per transaction), `acp_contract.v_active_tour_atoms` (place/activity columns), `shared.destinations`, `shared.v_destination_photos` / `v_tour_photos` | — | CIS migrations 180 / 216, 201 |
 | AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
-| AA-Booking (planned) | — | `tripplanner.outbox` row `inquiry.submitted` v1 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.json` | ecosystem ADR 0001 decision 6 (outbox); grant to AA-Booking's role added with AA-678 |
+| AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.json` | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
 | AA-CIS-Infra | — | — | owns the Lambdas, API Gateway, OIDC deploy role, secrets and the DB Migrate workflow that applies `migrations/` |
 
 Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
