@@ -24,6 +24,11 @@ _WRITE = re.compile(r"\b(?:insert\s+into|update(?:\s+only)?|delete\s+from|merge\
 # A table name built at runtime (f"DELETE FROM tripplanner.{t}") would slip past the regex above.
 _DYNAMIC = re.compile(r"\b(?:insert\s+into|update|delete\s+from|merge\s+into|truncate)\s+tripplanner\.\{",
                       re.IGNORECASE)
+# asyncpg bulk loads name the table as a string argument, not in SQL (run_deterministic.py did
+# conn.copy_records_to_table("itinerary_components", schema_name="tripplanner", ...)).
+_COPY = re.compile(r"\bcopy_(?:records_)?to_table\(\s*[rf]?['\"](?:shared\.)?(?:destinations|itinerary_components"
+                   r"|tour_day|tour_stop|tour_graph_\w+|tour_leg|tour_junction|\{)",
+                   re.IGNORECASE)
 
 
 def _backend_modules():
@@ -37,7 +42,7 @@ def _backend_modules():
 def test_no_backend_module_writes_place_data():
     """Guard: CIS is the single writer of places (ADR 0002 / 0007). Readers stay until 6b/7."""
     offenders = [f"{rel}: {m.group(0)}" for rel, text in _backend_modules()
-                 for rx in (_WRITE, _DYNAMIC) for m in rx.finditer(text)]
+                 for rx in (_WRITE, _DYNAMIC, _COPY) for m in rx.finditer(text)]
     assert offenders == []
 
 
@@ -51,8 +56,11 @@ def test_guard_pattern_catches_the_old_writers():
                "UPDATE ONLY tripplanner.tour_leg SET km = 0"]
     assert all(_WRITE.search(s) for s in samples)
     assert _DYNAMIC.search('f"DELETE FROM tripplanner.{t}"')
+    assert _COPY.search('await conn.copy_records_to_table(\n    "itinerary_components", schema_name="tripplanner")')
+    assert _COPY.search("conn.copy_to_table('destinations', source=f, schema_name='shared')")
     assert not _WRITE.search("SELECT id FROM shared.destinations WHERE lower(name) = $1")
     assert not _WRITE.search("INSERT INTO tripplanner.trip_events (trip_id) VALUES ($1)")
+    assert not _COPY.search('copy_records_to_table("trip_events", schema_name="tripplanner")')
 
 
 # backend.extraction holds only the read-only checks now; every other submodule was a writer.
