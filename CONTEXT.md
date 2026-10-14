@@ -136,10 +136,15 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   read-only from here; do not migrate or mutate it from this repo.
 - **Only CIS writes content** (root ADR 0002, 01/10/2026). This repo writes only `tripplanner.*`
   user state (sessions, drafts, customers, trip events) and `shared.llm_call_log`. The DB role
-  `tripplanner` has no INSERT/UPDATE on `shared.destinations` any more (CIS migration 201), so the
-  extraction scripts that geocode / insert / re-geocode places (`extraction/geocode.py`, `locate.py`,
-  `regeocode_outliers.py`, `backfill_country.py`) are **frozen**. The place pipeline (itinerary
-  extraction, geocoding, tour graph) moves to CIS (AA-712); this repo then reads it through views.
+  `tripplanner` has no INSERT/UPDATE on `shared.destinations` any more (CIS migration 201).
+  **The place pipeline (itinerary places, geocoding, tour graph) is CIS's** (root ADR 0007,
+  AA-712: CIS job kinds `place_extract` / `place_geocode` / `place_graph`, schema `geo`). Since
+  slice 6a this repo has **no place writers**: the extraction modules and scripts were removed,
+  and the guard test `backend/tests/test_extraction_ops.py` fails if any module under `backend/`
+  writes `shared.destinations` or the tripplanner place tables (`itinerary_components`, `tour_day`,
+  `tour_stop`, `tour_graph_*`, `tour_leg`, `tour_junction`). Those tables are **frozen** (no longer
+  refreshed) and the readers keep using them until slices 6b/7 switch them to the CIS catalog
+  views behind `PLACES_SOURCE`.
 - Photos (AA-708, 01/10/2026): AA marketing photos are synced and matched by CIS (`photo_sync`,
   `shared.place_photo`). This repo reads them only through `shared.v_destination_photos` /
   `shared.v_tour_photos` and `shared.destinations.cover_image_url` (set by CIS from the photo
@@ -160,7 +165,8 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   Stages:
   - `tp_compose`: assembly narration (Claude Sonnet 4.6 via the satellite role);
   - `tp_search_embed`: browse free-text search, one Cohere Embed v4 call per query (acc2);
-  - `tp_extract` / `tp_component_embed`: the offline extraction pipeline.
+  - `tp_extract` / `tp_component_embed`: the former offline extraction pipeline; no caller since
+    AA-712 slice 6a (built-in routes kept until the frozen tables are dropped).
 
   An admin can change a stage's model on the CIS admin Settings page (TripPlanner group) without
   a TripPlanner deploy; the Lambdas pick the change up within 60 s. Shadow config on a tp_* stage
@@ -179,19 +185,18 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   fallback** (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md`).
   Cohere embeddings run directly on acc2 (no satellite).
 - **`tour_day` (AA-675, migration 003)**: one row per (published tour, itinerary day): start,
-  end and **overnight place** (geocoded into `shared.destinations`), plus other places. Built from
-  `published_tours.aa_itineraries` by rules + one `tp_extract` call per tour, with every model
-  place grounded in that day's text (`backend/extraction/tour_days.py`). It runs inside the
-  assembly Lambda through a direct `lambda invoke` (`{"extraction": {"op": "list" | "tour_days" |
-  "prune"}}`, not reachable over HTTP), driven by `backend/extraction/invoke_tour_days.py`.
-  Unchanged tours are skipped (itinerary hash). It is the base of the Tour Graph (AA-673).
-  A night is linked through its **anchor** (the overnight place, or the day's end place when the
-  overnight is a hotel/lodge/camp; none in transit), located by `backend/extraction/locate.py`:
-  the model proposes coordinates, then Mapbox confirms within 25 km (Mapbox name search alone
-  misplaces Asian names). Op `"relink"` re-locates every anchor.
-- **Tour Graph (AA-673, migration 004)**: read model rebuilt in full from `tour_day` by extraction
-  op `"tour_graph"` (`backend/extraction/tour_graph.py`, no model call; `invoke_tour_days.py` runs
-  it after extracting). `tour_stop` = where each (tour, day) is (overnight destination, else the
+  end and **overnight place** (a `shared.destinations` row), plus other places. Built from
+  `published_tours.aa_itineraries` by the former TripPlanner extraction (rules + one `tp_extract`
+  call per tour), which CIS has ported (`services/places/`); the table is **frozen** since AA-712
+  slice 6a. It is the base of the Tour Graph (AA-673).
+- **Extraction checks (assembly Lambda, direct `lambda invoke` only, not reachable over HTTP)**:
+  `{"extraction": {"op": "list" | "orphans" | "neighbours"}}` (`backend/extraction/lambda_entry.py`,
+  `checks.py`) are read-only: `list` = active tours and whether tour_day is stale, `orphans` = rows
+  of tours no longer active, `neighbours` = the Tour Graph sample query. The former writer ops
+  `tour_days`, `components`, `relink`, `tour_graph`, `prune` answer `status` 410
+  "unknown extraction op" (moved to CIS) before opening a DB connection.
+- **Tour Graph (AA-673, migration 004)**: read model, frozen since AA-712 slice 6a (it was rebuilt
+  in full from `tour_day` by the former op `"tour_graph"`). `tour_stop` = where each (tour, day) is (overnight destination, else the
   day's main component destination); `tour_graph_node` = destinations with tours, activities,
   intensity, seasons; `tour_graph_edge` = A→B steps of real tours, weighted by tour count;
   `tour_leg` = every multi-day span of one tour (the sellable unit, with countries and
@@ -199,9 +204,9 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   `cross_border` flagged) where legs of different tours chain; `tour_graph_build` = params + stats
   per rebuild. Op `"neighbours"` is the sample "where next, still coverable by tours" query.
   Route-constrained suggestions and multi-tour composition read it (AA-674).
-- `itinerary_components` is built by an offline extraction pipeline from CIS published tours and
-  atoms. It is not refreshed automatically when new tours are published; the CIS data reset of
-  16/09/2026 means it must be rebuilt after the CIS rerun (tracked in CIS Linear AA-600).
+- `itinerary_components` was built by the former offline extraction pipeline from CIS published
+  tours and atoms. It is frozen since AA-712 slice 6a; CIS builds the replacement
+  (`catalog.v_tour_component` over `geo.*`) and the readers switch to it in slices 6b/7.
 - The trust and role wiring that make this call possible live in **AA-CIS-Infra**, not here.
 
 ## Deploy & CI
@@ -241,9 +246,9 @@ Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
 
 ## Known gaps (deferred)
 
-Automatic re-extraction when new tours are published; real advisor email (currently a stub);
-CloudFront in front of browse; Mapbox token URL restriction; some wrong geocode points; more
-countries in the gateway table.
+Place tables frozen until the readers switch to the CIS views (AA-712 slices 6b/7; new tours do
+not reach the map until then); real advisor email (currently a stub); CloudFront in front of
+browse; Mapbox token URL restriction; more countries in the gateway table.
 
 ## Related documents
 

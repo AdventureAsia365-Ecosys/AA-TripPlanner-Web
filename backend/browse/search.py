@@ -24,7 +24,7 @@ import logging
 from typing import Any, Callable, Optional, Protocol
 
 from backend.browse.filters import BrowseFilters
-from backend.extraction.tour_days import set_catalog_tenant
+from backend.shared.catalog_rls import set_catalog_tenant
 from backend.shared import llm_gateway, vector_topk
 
 STAGE = "tp_search_embed"

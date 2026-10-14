@@ -25,7 +25,7 @@ DATABASE_URL = _get("TRIPPLANNER_DATABASE_URL")
 SCHEMA_TRIPPLANNER = "tripplanner"
 SCHEMA_SHARED = "shared"
 
-# Source schemas the extraction pipeline READS (never writes).
+# CIS source schemas this service READS (never writes).
 SCHEMA_GOLD = "gold_aa_internal"
 SCHEMA_ACP = "acp_contract"
 
@@ -33,10 +33,6 @@ SCHEMA_ACP = "acp_contract"
 # Base URL that catalog photo paths are relative to: {base}{path}?size=large|small (CIS
 # migration 200). Browse responses carry absolute photo URLs built from it.
 CIS_PUBLIC_API_BASE = _get("CIS_PUBLIC_API_BASE", "https://api-cis.lumiguides.it.com")
-
-# --- Mapbox ---
-MAPBOX_GEOCODING_TOKEN = _get("MAPBOX_GEOCODING_TOKEN")
-MAPBOX_GEOCODING_URL = "https://api.mapbox.com/geocoding/v5/mapbox.places"
 
 # --- Bedrock ---
 # Region for all Bedrock calls. Verified live: acc2/acc3/acc1 all us-west-1.

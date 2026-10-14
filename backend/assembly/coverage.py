@@ -127,7 +127,7 @@ async def coverage(conn: Any, trip_id: str) -> dict:
     result["total_days"] += len(custom)
     tour_ids = sorted({leg["tour_id"] for leg in result["legs"]})
     if tour_ids:
-        from backend.extraction.tour_days import fetch_catalog  # tenant-scoped (RLS)
+        from backend.shared.catalog_rls import fetch_catalog  # tenant-scoped (RLS)
         names = {r["tour_id"]: r["aa_name"] for r in await fetch_catalog(conn, TOUR_NAMES_SQL, tour_ids)}
         for leg in result["legs"]:
             leg["tour_name"] = names.get(leg["tour_id"])

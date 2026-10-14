@@ -138,7 +138,7 @@ async def proposals(conn: Any, country: str, days: int) -> dict:
         comps.setdefault((r["tour_id"], r["day_index"]), []).append(dict(r))
     names: dict[str, str] = {}
     if tours:
-        from backend.extraction.tour_days import fetch_catalog  # tenant-scoped (RLS)
+        from backend.shared.catalog_rls import fetch_catalog  # tenant-scoped (RLS)
         names = {r["tour_id"]: r["aa_name"] for r in await fetch_catalog(conn, TOUR_NAMES_SQL, tours)}
     out = []
     for p in picked:
