@@ -95,6 +95,14 @@ for ti, n, title, body, places in _DAYS:
             "activity_types": acts, "atom_count": 1,
         })
 
+# itinerary_text: canonical "Day N — Title\nBody" blocks for tours with days; the retired tour has
+# a legacy free-text itinerary (no `days`), which the page shows as a fallback.
+for t in TOURS:
+    blocks = [f"Day {d['day_number']} — {d['title']}\n{d['body']}" for d in DAYS if d["tour_id"] == t["tour_id"]]
+    t["itinerary_text"] = "\n\n".join(blocks) or None
+TOURS[3]["itinerary_text"] = ("Morning: street-food breakfast in District 1.\n"
+                              "Afternoon: Ben Thanh market and a coffee stop.")
+
 PHOTOS: list[dict] = []
 for t in TOURS:
     for i in range(1, t["photo_count"] + 1):
@@ -179,7 +187,7 @@ class FakeCatalogPool:
                 c["updated_at"] = max(c["updated_at"], t["updated_at"])
             return sorted(out.values(), key=lambda c: (-c["tour_count"], c["country"]))
         if q == _norm(cat.COUNTRY_PLACES_SQL):
-            ids = {t["tour_id"] for t in self.tours if _visible(t) and _cslug(t) == args[0]}
+            ids = set(args[0])
             return [p for p in PLACES if p["tour_id"] in ids and p["destination_id"] and p["lat"] is not None]
         if q == _norm(cat.DESTINATION_COVERS_SQL):
             return [{"destination_id": d, "cover_photo_path": next(
@@ -212,6 +220,8 @@ class FakeCatalogPool:
         if _norm(query) == _norm(routes_mod.TOUR_TITLE_SQL):
             t = self._by_id(args[0])
             return t["title"] if t else None
+        if _norm(query) == _norm(routes_mod.TOUR_ID_BY_SOURCE_SQL):
+            return next((t["tour_id"] for t in self.tours if t["source_id"] == args[0]), None)
         return None
 
     def acquire(self):

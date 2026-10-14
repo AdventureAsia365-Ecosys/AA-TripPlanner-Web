@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -21,7 +22,7 @@ from urllib.parse import parse_qs, urlparse
 from backend.browse import handler as browse_handler
 from backend.tests.catalog_fixture import FakeCatalogPool
 
-PORT = 8011
+PORT = int(os.environ.get("DEV_BROWSE_PORT", "8011"))  # override when 8011 is taken
 _PHOTO_RE = re.compile(r"^/content/photos/([0-9a-f-]+)$")
 
 

@@ -3,7 +3,7 @@
 // trip lengths, the places and activities the tours really include.
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 import JsonLd from "@/components/site/JsonLd";
 import SiteFooter from "@/components/site/SiteFooter";
 import SiteHeader from "@/components/site/SiteHeader";
@@ -11,7 +11,7 @@ import StaticMap from "@/components/site/StaticMap";
 import TourCard from "@/components/site/TourCard";
 import { CATALOG_REVALIDATE_S, getDestination, siteUrl } from "@/lib/catalog";
 import type { DestinationPage } from "@/lib/catalogTypes";
-import { titleCase } from "@/lib/text";
+import { slugify, titleCase } from "@/lib/text";
 import { ButtonLink, EmptyState, Icon, Photo } from "@/ui";
 
 export const revalidate = CATALOG_REVALIDATE_S;
@@ -35,8 +35,11 @@ function intro(d: DestinationPage): string {
   return parts.join(" ");
 }
 
+// How many places the page lists; the map pins exactly these, with the same numbers.
+const LISTED_PLACES = 12;
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const res = await getDestination(params.country);
+  const res = await getDestination(slugify(params.country));
   if (!res.ok) return { title: "Destination", robots: { index: false } };
   const d = res.data;
   return {
@@ -48,6 +51,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function DestinationRoute({ params }: Props) {
+  // /destinations/Vietnam or /destinations/Sri_Lanka move to the canonical lowercase slug.
+  const canonical = slugify(params.country);
+  if (canonical && canonical !== params.country) permanentRedirect(`/destinations/${canonical}`);
   const res = await getDestination(params.country);
   if (!res.ok) {
     if (res.status === 404) notFound();
@@ -57,7 +63,8 @@ export default async function DestinationRoute({ params }: Props) {
   // A week by default, or the shortest tour here when that is longer.
   const days = Math.min(30, Math.max(7, d.min_days ?? 7));
   const planHref = `/plan?${new URLSearchParams({ country: d.country, days: String(days) })}`;
-  const points = d.places.map((p) => ({ name: p.name ?? "", lat: p.lat, lng: p.lng }));
+  const listed = d.places.slice(0, LISTED_PLACES);
+  const points = listed.map((p) => ({ name: p.name ?? "", lat: p.lat, lng: p.lng }));
 
   return (
     <div className="aa-site">
@@ -123,9 +130,9 @@ export default async function DestinationRoute({ params }: Props) {
             </div>
           ) : (
             <div className="mt-4 grid gap-5 lg:grid-cols-[1fr_1fr]">
-              <StaticMap points={points} title={`Places in ${d.country}`} />
+              <StaticMap points={points} title={`Places in ${d.country}`} caption="Numbers match the list of places." />
               <ol className="grid content-start gap-2 sm:grid-cols-2">
-                {d.places.slice(0, 12).map((p, i) => (
+                {listed.map((p, i) => (
                   <li key={p.destination_id} className="flex gap-3 rounded-xl border border-k-line bg-k-card p-2.5">
                     <Photo src={p.cover_url} alt={p.name ?? "Place"} className="h-14 w-14 shrink-0 rounded-lg" />
                     <div className="min-w-0">

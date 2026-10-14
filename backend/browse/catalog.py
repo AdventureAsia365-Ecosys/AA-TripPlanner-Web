@@ -62,8 +62,8 @@ TOUR_BY_SLUG_SQL = """
     SELECT t.source_system, t.source_id, t.tour_id::text AS tour_id, t.source_version, t.sku, t.slug,
            t.title, t.subtitle, t.summary, t.description, t.highlights, t.country, t.duration_raw,
            t.duration_days, t.activities, t.inclusions, t.exclusions, t.best_time_to_go, t.group_size,
-           t.lifecycle_stage, t.cover_photo_path, t.photo_count, t.published_at, t.updated_at,
-           t.content_hash
+           t.lifecycle_stage, t.itinerary_text, t.cover_photo_path, t.photo_count, t.published_at,
+           t.updated_at, t.content_hash
     FROM catalog.v_tour t
     WHERE t.slug = $1 OR left(replace(t.source_id, '-', ''), 8) = $2
     ORDER BY (t.slug = $1) DESC
@@ -102,13 +102,14 @@ COUNTRIES_SQL = f"""
     ORDER BY count(*) DESC, t.country
 """
 
-COUNTRY_PLACES_SQL = f"""
+# Places of the country's listed tours, by tour id (the ids come from TOUR_CARDS_SQL). A plain
+# uuid = ANY(...) can be pushed into the security_barrier view; filtering v_tour_place through a
+# join on the computed country slug would make it build every tour's places first (AA-812 review).
+COUNTRY_PLACES_SQL = """
     SELECT p.destination_id::text AS destination_id, p.destination_name, p.lat, p.lng,
            p.tour_id::text AS tour_id, p.activity_types
     FROM catalog.v_tour_place p
-    JOIN catalog.v_tour t ON t.tour_id = p.tour_id
-    WHERE {_COUNTRY_SLUG_SQL} = $1::text
-      AND t.lifecycle_stage IS DISTINCT FROM '{HIDDEN_LIFECYCLE}'
+    WHERE p.tour_id = ANY($1::uuid[])
       AND p.destination_id IS NOT NULL AND p.lat IS NOT NULL AND p.lng IS NOT NULL
 """
 
@@ -184,37 +185,33 @@ def _str_list(v: Any) -> list[str]:
     return []
 
 
-def months_from_text(text: Optional[str]) -> Optional[set[int]]:
-    """Months (1-12) a free-text `best_time_to_go` covers, or None when it names no month.
+_MONTH_RE = (r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+             r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?")
+_TOKEN_RE = re.compile(rf"\b({_MONTH_RE})\b|(\bto\b|\btill\b|\buntil\b|\bthrough\b|[-–—])", re.I)
+_ALL_YEAR_RE = re.compile(r"all[\s-]*year|year[\s-]*round|any\s*time|all\s+seasons", re.I)
+# Clause breaks; a negating word also starts a new clause ("October to April but avoid Tet").
+_CLAUSE_RE = re.compile(r"[.;,()\n]+|\s+(?=(?:but|except|excluding|avoid|avoiding|not)\b)", re.I)
+_NEGATED_RE = re.compile(r"^\s*(?:but\s+)?(?:avoid|avoiding|not|except|excluding)\b", re.I)
 
-    Handles "October to April", "Oct - Mar", "Nov–Feb and Jul–Aug", "March, April and May",
-    "all year" / "year-round". A range wraps the year end (Nov to Feb = 11, 12, 1, 2).
-    """
-    if not text:
-        return None
-    low = text.lower()
-    if re.search(r"all[\s-]*year|year[\s-]*round|any\s*time|all\s+seasons", low):
-        return set(range(1, 13))
-    # Tokens: month names (full or 3-letter) and range separators, in order of appearance.
-    tokens = re.findall(
-        r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
-        r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|(\bto\b|\btill\b|\buntil\b|"
-        r"\bthrough\b|[-–—])",
-        low,
-    )
-    months: set[int] = set()
+
+def _clause_months(clause: str) -> set[int]:
+    """Months a clause names: single months and ranges (a range wraps the year end)."""
     seq: list[Any] = []
-    for name, sep in tokens:
+    for m in _TOKEN_RE.finditer(clause):
+        name, sep = m.group(1), m.group(2)
         if name:
-            seq.append(MONTHS.index(name[:3]) + 1)
+            # "may" is a month only when written "May" (not the verb: "rain may fall").
+            if name.lower() == "may" and not name[0].isupper():
+                continue
+            seq.append(MONTHS.index(name[:3].lower()) + 1)
         elif sep and seq and isinstance(seq[-1], int):
             seq.append("-")
+    months: set[int] = set()
     i = 0
     while i < len(seq):
         m = seq[i]
         if isinstance(m, int) and i + 2 < len(seq) and seq[i + 1] == "-" and isinstance(seq[i + 2], int):
-            a, b = m, seq[i + 2]
-            k = a
+            k, b = m, seq[i + 2]
             while True:
                 months.add(k)
                 if k == b:
@@ -225,6 +222,33 @@ def months_from_text(text: Optional[str]) -> Optional[set[int]]:
             if isinstance(m, int):
                 months.add(m)
             i += 1
+    return months
+
+
+def months_from_text(text: Optional[str]) -> Optional[set[int]]:
+    """Months (1-12) a free-text `best_time_to_go` covers, or None when it names no month.
+
+    Handles "October to April", "Oct - Mar", "Nov–Feb and Jul–Aug", "March, April and May",
+    "all year" / "year-round". A range wraps the year end (Nov to Feb = 11, 12, 1, 2). Clauses
+    that start with "avoid" / "not" / "except" / "excluding" remove their months instead
+    ("All year except July", "October to April, avoid June to August").
+    """
+    if not text:
+        return None
+    good: set[int] = set()
+    bad: set[int] = set()
+    all_year = False
+    for clause in _CLAUSE_RE.split(text):
+        if not clause or not clause.strip():
+            continue
+        if _NEGATED_RE.match(clause):
+            bad |= _clause_months(clause)
+        else:
+            all_year = all_year or bool(_ALL_YEAR_RE.search(clause))
+            good |= _clause_months(clause)
+    if all_year or (bad and not good):
+        good = set(range(1, 13))
+    months = good - bad
     return months or None
 
 
@@ -374,6 +398,8 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
         "best_time_to_go": t["best_time_to_go"],
         "group_size": t["group_size"],
         "lifecycle_stage": t["lifecycle_stage"],
+        # Shown by the page when `days` is empty (a legacy, non-canonical itinerary text).
+        "itinerary_text": t["itinerary_text"],
         "cover_url": photo_url(t["cover_photo_path"], "large"),
         "photo_count": t["photo_count"] or 0,
         "published_at": _iso(t["published_at"]),
@@ -451,7 +477,7 @@ async def destination_page(country: str, *, pool: Any) -> Optional[dict]:
         return None
     cards = sort_cards([_card(r) for r in rows], "featured")
     days = [c["duration_days"] for c in cards if c["duration_days"]]
-    place_rows = await pool.fetch(COUNTRY_PLACES_SQL, cslug)
+    place_rows = await pool.fetch(COUNTRY_PLACES_SQL, [c["tour_id"] for c in cards])
     places = aggregate_places(place_rows)
     ids = [p["destination_id"] for p in places]
     covers = {r["destination_id"]: r for r in await pool.fetch(DESTINATION_COVERS_SQL, ids)} if ids else {}

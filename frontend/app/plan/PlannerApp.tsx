@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import Header from "@/components/Header";
 import MapView from "@/components/MapView";
 import FilterChips from "@/components/FilterChips";
@@ -8,6 +8,7 @@ import TripPanel from "@/components/TripPanel";
 import TourListPane from "@/components/TourListPane";
 import PlanPrefill from "@/components/PlanPrefill";
 import { TripProvider, useTrip, type PlanIntent } from "@/lib/useTrip";
+import { pinLightTheme } from "@/ui/theme";
 
 // Below this width we stack map/trip and toggle between them, so neither
 // gets squeezed on a phone. Above it, the classic side-by-side layout.
@@ -144,6 +145,9 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
 }
 
 export default function PlannerApp({ intent }: { intent: PlanIntent }) {
+  // The planner is light-only: in a dark theme, browser-styled controls (country select, days
+  // input) would turn dark on its light surfaces and become unreadable (AA-812 review).
+  useLayoutEffect(() => pinLightTheme(), []);
   return (
     <TripProvider initialIntent={intent}>
       <Layout initialMobileView={intent.ask ? "trip" : "map"} />

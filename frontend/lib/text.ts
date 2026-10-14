@@ -25,3 +25,15 @@ export function daysText(n: number | null | undefined, raw?: string | null): str
 export function titleCase(v: string): string {
   return v.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 }
+
+// Same rule as the backend's catalog.slugify (and catalog.v_tour.slug): lowercase, every run of
+// characters outside [a-z0-9] becomes "-", trimmed. Takes a raw route param (URL-encoded or not).
+export function slugify(raw: string): string {
+  let text = raw;
+  try {
+    text = decodeURIComponent(raw);
+  } catch {
+    /* already decoded / malformed: use as is */
+  }
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}

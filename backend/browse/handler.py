@@ -5,7 +5,8 @@ Routes:
   GET /browse/destinations/{destination_id}
   GET /browse/search?q=...
   GET /browse/routes?country=Nepal&days=10   (AA-674: whole-route proposals from real tours)
-  GET /browse/tour-route?tour_id=<uuid>      (AA-812: one tour's whole route, for "Customise")
+  GET /browse/tour-route?tour_id=<uuid>&source_id=<id>  (AA-812: one tour's whole route, for
+      "Customise"; source_id, when known, resolves the current tour_id)
   GET /browse/catalog/tours?country=&min_days=&max_days=&month=&sort=&limit=&offset=
   GET /browse/catalog/tours/{slug}           (AA-812: tour page, catalog.tour v1)
   GET /browse/catalog/destinations           (AA-812: countries with live tours)
@@ -43,6 +44,8 @@ _COUNTRIES_RE = re.compile(r"^/browse/countries$")
 _BY_COUNTRY_RE = re.compile(r"^/browse/by-country$")
 _ROUTES_RE = re.compile(r"^/browse/routes$")
 _TOUR_ROUTE_RE = re.compile(r"^/browse/tour-route$")
+# catalog source ids are uuids today; accept any short id-like token, never free text.
+_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _CAT_TOURS_RE = re.compile(r"^/browse/catalog/tours$")
 _CAT_TOUR_RE = re.compile(r"^/browse/catalog/tours/([a-z0-9-]{1,120})$")
 _CAT_DESTS_RE = re.compile(r"^/browse/catalog/destinations$")
@@ -124,15 +127,22 @@ async def route(
         return _resp(200, await catalog_mod.sitemap(pool=pool), _CACHE_HEADERS)
 
     if _TOUR_ROUTE_RE.match(path):
-        tid = query.get("tour_id")
-        tid = str((tid[0] if tid else "") if isinstance(tid, list) else (tid or "")).strip()
-        if not _UUID_RE.match(tid):
-            return _resp(400, {"error": "tour_id (uuid) required"}, _NO_STORE_HEADERS)
+        def _q(key: str) -> str:
+            v = query.get(key)
+            return str((v[0] if v else "") if isinstance(v, list) else (v or "")).strip()
+        tid, sid = _q("tour_id"), _q("source_id")
+        if tid and not _UUID_RE.match(tid):
+            return _resp(400, {"error": "tour_id must be a uuid"}, _NO_STORE_HEADERS)
+        if sid and not _SOURCE_ID_RE.match(sid):
+            return _resp(400, {"error": "source_id is malformed"}, _NO_STORE_HEADERS)
+        if not tid and not sid:
+            return _resp(400, {"error": "tour_id (uuid) or source_id required"}, _NO_STORE_HEADERS)
         async with pool.acquire() as conn:
-            proposal = await routes_mod.tour_route(conn, tid)
+            current = await routes_mod.resolve_tour_id(conn, tid or None, sid or None)
+            proposal = await routes_mod.tour_route(conn, current) if current else None
         if proposal is None:
             return _resp(404, {"error": "no planner route for this tour"}, _NO_STORE_HEADERS)
-        return _resp(200, {"tour_id": tid, "proposal": proposal}, _CACHE_HEADERS)
+        return _resp(200, {"tour_id": current, "proposal": proposal}, _CACHE_HEADERS)
 
     if _COUNTRIES_RE.match(path):
         data = await countries_mod.list_countries(pool=pool)

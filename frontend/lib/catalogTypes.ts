@@ -81,6 +81,8 @@ export interface TourDetail {
   best_time_to_go: string | null;
   group_size: string | null;
   lifecycle_stage: string | null;
+  // Whole itinerary text; the page shows it when `days` is empty (legacy, non-canonical text).
+  itinerary_text: string | null;
   cover_url: string | null;
   photo_count: number;
   published_at: string | null;

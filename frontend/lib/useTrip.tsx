@@ -95,6 +95,8 @@ export interface PlanIntent {
   travellers?: number;
   // catalog tour_id of a tour page's "Customise this trip" / "Ask an advisor"
   tourId?: string;
+  // its stable catalog source_id: resolves the CURRENT tour_id if the tour was re-uploaded
+  sourceId?: string;
   ask?: boolean;
 }
 

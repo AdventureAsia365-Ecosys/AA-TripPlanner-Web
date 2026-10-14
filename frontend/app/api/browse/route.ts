@@ -62,7 +62,13 @@ export async function GET(req: NextRequest) {
     upstreamPath = `/browse/catalog/tours${r.toString() ? `?${r}` : ""}`;
   } else if (resource === "tour-route") {
     // AA-812: one tour's whole route ("Customise this trip").
-    upstreamPath = `/browse/tour-route?tour_id=${encodeURIComponent(q.get("tour_id") ?? "")}`;
+    // source_id (stable) lets the Lambda resolve the current tour_id after a CIS re-upload.
+    const r = new URLSearchParams();
+    for (const k of ["tour_id", "source_id"]) {
+      const v = q.get(k);
+      if (v) r.set(k, v);
+    }
+    upstreamPath = `/browse/tour-route?${r}`;
   } else {
     return NextResponse.json({ error: "unknown resource" }, { status: 400 });
   }

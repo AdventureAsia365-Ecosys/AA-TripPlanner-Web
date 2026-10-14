@@ -3,6 +3,7 @@
 import type { PlanIntent } from "./useTrip";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SOURCE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 function one(v: string | string[] | undefined): string | undefined {
   const s = Array.isArray(v) ? v[0] : v;
@@ -17,11 +18,13 @@ function intInRange(v: string | undefined, lo: number, hi: number): number | und
 
 export function parseIntent(sp: Record<string, string | string[] | undefined>): PlanIntent {
   const tour = one(sp.tour);
+  const source = one(sp.source);
   return {
     country: one(sp.country)?.slice(0, 80),
     days: intInRange(one(sp.days), 2, 30),
     travellers: intInRange(one(sp.travellers), 1, 20),
     tourId: tour && UUID.test(tour) ? tour : undefined,
+    sourceId: source && SOURCE_ID.test(source) ? source : undefined,
     ask: one(sp.ask) === "1",
   };
 }

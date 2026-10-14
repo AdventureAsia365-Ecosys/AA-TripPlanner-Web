@@ -22,14 +22,27 @@ export function planHref(country: string, days: number, travellers: number): str
   return `/plan?${p}`;
 }
 
+// Clamp a typed number only when the visitor is done (blur / submit): clamping every keystroke
+// turns "14" into 30 (the "1" becomes 2, then "24" becomes 30).
+export function clampCount(raw: string, min: number, max: number, fallback: number): number {
+  const n = Math.round(Number(raw));
+  if (!raw.trim() || !Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
 export default function HomeSearch({ countries }: { countries: CountryChoice[] }) {
   const router = useRouter();
   const [country, setCountry] = useState("");
-  const [days, setDays] = useState(7);
-  const [travellers, setTravellers] = useState(2);
+  // Raw strings while typing; numbers only on blur / submit.
+  const [daysRaw, setDaysRaw] = useState("7");
+  const [travellersRaw, setTravellersRaw] = useState("2");
+  const days = clampCount(daysRaw, 2, 30, 7);
+  const travellers = clampCount(travellersRaw, 1, 20, 2);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    setDaysRaw(String(days));
+    setTravellersRaw(String(travellers));
     router.push(planHref(country, days, travellers));
   };
 
@@ -53,13 +66,13 @@ export default function HomeSearch({ countries }: { countries: CountryChoice[] }
         </label>
         <label className={field}>
           <span className={label}><Icon name="calendar" className="h-3.5 w-3.5" /> Days</span>
-          <input type="number" inputMode="numeric" min={2} max={30} value={days} aria-label="Number of days"
-                 onChange={(e) => setDays(Math.max(2, Math.min(30, Number(e.target.value) || 2)))} className={input} />
+          <input type="number" inputMode="numeric" min={2} max={30} value={daysRaw} aria-label="Number of days"
+                 onChange={(e) => setDaysRaw(e.target.value)} onBlur={() => setDaysRaw(String(days))} className={input} />
         </label>
         <label className={field}>
           <span className={label}><Icon name="users" className="h-3.5 w-3.5" /> Travellers</span>
-          <input type="number" inputMode="numeric" min={1} max={20} value={travellers} aria-label="Number of travellers"
-                 onChange={(e) => setTravellers(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} className={input} />
+          <input type="number" inputMode="numeric" min={1} max={20} value={travellersRaw} aria-label="Number of travellers"
+                 onChange={(e) => setTravellersRaw(e.target.value)} onBlur={() => setTravellersRaw(String(travellers))} className={input} />
         </label>
         <button type="submit" className={buttonClass("primary", "lg", "w-full sm:w-auto")}>
           <Icon name="route" className="h-4 w-4" /> Plan my trip
@@ -70,8 +83,8 @@ export default function HomeSearch({ countries }: { countries: CountryChoice[] }
           <button
             key={d}
             type="button"
-            onClick={() => setDays(d)}
-            aria-pressed={days === d}
+            onClick={() => setDaysRaw(String(d))}
+            aria-pressed={daysRaw === String(d)}
             className={`rounded-full border px-3 py-1 text-[12px] transition ${
               days === d
                 ? "border-k-accent bg-k-accent-tint font-semibold text-k-accent-deep"

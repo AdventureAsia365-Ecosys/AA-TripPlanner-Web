@@ -25,7 +25,7 @@ export function generateStaticParams() {
 type Props = { params: { slug: string } };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const res = await getTour(params.slug);
+  const res = await getTour(params.slug.toLowerCase());
   if (!res.ok) return { title: "Tour", robots: { index: false } };
   const t = res.data;
   const description = clip(t.summary || t.subtitle || t.description || `${t.title} — an Adventure Asia tour.`);
@@ -33,6 +33,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: `${t.title}${t.country ? ` — ${t.country}` : ""}`,
     description,
     alternates: { canonical: `/tours/${t.slug}` },
+    // A retired tour keeps its page for old links but leaves search results (and the sitemap).
+    ...(t.lifecycle_stage === "retired" ? { robots: { index: false, follow: true } } : {}),
     openGraph: {
       title: t.title,
       description,
@@ -43,8 +45,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   };
 }
 
+// tour_id changes when CIS re-uploads the tour; source_id does not, so the planner resolves the
+// current tour_id from it (a cached or bookmarked link keeps working).
 function planHref(t: TourDetail, ask = false): string {
-  const p = new URLSearchParams({ tour: t.tour_id });
+  const p = new URLSearchParams({ tour: t.tour_id, source: t.source_id });
   if (t.country) p.set("country", t.country);
   if (t.duration_days) p.set("days", String(Math.max(2, Math.min(30, t.duration_days))));
   if (ask) p.set("ask", "1");
@@ -60,7 +64,8 @@ function tripJsonLd(t: TourDetail, points: MapPoint[]) {
     description: t.summary || t.subtitle || undefined,
     url,
     image: t.photos.slice(0, 5).map((p) => p.url).filter(Boolean),
-    touristType: t.activities.length ? t.activities.slice(0, 5) : undefined,
+    // touristType is the audience; activities belong in keywords.
+    keywords: t.activities.length ? t.activities.slice(0, 8).join(", ") : undefined,
     provider: { "@type": "TravelAgency", name: "Adventure Asia", url: "https://adventure.asia/" },
     itinerary: {
       "@type": "ItemList",
@@ -128,6 +133,9 @@ function CtaCard({ t }: { t: TourDetail }) {
 }
 
 export default async function TourPage({ params }: Props) {
+  // Slugs are lowercase; /tours/Hanoi-And-... moves to the canonical URL instead of a 404.
+  const lower = params.slug.toLowerCase();
+  if (lower !== params.slug) permanentRedirect(`/tours/${lower}`);
   const res = await getTour(params.slug);
   if (!res.ok) {
     if (res.status === 404) notFound();
@@ -198,7 +206,12 @@ export default async function TourPage({ params }: Props) {
 
             <section className="mt-8" aria-labelledby="itinerary">
               <h2 id="itinerary" className="text-[22px] font-semibold">Day by day</h2>
-              {t.days.length === 0 ? (
+              {t.days.length === 0 && t.itinerary_text?.trim() ? (
+                // Legacy itinerary text that is not in "Day N — Title" blocks: show it as written.
+                <div className="mt-3 whitespace-pre-line rounded-2xl border border-k-line bg-k-card p-4 text-[14px] leading-relaxed text-k-body">
+                  {t.itinerary_text.trim()}
+                </div>
+              ) : t.days.length === 0 ? (
                 <p className="mt-3 rounded-2xl border border-dashed border-k-line bg-k-card p-4 text-[13px] text-k-muted">
                   The day-by-day itinerary for this tour is being prepared. An advisor can walk you through it.
                 </p>
@@ -231,7 +244,7 @@ export default async function TourPage({ params }: Props) {
               <section className="mt-8" aria-labelledby="route-map">
                 <h2 id="route-map" className="text-[22px] font-semibold">Where you go</h2>
                 <div className="mt-3 grid gap-4 md:grid-cols-[1fr_220px]">
-                  <StaticMap points={points} route title={`${t.title} route`} />
+                  <StaticMap points={points} route title={`${t.title} route`} caption="Numbers follow the itinerary order." />
                   <ol className="space-y-1.5 text-[13px] text-k-body">
                     {points.map((p, i) => (
                       <li key={`${p.name}-${i}`} className="flex items-center gap-2">

@@ -30,7 +30,18 @@ export function staticMapUrl(points: MapPoint[], opts: { route?: boolean; width?
   return `https://api.mapbox.com/styles/v1/mapbox/light-v11/static/${overlays.join(",")}/${auto}/${w}x${h}@2x?padding=48&access_token=${encodeURIComponent(token)}`;
 }
 
-export default function StaticMap({ points, route = false, title }: { points: MapPoint[]; route?: boolean; title: string }) {
+export default function StaticMap({
+  points,
+  route = false,
+  title,
+  caption,
+}: {
+  points: MapPoint[];
+  route?: boolean;
+  title: string;
+  // What the pin numbers mean on this page (itinerary order, list order, ...).
+  caption?: string;
+}) {
   const url = staticMapUrl(points, { route });
   if (!url) return null;
   return (
@@ -38,7 +49,7 @@ export default function StaticMap({ points, route = false, title }: { points: Ma
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={url} alt={`Map: ${title}`} loading="lazy" className="aspect-[5/3] w-full object-cover" />
       <figcaption className="px-3 py-2 text-[11px] text-k-muted">
-        Numbers follow the itinerary order. © Mapbox © OpenStreetMap
+        {caption ? `${caption} ` : ""}© Mapbox © OpenStreetMap
       </figcaption>
     </figure>
   );

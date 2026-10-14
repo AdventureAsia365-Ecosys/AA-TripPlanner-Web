@@ -10,6 +10,20 @@ import { useTrip } from "@/lib/useTrip";
 import { fetchTourRoute } from "@/lib/api";
 import type { RouteProposal } from "@/lib/types";
 
+// Once the prompt is answered (route added, "Not now", "OK"), drop the tour params from the URL so a
+// reload of the restored trip does not ask again. Other params (country, days) stay.
+function forgetTourParams() {
+  const url = new URL(window.location.href);
+  let changed = false;
+  for (const k of ["tour", "source", "ask"]) {
+    if (url.searchParams.has(k)) {
+      url.searchParams.delete(k);
+      changed = true;
+    }
+  }
+  if (changed) window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 type State =
   | { s: "idle" }
   | { s: "confirm"; p: RouteProposal }
@@ -24,6 +38,7 @@ export default function PlanPrefill({ onApplied }: { onApplied?: () => void }) {
 
   const apply = async (p: RouteProposal) => {
     if (await applyRoute(p)) {
+      forgetTourParams();
       setSt({ s: "applied", name: p.segments[0]?.tour_name ?? "This tour" });
       onApplied?.();
     } else {
@@ -32,19 +47,22 @@ export default function PlanPrefill({ onApplied }: { onApplied?: () => void }) {
   };
 
   useEffect(() => {
-    if (!intent.tourId || !ready || started.current) return;
+    if ((!intent.tourId && !intent.sourceId) || !ready || started.current) return;
     started.current = true;
-    fetchTourRoute(intent.tourId).then((p) => {
+    fetchTourRoute(intent.tourId, intent.sourceId).then((p) => {
       if (p === "missing") setSt({ s: "missing" });
       else if (p === "error") setSt({ s: "error" });
       else if (itinerary.length === 0) void apply(p);
       else setSt({ s: "confirm", p });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [intent.tourId, ready]);
+  }, [intent.tourId, intent.sourceId, ready]);
 
   if (st.s === "idle") return null;
-  const close = () => setSt({ s: "idle" });
+  const close = () => {
+    forgetTourParams();
+    setSt({ s: "idle" });
+  };
   const box = "pointer-events-auto mx-auto max-w-md rounded-xl border border-aa-line bg-white px-3 py-2.5 text-xs text-aa-ink shadow-aa";
 
   return (

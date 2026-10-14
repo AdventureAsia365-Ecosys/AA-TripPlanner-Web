@@ -43,7 +43,7 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
   // finder only; a tour page's pre-fill pins that tour instead).
   const autoFound = useRef(false);
   useEffect(() => {
-    if (compact || autoFound.current || !intent.country || intent.tourId) return;
+    if (compact || autoFound.current || !intent.country || intent.tourId || intent.sourceId) return;
     autoFound.current = true;
     void find();
     // eslint-disable-next-line react-hooks/exhaustive-deps

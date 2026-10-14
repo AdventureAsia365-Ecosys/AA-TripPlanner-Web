@@ -285,11 +285,13 @@ export async function fetchCatalogTours(q: {
   country?: string;
   sort?: TourSort;
   limit?: number;
+  offset?: number;
 }): Promise<TourList | null> {
   const p = new URLSearchParams({ resource: "catalog-tours" });
   if (q.country) p.set("country", q.country);
   if (q.sort) p.set("sort", q.sort);
   if (q.limit) p.set("limit", String(q.limit));
+  if (q.offset) p.set("offset", String(q.offset));
   try {
     const res = await fetch(`/api/browse?${p}`);
     if (!res.ok) return null;
@@ -301,9 +303,15 @@ export async function fetchCatalogTours(q: {
 
 // One tour's whole route as a route proposal (for "Customise this trip"). "missing" = the tour is
 // not on the planner's Tour Graph yet; "error" = the read failed.
-export async function fetchTourRoute(tourId: string): Promise<RouteProposal | "missing" | "error"> {
+export async function fetchTourRoute(
+  tourId: string | undefined,
+  sourceId?: string,
+): Promise<RouteProposal | "missing" | "error"> {
   try {
-    const res = await fetch(`/api/browse?resource=tour-route&tour_id=${encodeURIComponent(tourId)}`);
+    const p = new URLSearchParams({ resource: "tour-route" });
+    if (tourId) p.set("tour_id", tourId);
+    if (sourceId) p.set("source_id", sourceId);
+    const res = await fetch(`/api/browse?${p}`);
     if (res.status === 404) return "missing";
     if (!res.ok) return "error";
     const data = await res.json();

@@ -2,6 +2,7 @@
 // Server Component: featured tours and destinations come from the CIS catalog through the browse
 // Lambda (ISR, same TTL as the Lambda's CDN header). Each section has its own empty/error state, so
 // a failed read never blanks the page.
+import type { Metadata } from "next";
 import Link from "next/link";
 import HomeSearch from "@/components/site/HomeSearch";
 import SiteFooter from "@/components/site/SiteFooter";
@@ -12,6 +13,9 @@ import { CATALOG_REVALIDATE_S, getCountries, getTours, siteUrl } from "@/lib/cat
 import { EmptyState, ErrorState, Icon, Photo } from "@/ui";
 
 export const revalidate = CATALOG_REVALIDATE_S;
+
+// The layout's title/description apply; the home only adds its canonical URL.
+export const metadata: Metadata = { alternates: { canonical: "/" } };
 
 const STEPS = [
   {

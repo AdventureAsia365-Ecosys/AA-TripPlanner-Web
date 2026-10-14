@@ -46,6 +46,14 @@ def test_slugify_matches_catalog_slug_rule():
     ("Best in the dry season", None),
     (None, None),
     ("", None),
+    # the verb "may" is not May; negated clauses remove their months
+    ("Rain may fall, best October to April", {10, 11, 12, 1, 2, 3, 4}),
+    ("Mid-May to September", {5, 6, 7, 8, 9}),
+    ("October to April, avoid June to August", {10, 11, 12, 1, 2, 3, 4}),
+    ("All year except July", set(range(1, 13)) - {7}),
+    ("Avoid June to August", set(range(1, 13)) - {6, 7, 8}),
+    ("December to March. Not recommended in July", {12, 1, 2, 3}),
+    ("Any time, but May is busiest", set(range(1, 13))),
 ])
 def test_months_from_text(text, months):
     assert cat.months_from_text(text) == months
@@ -66,7 +74,8 @@ def test_str_list_accepts_the_shapes_cis_stores():
 
 def test_new_reads_never_touch_cis_internals():
     # ADR 0001: new code reads only the catalog views.
-    sqls = [v for k, v in vars(cat).items() if k.endswith("_SQL")] + [routes_mod.TOUR_TITLE_SQL]
+    sqls = [v for k, v in vars(cat).items() if k.endswith("_SQL")] + [routes_mod.TOUR_TITLE_SQL,
+                                                                       routes_mod.TOUR_ID_BY_SOURCE_SQL]
     assert len(sqls) >= 9
     src = "\n".join(sqls)
     assert "catalog.v_" in src
@@ -170,6 +179,13 @@ async def test_tour_detail_retired_still_reachable():
     assert status == 200 and tour["lifecycle_stage"] == "retired"
 
 
+async def test_tour_detail_legacy_itinerary_has_text_but_no_days():
+    status, tour, _ = await _get(f"/browse/catalog/tours/{fx.TOURS[3]['slug']}")
+    assert status == 200 and tour["days"] == []
+    assert tour["itinerary_text"].startswith("Morning:")  # the page's fallback
+    jsonschema.validate(_contract_view(tour), SCHEMA)
+
+
 async def test_tour_detail_unknown_is_404_no_store():
     status, _, headers = await _get("/browse/catalog/tours/no-such-tour")
     assert status == 404 and headers["cache-control"] == "no-store"
@@ -242,6 +258,36 @@ async def test_tour_route_whole_tour_in_day_order():
 async def test_tour_route_not_in_planner_is_404():
     status, _, _ = await _get("/browse/tour-route", {"tour_id": fx.TOURS[2]["tour_id"]})
     assert status == 404
+
+
+async def test_tour_route_resolves_current_tour_id_from_source_id():
+    # A stale tour_id (the tour was re-uploaded) plus its stable source_id still finds the route.
+    t = fx.TOURS[0]
+    stale = "00000000-0000-4000-8000-000000000000"
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": stale, "source_id": t["source_id"]})
+    assert status == 200 and body["tour_id"] == t["tour_id"]
+    status, body, _ = await _get("/browse/tour-route", {"source_id": t["source_id"]})
+    assert status == 200 and body["proposal"]["total_days"] == 4
+
+
+async def test_tour_route_unknown_source_falls_back_to_tour_id():
+    t = fx.TOURS[0]
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": t["tour_id"], "source_id": "gone"})
+    assert status == 200 and body["tour_id"] == t["tour_id"]
+
+
+async def test_tour_route_rejects_bad_source_id():
+    status, _, _ = await _get("/browse/tour-route", {"source_id": "x'; drop"})
+    assert status == 400
+    status, _, _ = await _get("/browse/tour-route", {})
+    assert status == 400
+
+
+async def test_destination_places_query_takes_tour_ids():
+    pool = fx.FakeCatalogPool()
+    await h.route("GET", "/browse/catalog/destinations/vietnam", {}, pool=pool)
+    args = next(a for q, a in pool.calls if q == cat.COUNTRY_PLACES_SQL)
+    assert set(args[0]) == {fx.TOURS[0]["tour_id"], fx.TOURS[1]["tour_id"]}  # retired one excluded
 
 
 async def test_tour_route_needs_uuid():
