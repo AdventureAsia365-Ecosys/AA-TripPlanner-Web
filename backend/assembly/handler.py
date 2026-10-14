@@ -197,8 +197,10 @@ async def route(
             return _resp(400, {"error": "empty_trip",
                                "detail": "pin at least one component before narrating"})
 
-        # AA-805: an identical itinerary reuses its narration (no model call, no log row).
-        cache_key = narration_cache.itinerary_hash(itinerary, mode)
+        # AA-805: an identical itinerary reuses its narration (no model call, no log row). The
+        # master day text is part of the key, so a CIS edit to a tour never serves stale text.
+        day_texts = await _load_master_texts(conn, itinerary)
+        cache_key = narration_cache.itinerary_hash(itinerary, mode, day_texts)
         cached = await narration_cache.get(conn, cache_key)
         if cached is not None:
             return _resp(200, {"trip_id": trip_id, "mode": mode, "source": cached["source"],
@@ -211,7 +213,8 @@ async def route(
         calls: list = []
         narrate_fn = None if budget["exhausted"] else await _resolve_narrator(mode, narrator, conn, calls)
         try:
-            narration, source, ungrounded = await _narrate(conn, itinerary, narrate_fn)
+            narration, source, ungrounded = await _narrate(conn, itinerary, narrate_fn,
+                                                           day_texts=day_texts)
         except Exception as e:  # noqa: BLE001 — surface Bedrock failure as 502
             await _record_calls(conn, calls, {"mode": mode, "days": len(itinerary)})
             return _resp(502, {"error": "narration_failed", "detail": str(e)})
@@ -329,12 +332,25 @@ def _basic_narration(entries: list[dict]) -> str:
     for e in entries:
         by_day.setdefault(int(e["day"]), []).append(e.get("name") or "")
     return "\n".join(
-        f"Day {d}: {', '.join(n for n in names if n)}." if any(names) else f"Day {d}."
+        f"Day {d}: {', '.join(n for n in names if n)}." if any(names) else f"Day {d}: free day."
         for d, names in sorted(by_day.items())
     )
 
 
-async def _narrate(conn, itinerary: list[dict], narrate_fn) -> tuple[str, str, list[dict]]:
+async def _load_master_texts(conn, itinerary: list[dict]) -> dict[tuple[str, int], str]:
+    """AA's authored per-day text for the itinerary's source tours; {} when unreadable."""
+    tour_ids = [e.get("source_tour_id") for e in itinerary if e.get("source_tour_id")]
+    try:
+        return await master_content.load_for_tours(conn, tour_ids)
+    except Exception:  # noqa: BLE001
+        # Reading authored itinerary text is a best-effort optimisation
+        # (it lives in a shared schema this role may not be granted). If it
+        # fails for any reason, fall back to LLM narration rather than 500.
+        return {}
+
+
+async def _narrate(conn, itinerary: list[dict], narrate_fn,
+                   day_texts: dict | None = None) -> tuple[str, str, list[dict]]:
     """Build day-by-day narration, preferring AA's authored master itinerary
     text over an LLM rewrite.
 
@@ -352,14 +368,8 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn) -> tuple[str, str, l
     narrate_fn None (AA-805 daily spend cap reached): the remaining days get neutral name lines
     and source is 'basic' — no AI text at all.
     """
-    tour_ids = [e.get("source_tour_id") for e in itinerary if e.get("source_tour_id")]
-    try:
-        day_texts = await master_content.load_for_tours(conn, tour_ids)
-    except Exception:  # noqa: BLE001
-        # Reading authored itinerary text is a best-effort optimisation
-        # (it lives in a shared schema this role may not be granted). If it
-        # fails for any reason, fall back to LLM narration rather than 500.
-        day_texts = {}
+    if day_texts is None:
+        day_texts = await _load_master_texts(conn, itinerary)
     master_narr, missing = master_content.build_narration(itinerary, day_texts)
 
     # All days resolved from authored content — no Bedrock call at all.

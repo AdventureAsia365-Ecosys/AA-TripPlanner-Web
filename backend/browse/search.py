@@ -10,7 +10,7 @@ relevant places surface first.
 
 AA-805: the query is embedded with input_type "search_query" (components were embedded as
 "search_document" — Cohere's asymmetric retrieval pair); only components of ACTIVE tours
-(published_tours.master_status = 'active') are ranked, read tenant-scoped like fetch_catalog;
+(published_tours.master_status = 'active', not soft-deleted — the v_active_tour_atoms rule) are ranked, read tenant-scoped like fetch_catalog;
 the daily TripPlanner spend cap stops the embed call (SearchUnavailable -> 503); failed embed
 attempts are logged.
 """
@@ -64,7 +64,8 @@ def build_search_query(
         WHERE c.embedding IS NOT NULL
           AND EXISTS (SELECT 1 FROM gold_aa_internal.published_tours pt
                       WHERE pt.tour_id::text = c.source_tour_id
-                        AND pt.master_status = 'active')
+                        AND pt.master_status = 'active'
+                        AND pt.deleted_at IS NULL)
           {where_frag}
         GROUP BY d.id, d.name, d.lat, d.lng
         ORDER BY best_distance ASC

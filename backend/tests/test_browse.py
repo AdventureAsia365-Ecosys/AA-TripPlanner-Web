@@ -162,6 +162,7 @@ async def test_route_search_no_store_and_uses_embedder(monkeypatch):
     # AA-805: active tours only, read with the AA tenant set (published_tours RLS)
     sql = next(q for q, _ in pool.calls if "best_distance" in q)
     assert "pt.master_status = 'active'" in sql
+    assert "pt.deleted_at IS NULL" in sql
     assert any("set_config('app.tenant_id'" in q for q, _ in pool.calls)
 
 

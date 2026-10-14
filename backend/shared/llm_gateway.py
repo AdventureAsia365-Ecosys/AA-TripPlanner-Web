@@ -23,8 +23,11 @@ AA-805 (fork defects vs. the CIS client):
   - Shadow config (`shadow_model_id` / `shadow_sample_pct`) is read but NOT run here: a shadow
     would double the spend of a consumer app and needs INSERT on shared.llm_shadow_log, which the
     `tripplanner` role does not have. `load_route` prints a warning when one is configured.
-  - Daily spend hard stop: `record()` adds each priced tp_* call to tripplanner.llm_spend_daily
-    (migration tp-010); `budget_status()` compares today's total with TP_DAILY_SPEND_CAP_USD.
+  - Daily spend hard stop: `record()` adds each customer-facing call (ONLINE_STAGES: tp_compose,
+    tp_search_embed) to tripplanner.llm_spend_daily (migration tp-010); `budget_status()` compares
+    today's total of those stages with TP_DAILY_SPEND_CAP_USD. Offline stages (tp_extract,
+    tp_component_embed — extraction and embedding backfills) are logged in shared.llm_call_log but
+    neither counted nor capped here, so a backfill can never take customer search/narration down.
 """
 from __future__ import annotations
 
@@ -298,7 +301,7 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
 
 async def record(db: Any, call: Call, quality_signal: dict, *,
                  tenant_id: Optional[str] = None) -> None:
-    """Writes the shared.llm_call_log row (and, for tp_* stages, today's spend counter).
+    """Writes the shared.llm_call_log row (and, for ONLINE_STAGES, today's spend counter).
     Never raises: a lost log row must not fail a request."""
     signal = {"app": APP, **call.extra, **quality_signal}
     if call.failed:
@@ -313,11 +316,14 @@ async def record(db: Any, call: Call, quality_signal: dict, *,
             call.fallback_used, call.provider)
     except Exception as e:  # noqa: BLE001
         print(f"[llm_gateway] llm_call_log write failed for {call.stage}: {e}")
-    if call.stage.startswith("tp_"):
+    if call.stage in ONLINE_STAGES:
         await _add_spend(db, call)
 
 
 # --- Daily spend hard stop (AA-805) -------------------------------------------------------------
+
+# Customer-facing stages: the only ones counted against, and stopped by, the daily cap.
+ONLINE_STAGES: tuple[str, ...] = ("tp_compose", "tp_search_embed")
 
 _SPEND_UPSERT_SQL = """
     INSERT INTO tripplanner.llm_spend_daily (day, stage, cost_usd, calls, unpriced_calls)
@@ -331,7 +337,7 @@ _SPEND_UPSERT_SQL = """
 
 _SPEND_TODAY_SQL = """
     SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM tripplanner.llm_spend_daily
-    WHERE day = (now() AT TIME ZONE 'UTC')::date
+    WHERE day = (now() AT TIME ZONE 'UTC')::date AND stage = ANY($1::text[])
 """
 
 
@@ -344,14 +350,14 @@ async def _add_spend(db: Any, call: Call) -> None:
 
 
 async def budget_status(db: Any) -> dict:
-    """Today's (UTC) TripPlanner model spend against TP_DAILY_SPEND_CAP_USD.
+    """Today's (UTC) customer-facing (ONLINE_STAGES) model spend against TP_DAILY_SPEND_CAP_USD.
 
     Returns {"spent_usd", "cap_usd", "exhausted"}. Fails OPEN when the counter cannot be read
     (tp-010 not applied, permission): `exhausted` False and `spent_usd` None, with a warning —
     the cap must never take narration down by itself. Calls with no catalog price add nothing."""
     cap = float(config.TP_DAILY_SPEND_CAP_USD)
     try:
-        row = await db.fetchrow(_SPEND_TODAY_SQL)
+        row = await db.fetchrow(_SPEND_TODAY_SQL, list(ONLINE_STAGES))
         spent = float(row["spent"]) if row and row["spent"] is not None else 0.0
     except Exception as e:  # noqa: BLE001
         print(f"[llm_gateway] daily spend unreadable ({e}); TripPlanner spend cap NOT enforced")

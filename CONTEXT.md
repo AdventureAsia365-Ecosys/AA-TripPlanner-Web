@@ -146,12 +146,16 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   An admin can change a stage's model on the CIS admin Settings page (TripPlanner group) without
   a TripPlanner deploy; the Lambdas pick the change up within 60 s. Shadow config on a tp_* stage
   is not run here (a warning is printed): a consumer app does not pay for shadows.
-- **AI guards (AA-805, migration tp-010)**: a daily hard stop on all tp_* spend
-  (`TP_DAILY_SPEND_CAP_USD`, counted in `tripplanner.llm_spend_daily` by the gateway — the role
-  cannot read `shared.llm_call_log`); over the cap narration falls back to AA text + neutral day
-  lines and search answers 503. `/narrate` is limited to the session that created the trip and
-  reuses `tripplanner.narration_cache` for an identical itinerary. Search embeds the query as
-  `search_query` and ranks only components of active tours.
+- **AI guards (AA-805, migration tp-010)**: a daily hard stop on **customer-facing** model spend
+  only — stages `tp_compose` + `tp_search_embed` (`llm_gateway.ONLINE_STAGES`,
+  `TP_DAILY_SPEND_CAP_USD`, counted in `tripplanner.llm_spend_daily` by the gateway — the role
+  cannot read `shared.llm_call_log`). Offline stages (`tp_extract`, `tp_component_embed`) are
+  logged but neither counted nor capped here, so a backfill never takes search/narration down.
+  Over the cap narration falls back to AA text + neutral day lines and search answers 503.
+  `/narrate` is limited to the session that created the trip and reuses
+  `tripplanner.narration_cache` for an identical itinerary (the key includes the AA master day
+  text, so CIS edits miss the cache). Search embeds the query as `search_query` and ranks only
+  components of active, not soft-deleted tours.
 - Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 primary → acc1
   fallback** (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md`).
   Cohere embeddings run directly on acc2 (no satellite).

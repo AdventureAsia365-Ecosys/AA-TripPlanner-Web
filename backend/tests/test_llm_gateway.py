@@ -341,3 +341,45 @@ async def test_budget_status_against_the_cap(monkeypatch):
     assert (await gw.budget_status(SpendDb(5.0)))["exhausted"] is True
     open_ = await gw.budget_status(SpendDb(fail=True))         # fails open, spent unknown
     assert open_ == {"spent_usd": None, "cap_usd": 5.0, "exhausted": False}
+
+
+class SpendLedgerDb:
+    """In-memory llm_call_log + llm_spend_daily: upserts add per stage, the read sums the
+    stages passed as $1 (mirrors _SPEND_UPSERT_SQL / _SPEND_TODAY_SQL)."""
+
+    def __init__(self):
+        self.by_stage: dict[str, float] = {}
+        self.logged: list[str] = []
+
+    async def execute(self, sql, *args):
+        if "shared.llm_call_log" in sql:
+            self.logged.append(args[1])
+        elif "tripplanner.llm_spend_daily" in sql:
+            stage, cost, _unpriced = args
+            self.by_stage[stage] = self.by_stage.get(stage, 0.0) + cost
+
+    async def fetchrow(self, sql, *args):
+        assert "stage = ANY($1" in sql
+        return {"spent": sum(v for k, v in self.by_stage.items() if k in args[0])}
+
+
+async def test_offline_stages_never_exhaust_the_customer_budget(monkeypatch):
+    """AA-805 review: an extraction/embedding backfill over the cap must not 503 search or drop
+    narration to 'basic' — only ONLINE_STAGES count."""
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    db = SpendLedgerDb()
+    await gw.record(db, gw.Call("tp_extract", "writer", "sonnet", "acc3", 1, 1, 40.0, False), {})
+    await gw.record(db, gw.Call("tp_component_embed", "embed", "cohere", None, 1, 0, 9.0, False), {})
+    assert db.logged == ["tp_extract", "tp_component_embed"]   # still in llm_call_log
+    assert db.by_stage == {}                                    # but not in the spend counter
+    status = await gw.budget_status(db)
+    assert status["exhausted"] is False and status["spent_usd"] == 0.0
+
+    await gw.record(db, gw.Call("tp_compose", "writer", "sonnet", "acc3", 1, 1, 3.0, False), {})
+    await gw.record(db, gw.Call("tp_search_embed", "embed", "cohere", None, 1, 0, 2.0, False), {})
+    assert (await gw.budget_status(db))["exhausted"] is True
+
+
+def test_online_stages_are_the_customer_facing_routes():
+    assert set(gw.ONLINE_STAGES) == {"tp_compose", "tp_search_embed"}
+    assert all(s in gw.BUILTIN_ROUTES for s in gw.ONLINE_STAGES)

@@ -1033,6 +1033,30 @@ def test_itinerary_hash_depends_on_content_and_mode_not_on_trip():
     assert h != narration_cache.itinerary_hash([dict(it[0], text_extract="New text")], "compose")
 
 
+def test_itinerary_hash_changes_when_the_master_day_text_changes():
+    """AA-805 review: a CIS edit to a tour's authored itinerary must miss the cache, not serve a
+    stale 'mixed' narration until the TTL ends."""
+    from backend.assembly import narration_cache
+    it = [{"day": 1, "component_id": "c1", "name": "Hanoi", "text_extract": "Old quarter",
+           "source_tour_id": "T1", "source_day_index": 2}]
+    before = narration_cache.itinerary_hash(it, "compose", {("T1", 2): "Day 2: Hanoi walk"})
+    after = narration_cache.itinerary_hash(it, "compose", {("T1", 2): "Day 2: Hanoi cyclo"})
+    assert before != after
+    # Text of days this itinerary does not use does not change the key.
+    assert before == narration_cache.itinerary_hash(
+        it, "compose", {("T1", 2): "Day 2: Hanoi walk", ("T1", 9): "Day 9: other"})
+    assert narration_cache.itinerary_hash(it, "compose") == narration_cache.itinerary_hash(
+        it, "compose", {})
+
+
+def test_basic_narration_keeps_a_day_with_no_names_through_the_merge():
+    """AA-805 review: a nameless day used to render 'Day N.' (no colon) and the merge dropped it."""
+    basic = handler._basic_narration([{"day": 2, "name": ""}, {"day": 3, "name": "Hue"}])
+    assert basic == "Day 2: free day.\nDay 3: Hue."
+    merged = handler._merge_by_day("Day 1: Hanoi.", basic)
+    assert merged.splitlines() == ["Day 1: Hanoi.", "Day 2: free day.", "Day 3: Hue."]
+
+
 @pytest.mark.asyncio
 async def test_narrate_over_the_daily_cap_makes_no_model_call(monkeypatch):
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
