@@ -20,8 +20,9 @@ def _get(name: str, default: str | None = None, required: bool = False) -> str |
 # Full DSN, e.g. postgresql://user:pass@host:5432/dbname
 DATABASE_URL = _get("TRIPPLANNER_DATABASE_URL")
 
-# Schemas this service touches. tripplanner is owned; shared is the one
-# deliberate cross-program exception (shared.destinations only).
+# Schemas this service touches. tripplanner is owned (user state written here;
+# the place tables are frozen, read-only since AA-712 slice 6a). In shared it
+# reads destinations / photo views / gateway config and writes llm_call_log only.
 SCHEMA_TRIPPLANNER = "tripplanner"
 SCHEMA_SHARED = "shared"
 

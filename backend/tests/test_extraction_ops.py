@@ -2,6 +2,7 @@
 over the frozen place tables; the writer ops answer 410 and no module writes place data."""
 from __future__ import annotations
 
+import ast
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -17,10 +18,12 @@ BACKEND = Path(__file__).resolve().parents[1]
 # Place data CIS owns now: shared.destinations and the frozen tripplanner place tables.
 _PLACE_TABLE = (r"(?:shared\.destinations|tripplanner\.(?:itinerary_components|tour_day|tour_stop"
                 r"|tour_graph_\w+|tour_leg|tour_junction))\b")
-_WRITE = re.compile(r"\b(?:insert\s+into|update|delete\s+from|truncate(?:\s+table)?)\s+" + _PLACE_TABLE,
+_WRITE = re.compile(r"\b(?:insert\s+into|update(?:\s+only)?|delete\s+from|merge\s+into|truncate(?:\s+table)?)\s+"
+                    + _PLACE_TABLE,
                     re.IGNORECASE)
 # A table name built at runtime (f"DELETE FROM tripplanner.{t}") would slip past the regex above.
-_DYNAMIC = re.compile(r"\b(?:insert\s+into|update|delete\s+from|truncate)\s+tripplanner\.\{", re.IGNORECASE)
+_DYNAMIC = re.compile(r"\b(?:insert\s+into|update|delete\s+from|merge\s+into|truncate)\s+tripplanner\.\{",
+                      re.IGNORECASE)
 
 
 def _backend_modules():
@@ -43,18 +46,45 @@ def test_guard_pattern_catches_the_old_writers():
                "UPDATE tripplanner.tour_day SET overnight_destination_id = $3",
                "DELETE FROM tripplanner.itinerary_components WHERE source_tour_id = $1",
                "insert into tripplanner.tour_graph_node (destination_id) values ($1)",
-               "INSERT INTO\n  tripplanner.tour_junction (destination_a) VALUES ($1)"]
+               "INSERT INTO\n  tripplanner.tour_junction (destination_a) VALUES ($1)",
+               "MERGE INTO shared.destinations d USING x ON d.id = x.id",
+               "UPDATE ONLY tripplanner.tour_leg SET km = 0"]
     assert all(_WRITE.search(s) for s in samples)
     assert _DYNAMIC.search('f"DELETE FROM tripplanner.{t}"')
     assert not _WRITE.search("SELECT id FROM shared.destinations WHERE lower(name) = $1")
     assert not _WRITE.search("INSERT INTO tripplanner.trip_events (trip_id) VALUES ($1)")
 
 
+# backend.extraction holds only the read-only checks now; every other submodule was a writer.
+_EXTRACTION_MODULES = {"checks", "lambda_entry"}
+
+
+def _extraction_imports(text: str) -> set[str]:
+    """Names imported from backend.extraction (both `import backend.extraction.x` and
+    `from backend.extraction import x, y` / `from backend.extraction.x import ...`)."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.Import):
+            found |= {a.name.split(".")[2] for a in node.names
+                      if a.name.startswith("backend.extraction.")}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "backend.extraction":
+                found |= {a.name for a in node.names}
+            elif node.module.startswith("backend.extraction."):
+                found.add(node.module.split(".")[2])
+    return found
+
+
+def test_extraction_package_holds_only_the_read_only_checks():
+    present = {p.stem for p in (BACKEND / "extraction").glob("*.py")} - {"__init__"}
+    assert present == _EXTRACTION_MODULES
+
+
 def test_no_module_imports_the_removed_writers():
-    removed = ("tour_days", "tour_graph", "components", "locate", "geocode", "invoke_tour_days",
-               "regeocode_outliers", "backfill_country", "backfill_embeddings", "run", "run_deterministic")
-    rx = re.compile(r"backend\.extraction(?:\.|\s+import\s+)(" + "|".join(removed) + r")\b")
-    assert [str(rel) for rel, text in _backend_modules() if rx.search(text)] == []
+    offenders = {str(rel): sorted(bad) for rel, text in _backend_modules()
+                 if (bad := _extraction_imports(text) - _EXTRACTION_MODULES)}
+    assert offenders == {}
+    assert _extraction_imports("from backend.extraction import checks, tour_days") == {"checks", "tour_days"}
 
 
 # --- lambda_entry ------------------------------------------------------------------------------
