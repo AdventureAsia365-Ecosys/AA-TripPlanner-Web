@@ -1,7 +1,7 @@
 {
   "name": "search_labelled_30",
   "issue": "AA-805",
-  "purpose": "30 traveller queries for live /browse/search checks: every query must answer 200, the top results must sit in the labelled countries, and no returned destination may be reachable only through components of inactive or soft-deleted tours.",
+  "purpose": "30 traveller queries for live /browse/search checks: every query must answer 200, the top results must sit in the labelled countries, and no returned destination may be reachable only through components of inactive or soft-deleted tours (checked by a DB join on the returned ids; the labels here cover relevance only).",
   "labelled_by": "Claude Code (S237, single labeller; expected countries come from the planner country list of 14/10/2026 and the place names' real locations)",
   "fields": {
     "query": "text typed into the planner search box",

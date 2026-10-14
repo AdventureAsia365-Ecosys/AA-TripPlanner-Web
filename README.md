@@ -92,7 +92,10 @@ Read them in the database, read-only, through the usual ECS exec pattern of the 
   2 rps / burst 5, `GET /browse/search` 10 / 20. A throttled call gets 429 before the Lambda runs.
 - **Search on inactive tours** — `backend/tests/fixtures/search_labelled_30.json` is the labelled
   30-query set for live runs: every destination returned must have at least one embedded component
-  of a tour with `published_tours.master_status = 'active'` and `deleted_at IS NULL`.
+  of a tour with `published_tours.master_status = 'active'` and `deleted_at IS NULL`. Join exactly as
+  `backend/browse/search.py` `ACTIVE_TOUR_SQL` does (`pt.tour_id::text = c.source_tour_id`, AA tenant
+  set for RLS); a component whose `source_tour_id` matches no `published_tours.tour_id` is dropped from
+  search, so count those separately rather than reading them as inactive-tour hits.
 
 ## Program rules
 
