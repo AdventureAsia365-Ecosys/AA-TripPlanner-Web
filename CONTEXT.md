@@ -64,11 +64,25 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 - Deploy is Vercel-driven: a PR shows a Vercel preview and CI status; merge to the production
   branch triggers the production deploy. Check the Vercel CI check on the PR for deploy success.
 
+### Pages (AA-812)
+
+- `/` search-first home (destination, days, travellers → `/plan?country=&days=&travellers=`),
+  featured tours, destinations grid, how it works, trust strip.
+- `/plan` the map planner (moved from `/`), with a Map | List-of-tours toggle; `?tour=<tour_id>`
+  pins that tour's whole route through the existing apply-route flow (`&ask=1` opens the trip).
+- `/tours/[slug]` and `/destinations/[country]`: Server Components with ISR (30 min, the browse
+  CDN TTL), JSON-LD (`TouristTrip`, `TouristDestination`), `sitemap.xml`, `robots.txt`.
+- Kit pages use `frontend/ui/` (tokens copied from the CIS kit with the same values, light +
+  dark via `<html data-theme>`, localStorage `tp_theme`); the planner keeps its light `aa-*` palette.
+
 ### Backend — two Lambdas, split by statefulness on purpose
 
 - **browse Lambda** — read-only, **stateless and cacheable**. Serves destination browsing and
   suggestion queries. Because it never mutates trip state, its responses can be cached at the
-  edge/CDN layer without correctness risk. Keep new read-only endpoints here. Its one model
+  edge/CDN layer without correctness risk. Keep new read-only endpoints here. Since AA-812 it
+  also serves the public catalog under `/browse/catalog/*` (tours, tour by slug, countries,
+  country page, sitemap), reading **only** the CIS catalog views (`catalog.v_*`, ADR 0001), and
+  `/browse/tour-route` (one tour's whole route for "Customise this trip"). Its one model
   call is the embedding for free-text search (`/browse/search`, not cached).
 - **assembly Lambda** — **stateful**, owns all trip mutations, and is the only side that calls
   **Claude**. Building/AI-narrating a trip is a write that also incurs model cost, so it is
@@ -200,6 +214,7 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 
 | Other side | This repo reads | This repo writes | Granted by |
 |---|---|---|---|
+| AA-CIS-App (catalog, AA-812) | `catalog.v_tour`, `v_tour_day`, `v_tour_place`, `v_tour_photo`, `v_destination`, `v_destination_photo` (contract `catalog.tour.v1`); photo URLs = `CIS_PUBLIC_API_BASE` + path | — | CIS migration 225 |
 | AA-CIS-App (content) | `gold_aa_internal.published_tours` (tenant RLS, AA tenant set per transaction), `acp_contract.v_active_tour_atoms` (place/activity columns), `shared.destinations`, `shared.v_destination_photos` / `v_tour_photos` | — | CIS migrations 180 / 216, 201 |
 | AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
 | AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.1.json` (payload `version` 1.1 since AA-805; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |

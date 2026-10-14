@@ -5,6 +5,14 @@ Routes:
   GET /browse/destinations/{destination_id}
   GET /browse/search?q=...
   GET /browse/routes?country=Nepal&days=10   (AA-674: whole-route proposals from real tours)
+  GET /browse/tour-route?tour_id=<uuid>      (AA-812: one tour's whole route, for "Customise")
+  GET /browse/catalog/tours?country=&min_days=&max_days=&month=&sort=&limit=&offset=
+  GET /browse/catalog/tours/{slug}           (AA-812: tour page, catalog.tour v1)
+  GET /browse/catalog/destinations           (AA-812: countries with live tours)
+  GET /browse/catalog/destinations/{country} (AA-812: country page data)
+  GET /browse/catalog/sitemap                (AA-812: slugs for sitemap.xml)
+
+The /browse/catalog/* reads use only the CIS catalog views (ADR 0001, CIS migration 225).
 
 Read routes (tiles, destinations) are CDN-cacheable with a fixed TTL;
 /search sends no-store. Never calls Bedrock except for the search
@@ -19,6 +27,7 @@ import re
 from typing import Any, Optional
 
 from backend import config
+from backend.browse import catalog as catalog_mod
 from backend.browse import countries as countries_mod
 from backend.browse import destinations as dest_mod
 from backend.browse import routes as routes_mod
@@ -33,6 +42,13 @@ _SEARCH_RE = re.compile(r"^/browse/search$")
 _COUNTRIES_RE = re.compile(r"^/browse/countries$")
 _BY_COUNTRY_RE = re.compile(r"^/browse/by-country$")
 _ROUTES_RE = re.compile(r"^/browse/routes$")
+_TOUR_ROUTE_RE = re.compile(r"^/browse/tour-route$")
+_CAT_TOURS_RE = re.compile(r"^/browse/catalog/tours$")
+_CAT_TOUR_RE = re.compile(r"^/browse/catalog/tours/([a-z0-9-]{1,120})$")
+_CAT_DESTS_RE = re.compile(r"^/browse/catalog/destinations$")
+_CAT_DEST_RE = re.compile(r"^/browse/catalog/destinations/([a-z0-9-]{1,80})$")
+_CAT_SITEMAP_RE = re.compile(r"^/browse/catalog/sitemap$")
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 _CACHE_HEADERS = {
     "content-type": "application/json",
@@ -78,6 +94,45 @@ async def route(
         async with pool.acquire() as conn:
             data = await routes_mod.proposals(conn, country, int(days_raw))
         return _resp(200, data, _CACHE_HEADERS)
+
+    # --- AA-812: catalog reads (CIS catalog views only) ---------------------------------------
+    if _CAT_TOURS_RE.match(path):
+        try:
+            q = catalog_mod.parse_list_query(query)
+        except catalog_mod.QueryError as e:
+            return _resp(400, {"error": str(e)}, _NO_STORE_HEADERS)
+        return _resp(200, await catalog_mod.list_tours(q, pool=pool), _CACHE_HEADERS)
+
+    m = _CAT_TOUR_RE.match(path)
+    if m:
+        data = await catalog_mod.tour_detail(m.group(1), pool=pool)
+        if data is None:
+            return _resp(404, {"error": "tour not found"}, _NO_STORE_HEADERS)
+        return _resp(200, data, _CACHE_HEADERS)
+
+    if _CAT_DESTS_RE.match(path):
+        return _resp(200, await catalog_mod.list_countries(pool=pool), _CACHE_HEADERS)
+
+    m = _CAT_DEST_RE.match(path)
+    if m:
+        data = await catalog_mod.destination_page(m.group(1), pool=pool)
+        if data is None:
+            return _resp(404, {"error": "destination not found"}, _NO_STORE_HEADERS)
+        return _resp(200, data, _CACHE_HEADERS)
+
+    if _CAT_SITEMAP_RE.match(path):
+        return _resp(200, await catalog_mod.sitemap(pool=pool), _CACHE_HEADERS)
+
+    if _TOUR_ROUTE_RE.match(path):
+        tid = query.get("tour_id")
+        tid = str((tid[0] if tid else "") if isinstance(tid, list) else (tid or "")).strip()
+        if not _UUID_RE.match(tid):
+            return _resp(400, {"error": "tour_id (uuid) required"}, _NO_STORE_HEADERS)
+        async with pool.acquire() as conn:
+            proposal = await routes_mod.tour_route(conn, tid)
+        if proposal is None:
+            return _resp(404, {"error": "no planner route for this tour"}, _NO_STORE_HEADERS)
+        return _resp(200, {"tour_id": tid, "proposal": proposal}, _CACHE_HEADERS)
 
     if _COUNTRIES_RE.match(path):
         data = await countries_mod.list_countries(pool=pool)

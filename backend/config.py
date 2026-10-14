@@ -29,6 +29,11 @@ SCHEMA_SHARED = "shared"
 SCHEMA_GOLD = "gold_aa_internal"
 SCHEMA_ACP = "acp_contract"
 
+# --- CIS public API (AA-812) ---
+# Base URL that catalog photo paths are relative to: {base}{path}?size=large|small (CIS
+# migration 200). Browse responses carry absolute photo URLs built from it.
+CIS_PUBLIC_API_BASE = _get("CIS_PUBLIC_API_BASE", "https://api-cis.lumiguides.it.com")
+
 # --- Mapbox ---
 MAPBOX_GEOCODING_TOKEN = _get("MAPBOX_GEOCODING_TOKEN")
 MAPBOX_GEOCODING_URL = "https://api.mapbox.com/geocoding/v5/mapbox.places"
