@@ -126,6 +126,25 @@ DESTINATION_PHOTOS_SQL = """
     ORDER BY position, destination_id
 """
 
+# Cover fallback (AA-812 D4/D5): many tours have no matched AA photo yet (cover_photo_path NULL,
+# CIS photo matching AA-708). Their card / hero then shows a photo of the tour's main destination,
+# else of a destination in the tour's country. The tour read filters by uuid = ANY (pushed into the
+# security_barrier view). The country read matches lower(country) like CIS does when it joins
+# shared.destinations to a tour's country (migration 225, v_tour_place); v_destination is small.
+TOUR_DESTINATIONS_SQL = """
+    SELECT p.tour_id::text AS tour_id, p.destination_id::text AS destination_id, p.destination_name,
+           p.day_number
+    FROM catalog.v_tour_place p
+    WHERE p.tour_id = ANY($1::uuid[]) AND p.destination_id IS NOT NULL
+"""
+
+COUNTRY_COVERS_SQL = """
+    SELECT lower(d.country) AS country_key, d.name, d.cover_photo_path
+    FROM catalog.v_destination d
+    WHERE lower(d.country) = ANY($1::text[]) AND d.cover_photo_path IS NOT NULL
+    ORDER BY lower(d.country), d.photo_count DESC, d.name
+"""
+
 SITEMAP_SQL = f"""
     SELECT t.slug, t.country, t.updated_at
     FROM catalog.v_tour t
@@ -268,6 +287,10 @@ def _card(r: Any) -> dict:
         "highlights": _str_list(r["highlights"])[:3],
         "cover_url": photo_url(r["cover_photo_path"], "large"),
         "cover_url_small": photo_url(r["cover_photo_path"], "small"),
+        # "tour" = the tour's own cover; "destination" / "country" = a fallback place photo
+        # (fill_fallback_covers), named by cover_place. None = no photo at all.
+        "cover_source": "tour" if r["cover_photo_path"] else None,
+        "cover_place": None,
         "photo_count": r["photo_count"] or 0,
         "lifecycle_stage": r["lifecycle_stage"],
         "published_at": _iso(r["published_at"]),
@@ -340,6 +363,70 @@ def parse_list_query(query: dict) -> dict:
     }
 
 
+# --- cover fallback ---------------------------------------------------------------------------
+
+def main_destinations(rows: Iterable[Any]) -> dict[str, list[tuple[str, Optional[str]]]]:
+    """Per tour, its destinations ranked as the "main" one first: most itinerary days there, then
+    the earliest day (a place with no day number last), then the name. -> {tour_id: [(id, name)]}"""
+    by: dict[str, dict[str, dict]] = {}
+    for r in rows:
+        d = by.setdefault(r["tour_id"], {}).setdefault(
+            r["destination_id"], {"name": r["destination_name"], "days": set(), "first": None})
+        n = r["day_number"]
+        if n is not None:
+            d["days"].add(n)
+            d["first"] = n if d["first"] is None else min(d["first"], n)
+    out: dict[str, list[tuple[str, Optional[str]]]] = {}
+    for tid, dests in by.items():
+        ranked = sorted(dests.items(), key=lambda kv: (
+            -len(kv[1]["days"]), kv[1]["first"] if kv[1]["first"] is not None else 10_000,
+            kv[1]["name"] or ""))
+        out[tid] = [(did, d["name"]) for did, d in ranked]
+    return out
+
+
+async def fill_fallback_covers(items: list[dict], *, pool: Any) -> None:
+    """Give tours without their own cover a destination photo, in place (AA-812 D4/D5).
+
+    Order: the cover of the tour's main destination (catalog.v_tour_place -> v_destination), else
+    the best-covered destination of the tour's country (v_destination.country, exact text). Sets
+    cover_url (+ cover_url_small when the item has it), cover_source ("destination" | "country")
+    and cover_place (the destination's name), so the page labels it a destination photo and never
+    presents it as a photo of the tour. Items that already have a cover are not touched; when no
+    place photo exists the item keeps cover_url None (the placeholder)."""
+    missing = [it for it in items if not it.get("cover_url")]
+    if not missing:
+        return
+
+    def put(it: dict, path: str, source: str, place: Optional[str]) -> None:
+        it["cover_url"] = photo_url(path, "large")
+        if "cover_url_small" in it:
+            it["cover_url_small"] = photo_url(path, "small")
+        it["cover_source"] = source
+        it["cover_place"] = place
+
+    ranked = main_destinations(await pool.fetch(TOUR_DESTINATIONS_SQL, [it["tour_id"] for it in missing]))
+    ids = sorted({did for dests in ranked.values() for did, _ in dests})
+    covers = ({r["destination_id"]: r["cover_photo_path"]
+               for r in await pool.fetch(DESTINATION_COVERS_SQL, ids) if r["cover_photo_path"]}
+              if ids else {})
+    for it in missing:
+        hit = next(((did, name) for did, name in ranked.get(it["tour_id"], []) if did in covers), None)
+        if hit:
+            put(it, covers[hit[0]], "destination", hit[1])
+
+    countries = sorted({it["country"].lower() for it in missing if not it.get("cover_url") and it.get("country")})
+    if not countries:
+        return
+    best: dict[str, Any] = {}
+    for r in await pool.fetch(COUNTRY_COVERS_SQL, countries):
+        best.setdefault(r["country_key"], r)  # rows come best first per country
+    for it in missing:
+        r = None if it.get("cover_url") else best.get((it.get("country") or "").lower())
+        if r:
+            put(it, r["cover_photo_path"], "country", r["name"])
+
+
 # --- resources --------------------------------------------------------------------------------
 
 async def list_tours(q: dict, *, pool: Any) -> dict:
@@ -352,6 +439,7 @@ async def list_tours(q: dict, *, pool: Any) -> dict:
                  if (m := months_from_text(c["best_time_to_go"])) is None or q["month"] in m]
     cards = sort_cards(cards, q["sort"])
     page = cards[q["offset"]: q["offset"] + q["limit"]]
+    await fill_fallback_covers(page, pool=pool)
     return {
         "filters": {k: q[k] for k in ("country", "min_days", "max_days", "month", "sort")},
         "total": len(cards),
@@ -374,7 +462,7 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
     days = await pool.fetch(TOUR_DAYS_SQL, tour_id)
     places = await pool.fetch(TOUR_PLACES_SQL, tour_id)
     photos = await pool.fetch(TOUR_PHOTOS_SQL, tour_id)
-    return {
+    out = {
         "contract": "catalog.tour",
         "version": 1,
         "source_system": t["source_system"],
@@ -401,6 +489,8 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
         # Shown by the page when `days` is empty (a legacy, non-canonical itinerary text).
         "itinerary_text": t["itinerary_text"],
         "cover_url": photo_url(t["cover_photo_path"], "large"),
+        "cover_source": "tour" if t["cover_photo_path"] else None,
+        "cover_place": None,
         "photo_count": t["photo_count"] or 0,
         "published_at": _iso(t["published_at"]),
         "updated_at": _iso(t["updated_at"]),
@@ -426,20 +516,28 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
             for p in photos
         ],
     }
+    # The hero falls back to a destination photo only when the tour has no photo at all.
+    if not out["photos"]:
+        await fill_fallback_covers([out], pool=pool)
+    return out
 
 
 async def list_countries(*, pool: Any) -> dict:
     rows = await pool.fetch(COUNTRIES_SQL)
-    return {
-        "countries": [
-            {"country": r["country"], "slug": slugify(r["country"]), "tour_count": r["tour_count"],
-             "min_days": r["min_days"], "max_days": r["max_days"],
-             "cover_url": photo_url(r["cover_photo_path"], "large"),
-             "cover_url_small": photo_url(r["cover_photo_path"], "small"),
-             "updated_at": _iso(r["updated_at"])}
-            for r in rows
-        ]
-    }
+    # A country none of whose tours has a photo shows its best-covered destination instead.
+    bare = sorted({r["country"].lower() for r in rows if not r["cover_photo_path"]})
+    fallback: dict[str, str] = {}
+    if bare:
+        for r in await pool.fetch(COUNTRY_COVERS_SQL, bare):
+            fallback.setdefault(r["country_key"], r["cover_photo_path"])
+    out = []
+    for r in rows:
+        path = r["cover_photo_path"] or fallback.get(r["country"].lower())
+        out.append({"country": r["country"], "slug": slugify(r["country"]), "tour_count": r["tour_count"],
+                    "min_days": r["min_days"], "max_days": r["max_days"],
+                    "cover_url": photo_url(path, "large"), "cover_url_small": photo_url(path, "small"),
+                    "updated_at": _iso(r["updated_at"])})
+    return {"countries": out}
 
 
 def aggregate_places(rows: Iterable[Any], limit: int = TOP_PLACES_PER_COUNTRY) -> list[dict]:
@@ -504,6 +602,11 @@ async def destination_page(country: str, *, pool: Any) -> Optional[dict]:
         for a in r["activity_types"] or []:
             acts[a] = acts.get(a, 0) + 1
     name = cards[0]["country"]
+    # Hero: a tour's own cover, else the first place photo of the gallery (taken before the
+    # listed tours get their destination fallbacks, so a tour photo always wins).
+    hero = next((c["cover_url"] for c in cards if c["cover_url"]), None) or (photos[0]["url"] if photos else None)
+    top = cards[:TOP_TOURS_PER_COUNTRY]
+    await fill_fallback_covers(top, pool=pool)
     return {
         "country": name,
         "slug": cslug,
@@ -511,8 +614,8 @@ async def destination_page(country: str, *, pool: Any) -> Optional[dict]:
         "min_days": min(days) if days else None,
         "max_days": max(days) if days else None,
         "top_activities": [a for a, _ in sorted(acts.items(), key=lambda kv: (-kv[1], kv[0]))[:6]],
-        "cover_url": next((c["cover_url"] for c in cards if c["cover_url"]), None),
-        "tours": cards[:TOP_TOURS_PER_COUNTRY],
+        "cover_url": hero,
+        "tours": top,
         "places": places,
         "photos": photos,
     }

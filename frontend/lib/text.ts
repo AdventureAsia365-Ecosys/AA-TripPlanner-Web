@@ -37,3 +37,20 @@ export function slugify(raw: string): string {
   }
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
+
+// Alt text for a tour cover. A fallback cover is a photo of a destination, not of the tour, so it
+// is named as such ("Hanoi — destination photo") instead of carrying the tour's title.
+export function coverAlt(
+  t: { title: string; cover_source?: string | null; cover_place?: string | null },
+): string {
+  if ((t.cover_source === "destination" || t.cover_source === "country") && t.cover_place) {
+    return `${t.cover_place} — destination photo`;
+  }
+  return t.title;
+}
+
+// Travel months for the month filter (value = 1-12, the browse API's `month`).
+export const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+] as const;

@@ -11,7 +11,7 @@ import StaticMap from "@/components/site/StaticMap";
 import type { MapPoint } from "@/lib/tourMap";
 import { CATALOG_REVALIDATE_S, getTour, siteUrl } from "@/lib/catalog";
 import type { TourDetail } from "@/lib/catalogTypes";
-import { clip, daysText, splitLines, titleCase } from "@/lib/text";
+import { clip, coverAlt, daysText, splitLines, titleCase } from "@/lib/text";
 import { routePoints } from "@/lib/tourMap";
 import { Badge, ButtonLink, Icon, Photo } from "@/ui";
 
@@ -40,7 +40,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       description,
       type: "website",
       url: `/tours/${t.slug}`,
-      images: t.cover_url ? [{ url: t.cover_url }] : undefined,
+      // A destination fallback cover keeps its "destination photo" alt here too.
+      images: t.cover_url ? [{ url: t.cover_url, alt: coverAlt(t) }] : undefined,
     },
   };
 }
@@ -92,7 +93,19 @@ function tripJsonLd(t: TourDetail, points: MapPoint[]) {
 function Gallery({ t }: { t: TourDetail }) {
   const photos = t.photos.length ? t.photos : [];
   if (photos.length === 0) {
-    return <Photo src={t.cover_url} alt={t.title} eager className="aspect-[16/9] w-full rounded-2xl" />;
+    // No tour photo: the API may send a destination photo instead (cover_source), captioned so it
+    // never reads as a picture of this tour.
+    const fallback = t.cover_url && t.cover_source !== "tour" && t.cover_place;
+    return (
+      <figure className="relative">
+        <Photo src={t.cover_url} alt={coverAlt(t)} eager className="aspect-[16/9] w-full rounded-2xl" />
+        {fallback && (
+          <figcaption className="absolute bottom-3 left-3 rounded-full bg-black/70 px-3 py-1 text-[12px] font-medium text-white">
+            Destination photo · {t.cover_place}
+          </figcaption>
+        )}
+      </figure>
+    );
   }
   const [first, ...rest] = photos;
   return (

@@ -4,6 +4,11 @@
 
 import type { RouteProposal } from "./types";
 
+// Where a tour's cover comes from (AA-812 D4/D5): its own photo, or — when it has none — a photo
+// of its main destination / of a destination in its country, named by cover_place. A fallback is
+// a destination photo and must be labelled so; it never shows the tour itself.
+export type CoverSource = "tour" | "destination" | "country" | null;
+
 export interface TourCard {
   source_id: string;
   tour_id: string;
@@ -19,6 +24,8 @@ export interface TourCard {
   highlights: string[];
   cover_url: string | null;
   cover_url_small: string | null;
+  cover_source: CoverSource;
+  cover_place: string | null;
   photo_count: number;
   lifecycle_stage: string | null;
   published_at: string | null;
@@ -84,6 +91,8 @@ export interface TourDetail {
   // Whole itinerary text; the page shows it when `days` is empty (legacy, non-canonical text).
   itinerary_text: string | null;
   cover_url: string | null;
+  cover_source: CoverSource;
+  cover_place: string | null;
   photo_count: number;
   published_at: string | null;
   updated_at: string | null;

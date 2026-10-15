@@ -86,7 +86,7 @@ export default async function DestinationRoute({ params }: Props) {
       <SiteHeader />
 
       <main>
-        <section className="relative isolate overflow-hidden">
+        <section className="relative isolate overflow-hidden bg-k-hero-bg">
           <Photo src={d.cover_url} alt={d.country} eager className="absolute inset-0 -z-10 h-full w-full" />
           <div aria-hidden className="absolute inset-0 -z-10 bg-k-scrim" />
           <div className="mx-auto max-w-6xl px-4 pb-10 pt-14 sm:pb-14 sm:pt-24">
@@ -158,7 +158,8 @@ export default async function DestinationRoute({ params }: Props) {
             <ul className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
               {d.photos.map((p) => (
                 <li key={p.photo_id}>
-                  <Photo src={p.url_small ?? p.url} alt={p.place_label || d.country} className="aspect-[4/3] w-full rounded-xl" />
+                  <Photo src={p.url_small ?? p.url} alt={p.place_label ? `${p.place_label}, ${d.country}` : d.country}
+                         className="aspect-[4/3] w-full rounded-xl" />
                   {p.place_label && <p className="mt-1 truncate text-[11px] text-k-muted">{p.place_label}</p>}
                 </li>
               ))}

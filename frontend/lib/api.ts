@@ -292,12 +292,14 @@ export async function removeDay(tripId: string, sessionId: string, dayId: string
 // state), not "no tours".
 export async function fetchCatalogTours(q: {
   country?: string;
+  month?: number;
   sort?: TourSort;
   limit?: number;
   offset?: number;
 }): Promise<TourList | null> {
   const p = new URLSearchParams({ resource: "catalog-tours" });
   if (q.country) p.set("country", q.country);
+  if (q.month) p.set("month", String(q.month));
   if (q.sort) p.set("sort", q.sort);
   if (q.limit) p.set("limit", String(q.limit));
   if (q.offset) p.set("offset", String(q.offset));

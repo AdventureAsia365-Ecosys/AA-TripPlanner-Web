@@ -179,11 +179,16 @@ class FakeCatalogPool:
     An unknown query returns no rows (so the planner's other reads show their empty states)."""
 
     def __init__(self, tours: list[dict] | None = None, stops: list[dict] | None = None,
-                 components: list[dict] | None = None):
+                 components: list[dict] | None = None, dest_photos: list[dict] | None = None):
         self.tours = TOURS if tours is None else tours
         self.stops = STOPS if stops is None else stops
         self.components = PLANNER_COMPONENTS if components is None else components
+        self.dest_photos = DEST_PHOTOS if dest_photos is None else dest_photos
         self.calls: list[tuple[str, tuple]] = []
+
+    def _dest_cover(self, did: str) -> str | None:
+        return next((p["path"] for p in sorted(self.dest_photos, key=lambda p: p["position"])
+                     if p["destination_id"] == did), None)
 
     def _by_id(self, tid: str) -> dict | None:
         return next((t for t in self.tours if t["tour_id"] == tid), None)
@@ -222,12 +227,21 @@ class FakeCatalogPool:
             ids = set(args[0])
             return [p for p in PLACES if p["tour_id"] in ids and p["destination_id"] and p["lat"] is not None]
         if q == _norm(cat.DESTINATION_COVERS_SQL):
-            return [{"destination_id": d, "cover_photo_path": next(
-                        (p["path"] for p in DEST_PHOTOS if p["destination_id"] == d), None),
-                     "photo_count": sum(1 for p in DEST_PHOTOS if p["destination_id"] == d)}
+            return [{"destination_id": d, "cover_photo_path": self._dest_cover(d),
+                     "photo_count": sum(1 for p in self.dest_photos if p["destination_id"] == d)}
                     for d in args[0]]
         if q == _norm(cat.DESTINATION_PHOTOS_SQL):
-            return [p for p in DEST_PHOTOS if p["destination_id"] in args[0]]
+            return [p for p in self.dest_photos if p["destination_id"] in args[0]]
+        if q == _norm(cat.TOUR_DESTINATIONS_SQL):
+            ids = set(args[0])
+            return [{"tour_id": p["tour_id"], "destination_id": p["destination_id"],
+                     "destination_name": p["destination_name"], "day_number": p["day_number"]}
+                    for p in PLACES if p["tour_id"] in ids and p["destination_id"]]
+        if q == _norm(cat.COUNTRY_COVERS_SQL):
+            rows = [{"country_key": c.lower(), "name": n, "cover_photo_path": self._dest_cover(d),
+                     "photo_count": sum(1 for p in self.dest_photos if p["destination_id"] == d)}
+                    for d, (n, c, _lat, _lng) in DESTS.items() if c.lower() in args[0] and self._dest_cover(d)]
+            return sorted(rows, key=lambda r: (r["country_key"], -r["photo_count"], r["name"]))
         if q == _norm(cat.SITEMAP_SQL):
             return sorted([t for t in self.tours if _visible(t)], key=lambda t: t["slug"])
         if q == _norm(routes_mod.DAYS_SQL):
