@@ -63,8 +63,9 @@ npm --prefix frontend run dev
 8. Drag-reorder a day → renarrate runs (order preserved, components
    unchanged; no re-selection).
 9. Click Send to advisor → (flag on) registration form appears; submit
-   name + phone/email → confirm notification fires to
-   `ADVISOR_NOTIFY_EMAIL`.
+   name + phone/email → confirm AA-Booking creates the trip case and its
+   `bk_notify_email` job sends the staff e-mail (AA-811, S238; TripPlanner
+   itself only logs the hand-off).
 10. Edit the trip again after sending → still editable; re-sending sends
     a new notification (no auto-notify on every edit).
 
