@@ -67,6 +67,9 @@ async def get_pool() -> asyncpg.Pool:
             min_size=1,
             max_size=1,
             command_timeout=30,
+            # Named per Lambda (aa-tripplanner-dev-browse / -assembly) so pg_stat_activity shows which
+            # function holds the connections on the shared RDS (AA-824, data standards C2.2).
+            server_settings={"application_name": os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "tripplanner-local")[:63]},
         )
     return _pool
 
