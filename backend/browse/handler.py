@@ -13,7 +13,10 @@ Routes:
   GET /browse/catalog/destinations/{country} (AA-812: country page data)
   GET /browse/catalog/sitemap                (AA-812: slugs for sitemap.xml)
 
-The /browse/catalog/* reads use only the CIS catalog views (ADR 0001, CIS migration 225).
+The /browse/catalog/* reads use only the CIS catalog views (ADR 0001, CIS migration 225). The place /
+tour-graph reads (tiles, countries, by-country, destinations, search, routes, tour-route) follow
+PLACES_SOURCE: legacy = the frozen tripplanner tables, cis = the CIS catalog views of migration 228
+(AA-712 slice 6b; backend/shared/places_source.py). Every response says which in x-places-source.
 
 Read routes (tiles, destinations) are CDN-cacheable with a fixed TTL;
 /search sends no-store. Never calls Bedrock except for the search
@@ -36,6 +39,7 @@ from backend.browse import tiles as tiles_mod
 from backend.browse import search as search_mod
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import TileError
+from backend.shared import places_source
 
 _TILE_RE = re.compile(r"^/browse/tiles/([^/]+)$")
 _DEST_RE = re.compile(r"^/browse/destinations/([^/]+)$")
@@ -64,6 +68,8 @@ _NO_STORE_HEADERS = {
 
 
 def _resp(status: int, body: dict, headers: dict) -> dict:
+    # AA-712 slice 6b: which place store served the read (legacy | cis), for the flip checks.
+    headers = {**headers, "x-places-source": places_source.current()}
     return {"statusCode": status, "headers": headers, "body": json.dumps(body)}
 
 

@@ -68,7 +68,7 @@ Names only — values come from Secrets Manager / Lambda config (AA-CIS-Infra) o
 
 | Where | Variables |
 |---|---|
-| Lambdas | `CIS_PUBLIC_API_BASE` (AA-812, photo URL base; defaults to the Dev CIS API), `TRIPPLANNER_DATABASE_URL` (or `TRIPPLANNER_DATABASE_URL_ARN`), `TRIPPLANNER_API_KEY`, `BEDROCK_REGION`, `BEDROCK_ACCT_PRIMARY` / `_FALLBACK`, `BEDROCK_ROLE_NAME_PRIMARY` / `_FALLBACK`, `BEDROCK_EXTERNAL_ID_PRIMARY` / `_FALLBACK`, `ADVISOR_NOTIFY_EMAIL`, `REQUIRE_REGISTRATION_BEFORE_HANDOFF` |
+| Lambdas | `CIS_PUBLIC_API_BASE` (AA-812, photo URL base; defaults to the Dev CIS API), `TRIPPLANNER_DATABASE_URL` (or `TRIPPLANNER_DATABASE_URL_ARN`), `TRIPPLANNER_API_KEY`, `BEDROCK_REGION`, `BEDROCK_ACCT_PRIMARY` / `_FALLBACK`, `BEDROCK_ROLE_NAME_PRIMARY` / `_FALLBACK`, `BEDROCK_EXTERNAL_ID_PRIMARY` / `_FALLBACK`, `ADVISOR_NOTIFY_EMAIL`, `REQUIRE_REGISTRATION_BEFORE_HANDOFF`, `PLACES_SOURCE` (AA-712 slice 6b: `legacy` default = frozen TripPlanner place tables, `cis` = CIS catalog views of migration 228; browse readers only until slice 6c, so set it on both Lambdas together in the flip window) |
 | Frontend | `NEXT_PUBLIC_SITE_URL` (AA-812, canonical origin for metadata/sitemap), `NEXT_PUBLIC_MAPBOX_TOKEN` (also the static maps on tour/destination pages), `BROWSE_API_URL`, `TRIP_API_URL`, `TRIPPLANNER_API_KEY` (server-side only) |
 
 `ADVISOR_NOTIFY_EMAIL` still defaults to a test address and the sender is a logging stub — switch
