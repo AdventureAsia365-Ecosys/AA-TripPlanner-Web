@@ -87,7 +87,11 @@ export default async function DestinationRoute({ params }: Props) {
 
       <main>
         <section className="relative isolate overflow-hidden bg-k-hero-bg">
-          <Photo src={d.cover_url} alt={d.country} eager className="absolute inset-0 -z-10 h-full w-full" />
+          {/* No cover: leave the solid hero-bg under the scrim. The Photo placeholder is a light tint,
+              and white text over tint + scrim is only ~4.4:1 (below AA for the 12-15px lines). */}
+          {d.cover_url && (
+            <Photo src={d.cover_url} alt={d.country} eager className="absolute inset-0 -z-10 h-full w-full" />
+          )}
           <div aria-hidden className="absolute inset-0 -z-10 bg-k-scrim" />
           <div className="mx-auto max-w-6xl px-4 pb-10 pt-14 sm:pb-14 sm:pt-24">
             <nav aria-label="Breadcrumb" className="text-[12px] text-white/80">

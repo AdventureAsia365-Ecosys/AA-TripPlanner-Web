@@ -389,7 +389,7 @@ async def fill_fallback_covers(items: list[dict], *, pool: Any) -> None:
     """Give tours without their own cover a destination photo, in place (AA-812 D4/D5).
 
     Order: the cover of the tour's main destination (catalog.v_tour_place -> v_destination), else
-    the best-covered destination of the tour's country (v_destination.country, exact text). Sets
+    the best-covered destination of the tour's country (v_destination.country, case-insensitive). Sets
     cover_url (+ cover_url_small when the item has it), cover_source ("destination" | "country")
     and cover_place (the destination's name), so the page labels it a destination photo and never
     presents it as a photo of the tour. Items that already have a cover are not touched; when no
