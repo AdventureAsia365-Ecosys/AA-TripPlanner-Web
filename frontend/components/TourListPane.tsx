@@ -163,7 +163,8 @@ export default function TourListPane() {
                   {t.duration_days ? `${t.duration_days} days` : t.duration_raw ?? ""}
                   {t.country && !filters.country ? ` · ${t.country}` : ""}
                 </p>
-                <Link href={`/tours/${t.slug}`} className="aa-focus line-clamp-2 text-sm font-semibold text-aa-ink hover:underline">
+                {/* AA-833: no prefetch; the list shows many tours at once (see TourCard). */}
+                <Link href={`/tours/${t.slug}`} prefetch={false} className="aa-focus line-clamp-2 text-sm font-semibold text-aa-ink hover:underline">
                   {t.title}
                 </Link>
                 {confirm?.tourId === t.tour_id ? (

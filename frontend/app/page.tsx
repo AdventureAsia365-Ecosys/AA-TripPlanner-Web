@@ -121,8 +121,11 @@ export default async function HomePage() {
               <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                 {countries.map((c) => (
                   <li key={c.slug}>
+                    {/* AA-833: no prefetch. Every card in view would render its destination page at
+                        once after a deploy or ISR expiry and throttle the browse Lambda. */}
                     <Link
                       href={`/destinations/${c.slug}`}
+                      prefetch={false}
                       className="group relative block aspect-[4/5] overflow-hidden rounded-2xl border border-k-line"
                     >
                       <Photo src={c.cover_url_small ?? c.cover_url} alt={c.country}
