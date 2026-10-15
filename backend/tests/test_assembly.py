@@ -814,9 +814,36 @@ async def test_send_writes_one_inquiry_outbox_row_with_consent(monkeypatch):
     assert row["idempotency_key"] == f"t1:{first['handoff_id']}"
     p = row["payload"]
     assert p["contract"] == "inquiry.submitted" and p["trip_id"] == "t1"
-    assert p["version"] == 1.1                     # AA-805: contract v1.1 (number, enum [1, 1.1])
+    assert p["version"] == 1.2                     # AA-830: contract v1.2 (number, enum [1.2])
     assert p["customer"]["email"] == "jo@x.com" and p["customer"]["consent"] is True
     assert [d["component_id"] for d in p["itinerary"]["days"]] == ["c1"]
+
+
+@pytest.mark.asyncio
+async def test_send_resolves_each_leg_to_the_catalog_key(monkeypatch):
+    """AA-830: a leg keyed by a version tour_id goes out with its catalog source_id; an unknown key
+    goes out with source_system / source_id null (never refused)."""
+    monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
+    monkeypatch.setitem(CATALOG, "c1", {**CATALOG["c1"], "source_tour_id": "tour-v2", "source_day_index": 1})
+    monkeypatch.setitem(CATALOG, "c2", {**CATALOG["c2"], "source_tour_id": "gone", "source_day_index": 4})
+
+    class CatalogConn(FakeConn):
+        async def fetch(self, query, *args):
+            if query == handoff.TOUR_KEYS_SQL:
+                self.asked = args[0]
+                return [{"source_system": "cis", "source_id": "src-1", "tour_id": "tour-v2"}]
+            return await super().fetch(query, *args)
+
+    conn = CatalogConn()
+    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
+    for cid in ("c1", "c2"):
+        await events.append_event(conn, "t1", "s1", "add_component", {"component_id": cid})
+    req = {"session_id": "s1", "customer": {"name": "Jo", "email": "jo@x.com", "consent": True}}
+    await handler.route("POST", "/trip/t1/send-to-advisor", req, conn=conn, sender=notify.LoggingSender())
+    legs = conn.outbox[0]["payload"]["itinerary"]["legs"]
+    assert conn.asked == ["gone", "tour-v2"]
+    assert {leg["source_tour_id"]: (leg["source_system"], leg["source_id"]) for leg in legs} == {
+        "tour-v2": ("cis", "src-1"), "gone": (None, None)}
 
 
 @pytest.mark.asyncio
