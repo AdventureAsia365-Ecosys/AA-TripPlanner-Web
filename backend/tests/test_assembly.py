@@ -290,6 +290,26 @@ async def test_notify_uses_config_email():
     assert sender.sent[0]["to"] == config.ADVISOR_NOTIFY_EMAIL
 
 
+def test_advisor_email_has_no_personal_default(monkeypatch):
+    # AA-811: AA-Booking e-mails staff; TripPlanner keeps no (personal) address in code.
+    import importlib
+
+    monkeypatch.delenv("ADVISOR_NOTIFY_EMAIL", raising=False)
+    try:
+        assert importlib.reload(config).ADVISOR_NOTIFY_EMAIL == ""
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+@pytest.mark.asyncio
+async def test_logging_sender_logs_and_sends_nothing(caplog):
+    sender = notify.LoggingSender()
+    with caplog.at_level("INFO", logger="backend.assembly.notify"):
+        await notify.notify_advisor("trip1", [], sender=sender)
+    assert "not e-mailed" in caplog.text and "trip1" in caplog.text
+
+
 # --- agent (compose / renarrate) --------------------------------------------
 
 def _fake_invoker(_model, _body):

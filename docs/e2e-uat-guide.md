@@ -18,7 +18,7 @@ MAPBOX_GEOCODING_TOKEN=<your token>        # ✅ verified working
 BEDROCK_ROLE_NAME=<cross-account role name>
 BEDROCK_REGION=us-west-2
 # BEDROCK_ACCT_PRIMARY / FALLBACK / MODEL_* have sensible defaults
-ADVISOR_NOTIFY_EMAIL=pqnghiep1354@gmail.com
+# ADVISOR_NOTIFY_EMAIL is optional (log label only): AA-Booking sends the staff e-mail (AA-811)
 REQUIRE_REGISTRATION_BEFORE_HANDOFF=true
 ```
 > The current `TRIPPLANNER_DATABASE_URL` is still the placeholder
@@ -104,10 +104,10 @@ npm --prefix frontend run dev      # http://localhost:3000
    day order follows the geographic sequence.
 8. Drag a day to reorder → order persists (renarrate runs server-side).
 9. Click "Send to advisor" → registration form appears (flag on) →
-   enter name + email → submit → success message; check the advisor
-   inbox (ADVISOR_NOTIFY_EMAIL) — note: email only actually sends once a
-   real Sender transport (SES/SMTP) is wired; the default LoggingSender
-   records but does not send.
+   enter name + email → submit → success message. TripPlanner sends no
+   e-mail (its LoggingSender only logs the hand-off): on Dev, AA-Booking
+   opens the trip case from the outbox row within ~1–2 min and e-mails the
+   staff inbox (job `bk_notify_email`, AA-811).
 10. Add another component after sending → still editable.
 
 ### Pass criteria
