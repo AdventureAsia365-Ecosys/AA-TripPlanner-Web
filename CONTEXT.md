@@ -55,6 +55,8 @@ Amazon Bedrock  — Cohere Embed v4 called directly in acc2;
 The journey ends with a **draft trip + customer** sent to an advisor ("Send to advisor" +
 sign-up), not a completed booking — booking belongs to the future AA-Booking (AAA) product
 (see `docs/tripplanner-to-aaa-handoff.md` in the root docs repo).
+TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Booking when it processes the
+`inquiry.submitted` outbox row (job `bk_notify_email`, AA-811); `backend/assembly/notify.py` only logs the hand-off.
 
 ### Frontend
 
@@ -255,7 +257,7 @@ Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
 ## Known gaps (deferred)
 
 Place tables frozen until the readers switch to the CIS views (AA-712 slices 6b/7; new tours do
-not reach the map until then); real advisor email (currently a stub); CloudFront in front of
+not reach the map until then); CloudFront in front of
 browse; Mapbox token URL restriction; more countries in the gateway table.
 
 ## Related documents

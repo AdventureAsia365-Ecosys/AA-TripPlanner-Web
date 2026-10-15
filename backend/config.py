@@ -72,8 +72,10 @@ BEDROCK_EXTERNAL_ID_FALLBACK = _get("BEDROCK_EXTERNAL_ID_FALLBACK", "aa296-satel
 # backend/shared/llm_gateway.py. Embeddings must stay 1536-dim to match VECTOR(1536).
 EMBED_DIM = 1536
 
-# --- Advisor notification (single config value, never inline) ---
-ADVISOR_NOTIFY_EMAIL = _get("ADVISOR_NOTIFY_EMAIL", "pqnghiep1354@gmail.com")
+# --- Advisor notification (log label only) ---
+# TripPlanner sends no e-mail: AA-Booking e-mails staff about a new inquiry (bk_notify_email, AA-811).
+# Optional label for the hand-off log line in assembly/notify.py; no personal address as a default.
+ADVISOR_NOTIFY_EMAIL = _get("ADVISOR_NOTIFY_EMAIL", "")
 
 # --- Master-content tenant (RLS on the shared gold schema) ---
 # gold_aa_internal.published_tours enforces row-level security by tenant
