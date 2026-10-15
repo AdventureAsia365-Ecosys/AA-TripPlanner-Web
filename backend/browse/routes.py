@@ -374,21 +374,30 @@ async def tour_route(conn: Any, tour_id: str, also: tuple[Optional[str], ...] = 
 
     PLACES_SOURCE=cis: the graph and the components are keyed by the tour's catalog source_id, which
     survives re-uploads, so the one key is the current tour's source_id (the other ids are not needed)."""
+    source_id = None
     if places_source.is_cis():
         source_id = await conn.fetchval(SOURCE_BY_TOUR_SQL, tour_id)
         keys = [source_id] if source_id else []
     else:
         keys = list(dict.fromkeys(k for k in (tour_id, *also) if k))
+
+    def _with_source(p: dict) -> dict:
+        # cis: segments / days carry the catalog source_id next to the current tour_id, as in proposals()
+        if source_id:
+            for row in (*p["segments"], *p["days"]):
+                row["source_id"] = source_id
+        return p
+
     title = None
     for key in keys:
         found = await _graph_route(conn, key, tour_id)
         if found:
             title = await conn.fetchval(TOUR_TITLE_SQL, tour_id)
-            return _proposal(tour_id, title, found[0], found[1], "tour_graph")
+            return _with_source(_proposal(tour_id, title, found[0], found[1], "tour_graph"))
     found = await _places_route(conn, tour_id, keys)
     if found:
         title = await conn.fetchval(TOUR_TITLE_SQL, tour_id)
-        return _proposal(tour_id, title, found[0], found[1], "places")
+        return _with_source(_proposal(tour_id, title, found[0], found[1], "places"))
     return None
 
 

@@ -212,7 +212,25 @@ async def test_cis_tour_route_uses_the_source_id_of_the_current_tour(cis):
     assert resp["statusCode"] == 200 and body["tour_id"] == TOUR_A
     assert body["proposal"]["match"] == "tour_graph"
     assert [d["component_id"] for d in body["proposal"]["days"]] == ["comp-1", "comp-2", "comp-3"]
+    # same shape as /browse/routes on cis: current tour_id + the catalog source_id
+    assert [(s["tour_id"], s["source_id"]) for s in body["proposal"]["segments"]] == [(TOUR_A, SRC_A)]
+    assert {(d["tour_id"], d["source_id"]) for d in body["proposal"]["days"]} == {(TOUR_A, SRC_A)}
     _assert_cis_only(pool)
+
+
+async def test_legacy_tour_route_has_no_source_id():
+    pool = RecordingPool([
+        ("FROM tripplanner.tour_stop s JOIN shared.destinations", [
+            {"tour_id": TOUR_A, "day_index": 1, "destination_id": VTE, "name": "Vientiane", "lat": 0.0,
+             "lng": 0.0, "country": "Laos"}]),
+        ("FROM tripplanner.itinerary_components", [
+            {"tour_id": TOUR_A, "day_index": 1, "destination_id": VTE, "component_id": "comp-1"}]),
+        ("SELECT title FROM catalog.v_tour", [{"title": "Mekong Valley"}]),
+    ])
+    resp = await h.route("GET", "/browse/tour-route", {"tour_id": TOUR_A}, pool=pool)
+    body = json.loads(resp["body"])
+    assert resp["statusCode"] == 200 and resp["headers"]["x-places-source"] == "legacy"
+    assert all("source_id" not in r for r in (*body["proposal"]["segments"], *body["proposal"]["days"]))
 
 
 async def test_cis_tour_route_without_a_catalog_source_answers_404(cis):
