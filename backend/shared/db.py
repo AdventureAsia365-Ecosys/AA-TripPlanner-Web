@@ -52,13 +52,20 @@ def _resolve_dsn() -> str:
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Lazily create and return the process-wide connection pool."""
+    """Lazily create and return the process-wide connection pool.
+
+    AA-824 (data standards C2.2, connection budget): one connection per Lambda instance. An
+    instance serves one invocation at a time and every handler uses its connections one after
+    another (no gather, no nested acquire), so a larger pool only held idle connections: with
+    max_size=5 the 10 reserved instances could open 50 connections on the shared RDS. With 1,
+    the TripPlanner budget is exactly the Lambdas' reserved concurrency.
+    """
     global _pool
     if _pool is None:
         _pool = await asyncpg.create_pool(
             dsn=_resolve_dsn(),
             min_size=1,
-            max_size=5,
+            max_size=1,
             command_timeout=30,
         )
     return _pool
