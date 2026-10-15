@@ -37,6 +37,7 @@ const config: Config = {
           line2: "var(--aa-line2)",
           "on-accent": "var(--aa-on-accent)",
           scrim: "var(--aa-scrim)",
+          "hero-bg": "var(--aa-hero-bg)",
         },
         aa: {
           gold: "#DB9628",

@@ -147,7 +147,7 @@ async def test_list_empty_catalog():
 
 def _contract_view(tour: dict) -> dict:
     """The catalog.tour v1 part of the answer (the API adds display helpers next to it)."""
-    extras = {"country_slug", "cover_url"}
+    extras = {"country_slug", "cover_url", "cover_source", "cover_place"}
     out = {k: v for k, v in tour.items() if k not in extras}
     out["photos"] = [{k: v for k, v in p.items() if k not in ("url", "url_small")} for p in tour["photos"]]
     return out
@@ -231,6 +231,112 @@ async def test_destination_place_without_geocode_is_left_out():
 async def test_destination_unknown_is_404():
     status, _, _ = await _get("/browse/catalog/destinations/atlantis")
     assert status == 404
+
+
+# --- cover fallback (D4/D5) -------------------------------------------------------------------
+
+def _without_photos(i: int) -> list[dict]:
+    """The fixture tours with tour i stripped of its own photos (cover NULL, photo_count 0)."""
+    tours = [dict(t) for t in fx.TOURS]
+    tours[i].update(cover_photo_path=None, photo_count=0)
+    return tours
+
+
+def test_main_destination_is_most_days_then_earliest():
+    rows = [
+        {"tour_id": "t", "destination_id": "a", "destination_name": "A", "day_number": 3},
+        {"tour_id": "t", "destination_id": "b", "destination_name": "B", "day_number": 1},
+        {"tour_id": "t", "destination_id": "b", "destination_name": "B", "day_number": 2},
+        {"tour_id": "t", "destination_id": "c", "destination_name": "C", "day_number": None},
+        {"tour_id": "t", "destination_id": "a", "destination_name": "A", "day_number": 4},
+        {"tour_id": "t", "destination_id": "d", "destination_name": "D", "day_number": 5},
+    ]
+    assert [d for d, _ in cat.main_destinations(rows)["t"]] == ["b", "a", "d", "c"]
+
+
+async def test_list_card_without_photo_gets_country_destination_photo():
+    _, body, _ = await _get("/browse/catalog/tours", {"country": "vietnam"})
+    mekong = next(t for t in body["tours"] if t["title"] == "Mekong Delta by Boat")
+    # Can Tho (its only place) has no photo -> the best-covered Vietnam destination (tie -> by name).
+    assert mekong["cover_source"] == "country" and mekong["cover_place"] == "Ha Long Bay"
+    assert mekong["cover_url"].endswith("?size=large") and mekong["cover_url_small"].endswith("?size=small")
+    assert mekong["photo_count"] == 0  # the featured sort still ranks on real photos
+    hanoi = next(t for t in body["tours"] if t["title"] == "Hanoi and Ha Long Bay")
+    assert hanoi["cover_source"] == "tour" and hanoi["cover_place"] is None
+
+
+async def test_list_card_prefers_the_tours_main_destination():
+    pool = fx.FakeCatalogPool(tours=_without_photos(0))
+    _, body, _ = await _get("/browse/catalog/tours", {"country": "vietnam"}, pool=pool)
+    t0 = next(t for t in body["tours"] if t["title"] == "Hanoi and Ha Long Bay")
+    # Hanoi (days 1, 4) and Ha Long Bay (days 2, 3) tie on days; Hanoi comes first in the trip.
+    assert t0["cover_source"] == "destination" and t0["cover_place"] == "Hanoi"
+    assert "a0000000-0000-4000-8000-000000000001" in t0["cover_url"]
+
+
+async def test_fallback_queries_only_for_the_page_without_covers():
+    pool = fx.FakeCatalogPool()
+    await _get("/browse/catalog/tours", {"country": "sri-lanka"}, pool=pool)
+    assert not any(q in (cat.TOUR_DESTINATIONS_SQL, cat.COUNTRY_COVERS_SQL) for q, _ in pool.calls)
+    pool = fx.FakeCatalogPool()
+    await _get("/browse/catalog/tours", {"limit": "1", "offset": "2"}, pool=pool)  # Mekong only
+    args = [a for q, a in pool.calls if q == cat.TOUR_DESTINATIONS_SQL]
+    assert args == [([fx.TOURS[1]["tour_id"]],)]
+
+
+async def test_country_fallback_ignores_case():
+    # CIS joins shared.destinations to a tour's country with lower() (mig 225); so does the fallback.
+    item = {"tour_id": "00000000-0000-4000-8000-0000000000ff", "country": "VIETNAM",
+            "cover_url": None, "cover_url_small": None, "cover_source": None, "cover_place": None}
+    pool = fx.FakeCatalogPool()
+    await cat.fill_fallback_covers([item], pool=pool)
+    assert item["cover_source"] == "country" and item["cover_place"] == "Ha Long Bay"
+    assert [a for q, a in pool.calls if q == cat.COUNTRY_COVERS_SQL] == [(["vietnam"],)]
+
+
+async def test_no_place_photo_keeps_the_placeholder():
+    pool = fx.FakeCatalogPool(tours=_without_photos(2), dest_photos=[])
+    _, body, _ = await _get("/browse/catalog/tours", {"country": "sri-lanka"}, pool=pool)
+    card = body["tours"][0]
+    assert card["cover_url"] is None and card["cover_url_small"] is None
+    assert card["cover_source"] is None and card["cover_place"] is None
+
+
+async def test_tour_detail_without_photos_gets_a_labelled_destination_hero(monkeypatch):
+    monkeypatch.setattr(fx, "PHOTOS", [p for p in fx.PHOTOS if p["tour_id"] != fx.TOURS[0]["tour_id"]])
+    pool = fx.FakeCatalogPool(tours=_without_photos(0))
+    status, tour, _ = await _get(f"/browse/catalog/tours/{fx.TOURS[0]['slug']}", pool=pool)
+    assert status == 200 and tour["photos"] == []
+    assert tour["cover_source"] == "destination" and tour["cover_place"] == "Hanoi"
+    assert tour["cover_url"].endswith("?size=large") and "cover_url_small" not in tour
+    jsonschema.validate(_contract_view(tour), SCHEMA)
+    # a tour with its own photos never reads the fallback
+    monkeypatch.undo()
+    pool = fx.FakeCatalogPool()
+    _, tour, _ = await _get(f"/browse/catalog/tours/{fx.TOURS[0]['slug']}", pool=pool)
+    assert tour["cover_source"] == "tour"
+    assert not any(q == cat.TOUR_DESTINATIONS_SQL for q, _ in pool.calls)
+
+
+async def test_destination_page_tours_and_hero_fallback():
+    _, page, _ = await _get("/browse/catalog/destinations/vietnam")
+    assert page["cover_url"] and "8d2e4f60" in page["cover_url"]  # the Hanoi tour's own cover
+    mekong = next(t for t in page["tours"] if t["title"] == "Mekong Delta by Boat")
+    assert mekong["cover_source"] == "country"
+    # no tour photo in the country -> hero = the first gallery photo
+    tours = [dict(t, cover_photo_path=None, photo_count=0) for t in fx.TOURS]
+    _, page, _ = await _get("/browse/catalog/destinations/vietnam", pool=fx.FakeCatalogPool(tours=tours))
+    assert page["cover_url"] == page["photos"][0]["url"]
+
+
+async def test_country_without_tour_photos_uses_a_destination_photo():
+    tours = [dict(t, cover_photo_path=None, photo_count=0) if t["country"] == "Vietnam" else t
+             for t in fx.TOURS]
+    _, body, _ = await _get("/browse/catalog/destinations", pool=fx.FakeCatalogPool(tours=tours))
+    vn = next(c for c in body["countries"] if c["country"] == "Vietnam")
+    assert "a0000000-0000-4000-8000-000000000002" in vn["cover_url"]  # Ha Long Bay (name order on a tie)
+    sl = next(c for c in body["countries"] if c["country"] == "Sri Lanka")
+    assert "2b3c4d5e" in sl["cover_url"]  # its own tour cover, untouched
 
 
 # --- sitemap ----------------------------------------------------------------------------------

@@ -1,7 +1,8 @@
 "use client";
 
 // AA-812 — the planner's LIST view: AA tours (CIS catalog) for the country chosen on the map,
-// sortable by duration. Each tour opens its page or is pinned as a whole route (same apply-route
+// filterable by travel month (the tour's "best time to go"; a tour that names no month stays in)
+// and sortable by duration. Each tour opens its page or is pinned as a whole route (same apply-route
 // flow as the route finder). A trip that already has stops is asked first, like PlanPrefill
 // (apply-route merges). Pages of PAGE_SIZE with "Show more". Styled with the planner's aa-* palette.
 
@@ -11,6 +12,7 @@ import { useTrip } from "@/lib/useTrip";
 import { fetchCatalogTours, fetchTourRoute } from "@/lib/api";
 import type { TourCard, TourSort } from "@/lib/catalogTypes";
 import type { RouteProposal } from "@/lib/types";
+import { coverAlt, MONTH_NAMES } from "@/lib/text";
 
 const PAGE_SIZE = 24;
 
@@ -19,6 +21,7 @@ type Load = { state: "loading" } | { state: "error" } | { state: "done"; tours: 
 export default function TourListPane() {
   const { filters, applyRoute, itinerary } = useTrip();
   const [sort, setSort] = useState<Extract<TourSort, "duration_asc" | "duration_desc">>("duration_asc");
+  const [month, setMonth] = useState(0); // 0 = any month
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<Record<string, string>>({});
@@ -30,19 +33,25 @@ export default function TourListPane() {
     let active = true;
     setLoad({ state: "loading" });
     setConfirm(null);
-    fetchCatalogTours({ country: filters.country, sort, limit: PAGE_SIZE }).then((r) => {
+    fetchCatalogTours({ country: filters.country, month: month || undefined, sort, limit: PAGE_SIZE }).then((r) => {
       if (!active) return;
       setLoad(r ? { state: "done", tours: r.tours, total: r.total } : { state: "error" });
     });
     return () => {
       active = false;
     };
-  }, [filters.country, sort, attempt]);
+  }, [filters.country, month, sort, attempt]);
 
   const showMore = async () => {
     if (load.state !== "done") return;
     setMore("loading");
-    const r = await fetchCatalogTours({ country: filters.country, sort, limit: PAGE_SIZE, offset: load.tours.length });
+    const r = await fetchCatalogTours({
+      country: filters.country,
+      month: month || undefined,
+      sort,
+      limit: PAGE_SIZE,
+      offset: load.tours.length,
+    });
     if (!r) {
       setMore("error");
       return;
@@ -88,17 +97,32 @@ export default function TourListPane() {
           {load.state === "done" && <span className="ml-1.5 font-normal text-aa-muted">({load.total})</span>}
           <span className="block text-[11px] font-normal text-aa-muted">Change the country on the Map view.</span>
         </p>
-        <label className="flex items-center gap-1.5 text-xs text-aa-muted">
-          Sort
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as typeof sort)}
-            className="aa-focus rounded-lg border border-aa-line bg-white px-2 py-1 text-xs text-aa-ink"
-          >
-            <option value="duration_asc">Shortest first</option>
-            <option value="duration_desc">Longest first</option>
-          </select>
-        </label>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-1.5 text-xs text-aa-muted">
+            Travel in
+            <select
+              value={month}
+              onChange={(e) => setMonth(Number(e.target.value))}
+              className="aa-focus rounded-lg border border-aa-line bg-white px-2 py-1 text-xs text-aa-ink"
+            >
+              <option value={0}>Any month</option>
+              {MONTH_NAMES.map((m, i) => (
+                <option key={m} value={i + 1}>{m}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-aa-muted">
+            Sort
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value as typeof sort)}
+              className="aa-focus rounded-lg border border-aa-line bg-white px-2 py-1 text-xs text-aa-ink"
+            >
+              <option value="duration_asc">Shortest first</option>
+              <option value="duration_desc">Longest first</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       {load.state === "loading" && <p className="mt-6 text-center text-xs text-aa-muted">Loading tours…</p>}
@@ -112,7 +136,9 @@ export default function TourListPane() {
       )}
       {load.state === "done" && load.tours.length === 0 && (
         <p className="mt-6 rounded-xl border border-dashed border-aa-line bg-white p-4 text-center text-xs text-aa-muted">
-          No Adventure Asia tours {filters.country ? `in ${filters.country} ` : ""}yet. Try another country.
+          {month
+            ? `No tours ${filters.country ? `in ${filters.country} ` : ""}list ${MONTH_NAMES[month - 1]} as a good time to go. Try another month.`
+            : `No Adventure Asia tours ${filters.country ? `in ${filters.country} ` : ""}yet. Try another country.`}
         </p>
       )}
       {load.state === "done" && load.tours.length > 0 && (
@@ -120,8 +146,15 @@ export default function TourListPane() {
           {load.tours.map((t) => (
             <li key={t.tour_id} className="flex gap-3 rounded-xl border border-aa-line bg-white p-2.5">
               {t.cover_url_small ? (
+                // A fallback (no tour photo) is a destination photo: named so in alt and title.
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={t.cover_url_small} alt="" loading="lazy" className="h-20 w-24 shrink-0 rounded-lg object-cover" />
+                <img
+                  src={t.cover_url_small}
+                  alt={t.cover_source === "tour" ? "" : coverAlt(t)}
+                  title={t.cover_source === "tour" ? undefined : coverAlt(t)}
+                  loading="lazy"
+                  className="h-20 w-24 shrink-0 rounded-lg object-cover"
+                />
               ) : (
                 <div aria-hidden className="h-20 w-24 shrink-0 rounded-lg bg-aa-gold-soft" />
               )}

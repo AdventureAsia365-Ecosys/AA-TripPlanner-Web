@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Badge, Photo } from "@/ui";
 import type { TourCard as TourCardData } from "@/lib/catalogTypes";
-import { daysText } from "@/lib/text";
+import { coverAlt, daysText } from "@/lib/text";
 
 export default function TourCard({ tour, eager = false }: { tour: TourCardData; eager?: boolean }) {
   const days = daysText(tour.duration_days, tour.duration_raw);
@@ -11,7 +11,7 @@ export default function TourCard({ tour, eager = false }: { tour: TourCardData; 
       className="group flex h-full flex-col overflow-hidden rounded-2xl border border-k-line bg-k-card transition hover:border-k-accent-border hover:shadow-aa-sm"
     >
       <div className="relative aspect-[4/3] overflow-hidden">
-        <Photo src={tour.cover_url_small ?? tour.cover_url} alt={tour.title} eager={eager}
+        <Photo src={tour.cover_url_small ?? tour.cover_url} alt={coverAlt(tour)} eager={eager}
                className="h-full w-full transition duration-300 group-hover:scale-[1.03]" />
         {days && (
           <span className="absolute left-3 top-3 rounded-full bg-k-card px-2.5 py-1 text-[11px] font-semibold text-k-ink">

@@ -9,6 +9,15 @@
    Only the core palette the kit components use is copied (accent, semantic, neutrals,
    surfaces); CIS's long tail of legacy page colours is not.
 
+   Contrast (AA-812 D6, S237): three LIGHT values differ from the CIS kit so every text pair
+   meets WCAG AA (4.5:1) — Lighthouse flagged them on every page:
+     --aa-accent-deep  #9E6E16 -> #875D12  (on tint 4.05 -> 5.28, on white 4.47 -> 5.83)
+     --aa-muted        #6B7380 -> #656D7A  (on bg 4.43 -> 4.84, on tint 4.34 -> 4.73)
+     --aa-on-accent    #FFFFFF -> #1A1206  (text on the gold primary 2.49 -> 7.42; the dark
+                                            theme already uses this ink)
+   Same hue, a few % darker; the accent itself (#DB9628, fills and icons) is unchanged. Proposed
+   back to the CIS kit under AA-655 so the family stays one palette. Dark values already pass.
+
    Theme: <html data-theme="light|dark"> set before paint by the restore script in
    app/layout.tsx (localStorage key `tp_theme`; absent = follow the OS). The map planner
    (/plan) keeps its own light-only Tailwind `aa.*` hex palette for now.
@@ -17,7 +26,7 @@
 :root,
 [data-theme="light"] {
   --aa-accent:        #DB9628;
-  --aa-accent-deep:   #9E6E16;
+  --aa-accent-deep:   #875D12; /* kit #9E6E16, see Contrast above */
   --aa-accent-soft:   #F4E2C2;
   --aa-accent-tint:   #FBF3E3;
   --aa-accent-border: #DDA64E;
@@ -39,17 +48,20 @@
   --aa-ink2:          #2A333E;
   --aa-ink3:          #3A4453;
   --aa-body:          #33363D;
-  --aa-muted:         #6B7380;
+  --aa-muted:         #656D7A; /* kit #6B7380 */
   --aa-muted2:        #9099A6;
   --aa-bg:            #F8F6F2;
   --aa-card:          #FFFFFF;
   --aa-line:          #E9E4DB;
   --aa-line2:         #F0EBE0;
 
-  --aa-on-accent:     #FFFFFF;
+  --aa-on-accent:     #1A1206; /* kit #FFFFFF */
   --aa-on-solid:      #FFFFFF;
   /* TripPlanner-only: scrim over hero photos (text on images must stay readable in both themes) */
   --aa-scrim:         rgba(15, 20, 27, 0.55);
+  /* TripPlanner-only: solid dark under a text-over-photo hero, so its white text stays readable
+     while the photo loads, when it fails, or when there is no photo (AA-812 D6) */
+  --aa-hero-bg:       #1F2933;
 
   color-scheme: light;
 }
@@ -88,6 +100,7 @@
   --aa-on-accent:     #1A1206;
   --aa-on-solid:      #FFFFFF;
   --aa-scrim:         rgba(5, 8, 12, 0.62);
+  --aa-hero-bg:       #19212C;
 
   color-scheme: dark;
 }
