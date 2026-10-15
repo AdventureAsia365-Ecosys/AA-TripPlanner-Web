@@ -7,6 +7,7 @@ Secrets Manager (acc2); locally it comes from the environment / .env.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 
 def _get(name: str, default: str | None = None, required: bool = False) -> str | None:
@@ -34,7 +35,7 @@ SCHEMA_ACP = "acp_contract"
 # "legacy" = the frozen TripPlanner tables (tripplanner.itinerary_components, tour_stop, tour_leg,
 # tour_junction + shared.destinations); "cis" = the CIS catalog views of migration 228
 # (catalog.v_tour_component, v_tour_stop, v_tour_leg, v_tour_junction, v_destination). Only the
-# browse readers follow it in slice 6b; the assembly readers switch with the tp-011 id-map (slice 6c),
+# browse readers follow it in slice 6b; the assembly readers switch with the tp-013 id-map (slice 6c),
 # so set it to "cis" on both Lambdas together, in that window. Unknown values read as "legacy".
 PLACES_SOURCE = _get("PLACES_SOURCE", "legacy")
 
@@ -95,6 +96,17 @@ MASTER_CONTENT_TENANT_ID = _get(
 # Manager and the BFF sends the same value. See shared/auth.py.
 TRIPPLANNER_API_KEY = _get("TRIPPLANNER_API_KEY", "")
 API_KEY_HEADER = "x-tripplanner-key"
+
+# --- Guest credential (AA-827) ---
+# The BFF holds a random token in an HttpOnly cookie and forwards it in this header on every
+# mutating call; the session row stores only sha256(token) (migration tp-011). session_id is an
+# identifier, never a credential. See assembly/guest_session.py.
+GUEST_TOKEN_HEADER = "x-tripplanner-guest"
+# Until this instant a request without a token (old BFF / old bundle) is still accepted for a
+# session that has no hash yet, and a legacy session is bound to the first token it sees. After
+# it, a session_id alone gets 401. Planned merge 16/10/2026 + ~72 h. A code constant on purpose:
+# changing it is a reviewed deploy, not a Lambda env edit.
+GUEST_LEGACY_GRACE_UNTIL = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
 
 # --- Behavioural constants (from design.md non-functional table) ---
 HOVER_DEBOUNCE_MS = 200
