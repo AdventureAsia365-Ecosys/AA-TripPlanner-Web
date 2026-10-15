@@ -143,8 +143,15 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
   and the guard test `backend/tests/test_extraction_ops.py` fails if any module under `backend/`
   writes `shared.destinations` or the tripplanner place tables (`itinerary_components`, `tour_day`,
   `tour_stop`, `tour_graph_*`, `tour_leg`, `tour_junction`). Those tables are **frozen** (no longer
-  refreshed) and the readers keep using them until slices 6b/7 switch them to the CIS catalog
-  views behind `PLACES_SOURCE`.
+  refreshed). Since slice 6b the **browse** readers (tiles, countries, by-country, destination detail,
+  search, routes, tour-route) read either them (`PLACES_SOURCE=legacy`, the default) or the CIS catalog
+  views of CIS migration 228 (`PLACES_SOURCE=cis`: `catalog.v_tour_component`, `v_tour_stop`,
+  `v_tour_leg`, `v_tour_junction`, `v_destination`, contract `catalog.graph.v1`; keyed by catalog
+  `source_id`, live tours only, no AA tenant needed; `backend/shared/places_source.py`). Every browse
+  response carries `x-places-source`. The **assembly** readers (`events._current_components`,
+  suggestions, coverage, activities, apply-route, handoff `leg_chain`) stay on the frozen tables until
+  slice 6c, which ships with the tp-011 component id-map; the views' component ids are new stable
+  uuid5 ids, so `cis` is set on both Lambdas together, in that window, not before.
 - Photos (AA-708, 01/10/2026): AA marketing photos are synced and matched by CIS (`photo_sync`,
   `shared.place_photo`). This repo reads them only through `shared.v_destination_photos` /
   `shared.v_tour_photos` and `shared.destinations.cover_image_url` (set by CIS from the photo
@@ -225,6 +232,7 @@ sign-up), not a completed booking — booking belongs to the future AA-Booking (
 | Other side | This repo reads | This repo writes | Granted by |
 |---|---|---|---|
 | AA-CIS-App (catalog, AA-812) | `catalog.v_tour`, `v_tour_day`, `v_tour_place`, `v_tour_photo`, `v_destination`, `v_destination_photo` (contract `catalog.tour.v1`); photo URLs = `CIS_PUBLIC_API_BASE` + path | — | CIS migration 225 |
+| AA-CIS-App (places / tour graph, AA-712) | with `PLACES_SOURCE=cis`: `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_destination` (+ `located_by`, `precision`) — contract `catalog.graph.v1` / `catalog.tour.v1.1` | — | CIS migration 228 |
 | AA-CIS-App (content) | `gold_aa_internal.published_tours` (tenant RLS, AA tenant set per transaction), `acp_contract.v_active_tour_atoms` (place/activity columns), `shared.destinations`, `shared.v_destination_photos` / `v_tour_photos` | — | CIS migrations 180 / 216, 201 |
 | AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
 | AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.1.json` (payload `version` 1.1 since AA-805; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |

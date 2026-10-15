@@ -17,6 +17,13 @@ ranked, read tenant-scoped like fetch_catalog; the daily TripPlanner spend cap s
 AA-712: ranking goes through backend.shared.vector_topk — the nearest components come from the HNSW
 index (ORDER BY embedding <=> q LIMIT k) and are grouped per destination afterwards, instead of
 MIN(embedding <=> q) over every component (a full scan of every vector per search).
+
+AA-712 slice 6b: with PLACES_SOURCE=cis it ranks catalog.v_tour_component (CIS migration 228) instead,
+with the exact aggregate MIN(c.embedding <=> q) per destination (S237 decision D7: 228 has no top-k
+function, and through the security_barrier view the HNSW index on geo.tour_place cannot serve an
+index-ordered scan). The views return live tours only and need no AA tenant, so this path has neither
+the active-tour EXISTS nor set_catalog_tenant. Rewrite to a top-k object before the catalog-wide run
+(design 03 §6.5).
 """
 from __future__ import annotations
 
@@ -24,8 +31,9 @@ import logging
 from typing import Any, Callable, Optional, Protocol
 
 from backend.browse.filters import BrowseFilters
+from backend.browse.tiles import geo_fields
 from backend.shared.catalog_rls import set_catalog_tenant
-from backend.shared import llm_gateway, vector_topk
+from backend.shared import llm_gateway, places_source, vector_topk
 
 STAGE = "tp_search_embed"
 log = logging.getLogger(__name__)
@@ -73,6 +81,27 @@ def search_where(filters: BrowseFilters) -> tuple[str, str, list[Any]]:
     return f"c.embedding IS NOT NULL {frag}", ACTIVE_TOUR_SQL, filter_params
 
 
+# AA-712 slice 6b (PLACES_SOURCE=cis): exact aggregate over the catalog component view. Query vector
+# = $1, filter params from $2 (the country filter reads the joined catalog.v_destination ``d``).
+CIS_SEARCH_SQL = """
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+           COUNT(c.component_id) AS component_count,
+           MIN(c.embedding <=> $1::vector) AS best_distance
+    FROM catalog.v_tour_component c
+    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+    WHERE c.embedding IS NOT NULL {where_frag}
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+    ORDER BY best_distance ASC, d.destination_id
+    LIMIT {limit}
+"""
+
+
+def cis_search_sql(filters: BrowseFilters, limit: int) -> tuple[str, list[Any]]:
+    """(sql, filter_params) of the cis path; the query embedding is $1."""
+    frag, filter_params = filters.where_sql(start_index=2)
+    return CIS_SEARCH_SQL.format(where_frag=frag, limit=int(limit)), filter_params
+
+
 def exact_first_for(filters: BrowseFilters) -> bool:
     """A country filter bounds the candidates to one country's components: the exact aggregate is
     cheap there and the top-k passes would mostly come up short (AA-712 review finding 1)."""
@@ -110,6 +139,12 @@ async def search(
         await llm_gateway.record(pool, call, signal)
     vec_literal = _vector_literal(vec)
 
+    if places_source.is_cis():
+        sql, filter_params = cis_search_sql(filters, limit)
+        rows = await pool.fetch(sql, vec_literal, *filter_params)
+        log.info("browse search: %d destinations via cis exact", len(rows))
+        return {"destinations": [_dest(r) for r in rows]}
+
     scan_where, keep_where, filter_params = search_where(filters)
     params: list[Any] = [vec_literal, *filter_params]
 
@@ -130,15 +165,15 @@ async def search(
             rows = await _run(conn)
     else:
         rows = await _run(pool)
+    return {"destinations": [_dest(r) for r in rows]}
+
+
+def _dest(r: Any) -> dict:
     return {
-        "destinations": [
-            {
-                "id": str(r["id"]),
-                "name": r["name"],
-                "lat": r["lat"],
-                "lng": r["lng"],
-                "component_count": r["component_count"],
-            }
-            for r in rows
-        ]
+        "id": str(r["id"]),
+        "name": r["name"],
+        "lat": r["lat"],
+        "lng": r["lng"],
+        "component_count": r["component_count"],
+        **geo_fields(r),
     }

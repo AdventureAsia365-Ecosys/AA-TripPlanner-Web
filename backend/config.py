@@ -30,6 +30,14 @@ SCHEMA_SHARED = "shared"
 SCHEMA_GOLD = "gold_aa_internal"
 SCHEMA_ACP = "acp_contract"
 
+# --- Place / tour-graph read source (AA-712 slice 6b, ADR 0007) ---
+# "legacy" = the frozen TripPlanner tables (tripplanner.itinerary_components, tour_stop, tour_leg,
+# tour_junction + shared.destinations); "cis" = the CIS catalog views of migration 228
+# (catalog.v_tour_component, v_tour_stop, v_tour_leg, v_tour_junction, v_destination). Only the
+# browse readers follow it in slice 6b; the assembly readers switch with the tp-011 id-map (slice 6c),
+# so set it to "cis" on both Lambdas together, in that window. Unknown values read as "legacy".
+PLACES_SOURCE = _get("PLACES_SOURCE", "legacy")
+
 # --- CIS public API (AA-812) ---
 # Base URL that catalog photo paths are relative to: {base}{path}?size=large|small (CIS
 # migration 200). Browse responses carry absolute photo URLs built from it.

@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from backend.browse.filters import BrowseFilters
+from backend.shared import places_source
 
 
 class _Pool(Protocol):
@@ -62,6 +63,22 @@ def build_tile_query(
     where_frag, filter_params = filters.where_sql(start_index=5)
     params: list[Any] = [lat_cell, lat_cell + size, lng_cell, lng_cell + size]
     params.extend(filter_params)
+    if places_source.is_cis():
+        # AA-712 slice 6b: CIS catalog views (228). Same filter columns on the component view; the
+        # view hides components on suspect / duplicate destinations and of tours that are not live.
+        sql = f"""
+        SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+               COUNT(c.component_id) AS component_count
+        FROM catalog.v_destination d
+        JOIN catalog.v_tour_component c ON c.destination_id = d.destination_id
+        WHERE d.lat >= $1 AND d.lat < $2
+          AND d.lng >= $3 AND d.lng < $4
+          {where_frag}
+        GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+        HAVING COUNT(c.component_id) > 0
+        ORDER BY component_count DESC
+    """
+        return sql, params
     sql = f"""
         SELECT d.id, d.name, d.lat, d.lng, COUNT(c.id) AS component_count
         FROM shared.destinations d
@@ -88,7 +105,16 @@ async def query_tile(tile_id: str, filters: BrowseFilters, *, pool: _Pool) -> di
                 "lat": r["lat"],
                 "lng": r["lng"],
                 "component_count": r["component_count"],
+                **geo_fields(r),
             }
             for r in rows
         ]
     }
+
+
+def geo_fields(r: Any) -> dict:
+    """``located_by`` / ``precision`` of a cis-path destination row (catalog.v_destination, 228): the map
+    draws ``precision = 'area'`` as an area and shows the Geoapify + OSM attribution for ``geoapify``
+    points. Empty on the legacy path (shared.destinations rows are not selected with them)."""
+    keys = r.keys() if hasattr(r, "keys") else ()
+    return {k: r[k] for k in ("located_by", "precision") if k in keys}
