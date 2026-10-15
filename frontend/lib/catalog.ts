@@ -19,14 +19,15 @@ export type Result<T> =
   | { ok: true; data: T }
   | { ok: false; status: number; error: string };
 
-async function browseGet<T>(path: string): Promise<Result<T>> {
-  const base = process.env.BROWSE_API_URL ?? "";
-  if (!base) return { ok: false, status: 503, error: "BROWSE_API_URL not configured" };
-  const headers: Record<string, string> = { accept: "application/json" };
-  const key = process.env.TRIPPLANNER_API_KEY ?? "";
-  if (key) headers["x-tripplanner-key"] = key;
+// AA-833: a throttled browse Lambda (429), a busy API Gateway (503) or a dropped connection (502)
+// is usually gone a few hundred ms later. One short retry keeps a single blip from becoming an
+// error page; anything else (404, other 4xx, 500) returns at once.
+const RETRY_STATUSES = new Set([429, 502, 503]);
+export const RETRY_DELAY_MS = 400;
+
+async function browseOnce<T>(url: string, headers: Record<string, string>): Promise<Result<T>> {
   try {
-    const res = await fetch(`${base}${path}`, {
+    const res = await fetch(url, {
       headers,
       next: { revalidate: CATALOG_REVALIDATE_S },
     });
@@ -35,6 +36,21 @@ async function browseGet<T>(path: string): Promise<Result<T>> {
   } catch (e) {
     return { ok: false, status: 502, error: e instanceof Error ? e.message : "network error" };
   }
+}
+
+// Exported for lib/catalog.test.ts; pages use the typed getters below.
+export async function browseGet<T>(path: string, retryDelayMs = RETRY_DELAY_MS): Promise<Result<T>> {
+  const base = process.env.BROWSE_API_URL ?? "";
+  if (!base) return { ok: false, status: 503, error: "BROWSE_API_URL not configured" };
+  const headers: Record<string, string> = { accept: "application/json" };
+  const key = process.env.TRIPPLANNER_API_KEY ?? "";
+  if (key) headers["x-tripplanner-key"] = key;
+  const first = await browseOnce<T>(`${base}${path}`, headers);
+  if (first.ok || !RETRY_STATUSES.has(first.status)) return first;
+  await new Promise((r) => setTimeout(r, retryDelayMs));
+  // The extra header changes React's per-render fetch memoisation key, which would otherwise hand
+  // back the same failed response. Next caches only 200 responses, so the failure is not stored.
+  return browseOnce<T>(`${base}${path}`, { ...headers, "x-browse-retry": "1" });
 }
 
 export function getTours(q: {

@@ -5,9 +5,13 @@ import { coverAlt, daysText } from "@/lib/text";
 
 export default function TourCard({ tour, eager = false }: { tour: TourCardData; eager?: boolean }) {
   const days = daysText(tour.duration_days, tour.duration_raw);
+  // AA-833: no prefetch. Cards come in grids (home, destination pages), and prefetching every card
+  // in view renders all those tour pages at once after a deploy or ISR expiry, throttling the
+  // browse Lambda. The page is fetched on click instead.
   return (
     <Link
       href={`/tours/${tour.slug}`}
+      prefetch={false}
       className="group flex h-full flex-col overflow-hidden rounded-2xl border border-k-line bg-k-card transition hover:border-k-accent-border hover:shadow-aa-sm"
     >
       <div className="relative aspect-[4/3] overflow-hidden">
