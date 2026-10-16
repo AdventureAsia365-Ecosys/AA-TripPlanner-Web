@@ -2,7 +2,7 @@ import { Icon } from "@/ui";
 
 const ITEMS = [
   { icon: "compass", title: "Designed by Adventure Asia", body: "Every day comes from a real Adventure Asia tour." },
-  { icon: "sparkle", title: "AI-assisted itineraries, reviewed by advisors", body: "AI helps you explore; a person checks every trip." },
+  { icon: "sparkle", title: "Adventure Asia AI itineraries, confirmed by advisors", body: "AI helps you explore; a person checks every trip." },
   { icon: "chat", title: "Tailor-made with an advisor", body: "No instant checkout: an advisor shapes the trip with you." },
 ];
 

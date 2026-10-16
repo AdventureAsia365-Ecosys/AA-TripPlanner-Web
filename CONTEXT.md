@@ -234,10 +234,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - **AI labels (AA-819, AUP 2026-11)**: every AI-written text block a traveller sees carries a label
   (`components/AiLabel.tsx`, a button with an aria-expanded explanation, not a `title` tooltip):
   the site pill, the tour page summary / highlights / day by day, the map popup and stop activity
-  texts ("AI-assisted": CIS writer-model output, published when it passes CIS's automated checks;
+  texts ("Adventure Asia AI", "AA AI" below the sm breakpoint — brand name chosen by Nghiệp S239: CIS writer-model output, published when it passes CIS's automated checks;
   only flagged tours reach a human, so no label claims a team review of every text), and the
-  narration (`master` and `master_basic` = "AA itinerary · AI-assisted", the same CIS text;
-  `mixed` = "AA + AI"; `llm` = "AI narration"; `basic` = neutral place lines only, no label). The
+  narration (`master` and `master_basic` = "AA itinerary · Adventure Asia AI", the same CIS text;
+  `mixed` = "AA itinerary + Adventure Asia AI"; `llm` = "Adventure Asia AI narration"; `basic` = neutral place lines only, no label). The
   narrate API's `ai_generated` is true for every source but `basic`. Place search and "You might
   also like" suggestions both rank by Cohere embeddings (suggestions: route-constrained, ranked by
   the pinned components' taste vector), and the site pill names both.

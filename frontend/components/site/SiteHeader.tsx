@@ -1,7 +1,7 @@
 // AA-812 — header of the kit pages (home, tour, destination). The AI-assisted label from AA-805
 // stays next to the AA mark (AA-819: a button that explains itself on tap or keyboard).
 import Link from "next/link";
-import AiLabel, { AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
+import AiLabel, { AI_BRAND_SHORT, AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
 import { ThemeToggle } from "@/ui/ThemeToggle";
 import { buttonClass } from "@/ui";
 
@@ -14,7 +14,7 @@ export default function SiteHeader() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/brand/logo.png" alt="Adventure Asia" className="h-8 w-auto" />
           </Link>
-          <AiLabel tone="kit" variant="outline" label={AI_SITE_LABEL} explanation={AI_SITE_EXPLANATION} />
+          <AiLabel tone="kit" variant="outline" label={AI_SITE_LABEL} shortLabel={AI_BRAND_SHORT} explanation={AI_SITE_EXPLANATION} />
         </div>
         <nav aria-label="Main" className="flex items-center gap-1.5 sm:gap-3">
           <Link href="/#destinations" className="hidden px-2 text-[13px] font-medium text-k-body hover:text-k-accent-deep sm:inline">

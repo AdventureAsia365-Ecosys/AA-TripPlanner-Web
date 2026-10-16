@@ -36,13 +36,16 @@ const STYLE: Record<AiLabelTone, { solid: string; outline: string; panel: string
 
 // Shared wording for catalog text written by the CIS writer model (tour pages, map experience
 // descriptions, stop activities).
-export const AI_CATALOG_LABEL = "AI-assisted";
+// Brand name of the AI label (Nghiệp, S239): full on wider screens, "AA AI" below the sm breakpoint.
+export const AI_BRAND_LABEL = "Adventure Asia AI";
+export const AI_BRAND_SHORT = "AA AI";
+export const AI_CATALOG_LABEL = AI_BRAND_LABEL;
 export const AI_CATALOG_EXPLANATION =
   "Written by an AI model from Adventure Asia's own tour notes and checked by automated quality checks; " +
   "tours the checks flag are reviewed by our team. Your advisor confirms every detail before you book.";
 
 // The site-wide pill next to the AA mark (Header, SiteHeader).
-export const AI_SITE_LABEL = "AI-assisted";
+export const AI_SITE_LABEL = AI_BRAND_LABEL;
 export const AI_SITE_EXPLANATION =
   "Tour descriptions and day-by-day itineraries are written by AI from Adventure Asia's own tour notes " +
   "and checked by automated quality checks. Trip narration is AI-written or AI-assisted, as its label " +
@@ -51,6 +54,8 @@ export const AI_SITE_EXPLANATION =
 
 interface Props {
   label: string;
+  // Shorter text for narrow screens (below the sm breakpoint); the full label shows from sm up.
+  shortLabel?: string;
   explanation: string;
   tone?: AiLabelTone;
   variant?: "solid" | "outline";
@@ -62,6 +67,7 @@ interface Props {
 
 export default function AiLabel({
   label,
+  shortLabel,
   explanation,
   tone = "planner",
   variant = "solid",
@@ -103,7 +109,14 @@ export default function AiLabel({
         onClick={() => setOpen((v) => !v)}
         className={`${style.focus} ${style[variant]} inline-flex min-h-6 shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-left text-[10px] font-bold uppercase leading-tight tracking-wide transition`}
       >
-        {label}
+        {shortLabel ? (
+          <>
+            <span className="sm:hidden">{shortLabel}</span>
+            <span className="hidden sm:inline">{label}</span>
+          </>
+        ) : (
+          label
+        )}
         <span
           aria-hidden
           className="inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-full border border-current text-[8px] font-bold normal-case leading-none"

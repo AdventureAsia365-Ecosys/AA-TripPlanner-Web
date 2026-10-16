@@ -4,7 +4,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, permanentRedirect } from "next/navigation";
-import AiLabel, { AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "@/components/AiLabel";
+import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "@/components/AiLabel";
 import JsonLd from "@/components/site/JsonLd";
 import SiteFooter from "@/components/site/SiteFooter";
 import SiteHeader from "@/components/site/SiteHeader";
@@ -201,7 +201,7 @@ export default async function TourPage({ params }: Props) {
             {t.summary && <p className="mt-4 text-[15px] leading-relaxed text-k-body">{t.summary}</p>}
             {/* AA-819 (D4): the tour text below is the CIS writer model's output (automated checks). */}
             {(t.summary || t.subtitle) && (
-              <AiLabel tone="kit" className="mt-2" label={AI_CATALOG_LABEL} explanation={AI_CATALOG_EXPLANATION} />
+              <AiLabel tone="kit" className="mt-2" label={AI_CATALOG_LABEL} shortLabel={AI_BRAND_SHORT} explanation={AI_CATALOG_EXPLANATION} />
             )}
             {t.best_time_to_go && (
               <p className="mt-3 flex items-center gap-2 text-[13px] text-k-muted">
@@ -213,7 +213,7 @@ export default async function TourPage({ params }: Props) {
               <section className="mt-8" aria-labelledby="highlights">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                   <h2 id="highlights" className="text-[22px] font-semibold">Highlights</h2>
-                  <AiLabel tone="kit" label={AI_CATALOG_LABEL} explanation={AI_CATALOG_EXPLANATION} />
+                  <AiLabel tone="kit" label={AI_CATALOG_LABEL} shortLabel={AI_BRAND_SHORT} explanation={AI_CATALOG_EXPLANATION} />
                 </div>
                 <ul className="mt-3 grid gap-2 sm:grid-cols-2">
                   {t.highlights.map((h) => (
@@ -229,7 +229,7 @@ export default async function TourPage({ params }: Props) {
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <h2 id="itinerary" className="text-[22px] font-semibold">Day by day</h2>
                 {(t.days.length > 0 || t.itinerary_text?.trim()) && (
-                  <AiLabel tone="kit" label={AI_CATALOG_LABEL} explanation={AI_CATALOG_EXPLANATION} />
+                  <AiLabel tone="kit" label={AI_CATALOG_LABEL} shortLabel={AI_BRAND_SHORT} explanation={AI_CATALOG_EXPLANATION} />
                 )}
               </div>
               {t.days.length === 0 && t.itinerary_text?.trim() ? (
