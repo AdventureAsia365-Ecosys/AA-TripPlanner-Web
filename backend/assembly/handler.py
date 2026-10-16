@@ -472,17 +472,22 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn,
 
 
 def _merge_by_day(master_narr: str, llm_narr: str) -> str:
-    """Merge two 'Day N: ...' blocks into one, ordered by day number.
-    Master lines win if a day appears in both."""
-    import re
+    """Merge two 'Day N: ...' narrations into one, ordered by day number.
+    Master blocks win if a day appears in both. A block runs from its 'Day N:' line to the next
+    one: a master day is its title line plus prose lines, all kept (AA-819; only the title line
+    used to survive the merge)."""
 
     def to_map(text: str) -> dict[int, str]:
-        out: dict[int, str] = {}
+        blocks: dict[int, list[str]] = {}
+        current: Optional[list[str]] = None  # None: outside a block, or a repeated day (ignored)
         for line in text.splitlines():
             m = re.match(r"\s*Day\s*(\d+)\s*:", line, re.IGNORECASE)
             if m:
-                out.setdefault(int(m.group(1)), line.strip())
-        return out
+                day = int(m.group(1))
+                current = None if day in blocks else blocks.setdefault(day, [line.strip()])
+            elif current is not None and line.strip():
+                current.append(line.strip())
+        return {d: "\n".join(block) for d, block in blocks.items()}
 
     days = to_map(llm_narr)
     days.update(to_map(master_narr))  # master overrides

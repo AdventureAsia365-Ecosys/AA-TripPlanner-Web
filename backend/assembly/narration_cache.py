@@ -14,9 +14,13 @@ import json
 from typing import Any, Optional, Protocol
 
 from backend import config
+from backend.assembly import master_content
 
-# Bump when the narration prompts (agent.py) or grounding change, so old text is not reused.
-PROMPT_VERSION = "2026-10-14.1"
+# Bump when the narration prompts (agent.py), grounding or the master-day choice
+# (master_content.resolve_day_text) change, so old text is not reused.
+# 2026-10-16.1 (AA-819): a tour day that does not visit the stop is no longer used; multi-line master
+# days survive the merge with AI-written days.
+PROMPT_VERSION = "2026-10-16.1"
 
 CACHEABLE_SOURCES = ("llm", "mixed")
 
@@ -45,10 +49,9 @@ def itinerary_hash(itinerary: list[dict], mode: str,
 
 
 def _master_text(master_texts: dict[tuple[str, int], str], entry: dict) -> str:
-    tid, didx = entry.get("source_tour_id"), entry.get("source_day_index")
-    if tid is None or didx is None:
-        return ""
-    return master_texts.get((str(tid), int(didx))) or ""
+    # The day text the narration would really use for this entry, which may be another day of the
+    # same tour when the entry's own day does not visit the stop (AA-819).
+    return master_content.resolve_day_text(entry, master_texts) or ""
 
 
 async def get(conn: _Conn, key: str) -> Optional[dict]:
