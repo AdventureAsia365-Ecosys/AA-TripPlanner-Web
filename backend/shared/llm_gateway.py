@@ -28,13 +28,21 @@ AA-805 (fork defects vs. the CIS client):
     today's total of those stages with TP_DAILY_SPEND_CAP_USD. Offline stages (tp_extract,
     tp_component_embed — extraction and embedding backfills) are logged in shared.llm_call_log but
     neither counted nor capped here, so a backfill can never take customer search/narration down.
+
+AA-856: `EmbeddingCache` / `query_embed_cache` keep query embeddings in the Lambda container
+(bounded LRU + TTL, keyed by stage, route models, input type and the normalised text). A cache hit
+is not a model call: no llm_call_log row, no spend.
 """
 from __future__ import annotations
 
 import json
+import re
 import time
+import unicodedata
+from array import array
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from backend import config
 from backend.shared import bedrock_satellite
@@ -264,6 +272,25 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
     raise BedrockError(f"All models failed for stage {route.stage!r}: " + "; ".join(errors))
 
 
+_acc2_embed: Any = None
+
+
+def _acc2_embed_client() -> Any:
+    """AA-856: one acc2 bedrock-runtime client per container for embeddings, with NO retry
+    (max_attempts=1, as CIS AA-610): a throttle retried at once spends the same minute's quota
+    again and holds the search request for seconds; search falls back to keyword ranking instead."""
+    global _acc2_embed
+    if _acc2_embed is None:
+        import boto3  # lazily, so tests never need boto3
+        from botocore.config import Config
+
+        _acc2_embed = boto3.client(
+            "bedrock-runtime", region_name=config.BEDROCK_REGION,
+            config=Config(connect_timeout=5, read_timeout=10,
+                          retries={"max_attempts": 1, "mode": "standard"}))
+    return _acc2_embed
+
+
 def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_document",
                 client_factory: ClientFactory = bedrock_satellite.default_client_factory,
                 failures: Optional[list] = None,
@@ -276,7 +303,9 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
             continue
         for account in _accounts(model, route.account_route):
             try:
-                rt = _runtime(account, client_factory)
+                rt = (_acc2_embed_client() if account == "acc2"
+                      and client_factory is bedrock_satellite.default_client_factory
+                      else _runtime(account, client_factory))
                 resp = rt.invoke_model(modelId=model.profiles[account], body=json.dumps(
                     {"texts": texts, "input_type": input_type, "embedding_types": ["float"],
                      "output_dimension": config.EMBED_DIM}))
@@ -297,6 +326,86 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
                 route.stage, route.role, model.key, account, tokens, 0, _cost(model, tokens, 0),
                 fallback_used=position > 0, extra={"tokens_estimated": header is None})
     raise BedrockError(f"All models failed for stage {route.stage!r}: " + "; ".join(errors))
+
+
+# --- Query embedding cache (AA-856) -------------------------------------------------------------
+#
+# Cohere Embed V4 on acc2 allows 20 requests per minute (Service Quotas, S239), so every repeated
+# search query must not call Bedrock again. The cache lives in the Lambda container (one instance
+# serves one invocation at a time, so no locking): bounded LRU with a TTL. A hit is not a model
+# call: no llm_call_log row, nothing added to the daily spend.
+
+EMBED_CACHE_MAX_ENTRIES = 1024      # ~12 KB per 1536-d vector stored as array('d') -> ~12 MB max
+EMBED_CACHE_TTL_SECONDS = 6 * 3600  # the key names the model; the TTL only bounds staleness
+
+_WS_RE = re.compile(r"\s+")
+
+
+def normalise_query(text: str) -> str:
+    """Cache key text and the text that is embedded: NFKC, case-folded, whitespace collapsed."""
+    return _WS_RE.sub(" ", unicodedata.normalize("NFKC", text or "")).strip().casefold()
+
+
+def embed_cache_key(route: Route, input_type: str, text: str) -> tuple:
+    """(stage, model keys of the route, input_type, dimension, normalised text). A model change on
+    the admin Settings page gives new keys, so a cached vector never crosses models."""
+    return (route.stage, tuple(m.key for m in route.models), input_type, config.EMBED_DIM,
+            normalise_query(text))
+
+
+class EmbeddingCache:
+    """Bounded LRU of embedding vectors with a per-entry TTL. Counts hits and misses for the
+    per-search log line (cache hit rate in CloudWatch)."""
+
+    def __init__(self, max_entries: int = EMBED_CACHE_MAX_ENTRIES,
+                 ttl_seconds: float = EMBED_CACHE_TTL_SECONDS,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.max_entries = max(1, int(max_entries))
+        self.ttl_seconds = float(ttl_seconds)
+        self._clock = clock
+        self._data: "OrderedDict[tuple, tuple[array, float]]" = OrderedDict()
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key: tuple) -> Optional[list[float]]:
+        entry = self._data.get(key)
+        if entry is None:
+            self.misses += 1
+            return None
+        vec, stored_at = entry
+        if self._clock() - stored_at >= self.ttl_seconds:
+            del self._data[key]
+            self.misses += 1
+            return None
+        self._data.move_to_end(key)
+        self.hits += 1
+        return list(vec)
+
+    def put(self, key: tuple, vec: list[float]) -> None:
+        self._data[key] = (array("d", vec), self._clock())
+        self._data.move_to_end(key)
+        while len(self._data) > self.max_entries:
+            self._data.popitem(last=False)
+
+    def clear(self) -> None:
+        self._data.clear()
+        self.hits = 0
+        self.misses = 0
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def stats(self) -> dict:
+        return {"cache_hits": self.hits, "cache_misses": self.misses, "cache_size": len(self._data)}
+
+
+query_embed_cache = EmbeddingCache()
+
+
+def is_throttle(error: str) -> bool:
+    """True for a Bedrock throttle (ThrottlingException / 'Too many requests') in an error text."""
+    low = (error or "").lower()
+    return "throttl" in low or "too many requests" in low
 
 
 async def record(db: Any, call: Call, quality_signal: dict, *,

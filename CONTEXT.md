@@ -90,7 +90,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   Map tiles (`/browse/tiles/{lat}_{lng}[_{size}]`) are fixed-grid cells of 1–90 degrees; the map
   (`frontend/lib/tileLoader.ts`) picks the finest grid that covers the view in ≤ 16 cells, caches
   them, runs ≤ 4 requests at a time and has a request budget (AA-812 hotfix). Its one model
-  call is the embedding for free-text search (`/browse/search`, not cached).
+  call is the embedding for free-text search (`/browse/search`; the response is no-store, the query
+  embedding is cached in the container and a failed embed falls back to keyword ranking, AA-856).
 - **assembly Lambda** — **stateful**, owns all trip mutations, and is the only side that calls
   **Claude**. Building/AI-narrating a trip is a write that also incurs model cost, so it is
   deliberately isolated from the cacheable read path. Keep anything that writes trip state or
@@ -219,7 +220,17 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   migration 173). If the tables cannot be read, built-in routes keep the previous models.
   Stages:
   - `tp_compose`: assembly narration (Claude Sonnet 4.6 via the satellite role);
-  - `tp_search_embed`: browse free-text search, one Cohere Embed v4 call per query (acc2);
+  - `tp_search_embed`: browse free-text search, one Cohere Embed v4 call per distinct query (acc2).
+    **Search under load (AA-856)**: Cohere Embed V4 on acc2 allows 20 requests per minute (Service
+    Quotas), so `llm_gateway.query_embed_cache` keeps query vectors per Lambda container (bounded LRU,
+    1024 entries, 6 h TTL; key = stage + route models + input type + normalised text; a hit makes no
+    call, no log row, no spend, and is served even over the daily cap). When the embed fails (throttle
+    or any Bedrock error; failed attempts still logged) search answers 200 with a keyword ranking
+    (`ILIKE` per query word over destination/component name, country and text, same filters and
+    active-tour rule; no pg_trgm on the RDS) and `"ranking": "keyword"` instead of a 500; after a
+    throttle the container skips the model for 10 s. The acc2 embed client makes one attempt (no
+    boto retry). Each search prints one `{"evt":"search_embed","outcome":hit|miss|fallback,...}` line
+    with the container's cache counters (never the query text);
   - `tp_extract` / `tp_component_embed`: the former offline extraction pipeline; no caller since
     AA-712 slice 6a (built-in routes kept until the frozen tables are dropped).
 

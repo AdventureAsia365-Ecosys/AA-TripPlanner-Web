@@ -2,7 +2,8 @@
 
 Embeds the query text (Bedrock), then ranks itinerary_components by
 pgvector cosine similarity ONLY within the set already narrowed by the
-active closed-enum filters. NOT cached (see design.md).
+active closed-enum filters. The HTTP response is not cached (no-store); the
+query embedding is (AA-856, below).
 
 Returns the same destination-pin shape as tiles, aggregated to
 destinations but ordered by best (lowest) cosine distance so the most
@@ -24,10 +25,25 @@ function, and through the security_barrier view the HNSW index on geo.tour_place
 index-ordered scan). The views return live tours only and need no AA tenant, so this path has neither
 the active-tour EXISTS nor set_catalog_tenant. Rewrite to a top-k object before the catalog-wide run
 (design 03 §6.5).
+
+AA-856 (Cohere Embed V4 on acc2: 20 requests per minute, S239 burst test = search 500s):
+  * query embeddings are cached in the Lambda container (``llm_gateway.query_embed_cache``: bounded
+    LRU + TTL, key = stage + route models + input type + normalised text). A hit makes no model call,
+    writes no llm_call_log row and is served even over the daily cap (it spends nothing);
+  * when the embed fails (throttle or any Bedrock error, every attempt still logged as a failed
+    llm_call_log row), search answers 200 with a keyword ranking over the same catalog and filters
+    (``ranking: "keyword"``) instead of a 500. After a throttle this container skips the model call
+    for ``THROTTLE_COOLDOWN_SECONDS`` and ranks by keyword directly. The daily spend cap still answers
+    503 (AA-805), unchanged;
+  * every search prints one ``{"evt": "search_embed", ...}`` line (outcome hit / miss / fallback,
+    reason, the container's cache hit and miss counters); never the query text.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
+import time
 from typing import Any, Callable, Optional, Protocol
 
 from backend.browse.filters import BrowseFilters
@@ -57,6 +73,12 @@ QUERY_INPUT_TYPE = "search_query"
 
 class SearchUnavailable(Exception):
     """The model call needed for free-text search is refused (daily spend cap reached)."""
+
+
+# AA-856: after a Bedrock throttle this container ranks by keyword without trying the model for this
+# long (the 20 rpm bucket refills one request every 3 s; retrying at once spends it again).
+THROTTLE_COOLDOWN_SECONDS = 10.0
+_throttled_until = 0.0
 
 
 def _vector_literal(vec: list[float]) -> str:
@@ -108,6 +130,50 @@ def exact_first_for(filters: BrowseFilters) -> bool:
     return filters.country is not None
 
 
+def _log_embed(outcome: str, reason: Optional[str] = None) -> None:
+    """One CloudWatch line per search (AA-856): cache hit rate and fallbacks. No query text."""
+    evt = {"evt": "search_embed", "outcome": outcome, **llm_gateway.query_embed_cache.stats()}
+    if reason:
+        evt["reason"] = reason
+    print(json.dumps(evt), flush=True)
+
+
+async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Optional[str]]:
+    """(vector, None) from the cache or one Bedrock call, or (None, reason) when search must fall
+    back to keyword ranking. Raises SearchUnavailable over the daily spend cap (AA-805)."""
+    global _throttled_until
+    # AA-685: model from the gateway route (cached 60 s, never raises).
+    route = await llm_gateway.load_route(pool, STAGE)
+    key = llm_gateway.embed_cache_key(route, QUERY_INPUT_TYPE, q)
+    cached = llm_gateway.query_embed_cache.get(key)
+    if cached is not None:
+        _log_embed("hit")
+        return cached, None
+    if time.monotonic() < _throttled_until:
+        return None, "throttle_cooldown"
+    if (await llm_gateway.budget_status(pool))["exhausted"]:
+        raise SearchUnavailable("daily AI spend cap reached")
+    text = llm_gateway.normalise_query(q)
+    # One llm_call_log row per real embed (AA-805: and one per failed attempt).
+    signal = {"texts": 1, "query_len_chars": len(text)}
+    failures: list = []
+    try:
+        vectors, call = llm_gateway.embed_texts(route, [text], input_type=QUERY_INPUT_TYPE,
+                                                failures=failures)
+    except llm_gateway.BedrockError as e:
+        throttled = llm_gateway.is_throttle(str(e))
+        if throttled:
+            _throttled_until = time.monotonic() + THROTTLE_COOLDOWN_SECONDS
+        return None, "throttle" if throttled else "embed_error"
+    finally:
+        for failed in failures:
+            await llm_gateway.record(pool, failed, signal)
+    await llm_gateway.record(pool, call, signal)
+    llm_gateway.query_embed_cache.put(key, vectors[0])
+    _log_embed("miss")
+    return vectors[0], None
+
+
 async def search(
     q: str,
     filters: BrowseFilters,
@@ -122,28 +188,16 @@ async def search(
     if embedder is not None:
         vec = embedder(q)
     else:
-        if (await llm_gateway.budget_status(pool))["exhausted"]:
-            raise SearchUnavailable("daily AI spend cap reached")
-        # AA-685: model from the gateway route, one llm_call_log row per search (AA-805: and
-        # one per failed attempt).
-        route = await llm_gateway.load_route(pool, STAGE)
-        signal = {"texts": 1, "query_len_chars": len(q)}
-        failures: list = []
-        try:
-            vectors, call = llm_gateway.embed_texts(route, [q], input_type=QUERY_INPUT_TYPE,
-                                                    failures=failures)
-        finally:
-            for failed in failures:
-                await llm_gateway.record(pool, failed, signal)
-        vec = vectors[0]
-        await llm_gateway.record(pool, call, signal)
+        vec, reason = await _query_vector(q, pool)
+        if vec is None:
+            return await keyword_search(q, filters, pool=pool, limit=limit, reason=reason)
     vec_literal = _vector_literal(vec)
 
     if places_source.is_cis():
         sql, filter_params = cis_search_sql(filters, limit)
         rows = await pool.fetch(sql, vec_literal, *filter_params)
         log.info("browse search: %d destinations via cis exact", len(rows))
-        return {"destinations": [_dest(r) for r in rows]}
+        return {"destinations": [_dest(r) for r in rows], "ranking": "semantic"}
 
     scan_where, keep_where, filter_params = search_where(filters)
     params: list[Any] = [vec_literal, *filter_params]
@@ -160,12 +214,110 @@ async def search(
         log.info("browse search: %d destinations via %s", len(rows), mode)
         return rows
 
+    rows = await _with_conn(pool, _run)
+    return {"destinations": [_dest(r) for r in rows], "ranking": "semantic"}
+
+
+async def _with_conn(pool: _Pool, fn: Callable[[Any], Any]) -> Any:
     if hasattr(pool, "acquire"):
         async with pool.acquire() as conn:
-            rows = await _run(conn)
+            return await fn(conn)
+    return await fn(pool)
+
+
+# --- Keyword fallback (AA-856) ------------------------------------------------------------------
+#
+# No pg_trgm/unaccent on the shared RDS (only vector, pg_stat_statements), so the fallback is a
+# case-insensitive substring match (ILIKE) of each query word, scored per component:
+#   destination name 3, component name 2, destination country 1, component text 1
+# summed over the words (more words matched = higher), best component per destination, ties by the
+# number of filtered components. Same filters, same active-tour rule (legacy) / live-tour views (cis)
+# as the semantic path; the scan is over the filtered components only (~4k legacy rows today).
+
+KEYWORD_MAX_TERMS = 8
+_WORD_RE = re.compile(r"[^\W_]+")
+_STOPWORDS = frozenset({
+    "a", "and", "the", "of", "in", "on", "at", "to", "for", "with", "by", "from", "near",
+    "or", "my", "me", "i", "is", "are", "trip", "tour", "tours", "travel", "visit", "day", "days",
+})
+
+_KEYWORD_SCORE = """
+    CROSS JOIN LATERAL (
+        SELECT SUM(CASE WHEN d.name ILIKE p THEN 3
+                        WHEN c.name ILIKE p THEN 2
+                        WHEN d.country ILIKE p OR c.text_extract ILIKE p THEN 1
+                        ELSE 0 END) AS score
+        FROM unnest($1::text[]) AS p
+    ) s
+"""
+
+KEYWORD_LEGACY_SQL = """
+    SELECT d.id, d.name, d.lat, d.lng,
+           COUNT(c.id) AS component_count, MAX(s.score) AS best_score
+    FROM tripplanner.itinerary_components c
+    JOIN shared.destinations d ON d.id = c.destination_id
+    {score}
+    WHERE TRUE {where_frag} {active}
+    GROUP BY d.id, d.name, d.lat, d.lng
+    HAVING MAX(s.score) > 0
+    ORDER BY best_score DESC, component_count DESC, d.id
+    LIMIT {limit}
+"""
+
+KEYWORD_CIS_SQL = """
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+           COUNT(c.component_id) AS component_count, MAX(s.score) AS best_score
+    FROM catalog.v_tour_component c
+    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+    {score}
+    WHERE TRUE {where_frag}
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+    HAVING MAX(s.score) > 0
+    ORDER BY best_score DESC, component_count DESC, d.destination_id
+    LIMIT {limit}
+"""
+
+
+def keyword_terms(q: str) -> list[str]:
+    """ILIKE patterns ('%word%') for the query: words of 2+ characters, stopwords dropped, at most
+    KEYWORD_MAX_TERMS. Words are letters/digits only, so no LIKE wildcard or escape can get in.
+    A query of stopwords only keeps its words."""
+    words = [w for w in _WORD_RE.findall(llm_gateway.normalise_query(q)) if len(w) >= 2]
+    kept = [w for w in words if w not in _STOPWORDS] or words
+    return [f"%{w}%" for w in dict.fromkeys(kept)][:KEYWORD_MAX_TERMS]
+
+
+def keyword_sql(filters: BrowseFilters, limit: int, *, cis: bool) -> tuple[str, list[Any]]:
+    """(sql, filter_params): the patterns array is $1, filter params follow from $2."""
+    frag, filter_params = filters.where_sql(start_index=2)
+    if cis:
+        sql = KEYWORD_CIS_SQL.format(score=_KEYWORD_SCORE, where_frag=frag, limit=int(limit))
     else:
-        rows = await _run(pool)
-    return {"destinations": [_dest(r) for r in rows]}
+        sql = KEYWORD_LEGACY_SQL.format(score=_KEYWORD_SCORE, where_frag=frag,
+                                        active=ACTIVE_TOUR_SQL, limit=int(limit))
+    return sql, filter_params
+
+
+async def keyword_search(q: str, filters: BrowseFilters, *, pool: _Pool,
+                         limit: int = SEARCH_LIMIT, reason: Optional[str] = None) -> dict:
+    """Search without a model call (AA-856): ranked by keyword match, no embedding."""
+    terms = keyword_terms(q)
+    if not terms:
+        _log_embed("fallback", reason)
+        return {"destinations": [], "ranking": "keyword"}
+    cis = places_source.is_cis()
+    sql, filter_params = keyword_sql(filters, limit, cis=cis)
+    if cis:
+        rows = await pool.fetch(sql, terms, *filter_params)
+    else:
+        async def _run(conn) -> list:
+            async with conn.transaction():
+                await set_catalog_tenant(conn)
+                return list(await conn.fetch(sql, terms, *filter_params))
+        rows = await _with_conn(pool, _run)
+    _log_embed("fallback", reason)
+    log.info("browse search: %d destinations via keyword fallback (%s)", len(rows), reason)
+    return {"destinations": [_dest(r) for r in rows], "ranking": "keyword"}
 
 
 def _dest(r: Any) -> dict:
