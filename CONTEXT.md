@@ -115,7 +115,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - The `/api/trip` BFF forwards the token on POST only, in `x-tripplanner-guest`; it refuses a
   cross-origin POST (403) and never logs. `tripplanner.sessions.guest_token_hash` stores sha256(token)
   only (`bytea`, 32 bytes, migration tp-011); the plaintext `guest_token` (= id::text before AA-827) is
-  no longer written. One cookie can bind several sessions, so the hash has no unique index.
+  no longer written, tp-012 nulls the legacy values and `sessions_guest_token_retired_chk`
+  (`CHECK (guest_token IS NULL)`) keeps it empty, so a pre-AA-827 Lambda artifact can no longer insert
+  a session (rollback = revert PR). DROP COLUMN is a later contract file. One cookie can bind several sessions, so the hash has no unique index.
 - `_guard` runs on all 8 mutations (add, remove, reorder, send-to-advisor, narrate, apply-route, add /
   remove day): 401 `guest_session_invalid` when the token does not match the session
   (`assembly/guest_session.py`), 403 `forbidden` when the session does not own the trip
