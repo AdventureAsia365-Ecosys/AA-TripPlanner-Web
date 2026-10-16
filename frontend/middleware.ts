@@ -7,8 +7,10 @@ import {
 } from "./lib/guestToken";
 
 // AA-827: the visitor holds the HttpOnly guest-token cookie before the planner makes its first fetch:
-// it is minted on the entry pages (home, destination and tour pages, /plan), so parallel first POSTs
-// usually carry the same token. Every matched request renews it (sliding lifetime). On /api/trip
+// it is minted on the /plan document, so parallel first POSTs usually carry the same token. Only the
+// dynamic /plan page and /api/trip are matched: the home, destination and tour pages are cached by the
+// CDN (s-maxage), and a per-visitor Set-Cookie must never ride on a shared cached response. Every
+// matched request renews the cookie (sliding lifetime). On /api/trip
 // itself (no page load first, or the cookie was cleared) the minted token is also handed to the BFF
 // on this same request. A cross-site POST is refused here, before any mint, so it can never overwrite
 // the visitor's real cookie (guestToken.guestCookieAction).
@@ -36,5 +38,5 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/destinations/:path*", "/tours/:path*", "/plan/:path*", "/api/trip"],
+  matcher: ["/plan/:path*", "/api/trip"],
 };

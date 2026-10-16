@@ -106,7 +106,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `tp_guest` under local http; Secure, SameSite=Lax, Path=/). **Lifetime rule:** Max-Age 400 days
   (the browser cap), sliding — every matched request re-sends it with a fresh Max-Age; nothing else
   expires a guest (`sessions.expires_at` is informational, not enforced). `frontend/middleware.ts`
-  mints it on the entry pages (`/`, `/destinations/*`, `/tours/*`, `/plan`) and on `/api/trip`, as a
+  mints it on `/plan` and on `/api/trip` only (the home, destination and tour pages are CDN-cached, so a
+  per-visitor Set-Cookie must never ride on them), as a
   raw `Set-Cookie` header — never `res.cookies.set`, which also echoes the value into an
   `x-middleware-set-cookie` response header that client JS can read — and refuses a cross-site POST
   (403) before any mint, so another site can never overwrite the cookie. Client JS never sees it. The
@@ -129,7 +130,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   browser that blocks the cookie can make the first edit of a trip only.
 - Known gap: two planner tabs opened at the same moment by a first-time visitor (no cookie yet) can
   each get a different token; the later Set-Cookie wins, and a session already bound to the earlier
-  one is reset on its next edit. Minting on the entry pages makes this rare, not impossible.
+  one is reset on its next edit. Minting on the `/plan` document makes this rare, not impossible.
 - Grace window until `config.GUEST_LEGACY_GRACE_UNTIL` (code constant, 19/10/2026 12:00 UTC): a
   pre-AA-827 session binds to the first token it sees, and a tokenless request passes for a session
   with no hash. After it, a session id alone gets 401.
