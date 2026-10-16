@@ -48,8 +48,8 @@ export const AI_CATALOG_EXPLANATION =
 export const AI_SITE_LABEL = AI_BRAND_LABEL;
 export const AI_SITE_EXPLANATION =
   "Tour descriptions and day-by-day itineraries are written by AI from Adventure Asia's own tour notes " +
-  "and checked by automated quality checks. Trip narration is AI-written or AI-assisted, as its label " +
-  "says. The planner's place search and its “You might also like” suggestions use AI to match your words " +
+  "and checked by automated quality checks. Trip narration carries its own Adventure Asia AI label, " +
+  "which says how much of it AI wrote. The planner's place search and its “You might also like” suggestions use AI to match your words " +
   "and the places you picked. An Adventure Asia advisor reviews every trip before you book.";
 
 interface Props {
@@ -75,8 +75,23 @@ export default function AiLabel({
   className = "",
 }: Props) {
   const [open, setOpen] = useState(false);
+  const [shift, setShift] = useState(0);
   const panelId = useId();
   const root = useRef<HTMLSpanElement>(null);
+  const panel = useRef<HTMLSpanElement>(null);
+
+  // A popover anchored at the label's left edge can run past the right edge of a phone screen when
+  // the label sits mid-line (S239 verify D-A: 400-408 px on a 390 px screen). Shift it left so it
+  // stays 8 px inside the viewport.
+  useEffect(() => {
+    if (!open || placement !== "popover" || !panel.current) {
+      setShift(0);
+      return;
+    }
+    const r = panel.current.getBoundingClientRect();
+    const over = r.right - (window.innerWidth - 8);
+    setShift(over > 0 ? Math.min(over, Math.max(0, r.left - 8)) : 0);
+  }, [open, placement]);
   const style = STYLE[tone];
 
   useEffect(() => {
@@ -125,8 +140,10 @@ export default function AiLabel({
         </span>
       </button>
       <span
+        ref={panel}
         id={panelId}
         role="note"
+        style={shift ? { transform: `translateX(-${shift}px)` } : undefined}
         className={`${open ? "block" : "hidden"} ${panelPos} rounded-lg border px-2.5 py-2 text-[11px] font-normal normal-case leading-relaxed tracking-normal ${style.panel}`}
       >
         {explanation}
