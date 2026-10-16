@@ -1,7 +1,10 @@
 """AA-827: guest token in an HttpOnly BFF cookie, stored as sha256 only, checked on every mutation.
 
-Offline (FakeConn from test_assembly). The grace window is monkeypatched in every test that depends
-on it, so the suite does not change behaviour when the real cutoff passes.
+Offline (FakeConn from test_assembly). The legacy grace window is closed on Dev since S239
+(`config.GUEST_LEGACY_GRACE_UNTIL` is in the past), so the post-cutoff behaviour is the default and
+those tests run on the shipped constant, unpatched (`grace_closed` only asserts it is in the past).
+The dormant grace code path is still covered by the `in_grace` tests, which move the cutoff into the
+future.
 """
 from __future__ import annotations
 
@@ -42,12 +45,14 @@ class RecordingConn(FakeConn):
 
 @pytest.fixture
 def in_grace(monkeypatch):
+    """The dormant grace code path: move the cutoff into the future."""
     monkeypatch.setattr(config, "GUEST_LEGACY_GRACE_UNTIL", NOW + timedelta(days=1))
 
 
 @pytest.fixture
-def after_cutoff(monkeypatch):
-    monkeypatch.setattr(config, "GUEST_LEGACY_GRACE_UNTIL", NOW - timedelta(seconds=1))
+def grace_closed():
+    """The shipped default. Nothing is patched: the real cutoff must already be in the past."""
+    assert not guest_session.in_grace(datetime.now(timezone.utc))
 
 
 async def _add(conn, session_id=S1, token=TOKEN, component="c1", trip=T1):
@@ -65,10 +70,17 @@ def test_grace_cutoff_is_a_timezone_aware_constant():
     assert config.GUEST_TOKEN_HEADER == "x-tripplanner-guest"
 
 
+def test_the_shipped_grace_window_is_already_closed():
+    """S239: Dev has no real guests, so the window was closed instead of waiting until 19/10."""
+    assert config.GUEST_LEGACY_GRACE_UNTIL == datetime(2026, 10, 16, tzinfo=timezone.utc)
+    assert config.GUEST_LEGACY_GRACE_UNTIL <= datetime.now(timezone.utc)
+    assert not guest_session.in_grace(datetime.now(timezone.utc))
+
+
 # --- token-bound sessions ---------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_new_session_stores_only_the_sha256_of_the_token(after_cutoff):
+async def test_new_session_stores_only_the_sha256_of_the_token(grace_closed):
     conn = RecordingConn()
     resp = await _add(conn)
     assert resp["statusCode"] == 200
@@ -79,7 +91,7 @@ async def test_new_session_stores_only_the_sha256_of_the_token(after_cutoff):
 
 
 @pytest.mark.asyncio
-async def test_same_token_passes_again_and_a_wrong_token_gets_401(after_cutoff):
+async def test_same_token_passes_again_and_a_wrong_token_gets_401(grace_closed):
     conn = FakeConn()
     assert (await _add(conn))["statusCode"] == 200
     assert (await _add(conn, component="c2"))["statusCode"] == 200
@@ -120,9 +132,9 @@ async def test_tokenless_works_inside_grace_until_the_session_is_bound(in_grace)
 
 
 @pytest.mark.asyncio
-async def test_after_the_cutoff_the_old_id_alone_never_passes(after_cutoff):
-    """Done-when: after GUEST_LEGACY_GRACE_UNTIL a legacy session, a tokenless request and the
-    session id sent as the token all get 401."""
+async def test_after_the_cutoff_the_old_id_alone_never_passes(grace_closed):
+    """Done-when: after GUEST_LEGACY_GRACE_UNTIL (the shipped default since S239) a legacy session,
+    a tokenless request and the session id sent as the token all get 401."""
     conn = FakeConn()
     conn.sessions[S1] = _session(S1, token=None)
     for token in (TOKEN, None, S1):
@@ -137,7 +149,7 @@ async def test_after_the_cutoff_the_old_id_alone_never_passes(after_cutoff):
 
 
 @pytest.mark.asyncio
-async def test_tokenless_for_a_session_that_does_not_exist_yet_is_refused_after_cutoff(after_cutoff):
+async def test_tokenless_for_a_session_that_does_not_exist_yet_is_refused_after_the_cutoff(grace_closed):
     conn = FakeConn()
     assert (await _add(conn, token=None))["statusCode"] == 401
     assert conn.sessions == {}
@@ -178,7 +190,7 @@ async def _op(conn, name, session_id, token, day_id):
 
 @pytest.mark.parametrize("name", sorted(OPS))
 @pytest.mark.asyncio
-async def test_every_mutation_refuses_another_session_and_serves_the_owner(name, monkeypatch, after_cutoff):
+async def test_every_mutation_refuses_another_session_and_serves_the_owner(name, monkeypatch, grace_closed):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
     conn = FakeConn()
     day_id = await _owner_trip(conn)
@@ -215,7 +227,7 @@ async def test_non_uuid_ids_get_400_without_echo_or_sql(method, path, body):
 
 @pytest.mark.asyncio
 async def test_no_token_hash_or_session_id_in_any_response_or_log(monkeypatch, capsys, caplog,
-                                                                  after_cutoff):
+                                                                  grace_closed):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
     caplog.set_level("DEBUG")
     secrets = (TOKEN, hashlib.sha256(TOKEN.encode()).hexdigest(), OWNER)
@@ -261,7 +273,7 @@ async def test_no_token_hash_or_session_id_in_any_response_or_log(monkeypatch, c
 
 @pytest.mark.asyncio
 async def test_registration_hand_off_still_writes_an_outbox_row_without_the_session(monkeypatch,
-                                                                                   after_cutoff):
+                                                                                   grace_closed):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
     conn = FakeConn()
     assert (await _add(conn))["statusCode"] == 200

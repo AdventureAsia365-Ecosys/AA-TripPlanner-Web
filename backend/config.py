@@ -104,9 +104,11 @@ API_KEY_HEADER = "x-tripplanner-key"
 GUEST_TOKEN_HEADER = "x-tripplanner-guest"
 # Until this instant a request without a token (old BFF / old bundle) is still accepted for a
 # session that has no hash yet, and a legacy session is bound to the first token it sees. After
-# it, a session_id alone gets 401. Planned merge 16/10/2026 + ~72 h. A code constant on purpose:
+# it, a session_id alone gets 401. CLOSED: set to an instant already past (S239). Dev has no real
+# guests, so there is no one to carry over and no reason to wait the planned 72 h; the grace code
+# path stays in guest_session.py (and its tests) but is dormant. A code constant on purpose:
 # changing it is a reviewed deploy, not a Lambda env edit.
-GUEST_LEGACY_GRACE_UNTIL = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
+GUEST_LEGACY_GRACE_UNTIL = datetime(2026, 10, 16, 0, 0, tzinfo=timezone.utc)
 
 # --- Behavioural constants (from design.md non-functional table) ---
 HOVER_DEBOUNCE_MS = 200
