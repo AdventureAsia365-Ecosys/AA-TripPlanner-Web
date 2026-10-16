@@ -22,29 +22,34 @@ const LONG_TRIP_WARN_DAYS = 25;
 // says AI (not only the tap-to-open explanation): AA master text is the CIS writer model's output.
 // `basic` (daily AI budget spent, no AA day at all: neutral name lines) has no AI text and no badge;
 // `master_basic` is the same fallback with some AA days in it.
-const AA_ITINERARY_LABEL = "AA itinerary · AI-assisted";
+const AA_ITINERARY_LABEL = "AA itinerary · Adventure Asia AI";
+const AA_ITINERARY_SHORT = "AA itinerary · AA AI";
 const AA_ITINERARY_TEXT =
   "Adventure Asia's own itinerary text for these tour days, written by AI from our tour notes and " +
   "checked by automated quality checks.";
-const NARRATION_LABEL: Record<string, { label: string; explanation: string }> = {
+const NARRATION_LABEL: Record<string, { label: string; shortLabel: string; explanation: string }> = {
   master: {
     label: AA_ITINERARY_LABEL,
+    shortLabel: AA_ITINERARY_SHORT,
     explanation: `${AA_ITINERARY_TEXT} Your advisor confirms every detail.`,
   },
   master_basic: {
     label: AA_ITINERARY_LABEL,
+    shortLabel: AA_ITINERARY_SHORT,
     explanation:
       `${AA_ITINERARY_TEXT} Today's AI writing limit is reached, so the days it does not cover show ` +
       "only their places. Your advisor confirms every detail.",
   },
   mixed: {
-    label: "AA + AI",
+    label: "AA itinerary + Adventure Asia AI",
+    shortLabel: "AA itinerary + AA AI",
     explanation:
       "Mostly Adventure Asia's own itinerary text, written by AI from our tour notes and checked by " +
       "automated quality checks; AI also wrote the days it did not cover. Your advisor confirms every detail.",
   },
   llm: {
-    label: "AI narration",
+    label: "Adventure Asia AI narration",
+    shortLabel: "AA AI narration",
     explanation: "Written by AI from the tour descriptions. Your advisor confirms every detail.",
   },
 };
@@ -551,6 +556,7 @@ export default function TripPanel() {
                   className="mt-1.5"
                   placement="inline"
                   label={NARRATION_LABEL[narrationSource].label}
+                  shortLabel={NARRATION_LABEL[narrationSource].shortLabel}
                   explanation={NARRATION_LABEL[narrationSource].explanation}
                   variant={narrationSource === "llm" ? "outline" : "solid"}
                 />

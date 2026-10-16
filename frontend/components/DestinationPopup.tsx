@@ -5,7 +5,7 @@ import { fetchDestination } from "@/lib/api";
 import type { DestinationDetail } from "@/lib/types";
 import { useTrip } from "@/lib/useTrip";
 import ActivityIcon from "./ActivityIcon";
-import AiLabel, { AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "./AiLabel";
+import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "./AiLabel";
 
 interface Props {
   destinationId: string;
@@ -98,7 +98,7 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
               <AiLabel
                 className="mt-1"
                 placement="inline"
-                label={AI_CATALOG_LABEL}
+                label={AI_CATALOG_LABEL} shortLabel={AI_BRAND_SHORT}
                 explanation={AI_CATALOG_EXPLANATION}
               />
             )}

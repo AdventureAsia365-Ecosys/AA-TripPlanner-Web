@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import AiLabel, { AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
+import AiLabel, { AI_BRAND_SHORT, AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
 
 // Top brand bar — Adventure Asia wordmark + tagline. Kept slim so the map
 // dominates the viewport (map-first product).
@@ -23,7 +23,7 @@ export default function Header() {
         </Link>
         {/* AA-805: AI Phase 0 — say plainly, next to the AA mark, that the planner uses AI.
             AA-819: a button with its explanation (touch + keyboard), naming only what is AI. */}
-        <AiLabel label={AI_SITE_LABEL} explanation={AI_SITE_EXPLANATION} variant="outline" />
+        <AiLabel label={AI_SITE_LABEL} shortLabel={AI_BRAND_SHORT} explanation={AI_SITE_EXPLANATION} variant="outline" />
         <div className="hidden leading-tight sm:block">
           <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-aa-gold">
             Trip Planner

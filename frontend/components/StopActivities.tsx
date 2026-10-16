@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { fetchStopActivities } from "@/lib/api";
 import type { StopActivity } from "@/lib/types";
-import AiLabel, { AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "@/components/AiLabel";
+import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "@/components/AiLabel";
 
 const LABEL: Record<string, string> = {
   trekking: "Trekking",
@@ -79,7 +79,7 @@ export default function StopActivities({ destinationId }: { destinationId: strin
         <AiLabel
           className="mt-1.5"
           placement="inline"
-          label={AI_CATALOG_LABEL}
+          label={AI_CATALOG_LABEL} shortLabel={AI_BRAND_SHORT}
           explanation={AI_CATALOG_EXPLANATION}
         />
       )}
