@@ -17,9 +17,9 @@ from backend import config
 from backend.assembly import master_content
 
 # Bump when the narration prompts (agent.py), grounding or the master-day choice
-# (master_content.resolve_day_text) change, so old text is not reused.
-# 2026-10-16.1 (AA-819): a tour day that does not visit the stop is no longer used; multi-line master
-# days survive the merge with AI-written days.
+# (master_content.resolve_days) change, so old text is not reused.
+# 2026-10-16.1 (AA-819): a tour day that does not visit the stop moves to a free day of the same
+# tour that does; multi-line master days survive the merge with AI-written days.
 PROMPT_VERSION = "2026-10-16.1"
 
 CACHEABLE_SOURCES = ("llm", "mixed")
@@ -36,22 +36,18 @@ def itinerary_hash(itinerary: list[dict], mode: str,
     (master_content.load_for_tours): the authored text each entry would use goes into the key,
     so a CIS edit to a tour's itinerary misses the cache instead of serving a stale 'mixed'
     narration until the TTL ends (AA-805 review)."""
-    master_texts = master_texts or {}
+    # The day text the narration really uses for each trip day, which may be another day of the
+    # same tour when the entry's own day does not visit the stop (AA-819, resolve_days).
+    resolved = master_content.resolve_days(itinerary, master_texts or {})
     days = [
         [e.get("day"), str(e.get("component_id")), e.get("name") or "", e.get("text_extract") or "",
          str(e.get("source_tour_id") or ""), e.get("source_day_index"),
-         _master_text(master_texts, e)]
+         resolved.get(e.get("day")) or ""]
         for e in sorted(itinerary, key=lambda e: (e.get("day") or 0, str(e.get("component_id"))))
     ]
     raw = json.dumps({"v": PROMPT_VERSION, "mode": mode, "days": days}, sort_keys=True,
                      separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _master_text(master_texts: dict[tuple[str, int], str], entry: dict) -> str:
-    # The day text the narration would really use for this entry, which may be another day of the
-    # same tour when the entry's own day does not visit the stop (AA-819).
-    return master_content.resolve_day_text(entry, master_texts) or ""
 
 
 async def get(conn: _Conn, key: str) -> Optional[dict]:

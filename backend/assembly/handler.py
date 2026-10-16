@@ -74,8 +74,11 @@ _ROUTE_NAMES = (
 
 _HEADERS = {"content-type": "application/json", "cache-control": "no-store"}
 
-# Narration sources that contain model-written text (frontend AI badge, cache eligibility).
-_AI_SOURCES = ("llm", "mixed")
+# Narration sources whose text is AI-written or AI-assisted, reported as `ai_generated`. AA master
+# text is the CIS writer model's output (AA-819), so 'master' and 'master_basic' count; only
+# 'basic' (neutral name lines, no master day) has no AI text. Cache eligibility is separate
+# (narration_cache.CACHEABLE_SOURCES).
+_AI_SOURCES = ("llm", "mixed", "master", "master_basic")
 
 
 def _resp(status: int, body: dict) -> dict:
@@ -446,8 +449,9 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn,
     'llm' (none authored), or 'mixed', and ungrounded lists the LLM lines removed or replaced
     because they stated a figure no component text supports (AA-731, grounding.py).
 
-    narrate_fn None (AA-805 daily spend cap reached): the remaining days get neutral name lines
-    and source is 'basic' — no AI text at all.
+    narrate_fn None (AA-805 daily spend cap reached): the remaining days get neutral name lines.
+    Source is 'master_basic' when some days are AA master text (AI-assisted, AA-819: the frontend
+    labels it), 'basic' when none is: no AI text at all.
     """
     if day_texts is None:
         day_texts = await _load_master_texts(conn, itinerary)
@@ -459,7 +463,9 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn,
 
     if narrate_fn is None:
         basic = _basic_narration(missing)
-        return (_merge_by_day(master_narr, basic) if master_narr else basic), "basic", []
+        if master_narr:
+            return _merge_by_day(master_narr, basic), "master_basic", []
+        return basic, "basic", []
 
     # Some (or all) days need the LLM. Narrate only the missing days, then
     # merge with any authored lines, preserving trip-day order.
