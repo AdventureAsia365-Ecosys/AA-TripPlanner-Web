@@ -12,7 +12,7 @@ import type {
   TourRouteFallback,
 } from "./types";
 import type { TourList, TourSort } from "./catalogTypes";
-import { resetGuestIds } from "./guestIds";
+import { COOKIES_NOTICE, COOKIES_REQUIRED, resetGuestIds, showGuestNotice } from "./guestIds";
 
 function filterParams(f: BrowseFilters): string {
   const p = new URLSearchParams();
@@ -98,23 +98,40 @@ export async function fetchTrip(tripId: string): Promise<TripResponse | null> {
   return res.json();
 }
 
-// AA-827: every trip mutation goes through here. 401 guest_session_invalid (this browser's token
-// does not match the stored session) or 403 forbidden (the trip belongs to another session) means
-// the stored ids are unusable: start a new trip (resetGuestIds reloads the page).
+// AA-827: every trip mutation goes through here (body always carries session_id + trip_id).
+// - 401 guest_session_invalid (this browser's cookie does not match the stored session) or 403
+//   forbidden (the trip belongs to another session): the stored ids are unusable, start a new trip
+//   (resetGuestIds reloads the page, unless it just did).
+// - 401 cookies_required: the request came without a cookie and the token minted for it was refused.
+//   Retry once: if the cookie was only lost, the browser now holds the new one and the retry gets the
+//   real answer. A second cookies_required means this browser does not keep the cookie: keep the ids,
+//   say cookies are needed. A refused mutation changed nothing, so the retry is safe.
 async function postTrip<T = Record<string, unknown>>(
-  body: Record<string, unknown>,
+  body: Record<string, unknown> & { session_id: string; trip_id: string },
 ): Promise<{ ok: boolean; status: number; data: T & { error?: string } }> {
-  const res = await fetch("/api/trip", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+  const send = async () => {
+    const res = await fetch("/api/trip", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+    return { res, data };
+  };
+  const cookiesRequired = (r: { res: Response; data: { error?: string } }) =>
+    r.res.status === 401 && r.data.error === COOKIES_REQUIRED;
+
+  let r = await send();
+  if (cookiesRequired(r)) {
+    r = await send();
+    if (cookiesRequired(r)) showGuestNotice(COOKIES_NOTICE);
+  }
+  const { res, data } = r;
   if (
     (res.status === 401 && data.error === "guest_session_invalid") ||
     (res.status === 403 && data.error === "forbidden")
   ) {
-    resetGuestIds();
+    resetGuestIds({ sessionId: body.session_id, tripId: body.trip_id });
   }
   return { ok: res.ok, status: res.status, data };
 }

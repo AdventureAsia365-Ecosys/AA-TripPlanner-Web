@@ -5,6 +5,7 @@ import {
   guestCookieName,
   isGuestToken,
   isSameOrigin,
+  mapMintedDenial,
 } from "@/lib/guestToken";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
@@ -22,12 +23,13 @@ function tripHeaders(guestToken?: string | null): Record<string, string> {
   return h;
 }
 
-// The cookie, or the token middleware.ts minted on this very request (no cookie yet).
-function requestGuestToken(req: NextRequest): string | null {
+// The cookie, or the token middleware.ts minted on this very request (no cookie came in; `minted`).
+// The BFF never sets the cookie itself: middleware.ts does, as a raw Set-Cookie header.
+function requestGuestToken(req: NextRequest): { token: string | null; minted: boolean } {
   const cookie = req.cookies.get(guestCookieName())?.value;
-  if (isGuestToken(cookie)) return cookie;
+  if (isGuestToken(cookie)) return { token: cookie, minted: false };
   const minted = req.headers.get(MINTED_TOKEN_HEADER);
-  return isGuestToken(minted) ? minted : null;
+  return isGuestToken(minted) ? { token: minted, minted: true } : { token: null, minted: false };
 }
 
 // GET /api/trip?trip_id=... — fetch the current itinerary for a trip, used to
@@ -76,6 +78,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   // AA-827: a cross-site browser POST never reaches the Lambda (the cookie is SameSite=Lax anyway).
+  // middleware.ts already refuses it before minting; this is defence in depth.
   if (!isSameOrigin(req)) {
     return NextResponse.json({ error: "cross_origin" }, { status: 403 });
   }
@@ -134,14 +137,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "unknown op" }, { status: 400 });
   }
 
+  const guest = requestGuestToken(req);
   const upstream = await fetch(`${TRIP_API_URL}${path}`, {
     method,
-    headers: tripHeaders(requestGuestToken(req)),
+    headers: tripHeaders(guest.token),
     body: JSON.stringify(payload),
   });
   const text = await upstream.text();
-  return new NextResponse(text, {
-    status: upstream.status,
+  // A refused token that was minted on this request -> 401 cookies_required (see mapMintedDenial).
+  const mapped = mapMintedDenial(upstream.status, text, guest.minted);
+  return new NextResponse(mapped ? mapped.body : text, {
+    status: mapped ? mapped.status : upstream.status,
     headers: { "content-type": "application/json", "cache-control": "no-store", vary: "Cookie" },
   });
 }

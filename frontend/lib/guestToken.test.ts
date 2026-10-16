@@ -3,18 +3,36 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  COOKIES_REQUIRED,
   GUEST_COOKIE_MAX_AGE,
+  guestCookieAction,
   guestCookieName,
-  guestCookieOptions,
   isGuestToken,
   isSameOrigin,
+  mapMintedDenial,
   mintGuestToken,
+  serializeGuestCookie,
 } from "./guestToken.ts";
-import { isUuid, randomUuid, uuidFromBytes } from "./guestIds.ts";
+import {
+  COOKIES_REQUIRED as CLIENT_COOKIES_REQUIRED,
+  RESET_LOOP_MS,
+  isResetLoop,
+  isUuid,
+  randomUuid,
+  storedIdsMatch,
+  uuidFromBytes,
+} from "./guestIds.ts";
 
 function headers(h: Record<string, string>) {
   return { headers: { get: (name: string) => h[name.toLowerCase()] ?? null } };
 }
+
+function request(method: string, h: Record<string, string>) {
+  return { method, ...headers(h) };
+}
+
+const HOST = { host: "plan.example.com" };
+const fixedMint = () => "M".repeat(43);
 
 test("a minted token is 43 base64url characters (32 random bytes)", () => {
   for (let i = 0; i < 50; i++) {
@@ -39,19 +57,98 @@ test("isGuestToken rejects anything that is not exactly a token", () => {
   }
 });
 
-test("production cookie is __Host- prefixed, HttpOnly, Secure, Lax, Path=/, 90 days", () => {
+test("production cookie is __Host- prefixed, HttpOnly, Secure, Lax, Path=/, 400 days", () => {
+  const t = mintGuestToken();
   assert.equal(guestCookieName(true), "__Host-tp_guest");
-  assert.deepEqual(guestCookieOptions(true), {
-    httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 90 * 24 * 3600,
-  });
-  assert.equal(GUEST_COOKIE_MAX_AGE, 7776000);
+  assert.equal(
+    serializeGuestCookie(t, true),
+    `__Host-tp_guest=${t}; Path=/; Max-Age=34560000; HttpOnly; SameSite=Lax; Secure`,
+  );
+  assert.equal(GUEST_COOKIE_MAX_AGE, 400 * 24 * 3600);
 });
 
 test("local http dev cookie has no __Host- prefix and no Secure, still HttpOnly", () => {
+  const t = mintGuestToken();
   assert.equal(guestCookieName(false), "tp_guest");
-  const o = guestCookieOptions(false);
-  assert.equal(o.secure, false);
-  assert.equal(o.httpOnly, true);
+  const c = serializeGuestCookie(t, false);
+  assert.equal(c, `tp_guest=${t}; Path=/; Max-Age=34560000; HttpOnly; SameSite=Lax`);
+  assert.doesNotMatch(c, /Secure/);
+});
+
+test("cookie action: a cross-site POST is rejected before any mint", () => {
+  let mints = 0;
+  const mint = () => { mints++; return fixedMint(); };
+  for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+    const a = guestCookieAction(request(method, { ...HOST, origin: "https://evil.example",
+      "sec-fetch-site": "cross-site" }), undefined, mint);
+    assert.deepEqual(a, { kind: "reject" }, method);
+    // with a valid cookie too (a browser would not send it, but a non-browser might)
+    assert.deepEqual(guestCookieAction(request(method, { ...HOST, origin: "null" }), mintGuestToken(), mint),
+      { kind: "reject" });
+  }
+  assert.equal(mints, 0);
+});
+
+test("cookie action: a cross-site non-navigation request leaves the cookie alone", () => {
+  for (const [method, mode] of [["GET", "no-cors"], ["GET", "cors"], ["HEAD", "nested-navigate"]]) {
+    const a = guestCookieAction(request(method, { ...HOST, "sec-fetch-site": "cross-site",
+      "sec-fetch-mode": mode }), undefined, fixedMint);
+    assert.deepEqual(a, { kind: "pass", token: null, minted: false }, `${method} ${mode}`);
+  }
+});
+
+test("cookie action: a cross-site top-level GET (a link from CIS) mints or renews", () => {
+  const nav = { ...HOST, "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" };
+  assert.deepEqual(guestCookieAction(request("GET", nav), undefined, fixedMint),
+    { kind: "pass", token: fixedMint(), minted: true });
+  const t = mintGuestToken();
+  assert.deepEqual(guestCookieAction(request("GET", nav), t, fixedMint), { kind: "pass", token: t, minted: false });
+});
+
+test("cookie action: same-origin requests renew a valid cookie and mint for a missing or bad one", () => {
+  const t = mintGuestToken();
+  const same = { ...HOST, origin: "https://plan.example.com", "sec-fetch-site": "same-origin" };
+  assert.deepEqual(guestCookieAction(request("POST", same), t, fixedMint), { kind: "pass", token: t, minted: false });
+  assert.deepEqual(guestCookieAction(request("POST", same), undefined, fixedMint),
+    { kind: "pass", token: fixedMint(), minted: true });
+  assert.deepEqual(guestCookieAction(request("POST", same), t.slice(1), fixedMint),
+    { kind: "pass", token: fixedMint(), minted: true });
+  // a typed-in URL / bookmark (sec-fetch-site none) and a non-browser GET
+  assert.deepEqual(guestCookieAction(request("GET", { ...HOST, "sec-fetch-site": "none" }), t, fixedMint),
+    { kind: "pass", token: t, minted: false });
+  assert.deepEqual(guestCookieAction(request("GET", HOST), undefined, fixedMint),
+    { kind: "pass", token: fixedMint(), minted: true });
+});
+
+test("a refused minted token becomes 401 cookies_required; everything else passes through", () => {
+  const invalid = JSON.stringify({ error: "guest_session_invalid" });
+  assert.deepEqual(mapMintedDenial(401, invalid, true), {
+    status: 401, body: JSON.stringify({ error: "cookies_required" }),
+  });
+  assert.equal(mapMintedDenial(401, invalid, false), null); // the cookie came in: a real mismatch
+  assert.equal(mapMintedDenial(403, JSON.stringify({ error: "forbidden" }), true), null);
+  assert.equal(mapMintedDenial(401, JSON.stringify({ error: "other" }), true), null);
+  assert.equal(mapMintedDenial(401, "not json", true), null);
+  assert.equal(mapMintedDenial(200, "{}", true), null);
+  assert.equal(COOKIES_REQUIRED, CLIENT_COOKIES_REQUIRED);
+});
+
+test("reset deletes the stored ids only when they are the ones that failed", () => {
+  const ids = { sessionId: randomUuid(), tripId: randomUuid() };
+  assert.ok(storedIdsMatch(JSON.stringify(ids), ids));
+  assert.equal(storedIdsMatch(JSON.stringify({ sessionId: randomUuid(), tripId: randomUuid() }), ids), false);
+  assert.equal(storedIdsMatch(JSON.stringify({ ...ids, tripId: randomUuid() }), ids), false);
+  assert.equal(storedIdsMatch(null, ids), false);
+  assert.equal(storedIdsMatch("{", ids), false);
+});
+
+test("a second reset in the same tab within the loop window is a reset loop", () => {
+  const now = 1_000_000_000;
+  assert.equal(isResetLoop(null, now), false);
+  assert.equal(isResetLoop("garbage", now), false);
+  assert.ok(isResetLoop(String(now - 1000), now));
+  assert.equal(isResetLoop(String(now - RESET_LOOP_MS), now), false);
+  assert.equal(isResetLoop(String(now + 5000), now), false); // clock went back: not a loop
 });
 
 test("isSameOrigin: same host passes, another site or a null origin fails, no Origin passes", () => {

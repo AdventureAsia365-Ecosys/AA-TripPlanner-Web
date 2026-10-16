@@ -1,6 +1,9 @@
 // AA-827: the guest credential. A random token (32 bytes, base64url, 43 chars) lives in an HttpOnly
 // cookie that only the server side (middleware.ts + the /api/trip BFF) reads; the BFF forwards it to
-// the assembly Lambda in a header, and the Lambda stores only its sha256. Client JS never sees it.
+// the assembly Lambda in a header, and the Lambda stores only its sha256. Client JS never sees it:
+// the cookie is written as a raw Set-Cookie header (serializeGuestCookie), never through Next's
+// `res.cookies.set`, whose proxy also copies the value into an `x-middleware-set-cookie` response
+// header that a same-origin fetch() can read.
 // Server-only by convention: do not import this from client components. Pure (no Next imports), so
 // it runs in the edge middleware, the Node route handler and `npm test` alike.
 
@@ -9,7 +12,13 @@ export const GUEST_TOKEN_HEADER = "x-tripplanner-guest";
 // middleware -> BFF, on the same request, for a token minted before the browser holds the cookie.
 // The middleware drops any client-supplied value first.
 export const MINTED_TOKEN_HEADER = "x-tp-guest-minted";
-export const GUEST_COOKIE_MAX_AGE = 60 * 60 * 24 * 90; // 90 days, like the guest session
+// 400 days, the most a browser keeps a cookie (Chrome caps Max-Age there). Sliding: the middleware
+// re-sends the cookie with a fresh Max-Age on every matched request, so an active guest never loses it.
+// The localStorage ids it guards have no expiry, and sessions.expires_at is not enforced.
+export const GUEST_COOKIE_MAX_AGE = 60 * 60 * 24 * 400;
+// BFF -> browser: the token the BFF used was minted on this request (no cookie came in) and the
+// Lambda refused it, so the cookie is most likely not kept by this browser. Never resets the ids.
+export const COOKIES_REQUIRED = "cookies_required";
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 
@@ -35,14 +44,10 @@ export function guestCookieName(secure: boolean = isSecureCookieEnv()): string {
   return secure ? "__Host-tp_guest" : "tp_guest";
 }
 
-export function guestCookieOptions(secure: boolean = isSecureCookieEnv()) {
-  return {
-    httpOnly: true,
-    secure,
-    sameSite: "lax" as const,
-    path: "/",
-    maxAge: GUEST_COOKIE_MAX_AGE,
-  };
+// The Set-Cookie value. HttpOnly + SameSite=Lax + Path=/ always; Secure (and the __Host- name) in
+// production.
+export function serializeGuestCookie(token: string, secure: boolean = isSecureCookieEnv()): string {
+  return `${guestCookieName(secure)}=${token}; Path=/; Max-Age=${GUEST_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
 }
 
 export interface HeaderSource {
@@ -61,4 +66,59 @@ export function isSameOrigin(req: { headers: HeaderSource }): boolean {
   } catch {
     return false; // "null" (sandboxed frame) or garbage
   }
+}
+
+export interface GuestRequest {
+  method: string;
+  headers: HeaderSource;
+}
+
+export type GuestCookieAction =
+  // A cross-site state-changing request: answer 403 and set no cookie.
+  | { kind: "reject" }
+  // Go on; `token` (when set) is (re)sent as the cookie, and `minted` says it is new on this request.
+  | { kind: "pass"; token: string | null; minted: boolean };
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+// What middleware.ts does with the guest cookie on one request.
+// - A cross-site POST never carries the SameSite=Lax cookie, so it would look cookie-less and a new
+//   token would overwrite the visitor's real cookie (a top-level cross-site POST accepts a Lax
+//   Set-Cookie): it is rejected before any mint.
+// - A cross-site request that is not a top-level GET navigation (an <img>, an iframe, a fetch) does
+//   not carry the cookie either: leave the cookie alone.
+// - Otherwise renew the valid cookie (sliding lifetime) or mint one.
+export function guestCookieAction(
+  req: GuestRequest,
+  cookie: string | undefined,
+  mint: () => string = mintGuestToken,
+): GuestCookieAction {
+  const safe = SAFE_METHODS.has(req.method.toUpperCase());
+  if (!safe && !isSameOrigin(req)) return { kind: "reject" };
+  if (req.headers.get("sec-fetch-site") === "cross-site"
+    && !(safe && req.headers.get("sec-fetch-mode") === "navigate")) {
+    return { kind: "pass", token: null, minted: false };
+  }
+  if (isGuestToken(cookie)) return { kind: "pass", token: cookie, minted: false };
+  return { kind: "pass", token: mint(), minted: true };
+}
+
+// The BFF's answer to the browser when the Lambda refused the guest token. A 401
+// guest_session_invalid for a token minted on this very request (the browser sent no cookie) becomes
+// 401 cookies_required: either the cookie was lost once (the browser keeps the new one, and the
+// client's single retry then gets the real answer) or the browser does not keep cookies at all (the
+// client keeps its ids and says cookies are needed, instead of wiping the trip every second edit).
+// Returns null to pass the Lambda's answer through unchanged.
+export function mapMintedDenial(
+  status: number,
+  bodyText: string,
+  minted: boolean,
+): { status: number; body: string } | null {
+  if (!minted || status !== 401) return null;
+  try {
+    if (JSON.parse(bodyText)?.error !== "guest_session_invalid") return null;
+  } catch {
+    return null;
+  }
+  return { status: 401, body: JSON.stringify({ error: COOKIES_REQUIRED }) };
 }
