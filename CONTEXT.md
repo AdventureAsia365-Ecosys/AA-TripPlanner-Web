@@ -225,14 +225,16 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
     then `cohere-embed-v4-acc1` once enabled — same model and 1536-d, AA-862).
     **Search under load (AA-856)**: Cohere Embed V4 on acc2 allows 20 requests per minute (Service
     Quotas), so `llm_gateway.query_embed_cache` keeps query vectors per Lambda container (bounded LRU,
-    1024 entries, 6 h TTL; key = stage + route models + input type + normalised text; a hit makes no
+    1024 entries, 6 h TTL; key = stage + base Bedrock model id(s) of the route (geo prefix stripped, so account rows of one
+    model share entries) + input type + normalised text; a hit makes no
     call, no log row, no spend, and is served even over the daily cap). When the embed fails (every
     account of the route failed: throttle or any Bedrock error; failed attempts still logged) search answers 200 with a keyword ranking
     (`ILIKE` per query word over destination/component name, country and text, same filters and
-    active-tour rule; no pg_trgm on the RDS) and `"ranking": "keyword"` instead of a 500; after a
-    throttle the container skips the model for 10 s. A query with no letter or digit (empty,
+    active-tour rule; no pg_trgm on the RDS) and `"ranking": "keyword"` instead of a 500; when any
+    attempt of the failed chain was a throttle the container skips the model for 10 s. A query with no letter or digit (empty,
     punctuation, zero-width characters) answers `{"destinations": []}` with no model call. The acc2
-    and satellite embed clients make one attempt each (no boto retry). Each search prints one `{"evt":"search_embed","outcome":hit|miss|fallback,...}` line
+    and satellite embed clients make one attempt each (no boto retry); the satellite AssumeRole uses
+    STS timeouts of 3 s connect / 5 s read, at most 2 attempts. Each search prints one `{"evt":"search_embed","outcome":hit|miss|fallback,...}` line
     with the container's cache counters (never the query text);
   - `tp_extract` / `tp_component_embed`: the former offline extraction pipeline; no caller since
     AA-712 slice 6a (built-in routes kept until the frozen tables are dropped).

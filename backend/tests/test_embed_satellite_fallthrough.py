@@ -124,7 +124,7 @@ def test_disabled_acc1_row_is_skipped_and_the_chain_error_still_reads_as_throttl
     assert acc1.calls == []
     assert "cohere-embed-v4-acc1: skipped" in str(e.value)
     assert [f.account for f in failures] == ["acc2", "acc3"]
-    # search.py keys its keyword cooldown on this: only when every account failed with a throttle
+    # search.py starts its keyword cooldown when any attempt in the failed chain was a throttle
     assert gw.is_throttle(str(e.value))
 
 
@@ -137,7 +137,7 @@ def prod(monkeypatch):
              "expiration": "default"}
 
     def assume(account_id, role_name, external_id, client_factory):
-        assert client_factory is bs.default_client_factory
+        assert client_factory is gw._embed_sts_factory  # bounded STS timeouts and retries
         state["assumes"].append((account_id, role_name, external_id))
         exp = state["expiration"]
         if exp == "default":
@@ -250,3 +250,33 @@ def test_credentials_keep_the_sts_expiration_and_the_old_name_still_works():
     assert bs.Credentials.from_sts_response(
         {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "s", "SessionToken": "t"}}
     ).expiration is None
+
+
+# --- review fixes: cache key per model, bounded STS ---------------------------------------------
+
+def test_cache_key_ignores_which_accounts_serve_the_same_model():
+    base = gw.Route("tp_search_embed", "embed", (ACC2,))
+    chained = gw.Route("tp_search_embed", "embed", (ACC2, ACC3, ACC1_OFF))
+    k = gw.embed_cache_key(base, "search_query", "beach")
+    assert k == gw.embed_cache_key(chained, "search_query", "beach")
+    other = gw.Route("tp_search_embed", "embed",
+                     (gw.Model("titan", "amazon", "embed", {"acc2": "amazon.titan-embed-text-v2:0"}),))
+    assert k != gw.embed_cache_key(other, "search_query", "beach")
+
+
+def test_satellite_sts_client_has_short_timeouts_and_one_retry(monkeypatch):
+    import sys
+    import types
+    seen = {}
+
+    class FakeConfig:
+        def __init__(self, **kw):
+            seen["config"] = kw
+
+    fake_boto3 = types.SimpleNamespace(client=lambda service, **kw: seen.setdefault("client", (service, kw)))
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setitem(sys.modules, "botocore.config", types.SimpleNamespace(Config=FakeConfig))
+    gw._embed_sts_factory("sts")
+    assert seen["client"][0] == "sts"
+    assert seen["config"] == {"connect_timeout": 3, "read_timeout": 5,
+                              "retries": {"total_max_attempts": 2, "mode": "standard"}}

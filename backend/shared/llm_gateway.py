@@ -323,6 +323,18 @@ _wall_clock: Callable[[], float] = time.time
 _SAT_STALE_MARKERS = ("expiredtoken", "accessdenied", "unrecognizedclient")
 
 
+def _embed_sts_factory(service: str, **_: Any) -> Any:
+    """STS client for the satellite AssumeRole on the search path, with short timeouts and at most
+    one retry. boto3's defaults (60 s connect, legacy retries) could hold a search past the browse
+    Lambda's 30 s timeout when STS hangs behind the NAT instance, turning a keyword-ranked answer
+    into a 500 (AA-862 review)."""
+    import boto3  # lazily, so tests never need boto3
+    from botocore.config import Config
+
+    return boto3.client(service, region_name=config.BEDROCK_REGION, config=Config(
+        connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 2, "mode": "standard"}))
+
+
 def _satellite_embed_client(account: str) -> Any:
     """AA-862: cached no-retry embed client for a satellite account. One AssumeRole per container
     until SAT_CREDS_REFRESH_MARGIN_SECONDS before the creds expire, instead of one per call."""
@@ -330,8 +342,7 @@ def _satellite_embed_client(account: str) -> Any:
     cached = _sat_embed.get(account)
     if cached is not None and now < cached[1]:
         return cached[0]
-    creds = bedrock_satellite.assume_credentials(
-        *_satellite_target(account), bedrock_satellite.default_client_factory)
+    creds = bedrock_satellite.assume_credentials(*_satellite_target(account), _embed_sts_factory)
     if creds.expiration is not None:
         expires_at = creds.expiration.timestamp()
     else:
@@ -414,11 +425,29 @@ def normalise_query(text: str) -> str:
     return _WS_RE.sub(" ", unicodedata.normalize("NFKC", text or "")).strip().casefold()
 
 
+# Geographic / cross-region inference-profile prefixes: `global.cohere.embed-v4:0` and
+# `us.cohere.embed-v4:0` are the same model and give the same vector.
+_PROFILE_GEO_PREFIXES = ("global.", "us-gov.", "us.", "eu.", "apac.", "jp.", "au.", "ca.")
+
+
+def _base_model_id(profile: str) -> str:
+    for prefix in _PROFILE_GEO_PREFIXES:
+        if profile.startswith(prefix):
+            return profile[len(prefix):]
+    return profile
+
+
 def embed_cache_key(route: Route, input_type: str, text: str) -> tuple:
-    """(stage, model keys of the route, input_type, dimension, normalised text). A model change on
-    the admin Settings page gives new keys, so a cached vector never crosses models."""
-    return (route.stage, tuple(m.key for m in route.models), input_type, config.EMBED_DIM,
-            normalise_query(text))
+    """(stage, base model ids the route can call, input_type, dimension, normalised text).
+
+    Keyed on the MODEL (the Bedrock model id behind each row's profiles, geo prefix stripped), not
+    on the route's catalog keys: AA-862 rows `cohere-embed-v4` / `-acc3` / `-acc1` are one model on
+    three accounts, so adding, enabling or disabling an account row must not empty the cache (a
+    cold cache sends every query straight at acc2's 20 rpm). A different model on the admin
+    Settings page gives a new key, so a cached vector never crosses models."""
+    ids = sorted({_base_model_id(str(p)) for m in route.models for p in (m.profiles or {}).values()})
+    model_part = tuple(ids) if ids else tuple(m.key for m in route.models)
+    return (route.stage, model_part, input_type, config.EMBED_DIM, normalise_query(text))
 
 
 class EmbeddingCache:
