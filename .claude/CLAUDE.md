@@ -22,7 +22,7 @@ Browser (Next.js, Vercel) → BFF /api/* (server-side, giữ TRIPPLANNER_API_KEY
   → API Gateway HTTP v2 (auth=NONE)  → Lambda A Browse (stateless, đọc; embed câu search)
                                       → Lambda B Assembly (stateful, Bedrock narration)
   → RDS Postgres acc2 (schema tripplanner.* + shared.destinations, pgvector)
-  → Bedrock: Cohere Embed v4 (direct acc2) / Claude (satellite assume acc3→acc1)
+  → Bedrock: Cohere Embed v4 (acc2 → acc3 → acc1, AA-862) / Claude (satellite assume acc3→acc1)
 ```
 - **3 đơn vị deploy:** Frontend (Vercel), Lambda A Browse, Lambda B Assembly. Pipeline địa điểm (extraction/geocode/tour graph) đã chuyển sang CIS (AA-712 slice 6a, ADR 0007) — repo này chỉ còn đọc.
 - **Auth MVP:** edge shared-secret `X-TripPlanner-Key` (BFF ↔ Lambda), chưa per-user.
@@ -44,7 +44,7 @@ Browser (Next.js, Vercel) → BFF /api/* (server-side, giữ TRIPPLANNER_API_KEY
   (`shared.llm_role_config` + `shared.llm_model_catalog`), client ở `backend/shared/llm_gateway.py`;
   mỗi lần gọi ghi 1 dòng `shared.llm_call_log` (`quality_signal.app = "tripplanner"`).
 - Stage: `tp_compose` (narration, Sonnet 4.6 qua satellite acc3→acc1), `tp_search_embed` (search,
-  Cohere Embed v4 direct acc2, 1536-dim), `tp_extract` / `tp_component_embed` (extraction offline cũ — không còn caller từ AA-712 slice 6a).
+  Cohere Embed v4 acc2 trước, throttle → hàng catalog satellite acc3/acc1 (AA-862), 1536-dim), `tp_extract` / `tp_component_embed` (extraction offline cũ — không còn caller từ AA-712 slice 6a).
 - Đổi model: trang admin CIS → Settings → nhóm TripPlanner (không cần deploy, cache 60s).
 - Role DB `tripplanner` chỉ có SELECT 2 bảng config + INSERT log (CIS migration 173).
 

@@ -12,6 +12,11 @@ the two config tables and INSERT on the log (CIS migration 173).
 Accounts: acc2 is where the Lambdas run (direct call, used for Cohere embeddings); acc3 and acc1
 are reached through the satellite roles in `bedrock_satellite`. Anthropic models are not
 available on acc2 (channel-program account), so an acc2 attempt for them simply fails over.
+Embeddings (AA-862): acc2 first, then satellite rows by route. acc2's Cohere Embed v4 quota is
+20 rpm, so the route chains one catalog row per account (`cohere-embed-v4` acc2 ->
+`cohere-embed-v4-acc3` -> `cohere-embed-v4-acc1`), same model and dimension, so vectors stay
+comparable. Satellite embed clients are cached per container (one AssumeRole until 5 minutes
+before the creds expire) and make a single attempt, like the acc2 one.
 
 If the tables cannot be read, BUILTIN_ROUTES keeps the models this app used before AA-685, so a
 DB problem never stops narration or search.
@@ -169,18 +174,21 @@ def _accounts(model: Model, preferred: Optional[str]) -> list[str]:
     return [a for a in dict.fromkeys(order) if a in model.profiles]
 
 
+def _satellite_target(account: str) -> tuple[str, str, str]:
+    """(account id, invoker role name, ExternalId) of a satellite account."""
+    if account == "acc3":
+        return (config.BEDROCK_ACCT_PRIMARY, config.BEDROCK_ROLE_NAME_PRIMARY,
+                config.BEDROCK_EXTERNAL_ID_PRIMARY)
+    if account == "acc1":
+        return (config.BEDROCK_ACCT_FALLBACK, config.BEDROCK_ROLE_NAME_FALLBACK,
+                config.BEDROCK_EXTERNAL_ID_FALLBACK)
+    raise BedrockError(f"Unknown account {account!r}")
+
+
 def _runtime(account: str, client_factory: ClientFactory) -> Any:
     if account == "acc2":
         return client_factory("bedrock-runtime", region=config.BEDROCK_REGION)
-    if account == "acc3":
-        target = (config.BEDROCK_ACCT_PRIMARY, config.BEDROCK_ROLE_NAME_PRIMARY,
-                  config.BEDROCK_EXTERNAL_ID_PRIMARY)
-    elif account == "acc1":
-        target = (config.BEDROCK_ACCT_FALLBACK, config.BEDROCK_ROLE_NAME_FALLBACK,
-                  config.BEDROCK_EXTERNAL_ID_FALLBACK)
-    else:
-        raise BedrockError(f"Unknown account {account!r}")
-    return bedrock_satellite.bedrock_for_account(*target, client_factory)
+    return bedrock_satellite.bedrock_for_account(*_satellite_target(account), client_factory)
 
 
 def _cost(model: Model, tin: int, tout: int, cache_read: int = 0,
@@ -275,27 +283,97 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
 _acc2_embed: Any = None
 
 
+def _new_embed_client(creds: Optional[bedrock_satellite.Credentials] = None) -> Any:
+    """A bedrock-runtime client for embeddings with NO retry: a throttle retried at once spends the
+    same minute's quota again and holds the search request for seconds; the route moves on to the
+    next account instead (AA-862), and search falls back to keyword ranking when every account
+    failed (AA-856). `creds` = satellite temp creds; None = the
+    Lambda role (acc2). AA-862: `total_max_attempts=1`, because botocore reads the legacy
+    `max_attempts` as the number of RETRIES (`max_attempts=1` = 2 attempts, as AA-856 shipped)."""
+    import boto3  # lazily, so tests never need boto3
+    from botocore.config import Config
+
+    kwargs: dict[str, Any] = {"region_name": config.BEDROCK_REGION}
+    if creds is not None:
+        kwargs.update(aws_access_key_id=creds.access_key_id,
+                      aws_secret_access_key=creds.secret_access_key,
+                      aws_session_token=creds.session_token)
+    return boto3.client("bedrock-runtime", config=Config(
+        connect_timeout=5, read_timeout=10, retries={"total_max_attempts": 1, "mode": "standard"}),
+        **kwargs)
+
+
 def _acc2_embed_client() -> Any:
-    """AA-856: one acc2 bedrock-runtime client per container for embeddings, with NO retry
-    (max_attempts=1, as CIS AA-610): a throttle retried at once spends the same minute's quota
-    again and holds the search request for seconds; search falls back to keyword ranking instead."""
+    """AA-856: one acc2 bedrock-runtime client per container for embeddings, no retry."""
     global _acc2_embed
     if _acc2_embed is None:
-        import boto3  # lazily, so tests never need boto3
-        from botocore.config import Config
-
-        _acc2_embed = boto3.client(
-            "bedrock-runtime", region_name=config.BEDROCK_REGION,
-            config=Config(connect_timeout=5, read_timeout=10,
-                          retries={"max_attempts": 1, "mode": "standard"}))
+        _acc2_embed = _new_embed_client()
     return _acc2_embed
+
+
+# AA-862: satellite (acc3/acc1) embed clients, one per account per container, with the wall-clock
+# time (epoch seconds) after which the client is rebuilt. Wall clock, not monotonic, because STS
+# `Expiration` is an absolute time and a frozen Lambda container must not outlive its creds.
+_sat_embed: dict[str, tuple[Any, float]] = {}
+SAT_CREDS_REFRESH_MARGIN_SECONDS = 300.0
+# AssumeRole's shortest session is 900 s; used when STS gives no Expiration (never in production).
+SAT_CREDS_ASSUMED_LIFETIME_SECONDS = 900.0
+_wall_clock: Callable[[], float] = time.time
+# Errors after which a cached satellite client is dropped, so the next call assumes the role again.
+_SAT_STALE_MARKERS = ("expiredtoken", "accessdenied", "unrecognizedclient")
+
+
+def _embed_sts_factory(service: str, **_: Any) -> Any:
+    """STS client for the satellite AssumeRole on the search path, with short timeouts and at most
+    one retry. boto3's defaults (60 s connect, legacy retries) could hold a search past the browse
+    Lambda's 30 s timeout when STS hangs behind the NAT instance, turning a keyword-ranked answer
+    into a 500 (AA-862 review)."""
+    import boto3  # lazily, so tests never need boto3
+    from botocore.config import Config
+
+    return boto3.client(service, region_name=config.BEDROCK_REGION, config=Config(
+        connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 2, "mode": "standard"}))
+
+
+def _satellite_embed_client(account: str) -> Any:
+    """AA-862: cached no-retry embed client for a satellite account. One AssumeRole per container
+    until SAT_CREDS_REFRESH_MARGIN_SECONDS before the creds expire, instead of one per call."""
+    now = _wall_clock()
+    cached = _sat_embed.get(account)
+    if cached is not None and now < cached[1]:
+        return cached[0]
+    creds = bedrock_satellite.assume_credentials(*_satellite_target(account), _embed_sts_factory)
+    if creds.expiration is not None:
+        expires_at = creds.expiration.timestamp()
+    else:
+        expires_at = now + SAT_CREDS_ASSUMED_LIFETIME_SECONDS
+    client = _new_embed_client(creds)
+    _sat_embed[account] = (client, expires_at - SAT_CREDS_REFRESH_MARGIN_SECONDS)
+    return client
+
+
+def _embed_runtime(account: str, client_factory: ClientFactory) -> Any:
+    """Production (default factory): the cached no-retry clients. An injected factory (tests,
+    scripts) keeps the plain per-call `_runtime` path."""
+    if client_factory is not bedrock_satellite.default_client_factory:
+        return _runtime(account, client_factory)
+    if account == "acc2":
+        return _acc2_embed_client()
+    return _satellite_embed_client(account)
+
+
+def _drop_stale_satellite_client(account: str, error: str) -> None:
+    low = (error or "").lower()
+    if account != "acc2" and any(m in low for m in _SAT_STALE_MARKERS):
+        _sat_embed.pop(account, None)
 
 
 def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_document",
                 client_factory: ClientFactory = bedrock_satellite.default_client_factory,
                 failures: Optional[list] = None,
                 ) -> tuple[list[list[float]], Call]:
-    """Cohere Embed v4 request shape (the only embedding vendor in the catalog)."""
+    """Cohere Embed v4 request shape (the only embedding vendor in the catalog). acc2 first, then
+    satellite rows by route (AA-862): each catalog row names one account, the route orders them."""
     errors = []
     for position, model in enumerate(route.models):
         if not model.enabled or model.api_style != "embed" or model.vendor != "cohere":
@@ -303,9 +381,7 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
             continue
         for account in _accounts(model, route.account_route):
             try:
-                rt = (_acc2_embed_client() if account == "acc2"
-                      and client_factory is bedrock_satellite.default_client_factory
-                      else _runtime(account, client_factory))
+                rt = _embed_runtime(account, client_factory)
                 resp = rt.invoke_model(modelId=model.profiles[account], body=json.dumps(
                     {"texts": texts, "input_type": input_type, "embedding_types": ["float"],
                      "output_dimension": config.EMBED_DIM}))
@@ -315,6 +391,8 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
                         or any(len(v) != config.EMBED_DIM for v in vectors)):
                     raise BedrockError("malformed embedding response")
             except Exception as e:  # noqa: BLE001
+                if client_factory is bedrock_satellite.default_client_factory:
+                    _drop_stale_satellite_client(account, str(e))
                 errors.append(f"{model.key}@{account}: {str(e)[:200]}")
                 if failures is not None:
                     failures.append(_failed(route, model, account, position, str(e)))
@@ -331,8 +409,9 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
 # --- Query embedding cache (AA-856) -------------------------------------------------------------
 #
 # Cohere Embed V4 on acc2 allows 20 requests per minute (Service Quotas, S239), so every repeated
-# search query must not call Bedrock again. The cache lives in the Lambda container (one instance
-# serves one invocation at a time, so no locking): bounded LRU with a TTL. A hit is not a model
+# search query must not call Bedrock again (misses then fall through to acc3/acc1, AA-862). The
+# cache lives in the Lambda container (one instance serves one invocation at a time, so no
+# locking): bounded LRU with a TTL. A hit is not a model
 # call: no llm_call_log row, nothing added to the daily spend.
 
 EMBED_CACHE_MAX_ENTRIES = 1024      # ~12 KB per 1536-d vector stored as array('d') -> ~12 MB max
@@ -346,11 +425,29 @@ def normalise_query(text: str) -> str:
     return _WS_RE.sub(" ", unicodedata.normalize("NFKC", text or "")).strip().casefold()
 
 
+# Geographic / cross-region inference-profile prefixes: `global.cohere.embed-v4:0` and
+# `us.cohere.embed-v4:0` are the same model and give the same vector.
+_PROFILE_GEO_PREFIXES = ("global.", "us-gov.", "us.", "eu.", "apac.", "jp.", "au.", "ca.")
+
+
+def _base_model_id(profile: str) -> str:
+    for prefix in _PROFILE_GEO_PREFIXES:
+        if profile.startswith(prefix):
+            return profile[len(prefix):]
+    return profile
+
+
 def embed_cache_key(route: Route, input_type: str, text: str) -> tuple:
-    """(stage, model keys of the route, input_type, dimension, normalised text). A model change on
-    the admin Settings page gives new keys, so a cached vector never crosses models."""
-    return (route.stage, tuple(m.key for m in route.models), input_type, config.EMBED_DIM,
-            normalise_query(text))
+    """(stage, base model ids the route can call, input_type, dimension, normalised text).
+
+    Keyed on the MODEL (the Bedrock model id behind each row's profiles, geo prefix stripped), not
+    on the route's catalog keys: AA-862 rows `cohere-embed-v4` / `-acc3` / `-acc1` are one model on
+    three accounts, so adding, enabling or disabling an account row must not empty the cache (a
+    cold cache sends every query straight at acc2's 20 rpm). A different model on the admin
+    Settings page gives a new key, so a cached vector never crosses models."""
+    ids = sorted({_base_model_id(str(p)) for m in route.models for p in (m.profiles or {}).values()})
+    model_part = tuple(ids) if ids else tuple(m.key for m in route.models)
+    return (route.stage, model_part, input_type, config.EMBED_DIM, normalise_query(text))
 
 
 class EmbeddingCache:
