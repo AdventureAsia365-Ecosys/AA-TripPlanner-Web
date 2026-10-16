@@ -152,7 +152,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `source_id`, live tours only, no AA tenant needed; `backend/shared/places_source.py`). Every browse
   response carries `x-places-source`. The **assembly** readers (`events._current_components`,
   suggestions, coverage, activities, apply-route, handoff `leg_chain`) stay on the frozen tables until
-  slice 6c, which ships with the tp-011 component id-map; the views' component ids are new stable
+  slice 6c, which ships with the tp-013 component id-map; the views' component ids are new stable
   uuid5 ids, so `cis` is set on both Lambdas together, in that window, not before.
 - Photos (AA-708, 01/10/2026): AA marketing photos are synced and matched by CIS (`photo_sync`,
   `shared.place_photo`). This repo reads them only through `shared.v_destination_photos` /
