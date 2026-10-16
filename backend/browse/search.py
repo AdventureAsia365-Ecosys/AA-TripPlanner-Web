@@ -182,7 +182,10 @@ async def search(
     embedder: Optional[Embedder] = None,
     limit: int = SEARCH_LIMIT,
 ) -> dict:
-    if not q or not q.strip():
+    # Nothing to rank: empty, whitespace or punctuation/format characters only (e.g. "?!", a
+    # zero-width space). Answer without a model call, so such requests never spend the shared
+    # Cohere quota or write a failed llm_call_log row (AA-856).
+    if not has_search_word(q):
         return {"destinations": []}
 
     if embedder is not None:
@@ -276,6 +279,11 @@ KEYWORD_CIS_SQL = """
     ORDER BY best_score DESC, component_count DESC, d.destination_id
     LIMIT {limit}
 """
+
+
+def has_search_word(q: Optional[str]) -> bool:
+    """True when the normalised query holds at least one letter or digit."""
+    return bool(_WORD_RE.search(llm_gateway.normalise_query(q or "")))
 
 
 def keyword_terms(q: str) -> list[str]:

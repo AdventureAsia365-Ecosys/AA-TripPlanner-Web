@@ -226,12 +226,28 @@ def test_keyword_terms():
     assert len(search_mod.keyword_terms(" ".join(f"w{i}" for i in range(20)))) == 8
 
 
-async def test_query_with_no_usable_word_returns_empty_keyword_result(gateway):
+async def test_keyword_fallback_with_no_usable_term_returns_empty_keyword_result(gateway):
     gateway["fail"] = "ThrottlingException"
     pool = Pool()
-    out = await search_mod.search("?!", BrowseFilters(), pool=pool)
+    out = await search_mod.search("a", BrowseFilters(), pool=pool)   # embedded, then no 2+ char word
+    assert gateway["embeds"] == ["a"]
     assert out == {"destinations": [], "ranking": "keyword"}
     assert not any("best_score" in q for q, _ in pool.calls)
+
+
+@pytest.mark.parametrize("q", ["", "   ", "\t\n", "\u3000", "?!", "%_\\", "\u200b", "\ufeff"])
+async def test_query_with_no_word_makes_no_model_call(gateway, q):
+    pool = Pool()
+    out = await search_mod.search(q, BrowseFilters(), pool=pool)
+    assert out == {"destinations": []}
+    assert gateway["embeds"] == [] and gateway["recorded"] == [] and pool.calls == []
+
+
+async def test_route_search_whitespace_query_makes_no_model_call(gateway):
+    pool = Pool()
+    resp = await h.route("GET", "/browse/search", {"q": " \u200b "}, pool=pool)
+    assert resp["statusCode"] == 200 and json.loads(resp["body"]) == {"destinations": []}
+    assert gateway["embeds"] == [] and gateway["recorded"] == []
 
 
 def test_keyword_sql_limit_is_an_int():

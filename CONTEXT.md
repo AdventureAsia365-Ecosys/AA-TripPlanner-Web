@@ -228,8 +228,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
     or any Bedrock error; failed attempts still logged) search answers 200 with a keyword ranking
     (`ILIKE` per query word over destination/component name, country and text, same filters and
     active-tour rule; no pg_trgm on the RDS) and `"ranking": "keyword"` instead of a 500; after a
-    throttle the container skips the model for 10 s. The acc2 embed client makes one attempt (no
-    boto retry). Each search prints one `{"evt":"search_embed","outcome":hit|miss|fallback,...}` line
+    throttle the container skips the model for 10 s. A query with no letter or digit (empty,
+    punctuation, zero-width characters) answers `{"destinations": []}` with no model call. The acc2
+    embed client makes one attempt (no boto retry). Each search prints one `{"evt":"search_embed","outcome":hit|miss|fallback,...}` line
     with the container's cache counters (never the query text);
   - `tp_extract` / `tp_component_embed`: the former offline extraction pipeline; no caller since
     AA-712 slice 6a (built-in routes kept until the frozen tables are dropped).
