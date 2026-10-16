@@ -13,6 +13,9 @@ keeps its cookie), so there is no unique index on the hash: the lookup is always
 Grace window (`config.GUEST_LEGACY_GRACE_UNTIL`): until then a session created before AA-827 (hash
 NULL) is bound to the first token it sees, and a request with no token at all (an old BFF or an old
 bundle) is still accepted for a session that has no hash. After it, only a matching token passes.
+The window is closed (the constant is in the past since S239: Dev has no real guests to carry
+over), so today a legacy session, a tokenless request and a bare session id all get 401. The grace
+branches below are kept, dormant, in case a future environment needs a rollout window again.
 """
 from __future__ import annotations
 

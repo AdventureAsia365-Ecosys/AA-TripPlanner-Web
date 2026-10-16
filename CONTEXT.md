@@ -131,9 +131,12 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - Known gap: two planner tabs opened at the same moment by a first-time visitor (no cookie yet) can
   each get a different token; the later Set-Cookie wins, and a session already bound to the earlier
   one is reset on its next edit. Minting on the `/plan` document makes this rare, not impossible.
-- Grace window until `config.GUEST_LEGACY_GRACE_UNTIL` (code constant, 19/10/2026 12:00 UTC): a
-  pre-AA-827 session binds to the first token it sees, and a tokenless request passes for a session
-  with no hash. After it, a session id alone gets 401.
+- Legacy grace window `config.GUEST_LEGACY_GRACE_UNTIL` is **closed** (code constant 16/10/2026 00:00
+  UTC, already past; S239: Dev has no real guests, so the planned 19/10 cutoff was not waited for). A
+  session id alone, a tokenless request and a pre-AA-827 session (no hash) all get 401. The grace code
+  path (bind a legacy session to its first token, accept tokenless for an unhashed session) is kept in
+  `assembly/guest_session.py` but dormant; reopening it means moving the constant into the future in
+  a reviewed deploy.
 - `trip_id` / `session_id` must be canonical UUIDs (400 otherwise, value not echoed); an unexpected
   error answers 500 and logs only its type, place and route name. Each guarded request prints one
   `{"evt":"guest_auth","outcome":…,"route":…}` line (no token, hash or ids).
