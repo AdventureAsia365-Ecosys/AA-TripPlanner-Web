@@ -4,7 +4,10 @@ acc2 (005097885195, where the Lambdas run) is an AWS channel-program account tha
 Anthropic Claude, so Claude runs on a satellite account: assume a cross-account role (acc3
 786888028788 primary, acc1 867490540162 fallback; each with its own ExternalId, see config),
 then call Bedrock with those temp creds. The trust is added via Terraform in AA-CIS-Infra
-(human-applied); this module only consumes it. acc2 itself can invoke Cohere embeddings.
+(human-applied); this module only consumes it. acc2 itself can invoke Cohere embeddings; AA-862
+also sends Cohere embeddings to acc3/acc1 when acc2's 20 rpm quota throttles (catalog rows
+`cohere-embed-v4-acc3` / `-acc1`, chained by the route), reusing `assume_credentials` with a
+cached, no-retry client in `llm_gateway`.
 
 AA-685: model choice, failover order, pricing and cost logging live in `llm_gateway` (driven by
 the shared gateway tables). This module only builds clients.
@@ -16,6 +19,7 @@ keys — creds come from the Lambda role's ambient chain (IAM role only).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable, Optional, Protocol
 
 from backend import config
@@ -41,14 +45,19 @@ class Credentials:
     access_key_id: str
     secret_access_key: str
     session_token: str
+    # STS `Expiration` (timezone-aware datetime from boto3); None when the response has none
+    # (test stubs). AA-862 uses it to refresh a cached satellite client before the creds expire.
+    expiration: Optional[datetime] = None
 
     @classmethod
     def from_sts_response(cls, resp: dict) -> "Credentials":
         c = resp["Credentials"]
+        exp = c.get("Expiration")
         return cls(
             access_key_id=c["AccessKeyId"],
             secret_access_key=c["SecretAccessKey"],
             session_token=c["SessionToken"],
+            expiration=exp if isinstance(exp, datetime) else None,
         )
 
 
@@ -81,9 +90,10 @@ def _role_arn(account_id: str, role_name: str) -> str:
     return f"arn:aws:iam::{account_id}:role/{role}"
 
 
-def _assume(
+def assume_credentials(
     account_id: str, role_name: str, external_id: str, client_factory: ClientFactory
 ) -> Credentials:
+    """One STS AssumeRole into the satellite invoker role; temp creds with their expiry."""
     sts: _StsClient = client_factory("sts")
     kwargs: dict[str, Any] = {
         "RoleArn": _role_arn(account_id, role_name),
@@ -95,8 +105,11 @@ def _assume(
     return Credentials.from_sts_response(resp)
 
 
+_assume = assume_credentials  # former private name, kept for existing callers
+
+
 def bedrock_for_account(
     account_id: str, role_name: str, external_id: str, client_factory: ClientFactory
 ) -> _BedrockClient:
-    creds = _assume(account_id, role_name, external_id, client_factory)
+    creds = assume_credentials(account_id, role_name, external_id, client_factory)
     return client_factory("bedrock-runtime", creds=creds, region=config.BEDROCK_REGION)

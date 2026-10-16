@@ -48,7 +48,7 @@ Postgres (the shared RDS in acc2)
   └─ read-only: acp_contract.v_active_tour_atoms, gold_aa_internal.published_tours (CIS-owned)
       │
       ▼
-Amazon Bedrock  — Cohere Embed v4 called directly in acc2;
+Amazon Bedrock  — Cohere Embed v4: acc2 first, then acc3/acc1 via the satellite role (AA-862);
                   Claude via cross-account role (acc3 primary → acc1 fallback)
 ```
 
@@ -220,17 +220,19 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   migration 173). If the tables cannot be read, built-in routes keep the previous models.
   Stages:
   - `tp_compose`: assembly narration (Claude Sonnet 4.6 via the satellite role);
-  - `tp_search_embed`: browse free-text search, one Cohere Embed v4 call per distinct query (acc2).
+  - `tp_search_embed`: browse free-text search, one Cohere Embed v4 call per distinct query (acc2
+    first; on an acc2 throttle the route falls through to the satellite rows `cohere-embed-v4-acc3`,
+    then `cohere-embed-v4-acc1` once enabled — same model and 1536-d, AA-862).
     **Search under load (AA-856)**: Cohere Embed V4 on acc2 allows 20 requests per minute (Service
     Quotas), so `llm_gateway.query_embed_cache` keeps query vectors per Lambda container (bounded LRU,
     1024 entries, 6 h TTL; key = stage + route models + input type + normalised text; a hit makes no
-    call, no log row, no spend, and is served even over the daily cap). When the embed fails (throttle
-    or any Bedrock error; failed attempts still logged) search answers 200 with a keyword ranking
+    call, no log row, no spend, and is served even over the daily cap). When the embed fails (every
+    account of the route failed: throttle or any Bedrock error; failed attempts still logged) search answers 200 with a keyword ranking
     (`ILIKE` per query word over destination/component name, country and text, same filters and
     active-tour rule; no pg_trgm on the RDS) and `"ranking": "keyword"` instead of a 500; after a
     throttle the container skips the model for 10 s. A query with no letter or digit (empty,
     punctuation, zero-width characters) answers `{"destinations": []}` with no model call. The acc2
-    embed client makes one attempt (no boto retry). Each search prints one `{"evt":"search_embed","outcome":hit|miss|fallback,...}` line
+    and satellite embed clients make one attempt each (no boto retry). Each search prints one `{"evt":"search_embed","outcome":hit|miss|fallback,...}` line
     with the container's cache counters (never the query text);
   - `tp_extract` / `tp_component_embed`: the former offline extraction pipeline; no caller since
     AA-712 slice 6a (built-in routes kept until the frozen tables are dropped).
@@ -265,7 +267,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   else the own day text as it is; only a day with no AA text goes to the LLM.
 - Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 primary → acc1
   fallback** (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md`).
-  Cohere embeddings run directly on acc2 (no satellite).
+  Cohere embeddings run on acc2 first; the route's satellite rows (`cohere-embed-v4-acc3`, later
+  `-acc1`, CIS migration 240) take over on an acc2 throttle (acc2 has 20 rpm, acc3 2,000 rpm). Each
+  container caches one no-retry satellite embed client per account (one AssumeRole until 5 minutes
+  before the creds expire), AA-862.
 - **`tour_day` (AA-675, migration 003)**: one row per (published tour, itinerary day): start,
   end and **overnight place** (a `shared.destinations` row), plus other places. Built from
   `published_tours.aa_itineraries` by the former TripPlanner extraction (rules + one `tp_extract`

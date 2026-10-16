@@ -69,7 +69,9 @@ BEDROCK_EXTERNAL_ID_PRIMARY = _get("BEDROCK_EXTERNAL_ID_PRIMARY", "aa296-satelli
 BEDROCK_EXTERNAL_ID_FALLBACK = _get("BEDROCK_EXTERNAL_ID_FALLBACK", "aa296-satellite-bedrock")
 # AA-685: which model each call uses (and its Bedrock profile per account) comes from the Model
 # Gateway tables in the shared RDS — stages tp_compose / tp_extract (Claude via the satellite
-# roles) and tp_search_embed / tp_component_embed (Cohere Embed v4, direct on acc2). See
+# roles) and tp_search_embed / tp_component_embed (Cohere Embed v4: acc2 first, then satellite
+# rows by route, AA-862 — the embed fall-through reuses the BEDROCK_ACCT_* / ROLE_NAME_* /
+# EXTERNAL_ID_* values above, whose defaults are the live ones). See
 # backend/shared/llm_gateway.py. Embeddings must stay 1536-dim to match VECTOR(1536).
 EMBED_DIM = 1536
 
