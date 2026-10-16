@@ -12,6 +12,7 @@ import type {
   TourRouteFallback,
 } from "./types";
 import type { TourList, TourSort } from "./catalogTypes";
+import { resetGuestIds } from "./guestIds";
 
 function filterParams(f: BrowseFilters): string {
   const p = new URLSearchParams();
@@ -97,22 +98,39 @@ export async function fetchTrip(tripId: string): Promise<TripResponse | null> {
   return res.json();
 }
 
+// AA-827: every trip mutation goes through here. 401 guest_session_invalid (this browser's token
+// does not match the stored session) or 403 forbidden (the trip belongs to another session) means
+// the stored ids are unusable: start a new trip (resetGuestIds reloads the page).
+async function postTrip<T = Record<string, unknown>>(
+  body: Record<string, unknown>,
+): Promise<{ ok: boolean; status: number; data: T & { error?: string } }> {
+  const res = await fetch("/api/trip", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (
+    (res.status === 401 && data.error === "guest_session_invalid") ||
+    (res.status === 403 && data.error === "forbidden")
+  ) {
+    resetGuestIds();
+  }
+  return { ok: res.ok, status: res.status, data };
+}
+
 export async function addComponent(
   tripId: string,
   sessionId: string,
   componentId: string,
 ): Promise<TripResponse> {
-  const res = await fetch("/api/trip", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      op: "add",
-      trip_id: tripId,
-      session_id: sessionId,
-      component_id: componentId,
-    }),
+  const { data } = await postTrip<TripResponse>({
+    op: "add",
+    trip_id: tripId,
+    session_id: sessionId,
+    component_id: componentId,
   });
-  return res.json();
+  return data;
 }
 
 export async function removeComponent(
@@ -120,17 +138,13 @@ export async function removeComponent(
   sessionId: string,
   componentId: string,
 ): Promise<TripResponse> {
-  const res = await fetch("/api/trip", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      op: "remove",
-      trip_id: tripId,
-      session_id: sessionId,
-      component_id: componentId,
-    }),
+  const { data } = await postTrip<TripResponse>({
+    op: "remove",
+    trip_id: tripId,
+    session_id: sessionId,
+    component_id: componentId,
   });
-  return res.json();
+  return data;
 }
 
 export async function reorder(
@@ -138,17 +152,13 @@ export async function reorder(
   sessionId: string,
   orderedComponentIds: string[],
 ): Promise<TripResponse> {
-  const res = await fetch("/api/trip", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      op: "reorder",
-      trip_id: tripId,
-      session_id: sessionId,
-      ordered_component_ids: orderedComponentIds,
-    }),
+  const { data } = await postTrip<TripResponse>({
+    op: "reorder",
+    trip_id: tripId,
+    session_id: sessionId,
+    ordered_component_ids: orderedComponentIds,
   });
-  return res.json();
+  return data;
 }
 
 export async function narrate(
@@ -156,18 +166,13 @@ export async function narrate(
   sessionId: string,
   mode: "compose" | "renarrate" = "compose",
 ): Promise<{ ok: boolean; narration: string; source: string }> {
-  const res = await fetch("/api/trip", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      op: "narrate",
-      trip_id: tripId,
-      session_id: sessionId,
-      mode,
-    }),
+  const { ok, data } = await postTrip<{ narration?: string; source?: string }>({
+    op: "narrate",
+    trip_id: tripId,
+    session_id: sessionId,
+    mode,
   });
-  if (!res.ok) return { ok: false, narration: "", source: "" };
-  const data = await res.json();
+  if (!ok) return { ok: false, narration: "", source: "" };
   return {
     ok: true,
     narration: data.narration ?? "",
@@ -180,17 +185,13 @@ export async function sendToAdvisor(
   sessionId: string,
   customer?: { name: string; phone: string; email: string; consent: boolean },
 ): Promise<{ status: number; body: TripResponse & { error?: string } }> {
-  const res = await fetch("/api/trip", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      op: "send",
-      trip_id: tripId,
-      session_id: sessionId,
-      customer,
-    }),
+  const { status, data } = await postTrip<TripResponse>({
+    op: "send",
+    trip_id: tripId,
+    session_id: sessionId,
+    customer,
   });
-  return { status: res.status, body: await res.json() };
+  return { status, body: data };
 }
 
 export interface Suggestion {
@@ -248,22 +249,13 @@ export async function fetchStopActivities(tripId: string, destinationId: string)
   return data.activities ?? [];
 }
 
-async function tripOp(body: Record<string, unknown>) {
-  const res = await fetch("/api/trip", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return { ok: res.ok, data: await res.json().catch(() => ({})) };
-}
-
 // Start from a proposed route: pin its components in its day order.
 export async function applyRoute(
   tripId: string,
   sessionId: string,
   componentIds: string[],
 ): Promise<TripResponse | null> {
-  const { ok, data } = await tripOp({
+  const { ok, data } = await postTrip<TripResponse>({
     op: "apply_route", trip_id: tripId, session_id: sessionId, component_ids: componentIds,
   });
   return ok ? data : null;
@@ -275,14 +267,14 @@ export async function addDay(
   kind: CustomDay["kind"],
   afterComponentId?: string,
 ): Promise<CustomDay[] | null> {
-  const { ok, data } = await tripOp({
+  const { ok, data } = await postTrip<{ custom_days?: CustomDay[] }>({
     op: "add_day", trip_id: tripId, session_id: sessionId, kind, after_component_id: afterComponentId,
   });
   return ok ? data.custom_days ?? [] : null;
 }
 
 export async function removeDay(tripId: string, sessionId: string, dayId: string): Promise<CustomDay[] | null> {
-  const { ok, data } = await tripOp({ op: "remove_day", trip_id: tripId, session_id: sessionId, day_id: dayId });
+  const { ok, data } = await postTrip<{ custom_days?: CustomDay[] }>({ op: "remove_day", trip_id: tripId, session_id: sessionId, day_id: dayId });
   return ok ? data.custom_days ?? [] : null;
 }
 

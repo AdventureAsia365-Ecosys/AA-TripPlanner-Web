@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import * as api from "./api";
+import { STORAGE_KEY, isUuid, randomUuid } from "./guestIds";
 import type {
   BrowseFilters,
   CountryOption,
@@ -20,15 +21,6 @@ import type {
   RouteProposal,
 } from "./types";
 import type { Suggestion } from "./api";
-
-// Guest identity: a random session + trip id, held in memory only (guests
-// are not persisted — lost on tab close, per requirements).
-function randomId(): string {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
 
 interface TripState {
   sessionId: string;
@@ -102,24 +94,24 @@ export interface PlanIntent {
 
 const TripContext = createContext<TripState | null>(null);
 
-const STORAGE_KEY = "aa-tripplanner:ids";
-
-// Persist the guest session + trip id so a reload restores the same trip
-// (the backend keeps the event log by trip_id). Falls back to fresh ids if
-// storage is unavailable (SSR, privacy mode).
+// Guest identity: a random session + trip id (UUID v4), persisted in localStorage so a reload
+// restores the same trip (the backend keeps the event log by trip_id). The ids are identifiers,
+// not credentials — the HttpOnly guest cookie is (AA-827). Falls back to fresh ids if storage is
+// unavailable (SSR, privacy mode); stored ids that are not UUIDs (an old Math.random fallback the
+// backend never accepted) are replaced.
 function loadOrCreateIds(): { sessionId: string; tripId: string } {
   if (typeof window !== "undefined") {
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed?.sessionId && parsed?.tripId) return parsed;
+        if (isUuid(parsed?.sessionId) && isUuid(parsed?.tripId)) return parsed;
       }
     } catch {
       /* ignore */
     }
   }
-  const ids = { sessionId: randomId(), tripId: randomId() };
+  const ids = { sessionId: randomUuid(), tripId: randomUuid() };
   if (typeof window !== "undefined") {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));

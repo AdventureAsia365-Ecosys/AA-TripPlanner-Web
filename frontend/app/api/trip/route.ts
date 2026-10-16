@@ -1,4 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  GUEST_TOKEN_HEADER,
+  MINTED_TOKEN_HEADER,
+  guestCookieName,
+  isGuestToken,
+  isSameOrigin,
+} from "@/lib/guestToken";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
 // Maps a single { op } POST body onto the Lambda's REST verbs/paths.
@@ -6,10 +13,21 @@ const TRIP_API_URL = process.env.TRIP_API_URL ?? "";
 // Shared secret the Lambdas verify (X-TripPlanner-Key). Server-side only.
 const TRIPPLANNER_API_KEY = process.env.TRIPPLANNER_API_KEY ?? "";
 
-function tripHeaders(): Record<string, string> {
+// AA-827: mutations carry the guest token (HttpOnly cookie) to the Lambda, which checks it against
+// the session's stored sha256. Reads stay token-free for now. The token is never logged or echoed.
+function tripHeaders(guestToken?: string | null): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
   if (TRIPPLANNER_API_KEY) h["x-tripplanner-key"] = TRIPPLANNER_API_KEY;
+  if (guestToken) h[GUEST_TOKEN_HEADER] = guestToken;
   return h;
+}
+
+// The cookie, or the token middleware.ts minted on this very request (no cookie yet).
+function requestGuestToken(req: NextRequest): string | null {
+  const cookie = req.cookies.get(guestCookieName())?.value;
+  if (isGuestToken(cookie)) return cookie;
+  const minted = req.headers.get(MINTED_TOKEN_HEADER);
+  return isGuestToken(minted) ? minted : null;
 }
 
 // GET /api/trip?trip_id=... — fetch the current itinerary for a trip, used to
@@ -57,6 +75,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  // AA-827: a cross-site browser POST never reaches the Lambda (the cookie is SameSite=Lax anyway).
+  if (!isSameOrigin(req)) {
+    return NextResponse.json({ error: "cross_origin" }, { status: 403 });
+  }
   if (!TRIP_API_URL) {
     return NextResponse.json(
       { error: "TRIP_API_URL not configured" },
@@ -114,12 +136,12 @@ export async function POST(req: NextRequest) {
 
   const upstream = await fetch(`${TRIP_API_URL}${path}`, {
     method,
-    headers: tripHeaders(),
+    headers: tripHeaders(requestGuestToken(req)),
     body: JSON.stringify(payload),
   });
   const text = await upstream.text();
   return new NextResponse(text, {
     status: upstream.status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    headers: { "content-type": "application/json", "cache-control": "no-store", vary: "Cookie" },
   });
 }
