@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { fetchStopActivities } from "@/lib/api";
 import type { StopActivity } from "@/lib/types";
+import AiLabel, { AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "@/components/AiLabel";
 
 const LABEL: Record<string, string> = {
   trekking: "Trekking",
@@ -52,25 +53,36 @@ export default function StopActivities({ destinationId }: { destinationId: strin
   };
 
   return (
-    <ul className="mt-2 space-y-1" aria-label="Activities at this stop">
-      {items.map((a) => (
-        <li key={`${a.name}-${a.activity}`}>
-          <label className="flex cursor-pointer items-start gap-2 text-[11px] text-aa-ink-soft">
-            <input
-              type="checkbox"
-              checked={a.selected}
-              disabled={busy !== null}
-              onChange={() => toggle(a)}
-              className="mt-0.5 accent-[#B87A1A]"
-            />
-            <span>
-              <span className="font-medium text-aa-ink">{LABEL[a.activity] ?? a.activity}</span>
-              {a.text_extract && <span> — {a.text_extract.slice(0, 90)}</span>}
-              <span className="text-aa-muted"> · on {a.tour_count} AA tour{a.tour_count > 1 ? "s" : ""}</span>
-            </span>
-          </label>
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className="mt-2 space-y-1" aria-label="Activities at this stop">
+        {items.map((a) => (
+          <li key={`${a.name}-${a.activity}`}>
+            <label className="flex cursor-pointer items-start gap-2 text-[11px] text-aa-ink-soft">
+              <input
+                type="checkbox"
+                checked={a.selected}
+                disabled={busy !== null}
+                onChange={() => toggle(a)}
+                className="mt-0.5 accent-[#B87A1A]"
+              />
+              <span>
+                <span className="font-medium text-aa-ink">{LABEL[a.activity] ?? a.activity}</span>
+                {a.text_extract && <span> — {a.text_extract.slice(0, 90)}</span>}
+                <span className="text-aa-muted"> · on {a.tour_count} AA tour{a.tour_count > 1 ? "s" : ""}</span>
+              </span>
+            </label>
+          </li>
+        ))}
+      </ul>
+      {/* AA-819: the activity snippets are the same CIS writer-model text as the map popup. */}
+      {items.some((a) => a.text_extract) && (
+        <AiLabel
+          className="mt-1.5"
+          placement="inline"
+          label={AI_CATALOG_LABEL}
+          explanation={AI_CATALOG_EXPLANATION}
+        />
+      )}
+    </>
   );
 }

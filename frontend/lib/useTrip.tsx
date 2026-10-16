@@ -31,9 +31,10 @@ interface TripState {
   inTripComponentIds: Set<string>;
   narration: string;
   narrating: boolean;
-  // Where the narration came from: 'master' (AA's authored itinerary text),
-  // 'llm' (AI-written), 'mixed', 'basic' (no AI: AA text + plain day lines,
-  // used when the daily AI budget is spent — AA-805), or "" before any call.
+  // Where the narration came from: 'master' (AA's itinerary text, AI-assisted),
+  // 'llm' (AI-written), 'mixed', 'master_basic' (AA text + plain day lines, used
+  // when the daily AI budget is spent — AA-805), 'basic' (plain day lines only,
+  // no AI text), or "" before any call.
   narrationSource: string;
   // Semantic search: when searchResults is non-null the map shows this
   // ranked set instead of tiles-by-bounds; null means "browse mode".

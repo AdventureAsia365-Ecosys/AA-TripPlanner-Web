@@ -11,6 +11,12 @@ parses them into `{(source_tour_id, day_index): text}`. The narration path
 uses it first and only falls back to the LLM for days it can't resolve
 (e.g. a tour whose itinerary isn't structured by day).
 
+A component row's tour day can be wrong (AA-819), so a day that does not name the pinned stop
+is moved to another, unused day of the same tour that does (`resolve_days`).
+"AA's real voice" is the CIS S1 writer model's output (checked by automated gates; only flagged
+tours reach a human), so it is AI-assisted text: the frontend labels it "AA itinerary ·
+AI-assisted" and the API reports it as ai_generated.
+
 NOTE ON STEERING: tech.md forbids *re-parsing aa_itineraries to synthesise
 atoms during extraction* (that pipeline must use acp_contract.tour_atoms).
 This is a different use: reading the same authored prose at narrate-time to
@@ -19,6 +25,7 @@ show it back to the traveller. It does not feed extraction or grounding.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Optional, Protocol
 
 
@@ -38,6 +45,7 @@ _DAY_HEADER = re.compile(
     r"^\s*Day\s*(\d{1,2})\s*[:\-\u2013\u2014]",
     re.IGNORECASE | re.MULTILINE,
 )
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 
 def parse_days(block: str) -> dict[int, str]:
@@ -105,12 +113,13 @@ def build_narration(
 ) -> tuple[str, list[dict]]:
     """Assemble day-by-day narration from master content where available.
 
-    For each itinerary entry, look up the authored text by
-    (source_tour_id, source_day_index). Returns:
-      - narration: lines "Day <trip_day>: <authored text>" joined, in trip
-        order, for the days we could resolve;
-      - missing: the itinerary entries with no master text (caller may send
-        these to the LLM as a fallback).
+    For each trip day, the authored text chosen by `resolve_days` (normally the entries' own tour
+    day, source_tour_id + source_day_index). Returns:
+      - narration: "Day <trip_day>: <authored text>" blocks joined, in trip
+        order, for the days we could resolve. A block can span several lines
+        (the authored day title, then its prose);
+      - missing: the itinerary entries of the days with no master text
+        (caller may send these to the LLM as a fallback).
 
     The authored text keeps AA's own day title/prose but is re-labelled with
     the trip's day number (the component may be day 3 of the trip even if it
@@ -118,25 +127,130 @@ def build_narration(
     """
     lines: list[str] = []
     missing: list[dict] = []
-    seen_days: set = set()
-    for e in itinerary:
-        # Several activities of one AA tour day share a trip day (AA-674): narrate it once.
-        if e.get("day") in seen_days:
-            continue
-        tid = e.get("source_tour_id")
-        didx = e.get("source_day_index")
-        text = None
-        if tid is not None and didx is not None:
-            text = day_texts.get((str(tid), int(didx)))
+    resolved = resolve_days(itinerary, day_texts)
+    for day, entries in _group_by_day(itinerary).items():
+        text = resolved.get(day)
         if not text:
-            missing.append(e)
+            missing.extend(entries)
             continue
         # Strip the source day header ("Day 6 — Title:") so we don't show a
         # day number that contradicts the trip order; keep the title/prose.
-        body = _strip_leading_day_header(text)
-        lines.append(f"Day {e['day']}: {body}")
-        seen_days.add(e.get("day"))
+        lines.append(f"Day {day}: {_strip_leading_day_header(text)}")
     return "\n".join(lines), missing
+
+
+def resolve_days(itinerary: list[dict], day_texts: dict[tuple[str, int], str]) -> dict[Any, Optional[str]]:
+    """The authored text to narrate each trip day with: {trip day: text or None}.
+
+    Several entries can share a trip day (AA-674: activities of one AA tour day); the day is
+    narrated once. AA-819 D1: a component row's tour day can be wrong (S239: Amber Fort pinned as
+    day 5 of 'Rajasthan: Forts, Havelis & Desert', whose day 5 is "Khimsar to Jaisalmer"; the tour
+    visits Amber Fort on day 16). The rule, per trip day:
+
+      1. Confirmed own day: the own tour day text of any of the day's entries that names that
+         entry's stop (component or place name; an entry with no name cannot be checked and counts
+         as confirmed).
+      2. Redirect: else, the nearest other day of the same tour that names the stop AND that no
+         entry of this itinerary has as its own day and no earlier trip day already took. In a
+         whole-tour "Customise this trip" itinerary every tour day is someone's own day, so a loose
+         pin never pulls a neighbour's text in twice (review of S239 lane: EBC, Phuket cases).
+      3. Else the own day text as it is: a day that names no stop is more often a spelling variant
+         ("Koh Phi Phi" for "Koh Phi Phi Don") than a wrong day, and AA text beats a paid AI line.
+      4. Else None (no own text): the day goes to the LLM, or to the neutral line over budget.
+    """
+    groups = _group_by_day(itinerary)
+    own_keys = {k for e in itinerary if (k := _own_key(e)) is not None}
+    taken: set[tuple[str, int]] = set()
+    out: dict[Any, Optional[str]] = {}
+    pending: list[Any] = []
+    for day, entries in groups.items():
+        key = next((k for e in entries if (k := _own_key(e)) is not None
+                    and day_texts.get(k) and _confirms(e, day_texts[k])), None)
+        if key is None:
+            pending.append(day)
+            continue
+        out[day] = day_texts[key]
+        taken.add(key)
+    for day in pending:
+        entries = groups[day]
+        key = next((k for e in entries
+                    if (k := _redirect(e, day_texts, own_keys | taken)) is not None), None)
+        if key is None:
+            key = next((k for e in entries if (k := _own_key(e)) is not None and day_texts.get(k)), None)
+        if key is not None:
+            taken.add(key)
+        out[day] = day_texts[key] if key is not None else None
+    return out
+
+
+def _group_by_day(itinerary: list[dict]) -> dict[Any, list[dict]]:
+    by_day: dict[Any, list[dict]] = {}
+    for e in itinerary:
+        by_day.setdefault(e.get("day"), []).append(e)
+    return by_day
+
+
+def _own_key(entry: dict) -> Optional[tuple[str, int]]:
+    tid, didx = entry.get("source_tour_id"), entry.get("source_day_index")
+    if tid is None or didx is None:
+        return None
+    return str(tid), int(didx)
+
+
+def _confirms(entry: dict, text: str) -> bool:
+    keys = _stop_keys(entry)
+    return not keys or _mentions(text, keys)
+
+
+def _redirect(entry: dict, day_texts: dict[tuple[str, int], str],
+              unavailable: set[tuple[str, int]]) -> Optional[tuple[str, int]]:
+    """The nearest other day of the entry's tour that names its stop and is free (ties: earlier)."""
+    own = _own_key(entry)
+    keys = _stop_keys(entry)
+    if own is None or not keys:
+        return None
+    tid, didx = own
+    candidates = sorted(
+        (abs(d - didx), d) for (t, d), text in day_texts.items()
+        if t == tid and d != didx and (t, d) not in unavailable and text and _mentions(text, keys)
+    )
+    return (tid, candidates[0][1]) if candidates else None
+
+
+def _norm(text: str) -> str:
+    """Case-, accent- and punctuation-insensitive form, padded so a key matches whole words."""
+    ascii_text = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    return f" {_NON_ALNUM.sub(' ', ascii_text.lower()).strip()} "
+
+
+# A trailing word that names the kind of place, not the place: "Pashupatinath Temple" is written
+# "Pashupatinath" in day texts, "Koh Phi Phi Don" as "Koh Phi Phi". Dropped as a second key only
+# when what is left is still a distinctive name (>= 4 letters).
+_GENERIC_SUFFIXES = {
+    "temple", "fort", "fortress", "palace", "street", "market", "gompa", "monastery", "pagoda",
+    "village", "island", "islands", "don", "lake", "pass", "park", "national", "museum", "square",
+}
+
+
+def _stop_keys(entry: dict) -> list[str]:
+    keys: list[str] = []
+    for field in ("name", "destination_name"):
+        key = _norm(entry.get(field) or "")
+        if not key.strip():
+            continue
+        keys.append(key)
+        words = key.split()
+        while words and words[-1] in _GENERIC_SUFFIXES:
+            words.pop()
+        head = " ".join(words)
+        if len(head.replace(" ", "")) >= 4 and f" {head} " != key:
+            keys.append(f" {head} ")
+    return keys
+
+
+def _mentions(text: str, keys: list[str]) -> bool:
+    t = _norm(text)
+    return any(k in t for k in keys)
 
 
 def _strip_leading_day_header(text: str) -> str:

@@ -80,7 +80,7 @@ async def _current_components(conn: _Conn, trip_id: str) -> list[dict]:
         """
         SELECT c.id, c.name, c.activity, c.duration_hint, c.text_extract,
                c.source_tour_id, c.source_day_index, c.destination_id,
-               d.lat AS lat, d.lng AS lng
+               d.name AS destination_name, d.lat AS lat, d.lng AS lng
         FROM tripplanner.itinerary_components c
         JOIN shared.destinations d ON d.id = c.destination_id
         WHERE c.id = ANY($1::uuid[])
@@ -156,6 +156,8 @@ async def current_itinerary(conn: _Conn, trip_id: str) -> list[dict]:
             "source_tour_id": e.get("source_tour_id"),
             "source_day_index": e.get("source_day_index"),
             "destination_id": str(e["destination_id"]) if e.get("destination_id") else None,
+            # AA-819: narration checks that a tour day's text visits this place (master_content).
+            "destination_name": e.get("destination_name"),
             "lat": e.get("lat"),
             "lng": e.get("lng"),
         }

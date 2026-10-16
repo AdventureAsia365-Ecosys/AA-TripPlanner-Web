@@ -405,8 +405,8 @@ def test_parse_days_unstructured_returns_empty():
 
 def test_build_narration_prefers_master_and_flags_missing():
     itinerary = [
-        {"day": 1, "name": "A", "source_tour_id": "t1", "source_day_index": 6},
-        {"day": 2, "name": "B", "source_tour_id": "t1", "source_day_index": 7},
+        {"day": 1, "name": "Old town", "source_tour_id": "t1", "source_day_index": 6},
+        {"day": 2, "name": "Night market", "source_tour_id": "t1", "source_day_index": 7},
     ]
     day_texts = {("t1", 6): "Day 6 — Old town: wander the streets."}
     narration, missing = master_content.build_narration(itinerary, day_texts)
@@ -415,6 +415,123 @@ def test_build_narration_prefers_master_and_flags_missing():
     assert "Day 6" not in narration
     # the day with no authored text is reported as missing (LLM fallback)
     assert [m["day"] for m in missing] == [2]
+
+
+# AA-819 D1 (S239, live on Dev): a trip with Fatehpur Sikri (North India 22 days, day 16) and
+# Amber Fort (component row says Rajasthan: Forts, Havelis & Desert 22 days, day 5) got day 5's
+# "Khimsar to Jaisalmer" text under Day 2. The tour's own day 16 is the Amber Fort day; the frozen
+# component row points at the wrong tour day. Texts below are the live CIS day texts.
+_NI, _RAJ = "fbadec01-765a-46fc-96ce-c92a9db823e8", "e716b1eb-daa3-46b3-abf2-e8a6f4da4fcf"
+_D1_TEXTS = {
+    (_NI, 16): ("Day 16: Fatehpur Sikri Detour and Arrival in Agra\nA 2-3 hour private vehicle journey "
+                "heads eastward to Agra, with an optional stop at Fatehpur Sikri, a 16th-century Mughal city."),
+    (_RAJ, 4): ("Day 4: Nawalgarh to Khimsar — Fort and Desert\n240-kilometer journey to Khimsar. Visits "
+                "include Khimsar Fort, the surrounding sand dunes."),
+    (_RAJ, 5): ("Day 5: Khimsar to Jaisalmer\n290-kilometer drive to Jaisalmer, known as the Golden City "
+                "for its honey-colored sandstone architecture. Overnight in Jaisalmer."),
+    (_RAJ, 16): ("Day 16: Jaipur: Amber Fort, City Palace & Hawa Mahal\nVisit Amber Fort, City Palace, and "
+                 "the well-known Hawa Mahal. Overnight in Jaipur."),
+}
+_D1_TRIP = [
+    {"day": 1, "component_id": "fs", "name": "Fatehpur Sikri", "destination_name": "Fatehpur Sikri",
+     "source_tour_id": _NI, "source_day_index": 16},
+    {"day": 2, "component_id": "af", "name": "Amber Fort", "destination_name": "Amber Fort",
+     "source_tour_id": _RAJ, "source_day_index": 5},
+]
+
+
+def test_build_narration_never_uses_a_tour_day_that_does_not_visit_the_stop():
+    narration, missing = master_content.build_narration(_D1_TRIP, _D1_TEXTS)
+    assert "Jaisalmer" not in narration and "Khimsar" not in narration
+    # the same tour's day that does visit Amber Fort is used instead (still AA text, no model call)
+    assert "Day 2: Jaipur: Amber Fort, City Palace & Hawa Mahal" in narration
+    assert narration.startswith("Day 1: Fatehpur Sikri Detour and Arrival in Agra\nA 2-3 hour")
+    assert missing == []
+
+
+def test_build_narration_keeps_the_own_day_when_no_other_day_of_the_tour_names_the_stop():
+    """Review of the S239 lane: a day that names no stop is more often a spelling variant than a
+    wrong day, so it keeps its AA text instead of costing a model call."""
+    texts = {k: v for k, v in _D1_TEXTS.items() if k != (_RAJ, 16)}
+    narration, missing = master_content.build_narration(_D1_TRIP, texts)
+    assert "Day 2: Khimsar to Jaisalmer" in narration
+    assert missing == []
+
+
+def test_build_narration_sends_a_day_with_no_text_at_all_to_the_fallback():
+    trip = [dict(_D1_TRIP[1], day=1, source_day_index=30)]
+    narration, missing = master_content.build_narration(trip, {(_RAJ, 5): _D1_TEXTS[(_RAJ, 5)]})
+    assert narration == "" and [m["component_id"] for m in missing] == ["af"]
+
+
+def _whole_tour(tour: str, pins: list[str]) -> list[dict]:
+    """A 'Customise this trip' itinerary: one pinned component per tour day, in tour order."""
+    return [{"day": i, "component_id": f"c{i}", "name": name, "destination_name": name,
+             "source_tour_id": tour, "source_day_index": i} for i, name in enumerate(pins, start=1)]
+
+
+def test_build_narration_never_repeats_a_day_another_stop_of_the_trip_already_has():
+    """Review of the S239 lane, live EBC case: the last day (departure) pins 'Cho La Pass', which
+    the tour crosses on day 2. Day 2 is that trip's own day 2, so day 3 keeps its own text."""
+    texts = {("ebc", 1): "Day 1 — Arrival in Kathmandu\nTransfer to the hotel.",
+             ("ebc", 2): "Day 2 — Ascent of Cho La Pass to Dzongla\nA long day over the pass.",
+             ("ebc", 3): "Day 3 — Departure\nTransfer to the airport."}
+    narration, missing = master_content.build_narration(
+        _whole_tour("ebc", ["Kathmandu", "Cho La Pass", "Cho La Pass"]), texts)
+    assert narration.count("Ascent of Cho La Pass") == 1
+    assert "Day 3: Departure" in narration and missing == []
+
+
+def test_build_narration_does_not_pull_a_neighbour_day_in_twice():
+    """Live Phuket case: day 2 (elephant sanctuary) pins 'Phuket', named on day 1, which is the
+    trip's own day 1; a tie must not copy day 1 under day 2."""
+    texts = {("th", 1): "Day 1 — Phuket Day Tour\nViewpoint, Big Buddha and Old Town in Phuket.",
+             ("th", 2): "Day 2 — Elephant Sanctuary\nA morning with rescued elephants.",
+             ("th", 3): "Day 3 — Koh Phi Phi\nBoat to Koh Phi Phi."}
+    narration, missing = master_content.build_narration(
+        _whole_tour("th", ["Phuket", "Phuket", "Koh Phi Phi Don"]), texts)
+    assert narration.count("Phuket Day Tour") == 1
+    assert "Day 2: Elephant Sanctuary" in narration
+    assert "Day 3: Koh Phi Phi" in narration and missing == []
+
+
+def test_stop_names_match_without_a_generic_suffix():
+    """'Pashupatinath Temple' is written 'Pashupatinath', 'Koh Phi Phi Don' 'Koh Phi Phi'."""
+    assert master_content._mentions("Visit Pashupatinath at dusk.",
+                                    master_content._stop_keys({"name": "Pashupatinath Temple"}))
+    assert master_content._mentions("Boat to Koh Phi Phi.",
+                                    master_content._stop_keys({"name": "Koh Phi Phi Don"}))
+    # a suffix alone, or a too-short head, is not a key
+    assert master_content._stop_keys({"name": "Temple"}) == [" temple "]
+    assert master_content._stop_keys({"name": "Wat Fort"}) == [" wat fort "]
+
+
+def test_build_narration_checks_every_entry_of_a_trip_day_before_moving_it():
+    """A trip day with two activities of tour day 3: the first entry's name is not in day 3's
+    text, the second's is. Day 3 is confirmed; day 1 (also naming the first) must not replace it."""
+    texts = {("vn", 1): "Day 1 — Arrival\nCheck in to your hotel in the Old Quarter.",
+             ("vn", 3): "Day 3 — Hanoi temples\nVisit the Temple of Literature."}
+    trip = [{"day": 1, "component_id": "oq", "name": "Old Quarter", "destination_name": "Hanoi Old Quarter",
+             "source_tour_id": "vn", "source_day_index": 3},
+            {"day": 1, "component_id": "tl", "name": "Temple of Literature",
+             "source_tour_id": "vn", "source_day_index": 3}]
+    narration, missing = master_content.build_narration(trip, texts)
+    assert narration == "Day 1: Hanoi temples\nVisit the Temple of Literature." and missing == []
+
+
+def test_build_narration_matches_the_stop_by_its_place_name_and_ignores_case_and_accents():
+    trip = [{"day": 1, "component_id": "x", "name": "Sunset boat ride", "destination_name": "Hội An",
+             "source_tour_id": "t", "source_day_index": 3}]
+    narration, missing = master_content.build_narration(
+        trip, {("t", 3): "Day 3 — Old town: a lantern-lit evening in HOI AN."})
+    assert narration == "Day 1: Old town: a lantern-lit evening in HOI AN." and missing == []
+
+
+def test_merge_by_day_keeps_every_line_of_a_multi_line_day():
+    """A master day is 'Day N: <title>' plus prose lines; the merge used to keep only the first line."""
+    master = "Day 1: Arrival in Agra\nA 2-3 hour drive to Agra.\nOvernight in Agra."
+    merged = handler._merge_by_day(master, "Day 2: Jaipur and its forts.")
+    assert merged == "Day 1: Arrival in Agra\nA 2-3 hour drive to Agra.\nOvernight in Agra.\nDay 2: Jaipur and its forts."
 
 
 # --- suggestions ------------------------------------------------------------
@@ -1138,6 +1255,15 @@ def test_itinerary_hash_changes_when_the_master_day_text_changes():
         it, "compose", {})
 
 
+def test_itinerary_hash_follows_the_tour_day_the_narration_really_uses():
+    """AA-819: when the entry's own day does not visit the stop, another day of the tour is used,
+    so an edit to THAT day must miss the cache too."""
+    from backend.assembly import narration_cache
+    before = narration_cache.itinerary_hash(_D1_TRIP, "compose", _D1_TEXTS)
+    edited = {**_D1_TEXTS, (_RAJ, 16): _D1_TEXTS[(_RAJ, 16)] + " Elephant rides are not offered."}
+    assert narration_cache.itinerary_hash(_D1_TRIP, "compose", edited) != before
+
+
 def test_basic_narration_keeps_a_day_with_no_names_through_the_merge():
     """AA-805 review: a nameless day used to render 'Day N.' (no colon) and the merge dropped it."""
     basic = handler._basic_narration([{"day": 2, "name": ""}, {"day": 3, "name": "Hue"}])
@@ -1159,6 +1285,20 @@ async def test_narrate_over_the_daily_cap_makes_no_model_call(monkeypatch):
     assert body["ai_budget_exhausted"] is True
     assert body["narration"] == "Day 1: Hanoi."
     assert conn.cache == {}                                  # a fallback is never cached
+
+
+@pytest.mark.asyncio
+async def test_narrate_over_the_cap_with_master_days_is_labelled_master_basic():
+    """Review of the S239 lane: AA master text is AI-assisted, so a budget fallback that still
+    carries master days is not 'basic' (which has no label) but 'master_basic'."""
+    itinerary = [{"day": 1, "name": "Old town", "source_tour_id": "t1", "source_day_index": 6},
+                 {"day": 2, "name": "Night market", "source_tour_id": "t1", "source_day_index": 7}]
+    narration, source, _ = await handler._narrate(
+        None, itinerary, None, day_texts={("t1", 6): "Day 6 — Old town: wander the streets."})
+    assert source == "master_basic"
+    assert narration.splitlines() == ["Day 1: Old town: wander the streets.", "Day 2: Night market."]
+    assert "master_basic" in handler._AI_SOURCES and "master" in handler._AI_SOURCES
+    assert "basic" not in handler._AI_SOURCES
 
 
 @pytest.mark.asyncio

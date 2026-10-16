@@ -74,8 +74,11 @@ _ROUTE_NAMES = (
 
 _HEADERS = {"content-type": "application/json", "cache-control": "no-store"}
 
-# Narration sources that contain model-written text (frontend AI badge, cache eligibility).
-_AI_SOURCES = ("llm", "mixed")
+# Narration sources whose text is AI-written or AI-assisted, reported as `ai_generated`. AA master
+# text is the CIS writer model's output (AA-819), so 'master' and 'master_basic' count; only
+# 'basic' (neutral name lines, no master day) has no AI text. Cache eligibility is separate
+# (narration_cache.CACHEABLE_SOURCES).
+_AI_SOURCES = ("llm", "mixed", "master", "master_basic")
 
 
 def _resp(status: int, body: dict) -> dict:
@@ -446,8 +449,9 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn,
     'llm' (none authored), or 'mixed', and ungrounded lists the LLM lines removed or replaced
     because they stated a figure no component text supports (AA-731, grounding.py).
 
-    narrate_fn None (AA-805 daily spend cap reached): the remaining days get neutral name lines
-    and source is 'basic' — no AI text at all.
+    narrate_fn None (AA-805 daily spend cap reached): the remaining days get neutral name lines.
+    Source is 'master_basic' when some days are AA master text (AI-assisted, AA-819: the frontend
+    labels it), 'basic' when none is: no AI text at all.
     """
     if day_texts is None:
         day_texts = await _load_master_texts(conn, itinerary)
@@ -459,7 +463,9 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn,
 
     if narrate_fn is None:
         basic = _basic_narration(missing)
-        return (_merge_by_day(master_narr, basic) if master_narr else basic), "basic", []
+        if master_narr:
+            return _merge_by_day(master_narr, basic), "master_basic", []
+        return basic, "basic", []
 
     # Some (or all) days need the LLM. Narrate only the missing days, then
     # merge with any authored lines, preserving trip-day order.
@@ -472,17 +478,22 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn,
 
 
 def _merge_by_day(master_narr: str, llm_narr: str) -> str:
-    """Merge two 'Day N: ...' blocks into one, ordered by day number.
-    Master lines win if a day appears in both."""
-    import re
+    """Merge two 'Day N: ...' narrations into one, ordered by day number.
+    Master blocks win if a day appears in both. A block runs from its 'Day N:' line to the next
+    one: a master day is its title line plus prose lines, all kept (AA-819; only the title line
+    used to survive the merge)."""
 
     def to_map(text: str) -> dict[int, str]:
-        out: dict[int, str] = {}
+        blocks: dict[int, list[str]] = {}
+        current: Optional[list[str]] = None  # None: outside a block, or a repeated day (ignored)
         for line in text.splitlines():
             m = re.match(r"\s*Day\s*(\d+)\s*:", line, re.IGNORECASE)
             if m:
-                out.setdefault(int(m.group(1)), line.strip())
-        return out
+                day = int(m.group(1))
+                current = None if day in blocks else blocks.setdefault(day, [line.strip()])
+            elif current is not None and line.strip():
+                current.append(line.strip())
+        return {d: "\n".join(block) for d, block in blocks.items()}
 
     days = to_map(llm_narr)
     days.update(to_map(master_narr))  # master overrides

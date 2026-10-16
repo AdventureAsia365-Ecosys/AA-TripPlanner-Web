@@ -7,6 +7,8 @@ import { COUNTRY_GATEWAY } from "@/lib/types";
 import RoutePlanner from "@/components/RoutePlanner";
 import StopActivities from "@/components/StopActivities";
 import { Icon } from "@/ui/Icon";
+import AiLabel from "@/components/AiLabel";
+import { parseNarration } from "@/lib/narration";
 
 const DAY_KIND_LABEL: Record<string, string> = {
   extra_night: "Extra night",
@@ -15,6 +17,37 @@ const DAY_KIND_LABEL: Record<string, string> = {
 };
 
 const LONG_TRIP_WARN_DAYS = 25;
+
+// AA-819 (D2): the narration badge per `source` of POST /trip/{id}/narrate. The visible label itself
+// says AI (not only the tap-to-open explanation): AA master text is the CIS writer model's output.
+// `basic` (daily AI budget spent, no AA day at all: neutral name lines) has no AI text and no badge;
+// `master_basic` is the same fallback with some AA days in it.
+const AA_ITINERARY_LABEL = "AA itinerary · AI-assisted";
+const AA_ITINERARY_TEXT =
+  "Adventure Asia's own itinerary text for these tour days, written by AI from our tour notes and " +
+  "checked by automated quality checks.";
+const NARRATION_LABEL: Record<string, { label: string; explanation: string }> = {
+  master: {
+    label: AA_ITINERARY_LABEL,
+    explanation: `${AA_ITINERARY_TEXT} Your advisor confirms every detail.`,
+  },
+  master_basic: {
+    label: AA_ITINERARY_LABEL,
+    explanation:
+      `${AA_ITINERARY_TEXT} Today's AI writing limit is reached, so the days it does not cover show ` +
+      "only their places. Your advisor confirms every detail.",
+  },
+  mixed: {
+    label: "AA + AI",
+    explanation:
+      "Mostly Adventure Asia's own itinerary text, written by AI from our tour notes and checked by " +
+      "automated quality checks; AI also wrote the days it did not cover. Your advisor confirms every detail.",
+  },
+  llm: {
+    label: "AI narration",
+    explanation: "Written by AI from the tour descriptions. Your advisor confirms every detail.",
+  },
+};
 
 // Map each gateway IATA back to its country, for a "countries visited" count.
 const IATA_TO_COUNTRY: Record<string, string> = Object.entries(
@@ -31,31 +64,6 @@ function transferHint(km: number): string {
   if (km < 120) return "a private 4WD or boat transfer";
   if (km < 400) return "a scenic overland drive or a domestic hop";
   return "a domestic flight, then an overland transfer";
-}
-
-interface NarrationBlock {
-  day: number | null;
-  text: string;
-}
-
-// Parse the LLM narration into per-day blocks. Handles the clean
-// "Day N: ..." format and defensively strips any leftover markdown
-// (**bold**, headings) from older/looser outputs.
-function parseNarration(raw: string): NarrationBlock[] {
-  const clean = raw.replace(/\*\*/g, "").replace(/^#+\s*/gm, "").trim();
-  const blocks: NarrationBlock[] = [];
-  // Split before each "Day N" marker (keep the marker with its text).
-  const parts = clean.split(/(?=Day\s+\d+\s*[:\-–])/i).map((p) => p.trim()).filter(Boolean);
-  if (parts.length === 0) return [{ day: null, text: clean }];
-  for (const p of parts) {
-    const m = p.match(/^Day\s+(\d+)\s*[:\-–]\s*(.*)$/is);
-    if (m) {
-      blocks.push({ day: Number(m[1]), text: m[2].trim() });
-    } else {
-      blocks.push({ day: null, text: p });
-    }
-  }
-  return blocks;
 }
 
 export default function TripPanel() {
@@ -520,35 +528,9 @@ export default function TripPanel() {
                 customer's chosen order is always respected. */}
             <div className="mt-4 rounded-xl border border-aa-line bg-white p-3">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
-                  <p className="text-xs font-semibold text-aa-ink">
-                    Day-by-day narration
-                  </p>
-                  {narration && narrationSource === "master" && (
-                    <span
-                      title="Straight from Adventure Asia's own tour itineraries"
-                      className="rounded-full bg-aa-gold-soft px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-aa-gold-dark"
-                    >
-                      AA itinerary
-                    </span>
-                  )}
-                  {narration && narrationSource === "mixed" && (
-                    <span
-                      title="Mostly AA's own itinerary text, with AI filling any gaps"
-                      className="rounded-full bg-aa-gold-soft px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-aa-gold-dark"
-                    >
-                      AA + AI
-                    </span>
-                  )}
-                  {narration && narrationSource === "llm" && (
-                    <span
-                      title="Written by AI from the tour descriptions. Your advisor confirms every detail."
-                      className="rounded-full border border-aa-gold/40 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-aa-gold-dark"
-                    >
-                      AI narration
-                    </span>
-                  )}
-                </div>
+                <p className="text-xs font-semibold text-aa-ink">
+                  Day-by-day narration
+                </p>
                 <button
                   onClick={() => narrate("compose")}
                   disabled={narrating}
@@ -561,6 +543,18 @@ export default function TripPanel() {
                       : "✨ Compose"}
                 </button>
               </div>
+              {/* AA-819: each narration state labelled honestly. On its own row and opening in
+                  the flow: the panel scrolls, so a floating explanation would be clipped and
+                  scroll it sideways (S239 review). */}
+              {narration && narrationSource && NARRATION_LABEL[narrationSource] && (
+                <AiLabel
+                  className="mt-1.5"
+                  placement="inline"
+                  label={NARRATION_LABEL[narrationSource].label}
+                  explanation={NARRATION_LABEL[narrationSource].explanation}
+                  variant={narrationSource === "llm" ? "outline" : "solid"}
+                />
+              )}
               {narration ? (
                 <div className="mt-2.5 space-y-2.5">
                   {narrationBlocks.slice(0, revealCount).map((b, i) => (
@@ -570,9 +564,12 @@ export default function TripPanel() {
                           Day {b.day}
                         </span>
                       )}
-                      <p className="text-xs leading-relaxed text-aa-ink-soft">
-                        {b.text}
-                      </p>
+                      <div className="min-w-0 text-xs leading-relaxed text-aa-ink-soft">
+                        {b.title && (
+                          <p className="font-semibold text-aa-ink">{b.title}</p>
+                        )}
+                        {b.text && <p className="whitespace-pre-line">{b.text}</p>}
+                      </div>
                     </div>
                   ))}
                 </div>
