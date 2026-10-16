@@ -229,8 +229,9 @@ async def test_route_search_logs_failed_embed_attempts(monkeypatch):
     monkeypatch.setattr(search_mod.llm_gateway, "load_route", fake_load_route)
     monkeypatch.setattr(search_mod.llm_gateway, "embed_texts", failing)
     monkeypatch.setattr(search_mod.llm_gateway, "record", fake_record)
-    with pytest.raises(llm_gateway.BedrockError):
-        await search_mod.search("beach", BrowseFilters(), pool=pool)
+    # AA-856: a failed embed falls back to keyword ranking (200), the failure is still logged.
+    out = await search_mod.search("beach", BrowseFilters(), pool=pool)
+    assert out["ranking"] == "keyword"
     assert recorded == [("tp_search_embed", True)]
 
 
