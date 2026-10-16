@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Protocol
 
-from backend import config
 from backend.assembly import sequencing
 
 VALID_EVENTS = {"add_component", "remove_component", "reorder", "sent", "add_day", "remove_day"}
@@ -137,26 +136,6 @@ async def _latest_explicit_order(conn: _Conn, trip_id: str) -> Optional[list[str
     return payload.get("ordered_component_ids")
 
 
-async def _ensure_guest_session(conn: _Conn, session_id: str) -> None:
-    """Guarantee a sessions row exists for session_id before any event that
-    FK-references it. The app has no separate 'create session' call — the
-    first pin (add_component) from a fresh visitor lazily creates an
-    anonymous GUEST session (guest_token = the session id, 90-day expiry).
-    Registration later attaches a customer_id and clears the expiry
-    (registration.py). Idempotent: a no-op if the session already exists,
-    and never resets a registered session's expiry.
-    """
-    await conn.execute(
-        """
-        INSERT INTO tripplanner.sessions (id, guest_token, expires_at)
-        VALUES ($1::uuid, ($1::uuid)::text, now() + make_interval(days => $2::int))
-        ON CONFLICT (id) DO NOTHING
-        """,
-        session_id,
-        config.GUEST_SESSION_DAYS,
-    )
-
-
 async def current_itinerary(conn: _Conn, trip_id: str) -> list[dict]:
     """Read-only: recompute the current day-ordered itinerary for a trip,
     including text_extract per day (needed by the narration LLM). Uses the
@@ -192,12 +171,15 @@ async def append_event(
     payload: dict,
 ) -> list[dict]:
     """Append an event and update the trip_drafts projection in ONE
-    transaction. Returns the new itinerary projection."""
+    transaction. Returns the new itinerary projection.
+
+    The sessions row must already exist: the handler's _guard creates or binds it (AA-827,
+    guest_session.authorize) before any mutation. If a route ever skips the guard, the
+    trip_events.session_id FK fails loudly instead of creating an unauthenticated session."""
     if event_type not in VALID_EVENTS:
         raise ValueError(f"invalid event_type: {event_type}")
 
     async with conn.transaction():
-        await _ensure_guest_session(conn, session_id)
         await conn.execute(
             "INSERT INTO tripplanner.trip_events "
             "(trip_id, session_id, event_type, payload) "

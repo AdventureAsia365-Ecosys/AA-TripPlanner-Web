@@ -15,6 +15,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from backend import config
 from backend.assembly import handler as assembly_handler
 from backend.shared.db import get_pool
 
@@ -38,12 +39,14 @@ class Handler(BaseHTTPRequestHandler):
     def _run(self):
         parsed = urlparse(self.path)
         body = self._read_body()
+        # AA-827: the BFF's guest token, passed through like the Lambda adapter does.
+        guest_token = self.headers.get(config.GUEST_TOKEN_HEADER)
 
         async def go():
             pool = await get_pool()
             async with pool.acquire() as conn:
                 return await assembly_handler.route(
-                    self.command, parsed.path, body, conn=conn
+                    self.command, parsed.path, body, conn=conn, guest_token=guest_token
                 )
 
         try:

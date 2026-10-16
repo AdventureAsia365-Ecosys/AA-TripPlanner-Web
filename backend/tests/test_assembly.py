@@ -14,6 +14,7 @@ from backend import config
 from backend.assembly import (
     agent,
     events,
+    guest_session,
     handoff,
     handler,
     master_content,
@@ -78,12 +79,14 @@ class FakeConn:
         self.customers: list[dict] = []
         self.sessions: dict[str, dict] = {}
         self.outbox: list[dict] = []
+        self.sql: list[str] = []          # every statement issued, normalised (AA-827 tests)
 
     def transaction(self):
         return FakeTxn()
 
     async def execute(self, query, *args):
         q = " ".join(query.split())
+        self.sql.append(q)
         if q.startswith("INSERT INTO tripplanner.trip_events"):
             trip_id, session_id, etype, payload = args
             self._eid += 1
@@ -110,7 +113,16 @@ class FakeConn:
             for c in self.customers:
                 if c["id"] == args[0] and not c.get("contact_consent"):
                     c["contact_consent"], c["contact_consent_at"] = True, "2026-10-11T00:00:00+00:00"
-        elif q.startswith("UPDATE tripplanner.sessions"):
+        elif q.startswith("INSERT INTO tripplanner.sessions (id, guest_token_hash"):
+            session_id, token_hash, _days = args          # ON CONFLICT (id) DO NOTHING
+            self.sessions.setdefault(session_id, {"id": session_id, "customer_id": None,
+                                                  "guest_token_hash": token_hash})
+        elif q.startswith("UPDATE tripplanner.sessions SET guest_token_hash"):
+            token_hash, session_id = args                 # only while the hash IS NULL
+            row = self.sessions.get(session_id)
+            if row is not None and row.get("guest_token_hash") is None:
+                row["guest_token_hash"] = token_hash
+        elif q.startswith("UPDATE tripplanner.sessions SET customer_id"):
             customer_id, session_id = args
             self.sessions.setdefault(session_id, {"id": session_id})
             self.sessions[session_id]["customer_id"] = customer_id
@@ -119,6 +131,7 @@ class FakeConn:
 
     async def fetch(self, query, *args):
         q = " ".join(query.split())
+        self.sql.append(q)
         if q.startswith("SELECT event_type, payload FROM tripplanner.trip_events") and "ORDER BY id ASC" in q:
             trip_id = args[0]
             return [
@@ -132,6 +145,10 @@ class FakeConn:
 
     async def fetchrow(self, query, *args):
         q = " ".join(query.split())
+        self.sql.append(q)
+        if q.startswith("SELECT guest_token_hash FROM tripplanner.sessions"):
+            row = self.sessions.get(args[0])
+            return {"guest_token_hash": row.get("guest_token_hash")} if row is not None else None
         if q.startswith("SELECT event_type, payload FROM tripplanner.trip_events") and "ORDER BY id DESC" in q:
             trip_id = args[0]
             rows = [e for e in self.events if e["trip_id"] == trip_id]
@@ -175,14 +192,38 @@ class FakeConn:
         return None
 
 
+# --- AA-827: ids are UUIDs and every mutation carries the BFF guest token ------
+
+TOKEN = "-0UxxnsV3WRRgs8YYFs7hikEinxIORd7SfjlpIeS-9Q"   # shape of a BFF token: 43 base64url chars
+S1 = "00000000-0000-4000-8000-0000000000a1"
+OWNER = "00000000-0000-4000-8000-0000000000a2"
+INTRUDER = "00000000-0000-4000-8000-0000000000a3"
+T1 = "00000000-0000-4000-8000-0000000000b1"
+T9 = "00000000-0000-4000-8000-0000000000b9"
+T235 = "00000000-0000-4000-8000-000000000235"
+TEMPTY = "00000000-0000-4000-8000-0000000000be"
+
+
+def _session(session_id: str, customer_id=None, token: str | None = TOKEN) -> dict:
+    """A sessions row already bound to `token` (AA-827)."""
+    return {"id": session_id, "customer_id": customer_id,
+            "guest_token_hash": guest_session.hash_token(token) if token else None}
+
+
+async def call(method, path, body, *, conn, guest_token=TOKEN, **kw):
+    """handler.route with the BFF guest token. Every test session is token-bound, so no test here
+    depends on the date of the legacy grace window (test_guest_session.py covers the window)."""
+    return await handler.route(method, path, body, conn=conn, guest_token=guest_token, **kw)
+
+
 # --- events / projection ----------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_add_components_builds_projection():
     conn = FakeConn()
-    await events.append_event(conn, "trip1", "s1", "add_component", {"component_id": "c1"})
+    await events.append_event(conn, "trip1", S1, "add_component", {"component_id": "c1"})
     itinerary = await events.append_event(
-        conn, "trip1", "s1", "add_component", {"component_id": "c3"}
+        conn, "trip1", S1, "add_component", {"component_id": "c3"}
     )
     # two components, sequenced deterministically, days 1..2
     assert {e["component_id"] for e in itinerary} == {"c1", "c3"}
@@ -194,9 +235,9 @@ async def test_add_components_builds_projection():
 @pytest.mark.asyncio
 async def test_remove_component_updates_projection():
     conn = FakeConn()
-    await events.append_event(conn, "t", "s1", "add_component", {"component_id": "c1"})
-    await events.append_event(conn, "t", "s1", "add_component", {"component_id": "c2"})
-    itinerary = await events.append_event(conn, "t", "s1", "remove_component", {"component_id": "c1"})
+    await events.append_event(conn, "t", S1, "add_component", {"component_id": "c1"})
+    await events.append_event(conn, "t", S1, "add_component", {"component_id": "c2"})
+    itinerary = await events.append_event(conn, "t", S1, "remove_component", {"component_id": "c1"})
     assert {e["component_id"] for e in itinerary} == {"c2"}
 
 
@@ -204,9 +245,9 @@ async def test_remove_component_updates_projection():
 async def test_reorder_pins_explicit_order():
     conn = FakeConn()
     for cid in ("c1", "c2", "c3"):
-        await events.append_event(conn, "t", "s1", "add_component", {"component_id": cid})
+        await events.append_event(conn, "t", S1, "add_component", {"component_id": cid})
     itinerary = await events.append_event(
-        conn, "t", "s1", "reorder", {"ordered_component_ids": ["c3", "c1", "c2"]}
+        conn, "t", S1, "reorder", {"ordered_component_ids": ["c3", "c1", "c2"]}
     )
     assert [e["component_id"] for e in itinerary] == ["c3", "c1", "c2"]
     assert [e["day"] for e in itinerary] == [1, 2, 3]
@@ -215,10 +256,10 @@ async def test_reorder_pins_explicit_order():
 @pytest.mark.asyncio
 async def test_add_after_reorder_invalidates_explicit_order():
     conn = FakeConn()
-    await events.append_event(conn, "t", "s1", "add_component", {"component_id": "c3"})
-    await events.append_event(conn, "t", "s1", "reorder", {"ordered_component_ids": ["c3"]})
+    await events.append_event(conn, "t", S1, "add_component", {"component_id": "c3"})
+    await events.append_event(conn, "t", S1, "reorder", {"ordered_component_ids": ["c3"]})
     # adding a new component after reorder -> back to deterministic sequencing
-    itinerary = await events.append_event(conn, "t", "s1", "add_component", {"component_id": "c2"})
+    itinerary = await events.append_event(conn, "t", S1, "add_component", {"component_id": "c2"})
     # sequencing anchors west-most: c2 (lng 103.8) before c3 (lng 108.3)
     assert [e["component_id"] for e in itinerary] == ["c2", "c3"]
 
@@ -228,21 +269,21 @@ async def test_add_after_reorder_invalidates_explicit_order():
 @pytest.mark.asyncio
 async def test_registration_creates_and_claims():
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1"}
-    cid = await registration.register_and_claim(conn, "s1", "Jo", "123", "jo@x.com")
+    conn.sessions[S1] = {"id": S1}
+    cid = await registration.register_and_claim(conn, S1, "Jo", "123", "jo@x.com")
     assert cid == "cust-1"
-    assert conn.sessions["s1"]["customer_id"] == "cust-1"
+    assert conn.sessions[S1]["customer_id"] == "cust-1"
 
 
 @pytest.mark.asyncio
 async def test_registration_never_claims_an_existing_customer_on_unverified_match():
     """S235: typing someone else's email must not attach this session to their customer."""
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1"}
+    conn.sessions[S1] = {"id": S1}
     conn.customers.append({"id": "existing", "name": "Victim", "phone": None, "email": "jo@x.com"})
-    cid = await registration.register_and_claim(conn, "s1", "Mallory", "", "jo@x.com", consent=True)
+    cid = await registration.register_and_claim(conn, S1, "Mallory", "", "jo@x.com", consent=True)
     assert cid is None
-    assert conn.sessions["s1"].get("customer_id") is None          # session stays a guest
+    assert conn.sessions[S1].get("customer_id") is None          # session stays a guest
     assert len(conn.customers) == 1                                # no insert (UNIQUE email)
     assert conn.customers[0]["name"] == "Victim"
     assert not conn.customers[0].get("contact_consent")            # stored customer untouched
@@ -251,8 +292,8 @@ async def test_registration_never_claims_an_existing_customer_on_unverified_matc
 @pytest.mark.asyncio
 async def test_registration_email_match_is_case_insensitive_and_stored_lowercase():
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1"}
-    cid = await registration.register_and_claim(conn, "s1", "Jo", "", "  Jo@X.com ")
+    conn.sessions[S1] = {"id": S1}
+    cid = await registration.register_and_claim(conn, S1, "Jo", "", "  Jo@X.com ")
     assert cid == "cust-1" and conn.customers[0]["email"] == "jo@x.com"
     conn.sessions["s2"] = {"id": "s2"}
     # same address, different case → a match, so not claimed and no second row
@@ -267,17 +308,17 @@ async def test_registration_email_match_is_case_insensitive_and_stored_lowercase
 @pytest.mark.asyncio
 async def test_registration_existing_phone_is_not_claimed():
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1"}
+    conn.sessions[S1] = {"id": S1}
     conn.customers.append({"id": "existing", "name": "Victim", "phone": "123", "email": None})
-    assert await registration.register_and_claim(conn, "s1", "Mallory", " 123 ", "m@x.com") is None
-    assert conn.sessions["s1"].get("customer_id") is None
+    assert await registration.register_and_claim(conn, S1, "Mallory", " 123 ", "m@x.com") is None
+    assert conn.sessions[S1].get("customer_id") is None
 
 
 @pytest.mark.asyncio
 async def test_registration_requires_contact():
     conn = FakeConn()
     with pytest.raises(ValueError):
-        await registration.register_and_claim(conn, "s1", "Jo", "", "")
+        await registration.register_and_claim(conn, S1, "Jo", "", "")
 
 
 # --- notify -----------------------------------------------------------------
@@ -396,8 +437,8 @@ async def test_suggest_empty_trip_returns_empty():
 @pytest.mark.asyncio
 async def test_handler_suggestions_route_ok():
     conn = FakeConn()
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
-    resp = await handler.route("GET", "/trip/t1/suggestions", {}, conn=conn)
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    resp = await call("GET", f"/trip/{T1}/suggestions", {}, conn=conn)
     assert resp["statusCode"] == 200
     assert "suggestions" in json.loads(resp["body"])
 
@@ -451,9 +492,9 @@ def test_rerank_keeps_top_taste_when_also_closest():
 @pytest.mark.asyncio
 async def test_handler_add_component():
     conn = FakeConn()
-    resp = await handler.route(
-        "POST", "/trip/t1/components",
-        {"session_id": "s1", "component_id": "c1"}, conn=conn,
+    resp = await call(
+        "POST", f"/trip/{T1}/components",
+        {"session_id": S1, "component_id": "c1"}, conn=conn,
     )
     assert resp["statusCode"] == 200
     assert resp["headers"]["cache-control"] == "no-store"
@@ -462,7 +503,7 @@ async def test_handler_add_component():
 @pytest.mark.asyncio
 async def test_handler_add_missing_fields_400():
     conn = FakeConn()
-    resp = await handler.route("POST", "/trip/t1/components", {"session_id": "s1"}, conn=conn)
+    resp = await call("POST", f"/trip/{T1}/components", {"session_id": S1}, conn=conn)
     assert resp["statusCode"] == 400
 
 
@@ -470,9 +511,9 @@ async def test_handler_add_missing_fields_400():
 async def test_handler_send_requires_registration_when_flag_on(monkeypatch):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1", "customer_id": None}  # guest
-    resp = await handler.route(
-        "POST", "/trip/t1/send-to-advisor", {"session_id": "s1"}, conn=conn
+    conn.sessions[S1] = _session(S1, None)  # guest
+    resp = await call(
+        "POST", f"/trip/{T1}/send-to-advisor", {"session_id": S1}, conn=conn
     )
     assert resp["statusCode"] == 422
     assert json.loads(resp["body"])["error"] == "registration_required"
@@ -482,19 +523,19 @@ async def test_handler_send_requires_registration_when_flag_on(monkeypatch):
 async def test_handler_send_registers_then_sends_and_notifies(monkeypatch):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    conn.sessions[S1] = _session(S1, None)
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
     sender = notify.LoggingSender()
-    resp = await handler.route(
-        "POST", "/trip/t1/send-to-advisor",
-        {"session_id": "s1", "customer": {"name": "Jo", "email": "jo@x.com"}},
+    resp = await call(
+        "POST", f"/trip/{T1}/send-to-advisor",
+        {"session_id": S1, "customer": {"name": "Jo", "email": "jo@x.com"}},
         conn=conn, sender=sender,
     )
     assert resp["statusCode"] == 200
     assert json.loads(resp["body"])["status"] == "sent"
-    assert conn.sessions["s1"]["customer_id"] == "cust-1"   # registered + claimed
+    assert conn.sessions[S1]["customer_id"] == "cust-1"   # registered + claimed
     assert len(sender.sent) == 1                             # advisor notified
-    assert conn.drafts["t1"]["status"] == "sent"
+    assert conn.drafts[T1]["status"] == "sent"
 
 
 @pytest.mark.asyncio
@@ -502,14 +543,14 @@ async def test_handler_send_twice_is_one_handoff_and_one_email(monkeypatch):
     """AA-731: a double click / retry after a lost response must not create a second hand-off."""
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    conn.sessions[S1] = _session(S1, None)
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
     sender = notify.LoggingSender()
-    req = {"session_id": "s1", "customer": {"name": "Jo", "email": "jo@x.com"}}
-    first = json.loads((await handler.route("POST", "/trip/t1/send-to-advisor", req,
-                                            conn=conn, sender=sender))["body"])
-    second = json.loads((await handler.route("POST", "/trip/t1/send-to-advisor", req,
-                                             conn=conn, sender=sender))["body"])
+    req = {"session_id": S1, "customer": {"name": "Jo", "email": "jo@x.com"}}
+    first = json.loads((await call("POST", f"/trip/{T1}/send-to-advisor", req,
+                                   conn=conn, sender=sender))["body"])
+    second = json.loads((await call("POST", f"/trip/{T1}/send-to-advisor", req,
+                                    conn=conn, sender=sender))["body"])
     assert first["already_sent"] is False and second["already_sent"] is True
     assert first["handoff_id"] == second["handoff_id"]
     assert len(sender.sent) == 1
@@ -521,13 +562,13 @@ async def test_handler_send_twice_is_one_handoff_and_one_email(monkeypatch):
 async def test_handler_send_after_a_real_edit_is_a_new_handoff(monkeypatch):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
     conn = FakeConn()
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
     sender = notify.LoggingSender()
-    first = json.loads((await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"},
-                                            conn=conn, sender=sender))["body"])
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c3"})
-    second = json.loads((await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"},
-                                             conn=conn, sender=sender))["body"])
+    first = json.loads((await call("POST", f"/trip/{T1}/send-to-advisor", {"session_id": S1},
+                                   conn=conn, sender=sender))["body"])
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c3"})
+    second = json.loads((await call("POST", f"/trip/{T1}/send-to-advisor", {"session_id": S1},
+                                    conn=conn, sender=sender))["body"])
     assert second["already_sent"] is False and second["handoff_id"] != first["handoff_id"]
     assert len(sender.sent) == 2
 
@@ -536,6 +577,7 @@ async def test_handler_send_after_a_real_edit_is_a_new_handoff(monkeypatch):
 async def test_handler_send_takes_the_per_trip_lock_first(monkeypatch):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
     conn = FakeConn()
+    conn.sessions[S1] = _session(S1)        # bound already: the guard only reads
     seen = []
     orig = conn.execute
 
@@ -544,24 +586,24 @@ async def test_handler_send_takes_the_per_trip_lock_first(monkeypatch):
         return await orig(query, *args)
 
     conn.execute = spy
-    await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"}, conn=conn,
-                        sender=notify.LoggingSender())
-    assert seen[0] == ("SELECT pg_advisory_xact_lock(hashtext($1))", ("tp_send:t1",))
+    await call("POST", f"/trip/{T1}/send-to-advisor", {"session_id": S1}, conn=conn,
+               sender=notify.LoggingSender())
+    assert seen[0] == ("SELECT pg_advisory_xact_lock(hashtext($1))", (f"tp_send:{T1}",))
 
 
 @pytest.mark.asyncio
 async def test_handler_narrate_replaces_a_day_with_an_invented_number():
     """AA-731: an LLM figure no component text supports never reaches the customer."""
     conn = FakeConn()
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
-    itinerary = await events.current_itinerary(conn, "t1")
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    itinerary = await events.current_itinerary(conn, T1)
     name = itinerary[0]["name"]
 
     def fake_narrator(it):
         yield "Day 1: Admire the 22-meter reclining Buddha, a 900-year-old marvel."
 
-    resp = await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
-                               conn=conn, narrator=fake_narrator)
+    resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1},
+                      conn=conn, narrator=fake_narrator)
     narration = json.loads(resp["body"])["narration"]
     assert "22" not in narration and "900" not in narration
     assert narration == f"Day 1: {name}."
@@ -570,8 +612,8 @@ async def test_handler_narrate_replaces_a_day_with_an_invented_number():
 @pytest.mark.asyncio
 async def test_handler_narrate_returns_narration():
     conn = FakeConn()
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c3"})
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c3"})
 
     def fake_narrator(itinerary):
         # asserts the handler passed a non-empty, day-ordered itinerary
@@ -579,8 +621,8 @@ async def test_handler_narrate_returns_narration():
         yield "Composed narration for "
         yield f"{len(itinerary)} days."
 
-    resp = await handler.route(
-        "POST", "/trip/t1/narrate", {"session_id": "s1"},
+    resp = await call(
+        "POST", f"/trip/{T1}/narrate", {"session_id": S1},
         conn=conn, narrator=fake_narrator,
     )
     assert resp["statusCode"] == 200
@@ -597,7 +639,7 @@ async def test_handler_narrate_logs_each_model_call(monkeypatch):
     from backend.shared import llm_gateway
 
     conn = FakeConn()
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
     recorded = []
 
     async def fake_load_route(db, stage):
@@ -614,7 +656,7 @@ async def test_handler_narrate_logs_each_model_call(monkeypatch):
     monkeypatch.setattr(handler.llm_gateway, "load_route", fake_load_route)
     monkeypatch.setattr(agent.llm_gateway, "generate_text", fake_generate_text)
     monkeypatch.setattr(handler.llm_gateway, "record", fake_record)
-    resp = await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"}, conn=conn)
+    resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn)
     assert resp["statusCode"] == 200
     assert json.loads(resp["body"])["narration"] == "Day 1: Arrive."
     assert recorded == [("tp_compose", 0.00081, {"mode": "compose", "source": "llm", "days": 1,
@@ -624,8 +666,8 @@ async def test_handler_narrate_logs_each_model_call(monkeypatch):
 @pytest.mark.asyncio
 async def test_handler_narrate_empty_trip_400():
     conn = FakeConn()
-    resp = await handler.route(
-        "POST", "/trip/empty/narrate", {"session_id": "s1"},
+    resp = await call(
+        "POST", f"/trip/{TEMPTY}/narrate", {"session_id": S1},
         conn=conn, narrator=lambda it: iter(["x"]),
     )
     assert resp["statusCode"] == 400
@@ -635,15 +677,15 @@ async def test_handler_narrate_empty_trip_400():
 @pytest.mark.asyncio
 async def test_handler_narrate_requires_session_id():
     conn = FakeConn()
-    resp = await handler.route("POST", "/trip/t1/narrate", {}, conn=conn)
+    resp = await call("POST", f"/trip/{T1}/narrate", {}, conn=conn)
     assert resp["statusCode"] == 400
 
 
 @pytest.mark.asyncio
 async def test_handler_narrate_bad_mode_400():
     conn = FakeConn()
-    resp = await handler.route(
-        "POST", "/trip/t1/narrate", {"session_id": "s1", "mode": "bogus"},
+    resp = await call(
+        "POST", f"/trip/{T1}/narrate", {"session_id": S1, "mode": "bogus"},
         conn=conn, narrator=lambda it: iter(["x"]),
     )
     assert resp["statusCode"] == 400
@@ -652,14 +694,14 @@ async def test_handler_narrate_bad_mode_400():
 @pytest.mark.asyncio
 async def test_handler_narrate_bedrock_failure_502():
     conn = FakeConn()
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
 
     def boom(itinerary):
         raise RuntimeError("bedrock down")
         yield  # pragma: no cover — make it a generator
 
-    resp = await handler.route(
-        "POST", "/trip/t1/narrate", {"session_id": "s1"},
+    resp = await call(
+        "POST", f"/trip/{T1}/narrate", {"session_id": S1},
         conn=conn, narrator=boom,
     )
     assert resp["statusCode"] == 502
@@ -671,16 +713,16 @@ async def test_handler_send_allows_edit_after_sent(monkeypatch):
     # after 'sent', another add keeps status 'sent' in projection (not locked)
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1", "customer_id": "cust-x"}
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
-    await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"}, conn=conn)
+    conn.sessions[S1] = _session(S1, "cust-x")
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    await call("POST", f"/trip/{T1}/send-to-advisor", {"session_id": S1}, conn=conn)
     # edit after send
-    resp = await handler.route(
-        "POST", "/trip/t1/components", {"session_id": "s1", "component_id": "c2"}, conn=conn
+    resp = await call(
+        "POST", f"/trip/{T1}/components", {"session_id": S1, "component_id": "c2"}, conn=conn
     )
     assert resp["statusCode"] == 200
     # projection stays 'sent' (edit allowed, not auto-re-notified)
-    assert conn.drafts["t1"]["status"] == "sent"
+    assert conn.drafts[T1]["status"] == "sent"
 
 
 # --- AA-674 / PR-11: added days and activity selection -----------------------
@@ -688,16 +730,16 @@ async def test_handler_send_allows_edit_after_sent(monkeypatch):
 @pytest.mark.asyncio
 async def test_add_and_remove_a_day_are_customizations_in_the_trip():
     conn = FakeConn()
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
-    r = await handler.route("POST", "/trip/t1/days", {"session_id": "s1", "kind": "extra_night",
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    r = await call("POST", f"/trip/{T1}/days", {"session_id": S1, "kind": "extra_night",
                                                       "after_component_id": "c1"}, conn=conn)
     assert r["statusCode"] == 200
     day_id = json.loads(r["body"])["day_id"]
-    await handler.route("POST", "/trip/t1/days", {"session_id": "s1", "kind": "extend_end"}, conn=conn)
-    trip = json.loads((await handler.route("GET", "/trip/t1", {}, conn=conn))["body"])
+    await call("POST", f"/trip/{T1}/days", {"session_id": S1, "kind": "extend_end"}, conn=conn)
+    trip = json.loads((await call("GET", f"/trip/{T1}", {}, conn=conn))["body"])
     assert [d["kind"] for d in trip["custom_days"]] == ["extra_night", "extend_end"]
     assert all(d["customization"] for d in trip["custom_days"])
-    r = await handler.route("DELETE", f"/trip/t1/days/{day_id}", {"session_id": "s1"}, conn=conn)
+    r = await call("DELETE", f"/trip/{T1}/days/{day_id}", {"session_id": S1}, conn=conn)
     assert [d["kind"] for d in json.loads(r["body"])["custom_days"]] == ["extend_end"]
     assert [e["event_type"] for e in conn.events][-3:] == ["add_day", "add_day", "remove_day"]  # reaches the advisor log
 
@@ -705,12 +747,12 @@ async def test_add_and_remove_a_day_are_customizations_in_the_trip():
 @pytest.mark.asyncio
 async def test_add_day_rejects_unknown_kind_and_an_extra_night_off_the_trip():
     conn = FakeConn()
-    bad = await handler.route("POST", "/trip/t1/days", {"session_id": "s1", "kind": "holiday"}, conn=conn)
+    bad = await call("POST", f"/trip/{T1}/days", {"session_id": S1, "kind": "holiday"}, conn=conn)
     assert bad["statusCode"] == 400
-    off = await handler.route("POST", "/trip/t1/days", {"session_id": "s1", "kind": "extra_night",
+    off = await call("POST", f"/trip/{T1}/days", {"session_id": S1, "kind": "extra_night",
                                                         "after_component_id": "c9"}, conn=conn)
     assert off["statusCode"] == 400
-    gone = await handler.route("DELETE", "/trip/t1/days/nope", {"session_id": "s1"}, conn=conn)
+    gone = await call("DELETE", f"/trip/{T1}/days/nope", {"session_id": S1}, conn=conn)
     assert gone["statusCode"] == 404
 
 
@@ -721,7 +763,7 @@ def test_suggestion_filters_ignore_unknown_values():
 
 
 def test_query_string_reaches_get_routes():
-    event = {"requestContext": {"http": {"method": "GET", "path": "/trip/t1/suggestions"}},
+    event = {"requestContext": {"http": {"method": "GET", "path": f"/trip/{T1}/suggestions"}},
              "queryStringParameters": {"activity": "trekking"}}
     assert handler._extract_request(event)[2] == {"activity": "trekking"}
 
@@ -730,12 +772,12 @@ def test_query_string_reaches_get_routes():
 async def test_apply_route_pins_components_in_route_order():
     conn = FakeConn()
     ids = [k for k in CATALOG][:3]
-    r = await handler.route("POST", "/trip/t9/apply-route",
-                            {"session_id": "s1", "component_ids": list(reversed(ids)) + [ids[0]]}, conn=conn)
+    r = await call("POST", f"/trip/{T9}/apply-route",
+                   {"session_id": S1, "component_ids": list(reversed(ids)) + [ids[0]]}, conn=conn)
     assert r["statusCode"] == 200
     assert [d["component_id"] for d in json.loads(r["body"])["itinerary"]] == list(reversed(ids))
     assert [e["event_type"] for e in conn.events] == ["add_component"] * 3 + ["reorder"]
-    bad = await handler.route("POST", "/trip/t9/apply-route", {"session_id": "s1", "component_ids": []}, conn=conn)
+    bad = await call("POST", f"/trip/{T9}/apply-route", {"session_id": S1, "component_ids": []}, conn=conn)
     assert bad["statusCode"] == 400
 
 
@@ -801,19 +843,19 @@ def test_leg_chain_groups_consecutive_days_of_the_same_tour():
 async def test_send_writes_one_inquiry_outbox_row_with_consent(monkeypatch):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
-    req = {"session_id": "s1", "customer": {"name": "Jo", "email": "jo@x.com", "consent": True}}
-    first = json.loads((await handler.route("POST", "/trip/t1/send-to-advisor", req, conn=conn,
-                                            sender=notify.LoggingSender()))["body"])
-    await handler.route("POST", "/trip/t1/send-to-advisor", req, conn=conn,
-                        sender=notify.LoggingSender())                       # double click
+    conn.sessions[S1] = _session(S1, None)
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    req = {"session_id": S1, "customer": {"name": "Jo", "email": "jo@x.com", "consent": True}}
+    first = json.loads((await call("POST", f"/trip/{T1}/send-to-advisor", req, conn=conn,
+                                   sender=notify.LoggingSender()))["body"])
+    await call("POST", f"/trip/{T1}/send-to-advisor", req, conn=conn,
+               sender=notify.LoggingSender())                       # double click
     assert len(conn.outbox) == 1
     row = conn.outbox[0]
     assert row["event"] == "inquiry.submitted" and row["schema_version"] == 1
-    assert row["idempotency_key"] == f"t1:{first['handoff_id']}"
+    assert row["idempotency_key"] == f"{T1}:{first['handoff_id']}"
     p = row["payload"]
-    assert p["contract"] == "inquiry.submitted" and p["trip_id"] == "t1"
+    assert p["contract"] == "inquiry.submitted" and p["trip_id"] == T1
     assert p["version"] == 1.2                     # AA-830: contract v1.2 (number, enum [1.2])
     assert p["customer"]["email"] == "jo@x.com" and p["customer"]["consent"] is True
     assert [d["component_id"] for d in p["itinerary"]["days"]] == ["c1"]
@@ -835,11 +877,11 @@ async def test_send_resolves_each_leg_to_the_catalog_key(monkeypatch):
             return await super().fetch(query, *args)
 
     conn = CatalogConn()
-    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
+    conn.sessions[S1] = _session(S1, None)
     for cid in ("c1", "c2"):
-        await events.append_event(conn, "t1", "s1", "add_component", {"component_id": cid})
-    req = {"session_id": "s1", "customer": {"name": "Jo", "email": "jo@x.com", "consent": True}}
-    await handler.route("POST", "/trip/t1/send-to-advisor", req, conn=conn, sender=notify.LoggingSender())
+        await events.append_event(conn, T1, S1, "add_component", {"component_id": cid})
+    req = {"session_id": S1, "customer": {"name": "Jo", "email": "jo@x.com", "consent": True}}
+    await call("POST", f"/trip/{T1}/send-to-advisor", req, conn=conn, sender=notify.LoggingSender())
     legs = conn.outbox[0]["payload"]["itinerary"]["legs"]
     assert conn.asked == ["gone", "tour-v2"]
     assert {leg["source_tour_id"]: (leg["source_system"], leg["source_id"]) for leg in legs} == {
@@ -850,11 +892,11 @@ async def test_send_resolves_each_leg_to_the_catalog_key(monkeypatch):
 async def test_send_without_consent_records_false(monkeypatch):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
-    await handler.route("POST", "/trip/t1/send-to-advisor",
-                        {"session_id": "s1", "customer": {"name": "Jo", "email": "jo@x.com"}},
-                        conn=conn, sender=notify.LoggingSender())
+    conn.sessions[S1] = _session(S1, None)
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    await call("POST", f"/trip/{T1}/send-to-advisor",
+               {"session_id": S1, "customer": {"name": "Jo", "email": "jo@x.com"}},
+               conn=conn, sender=notify.LoggingSender())
     assert conn.outbox[0]["payload"]["customer"]["consent"] is False
 
 
@@ -866,15 +908,15 @@ async def test_send_with_someone_elses_email_hands_off_only_the_submitted_contac
     conn = FakeConn()
     conn.customers.append({"id": "victim", "name": "Victim", "phone": "999", "email": "jo@x.com",
                            "contact_consent": True, "contact_consent_at": "2026-01-01T00:00:00+00:00"})
-    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
-    resp = await handler.route(
-        "POST", "/trip/t1/send-to-advisor",
-        {"session_id": "s1", "customer": {"name": "Mallory", "email": "JO@x.com", "consent": False}},
+    conn.sessions[S1] = _session(S1, None)
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    resp = await call(
+        "POST", f"/trip/{T1}/send-to-advisor",
+        {"session_id": S1, "customer": {"name": "Mallory", "email": "JO@x.com", "consent": False}},
         conn=conn, sender=notify.LoggingSender(),
     )
     assert resp["statusCode"] == 200
-    assert conn.sessions["s1"]["customer_id"] is None               # not linked to the victim
+    assert conn.sessions[S1]["customer_id"] is None               # not linked to the victim
     c = conn.outbox[0]["payload"]["customer"]
     assert c == {"customer_id": None, "name": "Mallory", "phone": None, "email": "jo@x.com",
                  "consent": False, "consent_at": None, "verified": False}
@@ -885,12 +927,12 @@ async def test_send_with_someone_elses_email_hands_off_only_the_submitted_contac
 async def test_first_time_registration_payload_is_the_new_customer_unverified(monkeypatch):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", True)
     conn = FakeConn()
-    conn.sessions["s1"] = {"id": "s1", "customer_id": None}
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
-    await handler.route("POST", "/trip/t1/send-to-advisor",
-                        {"session_id": "s1", "customer": {"name": "Jo", "email": "Jo@X.com"}},
-                        conn=conn, sender=notify.LoggingSender())
-    assert conn.sessions["s1"]["customer_id"] == "cust-1"
+    conn.sessions[S1] = _session(S1, None)
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    await call("POST", f"/trip/{T1}/send-to-advisor",
+               {"session_id": S1, "customer": {"name": "Jo", "email": "Jo@X.com"}},
+               conn=conn, sender=notify.LoggingSender())
+    assert conn.sessions[S1]["customer_id"] == "cust-1"
     c = conn.outbox[0]["payload"]["customer"]
     assert c["customer_id"] == "cust-1" and c["name"] == "Jo" and c["email"] == "jo@x.com"
     assert c["verified"] is False
@@ -900,12 +942,12 @@ async def test_first_time_registration_payload_is_the_new_customer_unverified(mo
 async def test_resend_after_edit_is_a_new_outbox_row(monkeypatch):
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
     conn = FakeConn()
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
-    await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"}, conn=conn,
-                        sender=notify.LoggingSender())
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c3"})
-    await handler.route("POST", "/trip/t1/send-to-advisor", {"session_id": "s1"}, conn=conn,
-                        sender=notify.LoggingSender())
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    await call("POST", f"/trip/{T1}/send-to-advisor", {"session_id": S1}, conn=conn,
+               sender=notify.LoggingSender())
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c3"})
+    await call("POST", f"/trip/{T1}/send-to-advisor", {"session_id": S1}, conn=conn,
+               sender=notify.LoggingSender())
     assert len(conn.outbox) == 2
     assert conn.outbox[0]["idempotency_key"] != conn.outbox[1]["idempotency_key"]
     assert conn.outbox[1]["payload"]["customer"] is None          # guest hand-off
@@ -982,11 +1024,11 @@ async def test_apply_route_order_survives_send_to_advisor(monkeypatch, s235_cata
     monkeypatch.setattr(config, "REQUIRE_REGISTRATION_BEFORE_HANDOFF", False)
     conn = FakeConn()
     ids = ["b1", "b2", "b3", "b4", "b7"]
-    r = await handler.route("POST", "/trip/t235/apply-route", {"session_id": "s1", "component_ids": ids},
-                            conn=conn)
+    r = await call("POST", f"/trip/{T235}/apply-route", {"session_id": S1, "component_ids": ids},
+                   conn=conn)
     assert [d["component_id"] for d in json.loads(r["body"])["itinerary"]] == ids
-    sent = await handler.route("POST", "/trip/t235/send-to-advisor", {"session_id": "s1"}, conn=conn,
-                               sender=notify.LoggingSender())
+    sent = await call("POST", f"/trip/{T235}/send-to-advisor", {"session_id": S1}, conn=conn,
+                      sender=notify.LoggingSender())
     assert [d["component_id"] for d in json.loads(sent["body"])["itinerary"]] == ids
     legs = conn.outbox[0]["payload"]["itinerary"]["legs"]
     assert [(leg["day_from"], leg["day_to"]) for leg in legs] == [(1, 4), (7, 7)]
@@ -997,12 +1039,12 @@ async def test_apply_route_order_survives_send_to_advisor(monkeypatch, s235_cata
 async def test_manual_order_survives_added_days_but_not_a_new_pin(s235_catalog):
     conn = FakeConn()
     for cid in ("b1", "b2", "b3"):
-        await events.append_event(conn, "t", "s1", "add_component", {"component_id": cid})
-    await events.append_event(conn, "t", "s1", "reorder", {"ordered_component_ids": ["b3", "b1", "b2"]})
-    await events.append_event(conn, "t", "s1", "add_day", {"day_id": "d1", "kind": "free_day"})
+        await events.append_event(conn, "t", S1, "add_component", {"component_id": cid})
+    await events.append_event(conn, "t", S1, "reorder", {"ordered_component_ids": ["b3", "b1", "b2"]})
+    await events.append_event(conn, "t", S1, "add_day", {"day_id": "d1", "kind": "free_day"})
     assert [e["component_id"] for e in await events.current_itinerary(conn, "t")] == ["b3", "b1", "b2"]
     # a set change invalidates the manual order; the tour falls back to its own day order
-    await events.append_event(conn, "t", "s1", "add_component", {"component_id": "b4"})
+    await events.append_event(conn, "t", S1, "add_component", {"component_id": "b4"})
     assert [e["component_id"] for e in await events.current_itinerary(conn, "t")] == ["b1", "b2", "b3", "b4"]
 
 
@@ -1043,31 +1085,31 @@ def _counting_narrator(counter):
 @pytest.mark.asyncio
 async def test_narrate_rejects_another_session_with_403():
     conn = AiConn()
-    await events.append_event(conn, "t1", "owner", "add_component", {"component_id": "c1"})
-    resp = await handler.route("POST", "/trip/t1/narrate", {"session_id": "intruder"}, conn=conn,
-                               narrator=lambda it: iter(["Day 1: x."]))
+    await events.append_event(conn, T1, OWNER, "add_component", {"component_id": "c1"})
+    resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": INTRUDER}, conn=conn,
+                      narrator=lambda it: iter(["Day 1: x."]))
     assert resp["statusCode"] == 403
-    ok = await handler.route("POST", "/trip/t1/narrate", {"session_id": "owner"}, conn=conn,
-                             narrator=lambda it: iter(["Day 1: x."]))
+    ok = await call("POST", f"/trip/{T1}/narrate", {"session_id": OWNER}, conn=conn,
+                    narrator=lambda it: iter(["Day 1: x."]))
     assert ok["statusCode"] == 200
 
 
 @pytest.mark.asyncio
 async def test_narrate_reuses_the_cached_narration_for_the_same_itinerary():
     conn = AiConn()
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
     calls: list = []
-    first = json.loads((await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
-                                            conn=conn, narrator=_counting_narrator(calls)))["body"])
-    second = json.loads((await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
-                                             conn=conn, narrator=_counting_narrator(calls)))["body"])
+    first = json.loads((await call("POST", f"/trip/{T1}/narrate", {"session_id": S1},
+                                   conn=conn, narrator=_counting_narrator(calls)))["body"])
+    second = json.loads((await call("POST", f"/trip/{T1}/narrate", {"session_id": S1},
+                                    conn=conn, narrator=_counting_narrator(calls)))["body"])
     assert calls == [1]                                      # the model ran once
     assert first["cached"] is False and second["cached"] is True
     assert second["narration"] == first["narration"] and second["ai_generated"] is True
     # a different itinerary is a different key
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c3"})
-    await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"}, conn=conn,
-                        narrator=_counting_narrator(calls))
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c3"})
+    await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn,
+               narrator=_counting_narrator(calls))
     assert calls == [1, 2]
 
 
@@ -1108,10 +1150,10 @@ def test_basic_narration_keeps_a_day_with_no_names_through_the_merge():
 async def test_narrate_over_the_daily_cap_makes_no_model_call(monkeypatch):
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
     conn = AiConn(spent=5.0)
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
     calls: list = []
-    body = json.loads((await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"},
-                                           conn=conn, narrator=_counting_narrator(calls)))["body"])
+    body = json.loads((await call("POST", f"/trip/{T1}/narrate", {"session_id": S1},
+                                  conn=conn, narrator=_counting_narrator(calls)))["body"])
     assert calls == []
     assert body["source"] == "basic" and body["ai_generated"] is False
     assert body["ai_budget_exhausted"] is True
@@ -1124,7 +1166,7 @@ async def test_narrate_logs_failed_attempts_even_when_it_returns_502(monkeypatch
     from backend.shared import llm_gateway
 
     conn = AiConn()
-    await events.append_event(conn, "t1", "s1", "add_component", {"component_id": "c1"})
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
     recorded = []
 
     async def fake_load_route(db, stage):
@@ -1141,6 +1183,6 @@ async def test_narrate_logs_failed_attempts_even_when_it_returns_502(monkeypatch
     monkeypatch.setattr(handler.llm_gateway, "load_route", fake_load_route)
     monkeypatch.setattr(agent.llm_gateway, "generate_text", failing_generate_text)
     monkeypatch.setattr(handler.llm_gateway, "record", fake_record)
-    resp = await handler.route("POST", "/trip/t1/narrate", {"session_id": "s1"}, conn=conn)
+    resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn)
     assert resp["statusCode"] == 502
     assert recorded == [("acc3", True, "error"), ("acc1", True, "error")]

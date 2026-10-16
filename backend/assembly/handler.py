@@ -7,6 +7,10 @@ Routes:
   POST   /trip/{trip_id}/send-to-advisor          sent (+ registration)
   POST   /trip/{trip_id}/narrate                  compose/renarrate (LLM)
 
+Every mutating route runs _guard (AA-827) right after its required-field check: the guest token
+from the BFF must match the session (guest_session.py), and the session must own the trip.
+session_id is an identifier, never a credential.
+
 Stateful per-visitor; never cached. The framework-agnostic route()
 coroutine takes injectable conn + sender and is unit-tested directly.
 Narration (compose/renarrate) is triggered by the frontend via a separate
@@ -17,13 +21,17 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import re
+import traceback
+import uuid
 from typing import Any, Optional
 
 from backend import config
 from backend.assembly import agent as agent_mod
 from backend.assembly import events as events_mod
 from backend.assembly import grounding as grounding_mod
+from backend.assembly import guest_session
 from backend.assembly import handoff as handoff_mod
 from backend.assembly import master_content
 from backend.assembly import narration_cache
@@ -46,6 +54,23 @@ _APPLY_ROUTE_RE = re.compile(r"^/trip/([^/]+)/apply-route$")
 _DAY_ITEM_RE = re.compile(r"^/trip/([^/]+)/days/([^/]+)$")
 _STOP_ACTIVITIES_RE = re.compile(r"^/trip/([^/]+)/stops/([^/]+)/activities$")
 _TRIP_RE = re.compile(r"^/trip/([^/]+)$")
+_TRIP_PREFIX_RE = re.compile(r"^/trip/([^/]+)")
+
+# (method, path pattern, route name) — the name is what logs carry, never ids.
+_ROUTE_NAMES = (
+    ("GET", _TRIP_RE, "get_trip"),
+    ("POST", _COMPONENTS_RE, "add"),
+    ("DELETE", _COMPONENT_ITEM_RE, "remove"),
+    ("PATCH", _REORDER_RE, "reorder"),
+    ("POST", _SEND_RE, "send"),
+    ("POST", _NARRATE_RE, "narrate"),
+    ("GET", _SUGGEST_RE, "suggestions"),
+    ("POST", _APPLY_ROUTE_RE, "apply_route"),
+    ("POST", _DAYS_RE, "add_day"),
+    ("DELETE", _DAY_ITEM_RE, "remove_day"),
+    ("GET", _STOP_ACTIVITIES_RE, "activities"),
+    ("GET", _COVERAGE_RE, "coverage"),
+)
 
 _HEADERS = {"content-type": "application/json", "cache-control": "no-store"}
 
@@ -67,8 +92,17 @@ async def route(
     conn,
     sender: Optional[notify_mod.Sender] = None,
     narrator: Optional[Any] = None,
+    guest_token: Optional[str] = None,
 ) -> dict:
     sender = sender or notify_mod.LoggingSender()
+
+    # AA-827: ids are UUIDs (DB columns are uuid). Reject anything else before any SQL, without
+    # echoing the value (a malformed id would otherwise reach an asyncpg error message).
+    m = _TRIP_PREFIX_RE.match(path)
+    if m and not _is_uuid(m.group(1)):
+        return _resp(400, {"error": "invalid trip_id"})
+    if body.get("session_id") not in (None, "") and not _is_uuid(body.get("session_id")):
+        return _resp(400, {"error": "invalid session_id"})
 
     # Read the current itinerary for a trip (used to restore a guest's trip
     # after a page reload — the trip_id is persisted client-side).
@@ -86,6 +120,8 @@ async def route(
         component_id = body.get("component_id")
         if not session_id or not component_id:
             return _resp(400, {"error": "session_id and component_id required"})
+        if denied := await _guard(conn, trip_id, session_id, guest_token, "add"):
+            return denied
         itinerary = await events_mod.append_event(
             conn, trip_id, session_id, "add_component",
             {"component_id": component_id},
@@ -98,6 +134,8 @@ async def route(
         session_id = body.get("session_id")
         if not session_id:
             return _resp(400, {"error": "session_id required"})
+        if denied := await _guard(conn, trip_id, session_id, guest_token, "remove"):
+            return denied
         itinerary = await events_mod.append_event(
             conn, trip_id, session_id, "remove_component",
             {"component_id": component_id},
@@ -111,6 +149,8 @@ async def route(
         ordered = body.get("ordered_component_ids")
         if not session_id or not isinstance(ordered, list):
             return _resp(400, {"error": "session_id and ordered_component_ids required"})
+        if denied := await _guard(conn, trip_id, session_id, guest_token, "reorder"):
+            return denied
         itinerary = await events_mod.append_event(
             conn, trip_id, session_id, "reorder",
             {"ordered_component_ids": ordered},
@@ -123,6 +163,8 @@ async def route(
         session_id = body.get("session_id")
         if not session_id:
             return _resp(400, {"error": "session_id required"})
+        if denied := await _guard(conn, trip_id, session_id, guest_token, "send"):
+            return denied
         customer = body.get("customer") or {}
 
         # AA-731: idempotent hand-off. One transaction, serialized per trip by an advisory lock;
@@ -181,16 +223,15 @@ async def route(
         session_id = body.get("session_id")
         if not session_id:
             return _resp(400, {"error": "session_id required"})
+        # AA-805 / AA-827: narration costs model spend — only the session that created the trip
+        # may ask (owner check in _guard).
+        if denied := await _guard(conn, trip_id, session_id, guest_token, "narrate"):
+            return denied
         # mode selects the prompt: "renarrate" respects a manual order and
         # never re-sequences; "compose" (default) narrates a fresh sequence.
         mode = body.get("mode") or "compose"
         if mode not in ("compose", "renarrate"):
             return _resp(400, {"error": "mode must be 'compose' or 'renarrate'"})
-
-        # AA-805: narration costs model spend — only the session that created the trip may ask.
-        owner = await _trip_owner(conn, trip_id)
-        if owner is not None and str(owner) != str(session_id):
-            return _resp(403, {"error": "forbidden", "detail": "this trip belongs to another session"})
 
         itinerary = await events_mod.current_itinerary(conn, trip_id)
         if not itinerary:
@@ -246,6 +287,8 @@ async def route(
         session_id, ids = body.get("session_id"), body.get("component_ids")
         if not session_id or not isinstance(ids, list) or not ids or len(ids) > 60:
             return _resp(400, {"error": "session_id and component_ids (1-60) required"})
+        if denied := await _guard(conn, trip_id, session_id, guest_token, "apply_route"):
+            return denied
         ids = list(dict.fromkeys(str(i) for i in ids))
         present = {str(c["id"]) for c in await events_mod._current_components(conn, trip_id)}  # noqa: SLF001
         for cid in ids:
@@ -263,12 +306,13 @@ async def route(
         if not session_id or kind not in events_mod.DAY_KINDS:
             return _resp(400, {"error": "session_id and kind required",
                                "kinds": sorted(events_mod.DAY_KINDS)})
+        if denied := await _guard(conn, trip_id, session_id, guest_token, "add_day"):
+            return denied
         after = body.get("after_component_id")
         if kind == "extra_night":
             pinned = {str(c["id"]) for c in await events_mod._current_components(conn, trip_id)}  # noqa: SLF001
             if not after or str(after) not in pinned:
                 return _resp(400, {"error": "extra_night needs after_component_id, a pinned stop"})
-        import uuid
         day_id = str(uuid.uuid4())
         await events_mod.append_event(conn, trip_id, session_id, "add_day",
                                       {"day_id": day_id, "kind": kind, "after_component_id": after,
@@ -282,6 +326,8 @@ async def route(
         session_id = body.get("session_id")
         if not session_id:
             return _resp(400, {"error": "session_id required"})
+        if denied := await _guard(conn, trip_id, session_id, guest_token, "remove_day"):
+            return denied
         if day_id not in {d["day_id"] for d in await events_mod.current_custom_days(conn, trip_id)}:
             return _resp(404, {"error": "no such added day"})
         await events_mod.append_event(conn, trip_id, session_id, "remove_day", {"day_id": day_id})
@@ -299,6 +345,41 @@ async def route(
         return _resp(200, {"trip_id": trip_id, **await coverage_mod.coverage(conn, trip_id)})
 
     return _resp(404, {"error": "not found"})
+
+
+def _is_uuid(value: Any) -> bool:
+    """A canonical (lowercase, hyphenated) UUID string — what the browser's crypto.randomUUID makes
+    and what asyncpg returns, so the owner check compares like with like."""
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def _route_name(method: str, path: str) -> str:
+    for verb, rx, name in _ROUTE_NAMES:
+        if method == verb and rx.match(path):
+            return name
+    return "unknown"
+
+
+async def _guard(conn, trip_id: str, session_id: str, guest_token: Optional[str],
+                 route_name: str) -> Optional[dict]:
+    """AA-827: the request's guest token must match the session (401), and the session must own
+    the trip (403; a trip with no draft yet has no owner). Returns the denial response, or None.
+    Creates the sessions row on first use, so trip_events' FK fails loudly if a route skips it."""
+    outcome = await guest_session.authorize(conn, session_id, guest_token)
+    if outcome in guest_session.DENIED:
+        guest_session.emit(outcome, route_name)
+        return _resp(401, {"error": "guest_session_invalid"})
+    owner = await _trip_owner(conn, trip_id)
+    if owner is not None and str(owner) != str(session_id):
+        guest_session.emit(guest_session.FORBIDDEN_OWNER, route_name)
+        return _resp(403, {"error": "forbidden", "detail": "this trip belongs to another session"})
+    guest_session.emit(outcome, route_name)
+    return None
 
 
 async def _resolve_narrator(mode: str, narrator: Optional[Any], conn, calls: list):
@@ -440,6 +521,25 @@ async def _event_log(conn, trip_id: str) -> list[dict]:
 
 # --- Lambda adapter ---------------------------------------------------------
 
+async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str] = None,
+                acquire=None) -> dict:
+    """route() on a pooled connection, behind a catch-all (AA-827): an unexpected error answers 500
+    and logs only its type, where it was raised and the route name — never str(e), which can carry
+    request values (asyncpg echoes bad input). `acquire` is injectable for tests."""
+    try:
+        if acquire is None:
+            from backend.shared.db import get_pool
+            acquire = (await get_pool()).acquire
+        async with acquire() as conn:
+            return await route(method, path, body, conn=conn, guest_token=guest_token)
+    except Exception as e:  # noqa: BLE001
+        frames = traceback.extract_tb(e.__traceback__)
+        at = f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}" if frames else ""
+        print(json.dumps({"evt": "assembly_error", "route": _route_name(method, path),
+                          "error": type(e).__name__, "at": at}), flush=True)
+        return _resp(500, {"error": "internal"})
+
+
 def _extract_request(event: dict) -> tuple[str, str, dict]:
     ctx = event.get("requestContext", {})
     http = ctx.get("http", {})
@@ -462,7 +562,6 @@ def handler(event, context):  # pragma: no cover - thin AWS adapter
     import asyncio
 
     from backend.shared import auth
-    from backend.shared.db import get_pool
 
     # AA-675: operator-only extraction checks, reached by a direct `lambda invoke` (IAM-authorised).
     # Read-only since AA-712 slice 6a (writer ops answer 410). API Gateway events always carry
@@ -476,10 +575,8 @@ def handler(event, context):  # pragma: no cover - thin AWS adapter
         return denied
 
     method, path, body = _extract_request(event)
+    # AA-827: the BFF's guest token (raw; guest_session rejects a malformed one before any SQL).
+    guest_token = auth._headers_lower(event).get(config.GUEST_TOKEN_HEADER)  # noqa: SLF001
 
-    async def _run():
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            return await route(method, path, body, conn=conn)
-
-    return asyncio.get_event_loop().run_until_complete(_run())
+    return asyncio.get_event_loop().run_until_complete(
+        serve(method, path, body, guest_token=guest_token))

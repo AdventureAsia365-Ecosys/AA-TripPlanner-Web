@@ -34,7 +34,7 @@ Next.js 14 frontend  ──(Mapbox GL)──►  interactive map UI
       │  same-origin /api/* (BFF, server-side; holds the TripPlanner API key)
       ▼
 API Gateway HTTP v2  (ANY /browse/{proxy+}, ANY /trip/{proxy+}; edge shared secret
-      │               X-TripPlanner-Key, no per-user auth yet)
+      │               X-TripPlanner-Key; guest token on trip mutations, AA-827)
       ▼
 Two Python 3.12 Lambda functions
   ├─ browse      → stateless, cacheable reads (destinations, suggestions); embeds search text
@@ -97,6 +97,47 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   calls a text model here.
 - Runtime: **Python 3.12**. The two functions are separate deploy units so the cacheable read
   path and the expensive stateful path scale and cache independently.
+
+### Guest identity (AA-827)
+
+- **Rule: `session_id` is an identifier, never a credential; every trip mutation goes through
+  `_guard`** (`backend/assembly/handler.py`). The credential is a random guest token (32 bytes,
+  base64url, 43 chars) that the BFF keeps in an HttpOnly cookie (`__Host-tp_guest` in production,
+  `tp_guest` under local http; Secure, SameSite=Lax, Path=/). **Lifetime rule:** Max-Age 400 days
+  (the browser cap), sliding — every matched request re-sends it with a fresh Max-Age; nothing else
+  expires a guest (`sessions.expires_at` is informational, not enforced). `frontend/middleware.ts`
+  mints it on `/plan` and on `/api/trip` only (the home, destination and tour pages are CDN-cached, so a
+  per-visitor Set-Cookie must never ride on them), as a
+  raw `Set-Cookie` header — never `res.cookies.set`, which also echoes the value into an
+  `x-middleware-set-cookie` response header that client JS can read — and refuses a cross-site POST
+  (403) before any mint, so another site can never overwrite the cookie. Client JS never sees it. The
+  browser keeps only `{sessionId, tripId}` (v4 UUIDs) in localStorage.
+- The `/api/trip` BFF forwards the token on POST only, in `x-tripplanner-guest`; it refuses a
+  cross-origin POST (403) and never logs. `tripplanner.sessions.guest_token_hash` stores sha256(token)
+  only (`bytea`, 32 bytes, migration tp-011); the plaintext `guest_token` (= id::text before AA-827) is
+  no longer written. One cookie can bind several sessions, so the hash has no unique index.
+- `_guard` runs on all 8 mutations (add, remove, reorder, send-to-advisor, narrate, apply-route, add /
+  remove day): 401 `guest_session_invalid` when the token does not match the session
+  (`assembly/guest_session.py`), 403 `forbidden` when the session does not own the trip
+  (`trip_drafts.session_id`; a trip with no draft yet has no owner). It also creates the sessions row
+  on first use (`events.append_event` no longer does). The frontend (`lib/api.ts` `postTrip`) forgets
+  its ids (only if localStorage still holds the failing ones) and reloads with a new trip on either
+  answer; a second reset in the same tab within 60 s does not reload.
+- **No cookie is not "another browser".** When a POST came without a cookie, the BFF uses the token
+  the middleware minted for it; if the Lambda refuses that token, the BFF answers 401
+  `cookies_required` instead of `guest_session_invalid`. The client retries once (a cookie lost once is
+  now replaced) and, on a second `cookies_required`, keeps its ids and says cookies are needed. A
+  browser that blocks the cookie can make the first edit of a trip only.
+- Known gap: two planner tabs opened at the same moment by a first-time visitor (no cookie yet) can
+  each get a different token; the later Set-Cookie wins, and a session already bound to the earlier
+  one is reset on its next edit. Minting on the `/plan` document makes this rare, not impossible.
+- Grace window until `config.GUEST_LEGACY_GRACE_UNTIL` (code constant, 19/10/2026 12:00 UTC): a
+  pre-AA-827 session binds to the first token it sees, and a tokenless request passes for a session
+  with no hash. After it, a session id alone gets 401.
+- `trip_id` / `session_id` must be canonical UUIDs (400 otherwise, value not echoed); an unexpected
+  error answers 500 and logs only its type, place and route name. Each guarded request prints one
+  `{"evt":"guest_auth","outcome":…,"route":…}` line (no token, hash or ids).
+- GET reads (trip, suggestions, coverage, activities) are not gated yet (follow-up).
 
 ### Data model — event-sourced trips
 

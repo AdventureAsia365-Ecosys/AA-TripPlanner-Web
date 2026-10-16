@@ -7,6 +7,7 @@ import FilterChips from "@/components/FilterChips";
 import TripPanel from "@/components/TripPanel";
 import TourListPane from "@/components/TourListPane";
 import PlanPrefill from "@/components/PlanPrefill";
+import GuestResetNotice from "@/components/GuestResetNotice";
 import { TripProvider, useTrip, type PlanIntent } from "@/lib/useTrip";
 import { pinLightTheme } from "@/ui/theme";
 import { Icon } from "@/ui/Icon";
@@ -154,6 +155,7 @@ export default function PlannerApp({ intent }: { intent: PlanIntent }) {
   return (
     <TripProvider initialIntent={intent}>
       <Layout initialMobileView={intent.ask ? "trip" : "map"} />
+      <GuestResetNotice />
     </TripProvider>
   );
 }
