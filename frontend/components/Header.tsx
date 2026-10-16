@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import AiLabel, { AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
 
 // Top brand bar — Adventure Asia wordmark + tagline. Kept slim so the map
 // dominates the viewport (map-first product).
@@ -20,13 +21,9 @@ export default function Header() {
             className="h-9 w-auto"
           />
         </Link>
-        {/* AA-805: AI Phase 0 — say plainly, next to the AA mark, that the planner uses AI. */}
-        <span
-          title="Suggestions, search and some narration are AI-assisted. An Adventure Asia advisor reviews every trip."
-          className="shrink-0 rounded-full border border-aa-gold/40 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-aa-gold-dark"
-        >
-          AI-assisted
-        </span>
+        {/* AA-805: AI Phase 0 — say plainly, next to the AA mark, that the planner uses AI.
+            AA-819: a button with its explanation (touch + keyboard), naming only what is AI. */}
+        <AiLabel label={AI_SITE_LABEL} explanation={AI_SITE_EXPLANATION} variant="outline" />
         <div className="hidden leading-tight sm:block">
           <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-aa-gold">
             Trip Planner

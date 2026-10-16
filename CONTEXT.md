@@ -231,6 +231,15 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `tripplanner.narration_cache` for an identical itinerary (the key includes the AA master day
   text, so CIS edits miss the cache). Search embeds the query as `search_query` and ranks only
   components of active, not soft-deleted tours.
+- **AI labels (AA-819, AUP 2026-11)**: every AI-written text block a traveller sees carries a label
+  (`components/AiLabel.tsx`, a button with an aria-expanded explanation, not a `title` tooltip):
+  the site pill, the tour page summary / highlights / day by day, the map popup and stop activity
+  texts ("AI-assisted, reviewed by Adventure Asia": CIS writer-model output, reviewed), and the
+  narration (`master` = "AA itinerary", AA's reviewed AI-assisted text; `mixed` = "AA + AI";
+  `llm` = "AI narration"; `basic` has no AI text). Suggestions are rule-based and are not labelled AI.
+  A master day text is used only when it names the pinned stop (component or place name); else the
+  nearest day of the same tour that does, else the LLM (`master_content.resolve_day_text`), because a
+  component row's tour day can be wrong.
 - Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 primary → acc1
   fallback** (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md`).
   Cohere embeddings run directly on acc2 (no satellite).

@@ -4,6 +4,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, permanentRedirect } from "next/navigation";
+import AiLabel, { AI_REVIEWED_EXPLANATION, AI_REVIEWED_LABEL } from "@/components/AiLabel";
 import JsonLd from "@/components/site/JsonLd";
 import SiteFooter from "@/components/site/SiteFooter";
 import SiteHeader from "@/components/site/SiteHeader";
@@ -198,6 +199,10 @@ export default async function TourPage({ params }: Props) {
             <h1 className="mt-3 text-[28px] font-semibold leading-tight sm:text-[36px]">{t.title}</h1>
             {t.subtitle && <p className="mt-2 text-[15px] text-k-muted">{t.subtitle}</p>}
             {t.summary && <p className="mt-4 text-[15px] leading-relaxed text-k-body">{t.summary}</p>}
+            {/* AA-819 (D4): the tour text below is the CIS writer model's reviewed output. */}
+            {(t.summary || t.subtitle) && (
+              <AiLabel tone="kit" className="mt-2" label={AI_REVIEWED_LABEL} explanation={AI_REVIEWED_EXPLANATION} />
+            )}
             {t.best_time_to_go && (
               <p className="mt-3 flex items-center gap-2 text-[13px] text-k-muted">
                 <Icon name="calendar" className="h-4 w-4 text-k-accent" /> Best time to go: {t.best_time_to_go}
@@ -206,7 +211,10 @@ export default async function TourPage({ params }: Props) {
 
             {t.highlights.length > 0 && (
               <section className="mt-8" aria-labelledby="highlights">
-                <h2 id="highlights" className="text-[22px] font-semibold">Highlights</h2>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <h2 id="highlights" className="text-[22px] font-semibold">Highlights</h2>
+                  <AiLabel tone="kit" label={AI_REVIEWED_LABEL} explanation={AI_REVIEWED_EXPLANATION} />
+                </div>
                 <ul className="mt-3 grid gap-2 sm:grid-cols-2">
                   {t.highlights.map((h) => (
                     <li key={h} className="flex gap-2 text-[14px] leading-relaxed text-k-body">
@@ -218,7 +226,12 @@ export default async function TourPage({ params }: Props) {
             )}
 
             <section className="mt-8" aria-labelledby="itinerary">
-              <h2 id="itinerary" className="text-[22px] font-semibold">Day by day</h2>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <h2 id="itinerary" className="text-[22px] font-semibold">Day by day</h2>
+                {(t.days.length > 0 || t.itinerary_text?.trim()) && (
+                  <AiLabel tone="kit" label={AI_REVIEWED_LABEL} explanation={AI_REVIEWED_EXPLANATION} />
+                )}
+              </div>
               {t.days.length === 0 && t.itinerary_text?.trim() ? (
                 // Legacy itinerary text that is not in "Day N — Title" blocks: show it as written.
                 <div className="mt-3 whitespace-pre-line rounded-2xl border border-k-line bg-k-card p-4 text-[14px] leading-relaxed text-k-body">
