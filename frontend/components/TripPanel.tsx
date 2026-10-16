@@ -18,19 +18,30 @@ const DAY_KIND_LABEL: Record<string, string> = {
 
 const LONG_TRIP_WARN_DAYS = 25;
 
-// AA-819 (D2): the narration badge per `source` of POST /trip/{id}/narrate. `basic` (daily AI budget
-// spent: neutral name lines, no AI text) has none.
+// AA-819 (D2): the narration badge per `source` of POST /trip/{id}/narrate. The visible label itself
+// says AI (not only the tap-to-open explanation): AA master text is the CIS writer model's output.
+// `basic` (daily AI budget spent, no AA day at all: neutral name lines) has no AI text and no badge;
+// `master_basic` is the same fallback with some AA days in it.
+const AA_ITINERARY_LABEL = "AA itinerary · AI-assisted";
+const AA_ITINERARY_TEXT =
+  "Adventure Asia's own itinerary text for these tour days, written by AI from our tour notes and " +
+  "checked by automated quality checks.";
 const NARRATION_LABEL: Record<string, { label: string; explanation: string }> = {
   master: {
-    label: "AA itinerary",
+    label: AA_ITINERARY_LABEL,
+    explanation: `${AA_ITINERARY_TEXT} Your advisor confirms every detail.`,
+  },
+  master_basic: {
+    label: AA_ITINERARY_LABEL,
     explanation:
-      "Adventure Asia's own itinerary text, written with AI assistance and reviewed by our team.",
+      `${AA_ITINERARY_TEXT} Today's AI writing limit is reached, so the days it does not cover show ` +
+      "only their places. Your advisor confirms every detail.",
   },
   mixed: {
     label: "AA + AI",
     explanation:
-      "Mostly Adventure Asia's own itinerary text (written with AI assistance and reviewed by our team); " +
-      "AI wrote the days it did not cover. Your advisor confirms every detail.",
+      "Mostly Adventure Asia's own itinerary text, written by AI from our tour notes and checked by " +
+      "automated quality checks; AI also wrote the days it did not cover. Your advisor confirms every detail.",
   },
   llm: {
     label: "AI narration",
@@ -517,20 +528,9 @@ export default function TripPanel() {
                 customer's chosen order is always respected. */}
             <div className="mt-4 rounded-xl border border-aa-line bg-white p-3">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
-                  <p className="text-xs font-semibold text-aa-ink">
-                    Day-by-day narration
-                  </p>
-                  {/* AA-819: three narration states, each labelled honestly. "AA itinerary" is
-                      AA's reviewed catalog text, which the CIS writer model drafted. */}
-                  {narration && narrationSource && NARRATION_LABEL[narrationSource] && (
-                    <AiLabel
-                      label={NARRATION_LABEL[narrationSource].label}
-                      explanation={NARRATION_LABEL[narrationSource].explanation}
-                      variant={narrationSource === "llm" ? "outline" : "solid"}
-                    />
-                  )}
-                </div>
+                <p className="text-xs font-semibold text-aa-ink">
+                  Day-by-day narration
+                </p>
                 <button
                   onClick={() => narrate("compose")}
                   disabled={narrating}
@@ -543,6 +543,18 @@ export default function TripPanel() {
                       : "✨ Compose"}
                 </button>
               </div>
+              {/* AA-819: each narration state labelled honestly. On its own row and opening in
+                  the flow: the panel scrolls, so a floating explanation would be clipped and
+                  scroll it sideways (S239 review). */}
+              {narration && narrationSource && NARRATION_LABEL[narrationSource] && (
+                <AiLabel
+                  className="mt-1.5"
+                  placement="inline"
+                  label={NARRATION_LABEL[narrationSource].label}
+                  explanation={NARRATION_LABEL[narrationSource].explanation}
+                  variant={narrationSource === "llm" ? "outline" : "solid"}
+                />
+              )}
               {narration ? (
                 <div className="mt-2.5 space-y-2.5">
                   {narrationBlocks.slice(0, revealCount).map((b, i) => (

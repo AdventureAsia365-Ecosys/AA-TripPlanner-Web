@@ -5,7 +5,7 @@ import { fetchDestination } from "@/lib/api";
 import type { DestinationDetail } from "@/lib/types";
 import { useTrip } from "@/lib/useTrip";
 import ActivityIcon from "./ActivityIcon";
-import AiLabel, { AI_REVIEWED_EXPLANATION, AI_REVIEWED_LABEL } from "./AiLabel";
+import AiLabel, { AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "./AiLabel";
 
 interface Props {
   destinationId: string;
@@ -92,14 +92,14 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
               {detail.components.length} experience
               {detail.components.length > 1 ? "s" : ""} to pin
             </p>
-            {/* AA-819 (D4): the experience descriptions are reviewed CIS writer-model text. The
+            {/* AA-819 (D4): the experience descriptions are CIS writer-model text. The
                 popup clips overflow, so the explanation opens in the flow. */}
             {detail.components.some((c) => c.text_extract) && (
               <AiLabel
                 className="mt-1"
                 placement="inline"
-                label={AI_REVIEWED_LABEL}
-                explanation={AI_REVIEWED_EXPLANATION}
+                label={AI_CATALOG_LABEL}
+                explanation={AI_CATALOG_EXPLANATION}
               />
             )}
           </div>

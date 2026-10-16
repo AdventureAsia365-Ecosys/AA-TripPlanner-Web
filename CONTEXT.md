@@ -234,12 +234,18 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - **AI labels (AA-819, AUP 2026-11)**: every AI-written text block a traveller sees carries a label
   (`components/AiLabel.tsx`, a button with an aria-expanded explanation, not a `title` tooltip):
   the site pill, the tour page summary / highlights / day by day, the map popup and stop activity
-  texts ("AI-assisted, reviewed by Adventure Asia": CIS writer-model output, reviewed), and the
-  narration (`master` = "AA itinerary", AA's reviewed AI-assisted text; `mixed` = "AA + AI";
-  `llm` = "AI narration"; `basic` has no AI text). Suggestions are rule-based and are not labelled AI.
-  A master day text is used only when it names the pinned stop (component or place name); else the
-  nearest day of the same tour that does, else the LLM (`master_content.resolve_day_text`), because a
-  component row's tour day can be wrong.
+  texts ("AI-assisted": CIS writer-model output, published when it passes CIS's automated checks;
+  only flagged tours reach a human, so no label claims a team review of every text), and the
+  narration (`master` and `master_basic` = "AA itinerary · AI-assisted", the same CIS text;
+  `mixed` = "AA + AI"; `llm` = "AI narration"; `basic` = neutral place lines only, no label). The
+  narrate API's `ai_generated` is true for every source but `basic`. Place search and "You might
+  also like" suggestions both rank by Cohere embeddings (suggestions: route-constrained, ranked by
+  the pinned components' taste vector), and the site pill names both.
+  Narration day choice (`master_content.resolve_days`), because a component row's tour day can be
+  wrong: per trip day, the own tour day text of any entry whose text names its stop (component or
+  place name, accent-insensitive, generic suffixes such as "Temple" dropped); else the nearest other
+  day of the same tour that names it and that no other entry of the itinerary owns or already took;
+  else the own day text as it is; only a day with no AA text goes to the LLM.
 - Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 primary → acc1
   fallback** (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md`).
   Cohere embeddings run directly on acc2 (no satellite).

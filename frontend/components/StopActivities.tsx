@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { fetchStopActivities } from "@/lib/api";
 import type { StopActivity } from "@/lib/types";
-import AiLabel, { AI_REVIEWED_EXPLANATION, AI_REVIEWED_LABEL } from "@/components/AiLabel";
+import AiLabel, { AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "@/components/AiLabel";
 
 const LABEL: Record<string, string> = {
   trekking: "Trekking",
@@ -74,13 +74,13 @@ export default function StopActivities({ destinationId }: { destinationId: strin
           </li>
         ))}
       </ul>
-      {/* AA-819: the activity snippets are the same reviewed CIS text as the map popup. */}
+      {/* AA-819: the activity snippets are the same CIS writer-model text as the map popup. */}
       {items.some((a) => a.text_extract) && (
         <AiLabel
           className="mt-1.5"
           placement="inline"
-          label={AI_REVIEWED_LABEL}
-          explanation={AI_REVIEWED_EXPLANATION}
+          label={AI_CATALOG_LABEL}
+          explanation={AI_CATALOG_EXPLANATION}
         />
       )}
     </>

@@ -5,10 +5,13 @@
 // Escape or a tap elsewhere closes it. A `title` tooltip alone is unreachable on touch and by
 // keyboard (S239 audit, defect D5).
 //
-// Wording must describe only what is really AI: catalog text (tour pages, experience
-// descriptions, "AA itinerary" narration) is drafted by the CIS writer model and reviewed by
-// Adventure Asia; "AI narration" is written by the model on request; suggestions are rule-based
-// (backend/assembly/suggestions.py) and are not AI.
+// Wording must state only what is true (S239 review). Catalog text (tour pages, experience
+// descriptions, "AA itinerary" narration) is written by the CIS writer model and published when it
+// passes automated checks (validate, judge, grounding); only tours those checks flag reach a person
+// (CIS A2 Review Queue), so the labels never claim that every text was reviewed by the team.
+// "AI narration" is written by the model on request. Place search and "You might also like"
+// suggestions both rank by Cohere text embeddings (backend/assembly/suggestions.py: the taste
+// vector of the pinned components, constrained to the route), so the site pill names both.
 
 import { useEffect, useId, useRef, useState } from "react";
 
@@ -31,19 +34,20 @@ const STYLE: Record<AiLabelTone, { solid: string; outline: string; panel: string
   },
 };
 
-// Shared wording for catalog text written by the CIS writer model and reviewed (tour pages, map
-// experience descriptions).
-export const AI_REVIEWED_LABEL = "AI-assisted, reviewed by Adventure Asia";
-export const AI_REVIEWED_EXPLANATION =
-  "Drafted by an AI writing model from Adventure Asia's own tour notes, then reviewed by our team. " +
-  "Your advisor confirms every detail before you book.";
+// Shared wording for catalog text written by the CIS writer model (tour pages, map experience
+// descriptions, stop activities).
+export const AI_CATALOG_LABEL = "AI-assisted";
+export const AI_CATALOG_EXPLANATION =
+  "Written by an AI model from Adventure Asia's own tour notes and checked by automated quality checks; " +
+  "tours the checks flag are reviewed by our team. Your advisor confirms every detail before you book.";
 
 // The site-wide pill next to the AA mark (Header, SiteHeader).
 export const AI_SITE_LABEL = "AI-assisted";
 export const AI_SITE_EXPLANATION =
-  "Tour descriptions and day-by-day itineraries are drafted with AI and reviewed by Adventure Asia. " +
-  "Trip narration labelled “AI narration” or “AA + AI” is written by AI when you ask for it, and the " +
-  "planner's place search uses AI to match your words. An Adventure Asia advisor reviews every trip.";
+  "Tour descriptions and day-by-day itineraries are written by AI from Adventure Asia's own tour notes " +
+  "and checked by automated quality checks. Trip narration is AI-written or AI-assisted, as its label " +
+  "says. The planner's place search and its “You might also like” suggestions use AI to match your words " +
+  "and the places you picked. An Adventure Asia advisor reviews every trip before you book.";
 
 interface Props {
   label: string;
