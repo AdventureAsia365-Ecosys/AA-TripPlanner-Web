@@ -97,3 +97,42 @@ def test_registration_and_transaction_shape():
     assert any("register its own key" in p.message for p in lint_text(wrong_key, n, "014_x.sql"))
     no_tx = REG.format(n=n)
     assert any("BEGIN; … COMMIT;" in p.message for p in lint_text(no_tx, n, "014_x.sql"))
+
+
+def test_default_privileges_must_name_in_schema_tripplanner():
+    # Without IN SCHEMA the default grant covers every schema of the database.
+    msgs = _messages(14, "ALTER DEFAULT PRIVILEGES FOR ROLE tp_owner GRANT SELECT ON TABLES TO tripplanner;")
+    assert any("IN SCHEMA tripplanner" in m for m in msgs)
+    msgs = _messages(14, "ALTER DEFAULT PRIVILEGES FOR ROLE tp_owner IN SCHEMA booking "
+                         "GRANT SELECT ON TABLES TO tripplanner;")
+    assert any("IN SCHEMA tripplanner" in m for m in msgs)
+    msgs = _messages(14, "ALTER DEFAULT PRIVILEGES FOR ROLE tp_owner IN SCHEMA tripplanner, shared "
+                         "GRANT SELECT ON TABLES TO tripplanner;")
+    assert any("IN SCHEMA tripplanner" in m for m in msgs)
+
+
+def test_role_membership_grants_fail():
+    # GRANT tp_owner TO tripplanner would make the runtime role a member of the owner.
+    for body in ("GRANT tp_owner TO tripplanner;",
+                 "GRANT tp_owner TO tripplanner WITH INHERIT FALSE, SET TRUE;",
+                 "REVOKE tp_owner FROM tripplanner;",
+                 "REVOKE ADMIN OPTION FOR tp_owner FROM aa_cis_admin;",
+                 "DO $$ BEGIN GRANT tp_owner TO booking; END $$;"):
+        assert any("role membership" in m for m in _messages(14, body)), body
+    # Object privileges are fine (and WITH GRANT OPTION is not a membership).
+    assert _messages(14, "GRANT SELECT ON tripplanner.sessions TO booking WITH GRANT OPTION;\n"
+                         "GRANT SELECT (id) ON tripplanner.sessions TO booking;\n"
+                         "REVOKE GRANT OPTION FOR SELECT ON tripplanner.sessions FROM booking;\n"
+                         "GRANT EXECUTE ON FUNCTION tripplanner.f() TO tripplanner;") == []
+
+
+def test_set_config_role_fails():
+    for body in ("SELECT set_config('role', 'aa_cis_admin', true);",
+                 "SELECT set_config('session_authorization', 'aa_cis_admin', true);",
+                 "SELECT SET_CONFIG( 'ROLE' , 'aa_cis_admin', true);",
+                 "DO $$ BEGIN PERFORM set_config('role', 'aa_cis_admin', true); END $$;"):
+        assert any("switches the role" in m for m in _messages(14, body)), body
+    for body in ("SELECT set_config(E'role', 'aa_cis_admin', true);",
+                 "DO $$ DECLARE g text := 'ro' || 'le'; BEGIN PERFORM set_config(g, 'x', true); END $$;"):
+        assert any("not a plain string literal" in m for m in _messages(14, body)), body
+    assert _messages(14, "SELECT set_config('statement_timeout', '30s', true);") == []

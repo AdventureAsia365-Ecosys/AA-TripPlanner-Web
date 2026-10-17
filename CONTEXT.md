@@ -186,16 +186,19 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   in `db/migrations/tripplanner/`.
   `shared.destinations` is **read-shared** reference data owned by the CIS side — treat it as
   read-only from here; do not migrate or mutate it from this repo.
-- DB roles (X1, AA-852, tp-013): the schema and every object in it are owned by the NOLOGIN role
+- DB roles (X1, AA-852): **from tp-013 (applied in the X1 S8 train; until that apply the RDS master
+  `aa_cis_admin` still owns everything)** the schema and every object in it are owned by the NOLOGIN role
   **`tp_owner`** (created by the Infra role bootstrap `rl-001`), not by the RDS master. The Lambdas log in
   as **`tripplanner`** (runtime, DML only, name kept), which gets its rights from default privileges
-  `FOR ROLE tp_owner IN SCHEMA tripplanner` (tables DML, sequences USAGE/SELECT). DB Migrate runs every
-  file after tp-013 as `tp_owner` (it reads the live schema owner and `SET ROLE`s to it), so a new file
-  creates objects owned by `tp_owner` with no `OWNER TO`, writes `ALTER DEFAULT PRIVILEGES FOR ROLE
-  tp_owner`, never switches roles itself and never creates roles or extensions (those live in Infra
-  `db/migrations/roles/`). `migrations/tests/` (CI step "Migration lint") enforces these rules;
-  `migrations/tests/test_tp013_pg.py` replays tp-001…013 on a throwaway local Postgres (`--pg-dsn`).
-  Undoing tp-013 is an Infra `roles/` file run as the master, never a `tripplanner/` file.
+  `FOR ROLE tp_owner IN SCHEMA tripplanner` (tables DML, sequences USAGE/SELECT). From tp-013's apply
+  DB Migrate runs every later file as `tp_owner` (it reads the live schema owner and `SET ROLE`s to it),
+  so a new file creates objects owned by `tp_owner` with no `OWNER TO`, writes `ALTER DEFAULT PRIVILEGES
+  FOR ROLE tp_owner IN SCHEMA tripplanner`, never switches roles or grants role memberships itself and
+  never creates roles or extensions (those live in Infra `db/migrations/roles/`). CI job "Migrations"
+  enforces this: `migrations/tests/migration_lint.py` (TripPlanner rules), the AA-CIS-Infra
+  `db/run_migration.py --inspect` lint at a pinned commit (`test_infra_runner.py`) and a replay of
+  tp-001…013 on PostgreSQL 15 + pgvector (`test_tp013_pg.py`). Undoing tp-013 is the prepared Infra
+  `roles/` file (branch `feat/x1-s7-tp013-undo`) run as the master, never a `tripplanner/` file.
 - **Only CIS writes content** (root ADR 0002, 01/10/2026). This repo writes only `tripplanner.*`
   user state (sessions, drafts, customers, trip events) and `shared.llm_call_log`. The DB role
   `tripplanner` has no INSERT/UPDATE on `shared.destinations` any more (CIS migration 201).

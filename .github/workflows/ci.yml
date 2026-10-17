@@ -36,12 +36,83 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: pytest -v --tb=short
 
-      - name: Migration lint
-        # migrations/tests (X1, AA-852): file names, registration, and the tp_owner rules from
-        # tp-013 on (no role switch or role DDL, ALTER DEFAULT PRIVILEGES FOR ROLE tp_owner, no
-        # OWNER TO after tp-013). Offline; the tp-013 replay test needs --pg-dsn and is skipped here.
-        working-directory: .
-        run: pytest -v --tb=short migrations/tests
+
+  # X1 (AA-852, plan S7 + review S241): the migrations/ checks, outside backend/ so a migration PR does
+  # not redeploy the Lambdas. Three layers, none may be skipped (a skip turns the job red):
+  #   1. migrations/tests/migration_lint.py: TripPlanner rules (migration role per file number, OWNER TO
+  #      only in tp-013, ALTER DEFAULT PRIVILEGES FOR ROLE tp_owner IN SCHEMA tripplanner, no role switch,
+  #      no role membership GRANT, no set_config('role')), offline;
+  #   2. test_tp013_pg.py: replay of tp-001…013 on PostgreSQL 15 + pgvector (the RDS Dev major) as a
+  #      NOSUPERUSER stand-in of the master: owners, raw ACLs, default privileges, runtime DML, booking
+  #      view-only read, a later file run as tp_owner;
+  #   3. test_infra_runner.py: AA-CIS-Infra db/run_migration.py --inspect (the lint DB Migrate applies at
+  #      copy and apply time, exit 4) at the pinned commit below, on a tripplanner/NNN_*.sql copy of every
+  #      file. Bump the pin when the Infra runner lint changes. Needs the repo secret INFRA_READ_TOKEN
+  #      (fine-grained token, Contents: read-only, AA-CIS-Infra only); missing = red.
+  migrations:
+    name: Migrations (lint, PG 15 replay, DB Migrate lint)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        # Same pins as backend/requirements.txt.
+        run: pip install asyncpg==0.30.0 pytest==8.3.3
+
+      - name: PostgreSQL 15 + pgvector (PGDG)
+        # A cluster of its own on port 5433, trust auth, used only by the replay test.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -q postgresql-15 postgresql-15-pgvector
+          sudo pg_dropcluster --stop 15 main 2>/dev/null || true
+          sudo pg_createcluster 15 x1 --port 5433 --start -- --auth=trust
+          psql "postgresql://postgres@127.0.0.1:5433/postgres" -Atc "SELECT version()"
+
+      - name: Migration lint + tp-013 replay on PostgreSQL 15
+        run: |
+          set -o pipefail
+          pytest migrations/tests -v --tb=short -rs -p no:cacheprovider \
+            --ignore=migrations/tests/test_infra_runner.py \
+            --pg-dsn postgresql://postgres@127.0.0.1:5433/postgres --pg-major 15 --pg-require-vector \
+            | tee /tmp/migrations.txt
+          if grep -qE "[0-9]+ skipped" /tmp/migrations.txt; then
+            echo "::error::migration tests were skipped"; exit 1
+          fi
+
+      - name: AA-CIS-Infra read token present?
+        run: |
+          if [ "${{ secrets.INFRA_READ_TOKEN != '' }}" != "true" ]; then
+            echo "::error::repo secret INFRA_READ_TOKEN is missing (fine-grained token, Contents: read-only on AdventureAsia365-Ecosys/AA-CIS-Infra): the DB Migrate lint cannot run"
+            exit 1
+          fi
+
+      - name: Fetch the DB Migrate runner (AA-CIS-Infra, pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: AdventureAsia365-Ecosys/AA-CIS-Infra
+          ref: eef43c0b37941363a947e7740752bd6f4348512c   # Infra main, X1 S1 (#163)
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          path: .infra
+          sparse-checkout: db/run_migration.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: DB Migrate lint (run_migration.py --inspect) on every migration
+        run: |
+          set -o pipefail
+          pytest migrations/tests/test_infra_runner.py -v --tb=short -rs -p no:cacheprovider \
+            --infra-runner .infra/db/run_migration.py | tee /tmp/infra-lint.txt
+          if grep -qE "[0-9]+ skipped" /tmp/infra-lint.txt; then
+            echo "::error::the DB Migrate lint was skipped"; exit 1
+          fi
 
   frontend:
     name: Frontend (lint + build)

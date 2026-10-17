@@ -1,7 +1,14 @@
 """Offline lint of the TripPlanner migrations (X1 plan S7, AA-852). Standard library only.
 
-TripPlanner has no migration replay in CI; this lint is the PR-time guard for the rules that change
-with the X1 owner transfer (tp-013) and mirrors the Booking migration guard (X1 S5):
+Two layers run in CI (job "Migrations"):
+  * the AUTHORITY: AA-CIS-Infra ``db/run_migration.py --inspect`` at a pinned commit, the same lint DB
+    Migrate runs at copy and apply time, on a copy of every file named ``tripplanner/NNN_*.sql`` (the
+    runner applies its role lint only to a path of that shape): test_infra_runner.py;
+  * this file: the TripPlanner-specific rules the runner does not know (the migration role per file
+    number, ``OWNER TO`` only in the transfer, ``IN SCHEMA tripplanner``), plus a few role rules repeated
+    offline so a local ``pytest migrations/tests`` catches them without the Infra checkout.
+
+Rules here, mirroring the Booking migration guard (X1 S5):
 
   * file names `NNN_name.sql`, numbers unique (MIG-3);
   * from tp-007 (the first file of the registry convention): one `BEGIN; … COMMIT;` and a
@@ -11,15 +18,23 @@ with the X1 owner transfer (tp-013) and mirrors the Booking migration guard (X1 
         `CREATE/ALTER/DROP ROLE|USER|GROUP`, `CREATE/ALTER/DROP EXTENSION` (roles/ in Infra, MIG-6);
         DB Migrate itself switches to the schema owner before the file (XD8);
       - no `SECURITY DEFINER` (MIG-6);
-      - every `ALTER DEFAULT PRIVILEGES` names `FOR ROLE <migration role>` explicitly. The migration
-        role is `aa_cis_admin` up to tp-013 and `tp_owner` from tp-014 (`migration_role`). tp-013 is
-        the transfer itself: it may also carry the `FOR ROLE aa_cis_admin … REVOKE` rows that retire
-        the old default privileges, and its `FOR ROLE tp_owner` GRANT rows restate them;
+      - no `set_config('role' | 'session_authorization', …)` and no set_config() whose parameter name
+        is not a plain string literal (the lint could not tell it is not role);
+      - no role membership GRANT / REVOKE (`GRANT tp_owner TO tripplanner` would make the runtime a
+        member of the owner): a GRANT / REVOKE without `ON` (roles/ in Infra, DM-8.1);
+      - every `ALTER DEFAULT PRIVILEGES` names `FOR ROLE <migration role>` and `IN SCHEMA tripplanner`
+        explicitly (without IN SCHEMA a default grant covers every schema of the database). The
+        migration role is `aa_cis_admin` up to tp-013 and `tp_owner` from tp-014 (`migration_role`).
+        tp-013 is the transfer itself: it may also carry the `FOR ROLE aa_cis_admin … REVOKE` rows that
+        retire the old default privileges, and its `FOR ROLE tp_owner` GRANT rows restate them;
       - `OWNER TO` only in tp-013 and only `OWNER TO tp_owner`: from tp-014 every object is created by
         tp_owner already.
 
-The AA-CIS-Infra runner lint (`db/run_migration.py --inspect`, `db/check_migration_files.py`) stays the
-authority at copy and apply time; this file catches the TripPlanner-specific rules in the owner PR.
+Dynamic SQL (EXECUTE), DEFERRABLE constraint triggers, `SET CONSTRAINTS … DEFERRED` and the
+transaction shape the role switch needs are left to the runner layer (test_infra_runner.py).
+
+If tp-013 is ever undone (Infra roles/ undo file), `migration_role` must return `aa_cis_admin` again for
+the files after the undo (the runner follows the live schema owner).
 """
 from __future__ import annotations
 
@@ -49,6 +64,12 @@ ROLE_SWITCH_RES = (
 ADP_RE = re.compile(r"\bALTER\s+DEFAULT\s+PRIVILEGES\b(?P<rest>[^;]*)")
 FOR_ROLE_RE = re.compile(r"^\s*FOR\s+(?:ROLE|USER)\s+(?P<roles>[A-Z0-9_$\",\s]+?)\s+(?:IN\s+SCHEMA|GRANT|REVOKE)\b")
 OWNER_TO_RE = re.compile(r"\bOWNER\s+TO\s+(?P<role>\"[^\"]+\"|[A-Z0-9_$]+)")
+IN_SCHEMA_RE = re.compile(r"\bIN\s+SCHEMA\s+(?P<schemas>[A-Z0-9_$\",\s]+?)\s+(?:GRANT|REVOKE)\b")
+SCHEMA = "tripplanner"
+GRANT_STMT_RE = re.compile(r"\b(?P<verb>GRANT|REVOKE)\b(?P<rest>[^;]*)")
+SET_CONFIG_RE = re.compile(r"\bset_config\s*\(\s*", re.IGNORECASE)
+PLAIN_LITERAL_RE = re.compile(r"'((?:[^']|'')*)'\s*,")
+ROLE_GUCS = ("role", "session_authorization")
 
 
 @dataclass(frozen=True)
@@ -127,6 +148,20 @@ def lint_text(sql: str, number: int, name: str) -> list:
     for rx, what in ROLE_SWITCH_RES:
         if rx.search(code):
             problems.append(Problem(name, f"{what} is not allowed in a TripPlanner migration from tp-{X1_FROM:03d}"))
+    literal_view = code_view(sql, keep_strings=True)
+    for m in SET_CONFIG_RE.finditer(literal_view):
+        lit = PLAIN_LITERAL_RE.match(literal_view, m.end())
+        if not lit:
+            problems.append(Problem(name, "set_config() whose parameter name is not a plain string literal: the "
+                                          "lint cannot tell it is not 'role' (write the name as a literal)"))
+        elif lit.group(1).strip().lower() in ROLE_GUCS:
+            problems.append(Problem(name, f"set_config('{lit.group(1).strip()}', …) switches the role: not allowed "
+                                          f"in a TripPlanner migration (DB Migrate switches to the owner itself, XD8)"))
+    for m in GRANT_STMT_RE.finditer(code):
+        if re.search(r"\bON\b", m.group("rest")) is None:
+            stmt = " ".join((m.group("verb") + m.group("rest")).split())[:80]
+            problems.append(Problem(name, f"role membership `{stmt}` belongs in AA-CIS-Infra db/migrations/roles/ "
+                                          f"(DM-8.1): a migration grants privileges ON objects, never roles"))
     expected = migration_role(number)
     for m in ADP_RE.finditer(code):
         rest = m.group("rest")
@@ -137,6 +172,11 @@ def lint_text(sql: str, number: int, name: str) -> list:
             continue
         roles = _roles(fr.group("roles"))
         revoke = re.search(r"\bREVOKE\b", rest) is not None
+        sc = IN_SCHEMA_RE.search(rest)
+        if not sc or _roles(sc.group("schemas")) != [SCHEMA]:
+            problems.append(Problem(name, f"ALTER DEFAULT PRIVILEGES FOR ROLE {', '.join(roles)} must name "
+                                          f"`IN SCHEMA {SCHEMA}` (and only it): without IN SCHEMA the default "
+                                          f"grant covers every schema of the database (X1)"))
         for role in roles:
             if number == TRANSFER and role == MASTER_ROLE and revoke:
                 continue                    # tp-013 retires the old FOR ROLE aa_cis_admin rows

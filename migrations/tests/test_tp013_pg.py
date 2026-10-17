@@ -1,8 +1,10 @@
 """tp-013 replay (X1 plan S7, AA-852): the owner transfer on a stand-in of the live shape.
 
-Runs only with ``pytest migrations/tests --pg-dsn postgresql://postgres@127.0.0.1:55432/postgres`` (a
-SUPERUSER DSN of a throwaway LOCAL Postgres; other hosts are refused, so it can never touch RDS). The
-superuser is used only for the bootstrap; the migrations run as a NOSUPERUSER stand-in of the RDS master:
+Runs only with ``--pg-dsn`` (a SUPERUSER DSN of a throwaway LOCAL Postgres; other hosts are refused, so it
+can never touch RDS). CI job "Migrations" runs it on every PR on PostgreSQL 15 + pgvector (the RDS major):
+``pytest migrations/tests --pg-dsn postgresql://postgres@127.0.0.1:5433/postgres --pg-major 15
+--pg-require-vector``. The superuser is used only for the bootstrap; the migrations run as a NOSUPERUSER
+stand-in of the RDS master:
 
   * roles (cluster-wide, created if missing): ``aa_cis_admin`` LOGIN NOSUPERUSER CREATEROLE CREATEDB,
     ``tripplanner`` and ``booking`` LOGIN, ``tp_owner`` NOLOGIN with ``GRANT tp_owner TO aa_cis_admin``
@@ -10,6 +12,8 @@ superuser is used only for the bootstrap; the migrations run as a NOSUPERUSER st
   * as ``aa_cis_admin``: schema ``shared`` + a stand-in ``shared.schema_versions``, schema ``tripplanner``
     with the live default privileges ``FOR ROLE aa_cis_admin`` (tables DML, sequences USAGE/SELECT →
     tripplanner; created out of band on Dev), then tp-001…012 replayed as files (002 before 001);
+  * a column grant to a third role (``x1_column_reader``: SELECT (id, email) on customers), so the raw-ACL
+    snapshot of guard 2 is exercised on attacl and for a grantee other than tripplanner / booking;
   * tp-013 first WITHOUT the CIS 243 grants (guard 1 must refuse, nothing changes), then with them.
 
 pgvector: created by the superuser when the server has it (as on RDS). Without it, the replay copy of
@@ -46,6 +50,7 @@ DO $$ BEGIN
   IF to_regrole('tripplanner') IS NULL THEN CREATE ROLE tripplanner LOGIN; END IF;
   IF to_regrole('booking') IS NULL THEN CREATE ROLE booking LOGIN; END IF;
   IF to_regrole('tp_owner') IS NULL THEN CREATE ROLE tp_owner NOLOGIN; END IF;
+  IF to_regrole('x1_column_reader') IS NULL THEN CREATE ROLE x1_column_reader NOLOGIN; END IF;
 END $$;
 GRANT tp_owner TO aa_cis_admin;
 """
@@ -64,6 +69,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE aa_cis_admin IN SCHEMA tripplanner
 ALTER DEFAULT PRIVILEGES FOR ROLE aa_cis_admin IN SCHEMA tripplanner
     GRANT USAGE, SELECT ON SEQUENCES TO tripplanner;
 """
+
+# After tp-001…012, before tp-013: a column-level grant to a role that is neither tripplanner nor booking.
+COLUMN_GRANT = "GRANT SELECT (id, email) ON tripplanner.customers TO x1_column_reader;"
 
 CIS_243_GRANTS = """
 GRANT USAGE ON SCHEMA shared TO tp_owner;
@@ -127,6 +135,22 @@ def pg_dsn(request):
     host = urlparse(dsn).hostname or "localhost"
     if host not in ("localhost", "127.0.0.1", "::1"):
         pytest.skip(f"integration tests only run against a local Postgres, not {host}")
+    major = request.config.getoption("--pg-major")
+    need_vector = request.config.getoption("--pg-require-vector")
+
+    async def server() -> tuple:
+        su = await asyncpg.connect(dsn)
+        try:
+            return (int(await su.fetchval("SHOW server_version_num")) // 10000,
+                    await su.fetchval("SELECT count(*) > 0 FROM pg_available_extensions WHERE name = 'vector'"))
+        finally:
+            await su.close()
+
+    got_major, has_vector = run(server())
+    if major is not None:
+        assert got_major == major, f"--pg-major {major}: the server is PostgreSQL {got_major}"
+    if need_vector:
+        assert has_vector, "--pg-require-vector: pgvector is not available on this server"
     return dsn
 
 
@@ -159,6 +183,7 @@ def db(pg_dsn):
             await admin.execute(LIVE_STANDINS)
             for f in _replay_order():
                 await admin.execute(_replay_text(f, vector))
+            await admin.execute(COLUMN_GRANT)
             refused = None
             try:
                 await admin.execute(TP013.read_text(encoding="utf-8"))
@@ -267,6 +292,29 @@ def test_default_privileges_are_the_tp_owner_rows_only(db):
     rows = {(r["role"], r["objtype"], r["grantee"], r["privilege"]) for r in run(check())}
     assert rows == {("tp_owner", "r", "tripplanner", p) for p in ("SELECT", "INSERT", "UPDATE", "DELETE")} | {
         ("tp_owner", "S", "tripplanner", p) for p in ("USAGE", "SELECT")}
+
+
+def test_column_grant_to_a_third_role_survives_with_tp_owner_as_grantor(db):
+    async def check():
+        su = await asyncpg.connect(db["su_dsn"])
+        try:
+            rows = await su.fetch("""
+                SELECT a.attname::text AS col, pg_get_userbyid(x.grantor)::text AS grantor,
+                       pg_get_userbyid(x.grantee)::text AS grantee, x.privilege_type AS privilege
+                  FROM pg_attribute a CROSS JOIN LATERAL aclexplode(a.attacl) x
+                 WHERE a.attrelid = 'tripplanner.customers'::regclass AND a.attacl IS NOT NULL""")
+            can = await su.fetchval(
+                "SELECT has_column_privilege('x1_column_reader', 'tripplanner.customers', 'email', 'SELECT')")
+            cannot = await su.fetchval(
+                "SELECT has_column_privilege('x1_column_reader', 'tripplanner.customers', 'name', 'SELECT')")
+        finally:
+            await su.close()
+        return rows, can, cannot
+
+    rows, can, cannot = run(check())
+    assert {(r["col"], r["grantor"], r["grantee"], r["privilege"]) for r in rows} == {
+        ("id", "tp_owner", "x1_column_reader", "SELECT"), ("email", "tp_owner", "x1_column_reader", "SELECT")}
+    assert can and not cannot
 
 
 def test_tripplanner_runtime_keeps_its_dml(db):
