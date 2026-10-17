@@ -63,8 +63,11 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - **Next.js 14.2.15** (App Router), deployed on **Vercel**.
 - **Mapbox GL** for the interactive map (destination pins, trip routing, day-by-day view).
 - Talks to the backend Lambdas over HTTP; no direct DB access from the browser.
-- Deploy is Vercel-driven: a PR shows a Vercel preview and CI status; merge to the production
-  branch triggers the production deploy. Check the Vercel CI check on the PR for deploy success.
+- Deploy is CI-driven (S241): `.github/workflows/vercel-deploy.yml` runs `vercel deploy` when a PR
+  or a push to `main` touches `frontend/**` — PR → preview (URL in one PR comment), `main` →
+  production. The Vercel Git integration is off (`frontend/vercel.json`, `git.deploymentEnabled:
+  false`) because the Hobby team cap (~100 deployments / 24 h, all projects) was being used up.
+  Needs the repo secret `VERCEL_TOKEN`. Check the "Vercel deploy" job on the PR for deploy success.
 
 ### Pages (AA-812)
 
@@ -300,7 +303,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 
 ## Deploy & CI
 
-- **Frontend**: Vercel (preview per PR, production on merge to the production branch).
+- **Frontend**: Vercel, deployed by `.github/workflows/vercel-deploy.yml` (preview per PR that
+  touches `frontend/**`, production on such a merge to `main`); Git integration off via
+  `frontend/vercel.json`; needs the repo secret `VERCEL_TOKEN`.
 - **Backend Lambdas**: deployed via GitHub Actions assuming the OIDC role
   `aa-tripplanner-dev-app-deploy` (an Infra-owned IAM role). The role's trust is scoped to this
   repo through the org OIDC subject
