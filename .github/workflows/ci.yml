@@ -36,6 +36,13 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: pytest -v --tb=short
 
+      - name: Migration lint
+        # migrations/tests (X1, AA-852): file names, registration, and the tp_owner rules from
+        # tp-013 on (no role switch or role DDL, ALTER DEFAULT PRIVILEGES FOR ROLE tp_owner, no
+        # OWNER TO after tp-013). Offline; the tp-013 replay test needs --pg-dsn and is skipped here.
+        working-directory: .
+        run: pytest -v --tb=short migrations/tests
+
   frontend:
     name: Frontend (lint + build)
     runs-on: ubuntu-latest
