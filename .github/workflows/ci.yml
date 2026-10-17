@@ -38,19 +38,18 @@ jobs:
 
 
   # X1 (AA-852, plan S7 + review S241): the migrations/ checks, outside backend/ so a migration PR does
-  # not redeploy the Lambdas. Three layers, none may be skipped (a skip turns the job red):
+  # not redeploy the Lambdas. Two layers here (the third runs in AA-CIS-Infra), none may be skipped (a skip turns the job red):
   #   1. migrations/tests/migration_lint.py: TripPlanner rules (migration role per file number, OWNER TO
   #      only in tp-013, ALTER DEFAULT PRIVILEGES FOR ROLE tp_owner IN SCHEMA tripplanner, no role switch,
   #      no role membership GRANT, no set_config('role')), offline;
   #   2. test_tp013_pg.py: replay of tp-001…013 on PostgreSQL 15 + pgvector (the RDS Dev major) as a
   #      NOSUPERUSER stand-in of the master: owners, raw ACLs, default privileges, runtime DML, booking
   #      view-only read, a later file run as tp_owner;
-  #   3. test_infra_runner.py: AA-CIS-Infra db/run_migration.py --inspect (the lint DB Migrate applies at
-  #      copy and apply time, exit 4) at the pinned commit below, on a tripplanner/NNN_*.sql copy of every
-  #      file. Bump the pin when the Infra runner lint changes. Needs the repo secret INFRA_READ_TOKEN
-  #      (fine-grained token, Contents: read-only, AA-CIS-Infra only); missing = red.
+  #   3. The DB Migrate runner lint (AA-CIS-Infra run_migration.py --inspect) runs in AA-CIS-Infra's
+  #      required 'Migration lint and unique numbers' check on the byte copy, before any apply (S241:
+  #      no cross-repo token or deploy key here; test_infra_runner.py stays for local runs).
   migrations:
-    name: Migrations (lint, PG 15 replay, DB Migrate lint)
+    name: Migrations (lint, PG 15 replay)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -85,33 +84,6 @@ jobs:
             | tee /tmp/migrations.txt
           if grep -qE "[0-9]+ skipped" /tmp/migrations.txt; then
             echo "::error::migration tests were skipped"; exit 1
-          fi
-
-      - name: AA-CIS-Infra read token present?
-        run: |
-          if [ "${{ secrets.INFRA_READ_TOKEN != '' }}" != "true" ]; then
-            echo "::error::repo secret INFRA_READ_TOKEN is missing (fine-grained token, Contents: read-only on AdventureAsia365-Ecosys/AA-CIS-Infra): the DB Migrate lint cannot run"
-            exit 1
-          fi
-
-      - name: Fetch the DB Migrate runner (AA-CIS-Infra, pinned)
-        uses: actions/checkout@v5
-        with:
-          repository: AdventureAsia365-Ecosys/AA-CIS-Infra
-          ref: eef43c0b37941363a947e7740752bd6f4348512c   # Infra main, X1 S1 (#163)
-          token: ${{ secrets.INFRA_READ_TOKEN }}
-          path: .infra
-          sparse-checkout: db/run_migration.py
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      - name: DB Migrate lint (run_migration.py --inspect) on every migration
-        run: |
-          set -o pipefail
-          pytest migrations/tests/test_infra_runner.py -v --tb=short -rs -p no:cacheprovider \
-            --infra-runner .infra/db/run_migration.py | tee /tmp/infra-lint.txt
-          if grep -qE "[0-9]+ skipped" /tmp/infra-lint.txt; then
-            echo "::error::the DB Migrate lint was skipped"; exit 1
           fi
 
   frontend:
