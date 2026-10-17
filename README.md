@@ -54,7 +54,9 @@ CIS_PUBLIC_API_BASE=http://localhost:8011 python -m backend.tests.dev_browse_ser
 
 ## Deploy
 
-- **Frontend:** Vercel — a preview per PR, production on merge to `main`.
+- **Frontend deploys:** CI-created via `.github/workflows/vercel-deploy.yml` (only when `frontend/**`
+  changes: PR → preview, `main` → production); the Vercel Git integration is off via
+  `frontend/vercel.json` (`git.deploymentEnabled: false`). Needs the repo secret `VERCEL_TOKEN`.
 - **Lambdas:** merge to `main` touching `backend/**` → `.github/workflows/deploy-lambdas.yml`
   (OIDC role `aa-tripplanner-dev-app-deploy`, defined in AA-CIS-Infra) updates both functions'
   code. The functions, API Gateway, S3 artifacts and secrets themselves are Terraform in

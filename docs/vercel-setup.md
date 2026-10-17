@@ -1,11 +1,15 @@
 # Vercel setup — AA-TripPlanner-Web (frontend)
 
-The frontend deploys to Vercel via **Git Integration** (no GitHub Actions
-workflow, no VERCEL_TOKEN needed). Vercel watches the connected repo and
-deploys automatically:
+> **S241 change:** deployments are no longer made by the Git integration.
+> `frontend/vercel.json` sets `git.deploymentEnabled: false`, and
+> `.github/workflows/vercel-deploy.yml` runs `vercel deploy` from the repo root
+> (the Root Directory setting below still applies) only when `frontend/**`
+> changes. It needs the repo secret `VERCEL_TOKEN`. Reason: the Hobby team cap
+> (~100 deployments / 24 h, all projects, canceled ones included).
 
-- Push to any branch / open a PR → **Preview** deployment.
-- Merge to `main` → **Production** deployment.
+- PR touching `frontend/**` → **Preview** deployment (URL in one PR comment).
+- Merge to `main` touching `frontend/**` → **Production** deployment.
+- Anything else: Actions → Vercel Deploy → Run workflow (preview, or production from `main`).
 
 Project: `aa-tripplanner` (Vercel), connected to
 `github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web`.
@@ -44,8 +48,9 @@ root. Set these in the Vercel project:
   redeploy → full data + trip flow.
 
 ## Triggering the first deploy
-Any push to a branch (e.g. merging a PR) triggers a build. To force one
-without a code change: Vercel dashboard → Deployments → ⋯ → Redeploy.
+A PR or merge that touches `frontend/**` triggers a build (see above). To
+force one without a code change: Actions → Vercel Deploy → Run workflow, or
+Vercel dashboard → Deployments → ⋯ → Redeploy.
 
 ## Verifying
 - Build log should show `next build` running from `frontend/`.
