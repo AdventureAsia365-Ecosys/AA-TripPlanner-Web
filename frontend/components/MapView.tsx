@@ -120,7 +120,6 @@ export default function MapView() {
       {
         concurrency: 4,
         onBudgetExceeded: () => {
-          // eslint-disable-next-line no-console
           console.warn("[map] tile request budget reached; skipping tile loads for a few seconds");
         },
       },
@@ -191,7 +190,6 @@ export default function MapView() {
     // Mapbox reports token/style/worker problems via an 'error' event, not
     // a thrown exception — so a broken map leaves the JS console clean.
     map.on("error", (e) => {
-      // eslint-disable-next-line no-console
       console.error("[mapbox error]", e?.error?.message ?? e);
     });
 

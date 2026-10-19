@@ -10,23 +10,27 @@ import SiteFooter from "@/components/site/SiteFooter";
 import SiteHeader from "@/components/site/SiteHeader";
 import StaticMap from "@/components/site/StaticMap";
 import type { MapPoint } from "@/lib/tourMap";
-import { CATALOG_REVALIDATE_S, getTour, siteUrl } from "@/lib/catalog";
+import { getTour, siteUrl } from "@/lib/catalog";
 import type { TourDetail } from "@/lib/catalogTypes";
 import { clip, coverAlt, daysText, splitLines, titleCase } from "@/lib/text";
 import { routePoints } from "@/lib/tourMap";
 import { Badge, ButtonLink, Icon, Photo } from "@/ui";
 
-export const revalidate = CATALOG_REVALIDATE_S;
+// Route segment config must be a literal (Next 15 reads it statically and fails the build on an
+// imported constant). Keep it equal to CATALOG_REVALIDATE_S (lib/segmentConfig.test.ts checks).
+export const revalidate = 1800;
 
 // Pages are rendered on first request and cached (ISR); nothing is pre-built at deploy time.
 export function generateStaticParams() {
   return [];
 }
 
-type Props = { params: { slug: string } };
+// Next 15: route params arrive as a Promise (async request APIs).
+type Props = { params: Promise<{ slug: string }> };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const res = await getTour(params.slug.toLowerCase());
+  const { slug } = await params;
+  const res = await getTour(slug.toLowerCase());
   if (!res.ok) return { title: "Tour", robots: { index: false } };
   const t = res.data;
   const description = clip(t.summary || t.subtitle || t.description || `${t.title} — an Adventure Asia tour.`);
@@ -147,17 +151,18 @@ function CtaCard({ t }: { t: TourDetail }) {
 }
 
 export default async function TourPage({ params }: Props) {
+  const { slug } = await params;
   // Slugs are lowercase; /tours/Hanoi-And-... moves to the canonical URL instead of a 404.
-  const lower = params.slug.toLowerCase();
-  if (lower !== params.slug) permanentRedirect(`/tours/${lower}`);
-  const res = await getTour(params.slug);
+  const lower = slug.toLowerCase();
+  if (lower !== slug) permanentRedirect(`/tours/${lower}`);
+  const res = await getTour(slug);
   if (!res.ok) {
     if (res.status === 404) notFound();
     throw new Error(`tour read failed (${res.status})`);
   }
   const t = res.data;
   // The slug follows the title; an old link resolves by its source-id suffix and moves here.
-  if (t.slug !== params.slug) permanentRedirect(`/tours/${t.slug}`);
+  if (t.slug !== slug) permanentRedirect(`/tours/${t.slug}`);
 
   const points = routePoints(t);
   const inclusions = splitLines(t.inclusions);

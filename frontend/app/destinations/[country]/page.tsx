@@ -9,18 +9,21 @@ import SiteFooter from "@/components/site/SiteFooter";
 import SiteHeader from "@/components/site/SiteHeader";
 import StaticMap from "@/components/site/StaticMap";
 import TourCard from "@/components/site/TourCard";
-import { CATALOG_REVALIDATE_S, getDestination, siteUrl } from "@/lib/catalog";
+import { getDestination, siteUrl } from "@/lib/catalog";
 import type { DestinationPage } from "@/lib/catalogTypes";
 import { slugify, titleCase } from "@/lib/text";
 import { ButtonLink, EmptyState, Icon, Photo } from "@/ui";
 
-export const revalidate = CATALOG_REVALIDATE_S;
+// Route segment config must be a literal (Next 15 reads it statically and fails the build on an
+// imported constant). Keep it equal to CATALOG_REVALIDATE_S (lib/segmentConfig.test.ts checks).
+export const revalidate = 1800;
 
 export function generateStaticParams() {
   return [];
 }
 
-type Props = { params: { country: string } };
+// Next 15: route params arrive as a Promise (async request APIs).
+type Props = { params: Promise<{ country: string }> };
 
 function intro(d: DestinationPage): string {
   const range =
@@ -39,7 +42,8 @@ function intro(d: DestinationPage): string {
 const LISTED_PLACES = 12;
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const res = await getDestination(slugify(params.country));
+  const { country } = await params;
+  const res = await getDestination(slugify(country));
   if (!res.ok) return { title: "Destination", robots: { index: false } };
   const d = res.data;
   return {
@@ -51,10 +55,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function DestinationRoute({ params }: Props) {
+  const { country } = await params;
   // /destinations/Vietnam or /destinations/Sri_Lanka move to the canonical lowercase slug.
-  const canonical = slugify(params.country);
-  if (canonical && canonical !== params.country) permanentRedirect(`/destinations/${canonical}`);
-  const res = await getDestination(params.country);
+  const canonical = slugify(country);
+  if (canonical && canonical !== country) permanentRedirect(`/destinations/${canonical}`);
+  const res = await getDestination(country);
   if (!res.ok) {
     if (res.status === 404) notFound();
     throw new Error(`destination read failed (${res.status})`);
