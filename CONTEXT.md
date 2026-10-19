@@ -82,6 +82,11 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   pins that tour's whole route through the existing apply-route flow (`&ask=1` opens the trip).
 - `/tours/[slug]` and `/destinations/[country]`: Server Components with ISR (30 min, the browse
   CDN TTL), JSON-LD (`TouristTrip`, `TouristDestination`), `sitemap.xml`, `robots.txt`.
+- `/privacy` and `/terms` (AA-886): **draft** legal pages (static, `noindex`, not in the sitemap) built on
+  `components/site/LegalPage.tsx`, which always shows a "Draft — pending legal review" banner. Paths and
+  the draft label live in `lib/legal.ts`; the site footer and the contact form in `TripPanel` (the only
+  form that collects personal data) link both pages. Every factual sentence must match what the code
+  does; open legal points stay `[to be confirmed]` until counsel approves the text.
 - Kit pages use `frontend/ui/` (tokens copied from the CIS kit with the same values, light +
   dark via `<html data-theme>`, localStorage `tp_theme`); the planner keeps its light `aa-*` palette.
 

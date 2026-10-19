@@ -9,6 +9,7 @@ import StopActivities from "@/components/StopActivities";
 import { Icon } from "@/ui/Icon";
 import AiLabel from "@/components/AiLabel";
 import { parseNarration } from "@/lib/narration";
+import { LEGAL_LINKS } from "@/lib/legal";
 
 const DAY_KIND_LABEL: Record<string, string> = {
   extra_night: "Extra night",
@@ -643,6 +644,24 @@ export default function TripPanel() {
                   />
                   <span>An Adventure Asia advisor may contact me about this trip.</span>
                 </label>
+                {/* AA-886: the legal pages sit next to the only PII form; a new tab keeps the form as typed. */}
+                <p className="text-[11px] text-aa-muted" data-testid="trip-legal-links">
+                  How we use your details:{" "}
+                  {LEGAL_LINKS.map((l, i) => (
+                    <span key={l.href}>
+                      {i > 0 && " · "}
+                      <a
+                        href={l.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="aa-focus font-semibold text-aa-ink underline underline-offset-2 hover:text-aa-gold-dark"
+                      >
+                        {l.label}
+                      </a>
+                    </span>
+                  ))}
+                  {" "}(draft)
+                </p>
                 <button
                   onClick={() => handleSend(true)}
                   disabled={!reg.name || (!reg.phone && !reg.email) || !reg.consent}
