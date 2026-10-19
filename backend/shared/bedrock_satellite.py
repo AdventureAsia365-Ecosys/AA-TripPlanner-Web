@@ -1,8 +1,8 @@
 """Bedrock transport — cross-account access for the satellite accounts.
 
-acc2 (005097885195, where the Lambdas run) is an AWS channel-program account that CANNOT invoke
+acc2 (where the Lambdas run) is an AWS channel-program account that CANNOT invoke
 Anthropic Claude, so Claude runs on a satellite account: assume a cross-account role (acc3
-786888028788 primary, acc1 867490540162 fallback; each with its own ExternalId, see config),
+primary, acc1 fallback; account IDs and ExternalIds from the Lambda environment, see config),
 then call Bedrock with those temp creds. The trust is added via Terraform in AA-CIS-Infra
 (human-applied); this module only consumes it. acc2 itself can invoke Cohere embeddings; AA-862
 also sends Cohere embeddings to acc3/acc1 when acc2's 20 rpm quota throttles (catalog rows

@@ -19,8 +19,8 @@
   - pgvector is already enabled on this instance (confirmed via STEP 0:
     version 0.8.1) — reuse it, do not add a new vector DB service.
 - LLM: AWS Bedrock, via the same satellite pattern already live for
-  AA-CIS-App/ACPv2 — assume a role on account 786888028788 (acc3,
-  primary), fallback to account 867490540162 (acc1). Sonnet-tier for both
+  AA-CIS-App/ACPv2 — assume a role on acc3 (primary), fallback to
+  acc1 (account IDs: env `BEDROCK_ACCT_*`, never in this public repo). Sonnet-tier for both
   LLM steps (`compose` and `renarrate` — see design.md). There is no
   Haiku-tier "parse brief" step in this build (no chat intake).
 - Geocoding: Mapbox Geocoding API (already needed for the map itself, no

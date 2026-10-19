@@ -49,14 +49,17 @@ CIS_PUBLIC_API_BASE = _get("CIS_PUBLIC_API_BASE", "https://api-cis.lumiguides.it
 BEDROCK_REGION = _get("BEDROCK_REGION", "us-west-1")
 
 # LLM (compose/renarrate) — Claude via the satellite pattern. acc2
-# (005097885195) is a channel-program account and CANNOT invoke Claude
+# (where the Lambdas run) is a channel-program account and CANNOT invoke Claude
 # ("Access to this model is not available for channel program accounts"),
 # so the app assumes a cross-account role: acc3 primary, acc1 fallback —
 # same as AA-CIS-App/ACPv2. Verified live on acc1: us.anthropic.claude-
 # sonnet-4-6 invokes OK. Models MUST be called by inference-profile id
 # (the bare foundation-model id fails with ValidationException).
-BEDROCK_ACCT_PRIMARY = _get("BEDROCK_ACCT_PRIMARY", "786888028788")   # acc3
-BEDROCK_ACCT_FALLBACK = _get("BEDROCK_ACCT_FALLBACK", "867490540162")  # acc1
+# Satellite account IDs come from the Lambda environment (AA-CIS-Infra tripplanner.tf); this repo
+# is public, so no account ID is written here (AA-902). Unset -> that satellite is skipped with a
+# clear error in the failover log (llm_gateway._satellite_target), acc2 and the other one still run.
+BEDROCK_ACCT_PRIMARY = _get("BEDROCK_ACCT_PRIMARY", "")   # acc3
+BEDROCK_ACCT_FALLBACK = _get("BEDROCK_ACCT_FALLBACK", "")  # acc1
 # The satellite invoker role has a DIFFERENT name on each account:
 #   acc3 (primary)  -> AA3-Bedrock-Invoker
 #   acc1 (fallback) -> AA-Bedrock-Invoker
@@ -71,7 +74,7 @@ BEDROCK_EXTERNAL_ID_FALLBACK = _get("BEDROCK_EXTERNAL_ID_FALLBACK", "aa296-satel
 # Gateway tables in the shared RDS — stages tp_compose / tp_extract (Claude via the satellite
 # roles) and tp_search_embed / tp_component_embed (Cohere Embed v4: acc2 first, then satellite
 # rows by route, AA-862 — the embed fall-through reuses the BEDROCK_ACCT_* / ROLE_NAME_* /
-# EXTERNAL_ID_* values above, whose defaults are the live ones). See
+# EXTERNAL_ID_* values above; the account IDs must be set on both Lambdas). See
 # backend/shared/llm_gateway.py. Embeddings must stay 1536-dim to match VECTOR(1536).
 EMBED_DIM = 1536
 

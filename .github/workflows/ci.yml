@@ -19,6 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # AA-902: this repo is public, so no AWS account ID, ARN with an account, VPC/SG/subnet ID,
+      # Cognito pool ID or API Gateway host in any tracked file (DM-6.10). Stdlib only, whole repo;
+      # it lives in this job because "Backend (pytest)" is a required check (blocks the merge).
+      - name: No literal AWS resource IDs (failing)
+        working-directory: .
+        run: python3 .github/scripts/check_resource_ids.py
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
         with:

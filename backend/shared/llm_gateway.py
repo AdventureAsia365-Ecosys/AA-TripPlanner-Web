@@ -175,14 +175,23 @@ def _accounts(model: Model, preferred: Optional[str]) -> list[str]:
 
 
 def _satellite_target(account: str) -> tuple[str, str, str]:
-    """(account id, invoker role name, ExternalId) of a satellite account."""
+    """(account id, invoker role name, ExternalId) of a satellite account.
+
+    The account IDs have no default (AA-902, public repo): an unset one raises here, before any
+    STS call, so the failover loop records a clear error and moves on to the next account."""
     if account == "acc3":
-        return (config.BEDROCK_ACCT_PRIMARY, config.BEDROCK_ROLE_NAME_PRIMARY,
-                config.BEDROCK_EXTERNAL_ID_PRIMARY)
-    if account == "acc1":
-        return (config.BEDROCK_ACCT_FALLBACK, config.BEDROCK_ROLE_NAME_FALLBACK,
-                config.BEDROCK_EXTERNAL_ID_FALLBACK)
-    raise BedrockError(f"Unknown account {account!r}")
+        target = (config.BEDROCK_ACCT_PRIMARY, config.BEDROCK_ROLE_NAME_PRIMARY,
+                  config.BEDROCK_EXTERNAL_ID_PRIMARY)
+        env = "BEDROCK_ACCT_PRIMARY"
+    elif account == "acc1":
+        target = (config.BEDROCK_ACCT_FALLBACK, config.BEDROCK_ROLE_NAME_FALLBACK,
+                  config.BEDROCK_EXTERNAL_ID_FALLBACK)
+        env = "BEDROCK_ACCT_FALLBACK"
+    else:
+        raise BedrockError(f"Unknown account {account!r}")
+    if not target[0]:
+        raise BedrockError(f"{account}: account id not configured ({env} is unset)")
+    return target
 
 
 def _runtime(account: str, client_factory: ClientFactory) -> Any:

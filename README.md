@@ -58,8 +58,8 @@ CIS_PUBLIC_API_BASE=http://localhost:8011 python -m backend.tests.dev_browse_ser
   changes: PR → preview, `main` → production); the Vercel Git integration is off via
   `frontend/vercel.json` (`git.deploymentEnabled: false`). Needs the repo secret `VERCEL_TOKEN`.
 - **Lambdas:** merge to `main` touching `backend/**` → `.github/workflows/deploy-lambdas.yml`
-  (OIDC role `aa-tripplanner-dev-app-deploy`, defined in AA-CIS-Infra) updates both functions'
-  code. The functions, API Gateway, S3 artifacts and secrets themselves are Terraform in
+  (OIDC role `aa-tripplanner-dev-app-deploy`, defined in AA-CIS-Infra; its ARN is the repo secret
+  `AWS_DEPLOY_ROLE_ARN`, AA-902) updates both functions' code. The functions, API Gateway, S3 artifacts and secrets themselves are Terraform in
   `AA-CIS-Infra/accounts/aa365/tripplanner.tf`.
 - **Migrations:** applied to Dev from an identical copy in `AA-CIS-Infra/db/migrations/tripplanner/`
   by the **DB Migrate** workflow (check → apply), before the code that needs them merges.
