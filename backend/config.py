@@ -92,12 +92,23 @@ MASTER_CONTENT_TENANT_ID = _get(
 )
 
 # --- Edge shared-secret (API Gateway auth is NONE; the app checks this) ---
-# A shared secret the BFF must send in the X-TripPlanner-Key header. When
-# unset/empty (local dev, unit tests) the check is DISABLED — so nothing
-# breaks without it. In production the Lambda env sets it from Secrets
-# Manager and the BFF sends the same value. See shared/auth.py.
+# A shared secret the BFF must send in the X-TripPlanner-Key header. See shared/auth.py.
+# AA-878: on Lambda the key comes from Secrets Manager, read by a NAME derived from the
+# existing ENVIRONMENT env (tripplanner/<ENVIRONMENT>/api-key), never a plaintext env value.
+# TRIPPLANNER_API_KEY in the env still wins (local dev, and the rollout window before Infra
+# drops it from the Lambda env). Off Lambda with no env key the gate is DISABLED (local, unit
+# tests); on Lambda a missing/unreadable key answers 503 (fail closed).
 TRIPPLANNER_API_KEY = _get("TRIPPLANNER_API_KEY", "")
 API_KEY_HEADER = "x-tripplanner-key"
+# Set by Terraform on both Lambdas (dev today); only used to derive the secret name.
+ENVIRONMENT = _get("ENVIRONMENT", "")
+API_KEY_SECRET_NAME_TEMPLATE = "tripplanner/{environment}/api-key"
+# How long a key read from Secrets Manager is reused per container: a rotation lands
+# within this window without a redeploy.
+API_KEY_CACHE_SECONDS = 600
+# After a failed read, answer 503 straight away for this long instead of calling
+# Secrets Manager on every request.
+API_KEY_RETRY_AFTER_SECONDS = 10
 
 # --- Guest credential (AA-827) ---
 # The BFF holds a random token in an HttpOnly cookie and forwards it in this header on every
