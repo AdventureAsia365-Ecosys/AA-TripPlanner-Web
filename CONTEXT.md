@@ -65,7 +65,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   a number literal (`lib/segmentConfig.test.ts` keeps the catalog pages equal to `CATALOG_REVALIDATE_S`).
   Lint is the ESLint 9 CLI with a flat config (`frontend/eslint.config.mjs`, `next/core-web-vitals`);
   `next-env.d.ts` is generated, not committed. `package.json` `overrides` lifts Next's own pinned
-  postcss to the top-level version (advisories fixed only in Next 16).
+  postcss to the top-level version (advisories fixed only in Next 16) and pins
+  `postcss-selector-parser` 7.1.6 under Tailwind 3 (advisory fixed only in 7.x; Tailwind 3 asks `^6`).
+  Drop that override when Tailwind moves to v4.
 - **Mapbox GL** for the interactive map (destination pins, trip routing, day-by-day view).
 - Talks to the backend Lambdas over HTTP; no direct DB access from the browser.
 - Deploy is CI-driven (S241): `.github/workflows/vercel-deploy.yml` runs `vercel deploy` when a PR
