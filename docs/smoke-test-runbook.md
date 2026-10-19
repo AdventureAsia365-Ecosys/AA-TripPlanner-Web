@@ -17,7 +17,7 @@ commands, and the manual click-path to verify.
 |---|---|---|---|
 | P1 | DB tunnel to shared RDS (acc2, us-west-1) | Nghiep | set `TRIPPLANNER_DATABASE_URL` in `backend/.env` |
 | P2 | Apply `002_shared_destinations.sql` then `001_tripplanner_schema.sql` | Nghiep | 002 first (FK). Coordinate `shared` numbering with AA-CIS-App |
-| P3 | Mapbox tokens | Nghiep | `MAPBOX_GEOCODING_TOKEN` (backend), `NEXT_PUBLIC_MAPBOX_TOKEN` (frontend) — see docs/mapbox-setup.md |
+| P3 | Mapbox token | Nghiep | `NEXT_PUBLIC_MAPBOX_TOKEN` (frontend, URL-restricted). The server-side geocoding token is retired: CIS geocodes places (ADR 0007); the old token was revoked 20/10/2026 — see docs/mapbox-setup.md |
 | P4 | Bedrock trust: Lambda roles as trusted principals on acc3/acc1 roles | Nghiep (Terraform, AA-CIS-Infra) | set `BEDROCK_ROLE_NAME` in env |
 | P5 | Run extraction against the 31 active tours | Nghiep + agent | writes real components; spends geocode + Bedrock quota |
 
