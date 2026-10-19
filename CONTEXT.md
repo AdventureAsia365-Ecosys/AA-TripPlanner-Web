@@ -1,3 +1,17 @@
+---
+id: ARCH-06-tripplanner
+title: "AA-TripPlanner-Web — Repo Context"
+description: Stack, boundaries, ownership, domain terms and working rules of AA-TripPlanner-Web (Next.js frontend and its two backend Lambdas); read it before designing or changing code in this repo.
+type: explanation
+status: active
+owner: nghiep
+audience: [engineer, agent]
+applies_to: [aa-tripplanner, tripplanner-lambda]
+last_reviewed: 2026-10-19
+review_every_days: 90
+related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
+---
+
 # AA-TripPlanner-Web — Repo Context
 
 B2C map-based trip planner in the Adventure Asia (AA) ecosystem. An end traveler explores
