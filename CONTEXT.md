@@ -30,7 +30,7 @@ AA-CIS-App. What it shares with the rest of the ecosystem is a small set of AWS-
 Traveler (browser)
       │
       ▼
-Next.js 14 frontend  ──(Mapbox GL)──►  interactive map UI
+Next.js 15 frontend  ──(Mapbox GL)──►  interactive map UI
       │  same-origin /api/* (BFF, server-side; holds the TripPlanner API key)
       ▼
 API Gateway HTTP v2  (ANY /browse/{proxy+}, ANY /trip/{proxy+}; edge shared secret
@@ -60,7 +60,12 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 
 ### Frontend
 
-- **Next.js 14.2.15** (App Router), deployed on **Vercel**.
+- **Next.js 15.5** (App Router) on **React 19.2**, deployed on **Vercel** (AA-904). Route `params` /
+  `searchParams` are Promises (await them); route segment config (`export const revalidate`) must be
+  a number literal (`lib/segmentConfig.test.ts` keeps the catalog pages equal to `CATALOG_REVALIDATE_S`).
+  Lint is the ESLint 9 CLI with a flat config (`frontend/eslint.config.mjs`, `next/core-web-vitals`);
+  `next-env.d.ts` is generated, not committed. `package.json` `overrides` lifts Next's own pinned
+  postcss to the top-level version (advisories fixed only in Next 16).
 - **Mapbox GL** for the interactive map (destination pins, trip routing, day-by-day view).
 - Talks to the backend Lambdas over HTTP; no direct DB access from the browser.
 - Deploy is CI-driven (S241): `.github/workflows/vercel-deploy.yml` runs `vercel deploy` when a PR

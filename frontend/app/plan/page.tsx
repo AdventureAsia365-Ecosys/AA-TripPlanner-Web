@@ -15,6 +15,9 @@ export const metadata: Metadata = {
   robots: { index: false, follow: true },
 };
 
-export default function PlanPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
-  return <PlannerApp intent={parseIntent(searchParams)} />;
+// Next 15: searchParams arrives as a Promise (async request APIs).
+type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
+
+export default async function PlanPage({ searchParams }: Props) {
+  return <PlannerApp intent={parseIntent(await searchParams)} />;
 }

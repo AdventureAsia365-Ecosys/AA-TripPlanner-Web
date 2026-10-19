@@ -130,7 +130,7 @@ export function TripProvider({
   children: React.ReactNode;
   initialIntent?: PlanIntent;
 }) {
-  const idsRef = useRef<{ sessionId: string; tripId: string }>();
+  const idsRef = useRef<{ sessionId: string; tripId: string }>(undefined);
   if (!idsRef.current) {
     idsRef.current = loadOrCreateIds();
   }
@@ -217,7 +217,6 @@ export function TripProvider({
     return () => {
       active = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [suggestKey, filterKey, tripId]);
 
   // AA-674: which real tours cover the trip — refreshed when the day order or added days change.

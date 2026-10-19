@@ -56,7 +56,7 @@ export default function FilterChips() {
   // don't emit reliable mouseenter events.
   const [countryOpen, setCountryOpen] = useState(false);
   const countryBoxRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);

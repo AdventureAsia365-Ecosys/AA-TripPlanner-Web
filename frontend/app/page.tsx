@@ -9,10 +9,12 @@ import SiteFooter from "@/components/site/SiteFooter";
 import SiteHeader from "@/components/site/SiteHeader";
 import TourCard from "@/components/site/TourCard";
 import JsonLd from "@/components/site/JsonLd";
-import { CATALOG_REVALIDATE_S, getCountries, getTours, siteUrl } from "@/lib/catalog";
+import { getCountries, getTours, siteUrl } from "@/lib/catalog";
 import { EmptyState, ErrorState, Icon, Photo } from "@/ui";
 
-export const revalidate = CATALOG_REVALIDATE_S;
+// Route segment config must be a literal (Next 15 reads it statically and fails the build on an
+// imported constant). Keep it equal to CATALOG_REVALIDATE_S (lib/segmentConfig.test.ts checks).
+export const revalidate = 1800;
 
 // The layout's title/description apply; the home only adds its canonical URL.
 export const metadata: Metadata = { alternates: { canonical: "/" } };

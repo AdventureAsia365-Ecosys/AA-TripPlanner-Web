@@ -5,7 +5,7 @@
 // activity iconography (replaces the emoji maps that were duplicated in
 // lib/types.ts and DestinationPopup.tsx).
 
-import type { SVGProps } from "react";
+import type { JSX, SVGProps } from "react";
 
 type IconProps = { size?: number } & SVGProps<SVGSVGElement>;
 
