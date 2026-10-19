@@ -197,7 +197,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   never creates roles or extensions (those live in Infra `db/migrations/roles/`). CI job "Migrations"
   enforces this: `migrations/tests/migration_lint.py` (TripPlanner rules), the AA-CIS-Infra
   `db/run_migration.py --inspect` lint at a pinned commit (`test_infra_runner.py`) and a replay of
-  tp-001…013 on PostgreSQL 15 + pgvector (`test_tp013_pg.py`). Undoing tp-013 is the prepared Infra
+  tp-001…013 on PostgreSQL 15 + pgvector (`test_tp013_pg.py`; `test_tp015_pg.py` continues it with tp-014/015 as
+  `tp_owner`). Undoing tp-013 is the prepared Infra
   `roles/` file (branch `feat/x1-s7-tp013-undo`) run as the master, never a `tripplanner/` file.
 - **Only CIS writes content** (root ADR 0002, 01/10/2026). This repo writes only `tripplanner.*`
   user state (sessions, drafts, customers, trip events) and `shared.llm_call_log`. The DB role
@@ -215,8 +216,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `source_id`, live tours only, no AA tenant needed; `backend/shared/places_source.py`). Every browse
   response carries `x-places-source`. The **assembly** readers (`events._current_components`,
   suggestions, coverage, activities, apply-route, handoff `leg_chain`) stay on the frozen tables until
-  slice 6c, which ships with the component id-map migration (next free key, tp-015 or later: tp-013
-  and tp-014 went to X1, AA-852); the views' component ids are new stable
+  slice 6c, which ships with the component id-map migration (next free key, tp-016 or later: tp-013
+  and tp-014 went to X1, AA-852, tp-015 to AA-858); the views' component ids are new stable
   uuid5 ids, so `cis` is set on both Lambdas together, in that window, not before.
 - Photos (AA-708, 01/10/2026): AA marketing photos are synced and matched by CIS (`photo_sync`,
   `shared.place_photo`). This repo reads them only through `shared.v_destination_photos` /
@@ -337,6 +338,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 | AA-CIS-App (content) | `gold_aa_internal.published_tours` (tenant RLS, AA tenant set per transaction), `acp_contract.v_active_tour_atoms` (place/activity columns), `shared.destinations`, `shared.v_destination_photos` / `v_tour_photos` | — | CIS migrations 180 / 216, 201 |
 | AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
 | AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 / v1.2 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.2.json` (payload `version` 1.2 since AA-830: each leg also carries the catalog tour key `source_system` + `source_id`, resolved against `catalog.v_tour` at send time, both null when unresolvable; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
+| AA-CIS-App (admin overview, AA-858) | — | — (it **reads** `tripplanner.v_ops_traffic_daily`: per UTC day `planner_session_started`, `trip_started`, `trip_edited`, `inquiry_sent`, aggregates only, last 400 days; contract `ops.overview.v1`, metric names append-only) | migration tp-015 grants role `cis_app` (the CIS runtime from X1 S18; until then the CIS runtime `aa_cis_admin` reads it through its `tp_owner` membership) USAGE on schema `tripplanner` + SELECT on the view only |
 | AA-CIS-Infra | — | — | owns the Lambdas, API Gateway, OIDC deploy role, secrets and the DB Migrate workflow that applies `migrations/` |
 
 Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
