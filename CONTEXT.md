@@ -101,6 +101,14 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   calls a text model here.
 - Runtime: **Python 3.12**. The two functions are separate deploy units so the cacheable read
   path and the expensive stateful path scale and cache independently.
+- **Edge shared secret** (`backend/shared/auth.py`, AA-878): both Lambdas check the
+  `X-TripPlanner-Key` header the BFF sends (Vercel env `TRIPPLANNER_API_KEY`, same value). On Lambda
+  the expected key is read from Secrets Manager by the name `tripplanner/<ENVIRONMENT>/api-key`
+  (derived from the existing `ENVIRONMENT` env, IAM-role read, cached 10 min per container so a
+  rotation lands without a redeploy); a `TRIPPLANNER_API_KEY` env value still wins (local dev). It
+  **fails closed**: on Lambda a missing, unreadable, empty or `REPLACE_ME` key answers 503
+  (`{"evt":"api_key_unavailable"}` log line, no value). Only off Lambda with no env key is the gate
+  disabled (local dev, unit tests). The secret itself is Infra's (`tripplanner.tf`).
 
 ### Guest identity (AA-827)
 
