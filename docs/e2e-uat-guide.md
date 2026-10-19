@@ -14,7 +14,6 @@ sed -i 's/\r$//' backend/.env frontend/.env.local
 ### backend/.env — required keys
 ```
 TRIPPLANNER_DATABASE_URL=postgresql://<real-user>:<real-pass>@localhost:<tunnel-port>/<dbname>
-MAPBOX_GEOCODING_TOKEN=<your token>        # ✅ verified working
 BEDROCK_ROLE_NAME=<cross-account role name>
 BEDROCK_REGION=us-west-2
 BEDROCK_ACCT_PRIMARY=<acc3-account-id>   # no default since AA-902 (account map: private AA-Ecosys repo)
