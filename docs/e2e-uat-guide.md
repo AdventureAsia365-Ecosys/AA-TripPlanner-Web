@@ -17,7 +17,8 @@ TRIPPLANNER_DATABASE_URL=postgresql://<real-user>:<real-pass>@localhost:<tunnel-
 MAPBOX_GEOCODING_TOKEN=<your token>        # ✅ verified working
 BEDROCK_ROLE_NAME=<cross-account role name>
 BEDROCK_REGION=us-west-2
-# BEDROCK_ACCT_PRIMARY / FALLBACK / MODEL_* have sensible defaults
+BEDROCK_ACCT_PRIMARY=<acc3-account-id>   # no default since AA-902 (account map: private AA-Ecosys repo)
+BEDROCK_ACCT_FALLBACK=<acc1-account-id>
 # ADVISOR_NOTIFY_EMAIL is optional (log label only): AA-Booking sends the staff e-mail (AA-811)
 REQUIRE_REGISTRATION_BEFORE_HANDOFF=true
 ```

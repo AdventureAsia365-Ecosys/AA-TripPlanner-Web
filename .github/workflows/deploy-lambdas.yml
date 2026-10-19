@@ -8,11 +8,14 @@ name: Deploy Lambdas
 #
 # Prereqs (one-time, done in AA-CIS-Infra apply):
 #   - the two Lambdas + the artifacts bucket + the OIDC deploy role exist.
-# Repo configuration (Settings -> Secrets and variables -> Actions -> Variables):
-#   - AWS_DEPLOY_ROLE_ARN   (default below if unset)
-#   - LAMBDA_ARTIFACTS_BUCKET (default below if unset)
-# Both are non-secret identifiers; the defaults match the dev account so the
-# workflow works out of the box, and can be overridden per environment.
+# Repo configuration (Settings -> Secrets and variables -> Actions):
+#   - secret AWS_DEPLOY_ROLE_ARN: the OIDC deploy role (AA-CIS-Infra output of
+#     aws_iam_role.tripplanner_app_deploy). Required. A SECRET, not a variable,
+#     so the account ID inside it is masked in this public repo's run logs
+#     (AA-902: no account ID in tracked files or public logs).
+#   - variable LAMBDA_ARTIFACTS_BUCKET (optional): defaults to
+#     aa-tripplanner-dev-lambda-artifacts-<account of the assumed role>, read
+#     from STS after the OIDC login; the account ID is masked in the log.
 
 on:
   workflow_dispatch:
@@ -32,8 +35,7 @@ concurrency:
 
 env:
   AWS_REGION: us-west-1
-  AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN || 'arn:aws:iam::005097885195:role/aa-tripplanner-dev-app-deploy' }}
-  ARTIFACTS_BUCKET: ${{ vars.LAMBDA_ARTIFACTS_BUCKET || 'aa-tripplanner-dev-lambda-artifacts-005097885195' }}
+  ARTIFACTS_BUCKET_STEM: aa-tripplanner-dev-lambda-artifacts
   BROWSE_FUNCTION: aa-tripplanner-dev-browse
   ASSEMBLY_FUNCTION: aa-tripplanner-dev-assembly
 
@@ -52,14 +54,32 @@ jobs:
       - name: Build Lambda zips
         run: bash backend/package_lambdas.sh
 
+      - name: Check AWS_DEPLOY_ROLE_ARN
+        env:
+          HAS_ROLE: ${{ secrets.AWS_DEPLOY_ROLE_ARN != '' }}
+        run: |
+          if [ "${HAS_ROLE}" != "true" ]; then
+            echo "::error::Secret AWS_DEPLOY_ROLE_ARN is not set (AA-CIS-Infra output of the tripplanner deploy role); nothing deployed."
+            exit 1
+          fi
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
 
-      - name: Verify identity
-        run: aws sts get-caller-identity
+      # The account ID is masked from here on (::add-mask:: and the action's own mask).
+      - name: Verify identity + resolve the artifacts bucket
+        env:
+          BUCKET_OVERRIDE: ${{ vars.LAMBDA_ARTIFACTS_BUCKET }}
+        run: |
+          set -euo pipefail
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::${account}"
+          aws sts get-caller-identity --query Arn --output text
+          echo "ARTIFACTS_BUCKET=${BUCKET_OVERRIDE:-${ARTIFACTS_BUCKET_STEM}-${account}}" >> "$GITHUB_ENV"
 
       - name: Upload artifacts to S3
         run: |

@@ -164,6 +164,19 @@ def test_missing_role_raises(monkeypatch):
         gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory)
 
 
+
+def test_unset_satellite_account_fails_over_without_an_sts_call(monkeypatch):
+    """AA-902: no account-ID default in this public repo; an unset acc3 id is skipped, not assumed."""
+    monkeypatch.setattr(config, "BEDROCK_ACCT_PRIMARY", "")
+    arns: list = []
+    factory = make_factory({"acc3": StubBedrock(response=_claude_reply()),
+                            "acc1": StubBedrock(response=_claude_reply())}, arns)
+    _, call = gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory)
+    assert call.account == "acc1"
+    assert arns == ["arn:aws:iam::222222222222:role/FallbackBedrockRole"]
+    with pytest.raises(bs.BedrockError, match="BEDROCK_ACCT_PRIMARY is unset"):
+        gw._satellite_target("acc3")
+
 # --- embed_texts ----------------------------------------------------------------
 
 def test_embed_is_direct_on_acc2_and_reads_token_header():
