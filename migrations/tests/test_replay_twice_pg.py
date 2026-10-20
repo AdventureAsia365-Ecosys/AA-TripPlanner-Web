@@ -4,7 +4,8 @@ Runs only with ``--pg-dsn`` (a SUPERUSER DSN of a throwaway LOCAL Postgres, see 
 refused). CI job "Migrations (lint, PG 15 replay)" runs it on PostgreSQL 15 + pgvector with ``--fail-on-skip``.
 
 Stand-in: the one of test_tp013_pg.py (roles, the NOSUPERUSER master ``aa_cis_admin``, ``shared.schema_versions``,
-the live default privileges FOR ROLE aa_cis_admin), then:
+the live default privileges FOR ROLE aa_cis_admin) plus the CIS runtime role ``cis_app`` of test_tp015_pg.py (tp-015
+raises when it is missing), then:
 
   * pass 1: every file in file order (002 before 001, tp-001's FK), each as the role DB Migrate would use: the live
     owner of schema ``tripplanner`` read before the file (XD8), i.e. the login role ``aa_cis_admin`` until tp-013
@@ -28,6 +29,7 @@ import pytest
 from migration_lint import NAME_RE, REGISTRY_FROM, TRANSFER, migration_files, migration_role
 from test_tp013_pg import pg_dsn  # noqa: F401  (fixture: --pg-dsn, local only, --pg-major / --pg-require-vector)
 from test_tp013_pg import BOOTSTRAP_ROLES, CIS_243_GRANTS, LIVE_STANDINS, _dsn, _replay_text, run
+from test_tp015_pg import CIS_READER
 
 asyncpg = pytest.importorskip("asyncpg")
 
@@ -142,6 +144,9 @@ def replay(pg_dsn):  # noqa: F811
         su = await asyncpg.connect(pg_dsn)
         try:
             await su.execute(BOOTSTRAP_ROLES)
+            # cis_app is cluster-global and tp-015 requires it; create it here so the module does not depend on
+            # test_tp015_pg.py having run first on the same cluster (CI starts a fresh one each run).
+            await su.execute(CIS_READER)
             await su.execute(f"ALTER ROLE aa_cis_admin PASSWORD '{password}'")
             await su.execute(f'CREATE DATABASE "{name}" OWNER aa_cis_admin')
         finally:
