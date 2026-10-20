@@ -232,7 +232,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   enforces this: `migrations/tests/migration_lint.py` (TripPlanner rules), the AA-CIS-Infra
   `db/run_migration.py --inspect` lint at a pinned commit (`test_infra_runner.py`) and a replay of
   tp-001…013 on PostgreSQL 15 + pgvector (`test_tp013_pg.py`; `test_tp015_pg.py` continues it with tp-014/015 as
-  `tp_owner`). Undoing tp-013 is the prepared Infra
+  `tp_owner`). `test_replay_twice_pg.py` (AA-849) applies every file twice: the second run must not error and
+  must change nothing, and the registered `tp-NNN` keys must equal the files, so **every new file must be
+  safe to run again** (`IF NOT EXISTS`, `CREATE OR REPLACE`, `ON CONFLICT (version) DO NOTHING`, no
+  unguarded seed rows). Nothing in that job may be skipped (`--fail-on-skip`). Undoing tp-013 is the prepared Infra
   `roles/` file (branch `feat/x1-s7-tp013-undo`) run as the master, never a `tripplanner/` file.
 - **Only CIS writes content** (root ADR 0002, 01/10/2026). This repo writes only `tripplanner.*`
   user state (sessions, drafts, customers, trip events) and `shared.llm_call_log`. The DB role
