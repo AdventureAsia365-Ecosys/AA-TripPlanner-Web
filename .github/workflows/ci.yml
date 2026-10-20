@@ -51,7 +51,10 @@ jobs:
   #      no role membership GRANT, no set_config('role')), offline;
   #   2. test_tp013_pg.py: replay of tp-001…013 on PostgreSQL 15 + pgvector (the RDS Dev major) as a
   #      NOSUPERUSER stand-in of the master: owners, raw ACLs, default privileges, runtime DML, booking
-  #      view-only read, a later file run as tp_owner;
+  #      view-only read, a later file run as tp_owner; test_tp015_pg.py the same up to tp-015;
+  #      test_replay_twice_pg.py (AA-849): every file applied twice, each as the role DB Migrate uses
+  #      (live owner of schema tripplanner, XD8); the second pass must not error and must change nothing
+  #      (catalog, row counts, registry rows), and the registered tp-NNN keys must equal the files;
   #   3. The DB Migrate runner lint (AA-CIS-Infra run_migration.py --inspect) runs in AA-CIS-Infra's
   #      required 'Migration lint and unique numbers' check on the byte copy, before any apply (S241:
   #      no cross-repo token or deploy key here; test_infra_runner.py stays for local runs).
@@ -82,16 +85,25 @@ jobs:
           sudo pg_createcluster 15 x1 --port 5433 --start -- --auth=trust
           psql "postgresql://postgres@127.0.0.1:5433/postgres" -Atc "SELECT version()"
 
-      - name: Migration lint + tp-013 replay on PostgreSQL 15
+      - name: Migration lint + replays (tp-013, tp-015, every file twice) on PostgreSQL 15
+        # Nothing may be skipped (AA-849): --fail-on-skip makes pytest exit non-zero on any skipped,
+        # xfailed, xpassed or deselected test (a whole module skipped at collection included); the grep
+        # below is the backstop if the option were ever dropped, and each replay module must report PASSED
+        # lines, so deleting or renaming one cannot pass silently.
         run: |
           set -o pipefail
           pytest migrations/tests -v --tb=short -rs -p no:cacheprovider \
-            --ignore=migrations/tests/test_infra_runner.py \
+            --ignore=migrations/tests/test_infra_runner.py --fail-on-skip \
             --pg-dsn postgresql://postgres@127.0.0.1:5433/postgres --pg-major 15 --pg-require-vector \
             | tee /tmp/migrations.txt
-          if grep -qE "[0-9]+ skipped" /tmp/migrations.txt; then
-            echo "::error::migration tests were skipped"; exit 1
+          if grep -qE "[0-9]+ (skipped|xfailed|xpassed|deselected)" /tmp/migrations.txt; then
+            echo "::error::migration tests were skipped, xfailed, xpassed or deselected"; exit 1
           fi
+          for module in test_migration_lint test_tp013_pg test_tp015_pg test_replay_twice_pg; do
+            if ! grep -qE "^migrations/tests/${module}\.py::[^ ]+ PASSED" /tmp/migrations.txt; then
+              echo "::error::${module}.py reported no PASSED test"; exit 1
+            fi
+          done
 
   frontend:
     name: Frontend (lint + build)
