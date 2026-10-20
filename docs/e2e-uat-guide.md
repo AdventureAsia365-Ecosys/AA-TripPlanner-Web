@@ -91,7 +91,7 @@ npm --prefix frontend run dev      # http://localhost:3000
 ```
 
 ## 6. UAT click-path (acceptance)
-1. Open http://localhost:3000 → map with destination pins (clustered
+1. Open `http://localhost:3000` → map with destination pins (clustered
    where dense). No default country tab.
 2. Pan/zoom → pins refresh for the visible 1° tiles.
 3. Click an activity chip (e.g. trekking) → pins narrow.
