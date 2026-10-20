@@ -10,8 +10,11 @@ name: Docs lint
 # Not repeated here: literal resource IDs are already blocked in every tracked file by the required
 # "Backend (pytest)" job in ci.yml (.github/scripts/check_resource_ids.py, AA-902).
 #
-# No path filter, so the "Docs lint" check reports on every PR and can be added to the required checks. It takes
-# under a minute; Actions minutes are free on a public repo. No AWS, no secrets beyond the read-only token.
+# No path filter, so the "Docs lint" check reports on every PR and can be a required check on main.
+# Required checks live in branch protection, not in this file; status and command:
+# docs/implementation-notes/AA-888-docs-lint.md ("Should know").
+# The job takes under a minute; Actions minutes are free on a public repo. No AWS, no secrets beyond the read-only
+# token.
 on:
   pull_request:
     branches: [main]

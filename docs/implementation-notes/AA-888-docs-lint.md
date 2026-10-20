@@ -11,7 +11,7 @@
 - Root-only `check_alarm_runbooks.py` is not copied: no generated alarm catalog here.
 - No resource-ID step in the docs job: `.github/scripts/check_resource_ids.py` already blocks literal IDs in every
   tracked file from the required "Backend (pytest)" job in `ci.yml` (AA-902). `ci.yml` is untouched.
-- No path filter, so "Docs lint" reports on every PR and can become a required check later.
+- No path filter, so "Docs lint" reports on every PR and can be a required check on main (status in Should know).
 - Weekly cron Monday 01:35 UTC, after root (01:17), AA-Booking (01:23) and AA-CIS-Infra (01:29).
 
 ## Changed
@@ -31,3 +31,14 @@
 - Done-when evidence comes from a throwaway draft PR (branch `test/docs-lint-red`) with an `sg-` ID and a
   backslash-continued `aws` command: expected red on "Docs lint" (AWS CLI) and on "Backend (pytest)" (resource ID).
 - Local run: `tools/docs/README.md`. Drift check against the root copy: the `cmp` loop in that README.
+- **"Docs lint" is not a required check yet.** Live required checks on `main` (2026-10-20): "Backend (pytest)" and
+  "Frontend (lint + build)" only. Until it is added, a red "Docs lint" (backslash-continued `aws`, broken internal
+  link, bad front-matter) does not block a merge, auto-merge included, since that waits only for required checks.
+  Resource IDs stay blocked: that check runs in the required "Backend (pytest)" job.
+- **Post-merge step (orchestrator, repo admin):** after this PR merges, add the check to branch protection and read
+  the list back:
+  `gh api -X POST repos/AdventureAsia365-Ecosys/AA-TripPlanner-Web/branches/main/protection/required_status_checks/contexts -f 'contexts[]=Docs lint'`
+  `gh api repos/AdventureAsia365-Ecosys/AA-TripPlanner-Web/branches/main/protection/required_status_checks --jq .contexts`
+  Not done in this branch: it is a repo setting, and adding it before the merge would block every open PR, because
+  none of them runs the workflow yet. PRs opened before the merge get the check on their next push or re-run (the
+  `pull_request` event reads workflows from the merge ref).
