@@ -58,6 +58,9 @@ export interface TourPlace {
   lat: number | null;
   lng: number | null;
   activity_types: string[];
+  // catalog.tour v1.1 (CIS 228, AA-847): how the point was located; "area" is drawn as an area
+  located_by?: "geoapify" | "mapbox" | "llm" | "manual" | null;
+  precision?: "point" | "area" | null;
 }
 
 export interface CatalogPhoto {
@@ -120,6 +123,8 @@ export interface CountryPlace {
   tour_count: number;
   activity_types: string[];
   cover_url: string | null;
+  located_by?: "geoapify" | "mapbox" | "llm" | "manual" | null;
+  precision?: "point" | "area" | null;
 }
 
 export interface DestinationPage {

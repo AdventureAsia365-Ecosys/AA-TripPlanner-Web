@@ -3,6 +3,12 @@
 // out and the place list next to it carries the information.
 
 import type { MapPoint } from "@/lib/tourMap";
+import { GEOCODE_ATTRIBUTION, needsGeocodeAttribution } from "@/lib/types";
+
+// AA-847 (ADR 0007): an approximate point (precision "area": the model's point, not a geocoded one) gets a
+// muted pin, so it never reads as an exact spot; the caption says so.
+const PIN_EXACT = "db9628";
+const PIN_AREA = "9aa0a6";
 
 const MAX_PINS = 25; // keeps the URL well under Mapbox's 8192-char limit
 
@@ -22,7 +28,8 @@ export function staticMapUrl(points: MapPoint[], opts: { route?: boolean; width?
   }
   pts.forEach((p, i) => {
     const label = i < 99 ? String(i + 1) : "";
-    overlays.push(`pin-s${label ? `-${label}` : ""}+db9628(${r6(p.lng)},${r6(p.lat)})`);
+    const color = p.precision === "area" ? PIN_AREA : PIN_EXACT;
+    overlays.push(`pin-s${label ? `-${label}` : ""}+${color}(${r6(p.lng)},${r6(p.lat)})`);
   });
   const w = opts.width ?? 800;
   const h = opts.height ?? 480;
@@ -44,12 +51,28 @@ export default function StaticMap({
 }) {
   const url = staticMapUrl(points, { route });
   if (!url) return null;
+  const shown = points.slice(0, MAX_PINS);
+  const approximate = shown.some((p) => p.precision === "area");
+  const geoapify = needsGeocodeAttribution(shown);
   return (
     <figure className="overflow-hidden rounded-2xl border border-k-line bg-k-card">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={url} alt={`Map: ${title}`} loading="lazy" className="aspect-[5/3] w-full object-cover" />
       <figcaption className="px-3 py-2 text-[11px] text-k-muted">
-        {caption ? `${caption} ` : ""}© Mapbox © OpenStreetMap
+        {caption ? `${caption} ` : ""}
+        {approximate ? "Grey pins mark an approximate area. " : ""}© Mapbox © OpenStreetMap
+        {geoapify && (
+          <>
+            {" · "}
+            <a href={GEOCODE_ATTRIBUTION.geoapify.href} target="_blank" rel="noopener noreferrer" className="underline">
+              {GEOCODE_ATTRIBUTION.geoapify.label}
+            </a>
+            {" · "}
+            <a href={GEOCODE_ATTRIBUTION.osm.href} target="_blank" rel="noopener noreferrer" className="underline">
+              {GEOCODE_ATTRIBUTION.osm.label}
+            </a>
+          </>
+        )}
       </figcaption>
     </figure>
   );

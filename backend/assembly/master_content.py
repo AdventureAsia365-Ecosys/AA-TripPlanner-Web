@@ -30,6 +30,15 @@ from typing import Any, Optional, Protocol
 
 
 from backend import config
+from backend.shared import places_source
+
+# AA-847 slice 6c (PLACES_SOURCE=cis): component tour keys are catalog source_ids; catalog.v_tour carries the same
+# aa_itineraries text as itinerary_text (live tours only, no AA tenant needed).
+CIS_TEXTS_SQL = """
+    SELECT source_id AS tour_id, itinerary_text AS aa_itineraries
+    FROM catalog.v_tour
+    WHERE source_id = ANY($1::text[]) AND itinerary_text IS NOT NULL
+"""
 
 
 class _Conn(Protocol):
@@ -77,9 +86,11 @@ async def load_for_tours(
 
     Returns {(tour_id, day_index): day_text}. Tours with no itinerary text
     or no parseable day headers simply contribute nothing."""
-    ids = [t for t in {str(t) for t in tour_ids} if t]
+    ids = sorted(t for t in {str(t) for t in tour_ids if t} if t)
     if not ids:
         return {}
+    if places_source.is_cis():
+        return _parsed(await conn.fetch(CIS_TEXTS_SQL, ids))
     sql = """
         SELECT tour_id::text AS tour_id, aa_itineraries
         FROM gold_aa_internal.published_tours
@@ -99,6 +110,10 @@ async def load_for_tours(
             rows = await conn.fetch(sql, ids)
     else:
         rows = await conn.fetch(sql, ids)
+    return _parsed(rows)
+
+
+def _parsed(rows) -> dict[tuple[str, int], str]:
     result: dict[tuple[str, int], str] = {}
     for r in rows:
         tour_id = str(r["tour_id"])
@@ -180,6 +195,25 @@ def resolve_days(itinerary: list[dict], day_texts: dict[tuple[str, int], str]) -
         if key is not None:
             taken.add(key)
         out[day] = day_texts[key] if key is not None else None
+    return out
+
+
+def guarded_days(itinerary: list[dict], day_texts: dict[tuple[str, int], str]) -> list[dict]:
+    """AA-847 (TP #86, the hand-off twin of resolve_days): the itinerary with each entry's tour day checked
+    against AA's day text. An entry whose own day text does not name its stop moves to the nearest other day of the
+    same tour that does and that no other entry has as its own day (the narration rule); otherwise it keeps its
+    day. Returns copies; a moved entry carries ``listed_day_index`` (the component row's day)."""
+    own_keys = {k for e in itinerary if (k := _own_key(e)) is not None}
+    out = []
+    for e in itinerary:
+        k = _own_key(e)
+        entry = dict(e)
+        if k is not None and day_texts.get(k) and not _confirms(e, day_texts[k]):
+            moved = _redirect(e, day_texts, own_keys)
+            if moved is not None:
+                entry["listed_day_index"] = e.get("source_day_index")
+                entry["source_day_index"] = moved[1]
+        out.append(entry)
     return out
 
 

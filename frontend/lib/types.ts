@@ -1,11 +1,19 @@
 // Shared frontend types, mirroring the backend browse/assembly contracts.
 
+// AA-847 (ADR 0007): how a place was located, on the cis places source. "geoapify" (or "manual") points are
+// pins; "llm" points carry precision "area" and are drawn as an area, never as a pinpoint. Absent on the legacy
+// source. Linear features (trails, rivers, roads) are not returned at all (CIS hides them).
+export type LocatedBy = "geoapify" | "mapbox" | "llm" | "manual";
+export type GeoPrecision = "point" | "area";
+
 export interface DestinationPin {
   id: string;
   name: string;
   lat: number;
   lng: number;
   component_count: number;
+  located_by?: LocatedBy | null;
+  precision?: GeoPrecision | null;
 }
 
 export interface Component {
@@ -25,6 +33,8 @@ export interface DestinationDetail {
   country: string;
   cover_image_url?: string | null;
   components: Component[];
+  located_by?: LocatedBy | null;
+  precision?: GeoPrecision | null;
 }
 
 export interface ItineraryDay {
@@ -38,6 +48,20 @@ export interface ItineraryDay {
   lng?: number;
   // AA-674: the component's destination (activity toggles per stop).
   destination_id?: string | null;
+  // AA-847: as DestinationPin (cis places source only).
+  located_by?: LocatedBy | null;
+  precision?: GeoPrecision | null;
+}
+
+/** AA-847 (ADR 0007, Geoapify Free plan + ODbL): shown wherever a Geoapify-located point is on screen. */
+export const GEOCODE_ATTRIBUTION = {
+  geoapify: { label: "Powered by Geoapify", href: "https://www.geoapify.com/" },
+  osm: { label: "© OpenStreetMap contributors", href: "https://www.openstreetmap.org/copyright" },
+} as const;
+
+/** Do these places need the Geoapify / OpenStreetMap attribution? */
+export function needsGeocodeAttribution(places: Array<{ located_by?: LocatedBy | null }>): boolean {
+  return places.some((p) => p.located_by === "geoapify");
 }
 
 export interface BrowseFilters {

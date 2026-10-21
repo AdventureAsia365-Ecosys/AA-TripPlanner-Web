@@ -14,6 +14,11 @@ key `source_system` + `source_id`, resolved at send time against catalog.v_tour 
 A key the catalog does not know (tour left the catalog) or an unreadable catalog leaves both null: the
 hand-off is never refused over it, and AA-Booking reports the leg as unmatched.
 
+Day guard (AA-847, TP #86): a component row's tour day can be wrong (AA-819). The legs use the same check as the
+narration (master_content.guarded_days): a day whose AA text does not name the stop moves to the nearest day of
+the same tour that does; `days[]` keeps the component's own row. AA text that cannot be read leaves the days as
+they are (never refuses a hand-off).
+
 Identity (S235 security fix): no customer field is verified — TripPlanner has no OTP; AA-Booking will
 own identity and verification. Every customer object therefore carries `verified: false`. When the
 submitted phone/email matched someone else's stored customer, the session is not linked to it
@@ -27,6 +32,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol
 
+from backend.assembly import master_content
 from backend.assembly.registration import normalise_contact
 
 log = logging.getLogger(__name__)
@@ -111,6 +117,19 @@ async def resolve_tour_keys(conn: _Conn, keys: list[str]) -> dict[str, TourKey]:
     return {k: by_source.get(k) or by_tour[k] for k in wanted if k in by_source or k in by_tour}
 
 
+async def load_day_texts(conn: _Conn, keys: list) -> dict[tuple[str, int], str]:
+    """AA's day texts for the day guard; {} when unreadable. In a savepoint when the connection has one, so a
+    failed read never aborts the hand-off transaction."""
+    try:
+        if hasattr(conn, "transaction"):
+            async with conn.transaction():
+                return await master_content.load_for_tours(conn, keys)
+        return await master_content.load_for_tours(conn, keys)
+    except Exception as exc:  # noqa: BLE001 — the guard is best effort, the hand-off is not
+        log.warning("day texts unreadable, hand-off legs use the component days: %s", type(exc).__name__)
+        return {}
+
+
 def with_tour_keys(legs: list[dict], tour_keys: dict[str, TourKey]) -> list[dict]:
     """Add source_system + source_id to each leg (both None when the key is unresolved), keeping the
     contract's field order: position, source_tour_id, source_system, source_id, day_from, day_to."""
@@ -132,9 +151,12 @@ def build_payload(
     custom_days: list[dict],
     tour_keys: Optional[dict[str, TourKey]] = None,
     submitted_at: Optional[datetime] = None,
+    day_texts: Optional[dict[tuple[str, int], str]] = None,
 ) -> dict:
     """The v1.2 payload. `tour_keys` (resolve_tour_keys) maps source_tour_id to the catalog key; a leg
-    whose key is missing carries source_system / source_id null."""
+    whose key is missing carries source_system / source_id null. `day_texts` (AA's day texts of the tours,
+    master_content.load_for_tours) turn on the day guard of the legs (AA-847)."""
+    legs_from = master_content.guarded_days(itinerary, day_texts) if day_texts else itinerary
     submitted_at = submitted_at or datetime.now(timezone.utc)
     return {
         "contract": EVENT,
@@ -146,7 +168,7 @@ def build_payload(
         "submitted_at": submitted_at.isoformat(),
         "customer": customer,
         "itinerary": {
-            "legs": with_tour_keys(leg_chain(itinerary), tour_keys or {}),
+            "legs": with_tour_keys(leg_chain(legs_from), tour_keys or {}),
             "days": [
                 {
                     "day": e["day"],
@@ -229,8 +251,10 @@ async def write_inquiry(
     if customer is None and submitted is not None:
         customer = submitted
     tour_keys = await resolve_tour_keys(conn, [e.get("source_tour_id") for e in itinerary])
+    day_texts = await load_day_texts(conn, [e.get("source_tour_id") for e in itinerary])
     payload = build_payload(trip_id=trip_id, handoff_id=handoff_id, customer=customer,
-                            itinerary=itinerary, custom_days=custom_days, tour_keys=tour_keys)
+                            itinerary=itinerary, custom_days=custom_days, tour_keys=tour_keys,
+                            day_texts=day_texts)
     key = payload["idempotency_key"]
     await conn.execute(
         "INSERT INTO tripplanner.outbox (event, schema_version, idempotency_key, aggregate_id, payload) "

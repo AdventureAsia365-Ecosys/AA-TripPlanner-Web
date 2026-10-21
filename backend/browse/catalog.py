@@ -78,7 +78,7 @@ TOUR_DAYS_SQL = """
 TOUR_PLACES_SQL = """
     SELECT day_number, position, place_name, place_card_id::text AS place_card_id, place_display_name,
            locality, region, country, destination_id::text AS destination_id, destination_name, lat, lng,
-           activity_types, atom_count
+           activity_types, atom_count, located_by, precision
     FROM catalog.v_tour_place WHERE tour_id = $1::uuid
     ORDER BY day_number NULLS LAST, position
 """
@@ -107,7 +107,7 @@ COUNTRIES_SQL = f"""
 # join on the computed country slug would make it build every tour's places first (AA-812 review).
 COUNTRY_PLACES_SQL = """
     SELECT p.destination_id::text AS destination_id, p.destination_name, p.lat, p.lng,
-           p.tour_id::text AS tour_id, p.activity_types
+           p.tour_id::text AS tour_id, p.activity_types, p.located_by, p.precision
     FROM catalog.v_tour_place p
     WHERE p.tour_id = ANY($1::uuid[])
       AND p.destination_id IS NOT NULL AND p.lat IS NOT NULL AND p.lng IS NOT NULL
@@ -505,7 +505,9 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
                                "place_display_name", "locality", "region", "country",
                                "destination_id", "destination_name", "atom_count")}
             | {"lat": _num(p["lat"]), "lng": _num(p["lng"]),
-               "activity_types": list(p["activity_types"] or [])}
+               "activity_types": list(p["activity_types"] or []),
+               # AA-847 (ADR 0007): 'area' is drawn as an area; 'geoapify' needs the attribution
+               **_geo(p)}
             for p in places
         ],
         "photos": [
@@ -540,13 +542,19 @@ async def list_countries(*, pool: Any) -> dict:
     return {"countries": out}
 
 
+def _geo(r: Any) -> dict:
+    """``located_by`` / ``precision`` of a v_tour_place row (None when the row has no such column)."""
+    keys = r.keys() if hasattr(r, "keys") else ()
+    return {k: (r[k] if k in keys else None) for k in ("located_by", "precision")}
+
+
 def aggregate_places(rows: Iterable[Any], limit: int = TOP_PLACES_PER_COUNTRY) -> list[dict]:
     """Group place rows of a country's tours by destination: how many tours pass, top activities."""
     by: dict[str, dict] = {}
     for r in rows:
         d = by.setdefault(r["destination_id"], {
             "destination_id": r["destination_id"], "name": r["destination_name"],
-            "lat": _num(r["lat"]), "lng": _num(r["lng"]), "_tours": set(), "_acts": {},
+            "lat": _num(r["lat"]), "lng": _num(r["lng"]), "_tours": set(), "_acts": {}, **_geo(r),
         })
         d["_tours"].add(r["tour_id"])
         for a in r["activity_types"] or []:

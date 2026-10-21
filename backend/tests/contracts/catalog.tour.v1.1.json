@@ -1,0 +1,463 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://adventure.asia/contracts/catalog.tour.v1.1.json",
+  "title": "catalog.tour v1.1 (CIS → AA-Booking, TripPlanner)",
+  "description": "One live AA tour as the CIS catalog read model exposes it (ADR 0001 decision 1, AA-679). Assembled from the views of schema `catalog` (CIS migration 225): the tour fields are one row of catalog.v_tour, `days` are its catalog.v_tour_day rows, `places` its catalog.v_tour_place rows, `photos` its catalog.v_tour_photo rows. Only tours whose Master Content is active and whose source is the active version appear; a tour that leaves the catalog (inactive, trashed, superseded) is simply absent. Key = (source_system, source_id), stable across re-uploads; tour_id is the current CIS version and changes on re-upload. A consumer re-syncs a tour when content_hash changes. No prices: prices are AA-Booking's (ADR 0005). Events catalog.tour.published / updated / trashed (outbox) come in a later additive version; until then consumers poll catalog.v_tour. v1.1 (S237, CIS migration 228, AA-712): additive over v1 — places[] gain located_by and precision; places[].destination_id now comes from the CIS place pipeline's link first (then the place card, then the v1 exact name + country match), and a suspect or duplicate destination is never returned (destination_id, destination_name, lat, lng null). catalog.v_destination gains geo_status, located_by, precision (rows of catalog.graph.v1 point at it). Consumers must accept version 1 and 1.1.",
+  "type": "object",
+  "required": [
+    "contract",
+    "version",
+    "source_system",
+    "source_id",
+    "tour_id",
+    "slug",
+    "title",
+    "country",
+    "content_hash",
+    "published_at",
+    "updated_at",
+    "days",
+    "places",
+    "photos"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "const": "catalog.tour"
+    },
+    "version": {
+      "enum": [
+        1,
+        1.1
+      ],
+      "description": "major.minor; 1.1 is additive over 1"
+    },
+    "source_system": {
+      "const": "cis"
+    },
+    "source_id": {
+      "type": "string",
+      "description": "Stable CIS id of the tour: silver_aa_internal.raw_tours.source_group_id (a uuid string). The sync key together with source_system (contracts README rule 3; 'external_ref' in older docs)."
+    },
+    "tour_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Current CIS version of the tour (raw_tours.tour_id). Changes on re-upload; never use it as the key."
+    },
+    "source_version": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "raw_tours.source_version — increments on each re-upload of the same source_id"
+    },
+    "sku": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "slug": {
+      "type": "string",
+      "description": "URL hint: '<title>-<country>' lowercased, non [a-z0-9] runs replaced by '-', max 80 chars, then '-' + first 8 hex of source_id. Unique; changes when the title changes. Not an identity."
+    },
+    "title": {
+      "type": "string"
+    },
+    "subtitle": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "highlights": {
+      "description": "AA master highlights (published_tours.aa_highlights, JSON as authored — usually an array of strings)"
+    },
+    "country": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Country name as CIS normalises it (raw_tours.country, e.g. 'Vietnam', 'Sri Lanka'). ISO codes are not part of v1 (open decision, AA-679)."
+    },
+    "duration_raw": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Source duration text"
+    },
+    "duration_days": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "First 'N day(s)' in duration_raw, else the highest day number of the canonical itinerary; null when neither exists"
+    },
+    "activities": {
+      "description": "Source activities (raw_tours.activities JSON as ingested)"
+    },
+    "inclusions": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exclusions": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "best_time_to_go": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "group_size": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lifecycle_stage": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Sales lifecycle of the source: active | phasing_out | retired (catalog does not filter on it)"
+    },
+    "itinerary_text": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Whole AA master itinerary. Canonical form 'Day N — Title\\nBody' blocks; a non-canonical (legacy) text yields no `days`."
+    },
+    "cover_photo_path": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Path relative to the CIS public API base: GET {base}{path}?size=large|small returns the image (Dev base https://api-cis.lumiguides.it.com)"
+    },
+    "photo_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "published_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Latest of published_at and the tour's photo updates. Informative only, NOT a change cursor: published_tours has no updated_at, so an in-place Master Content edit changes content_hash without moving updated_at. Detect changes by diffing content_hash."
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "md5 over every content field above (incl. cover photo path). Changes iff the content a consumer copies changes."
+    },
+    "days": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "day_number",
+          "title",
+          "body",
+          "places"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "day_number": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "places": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "place_name of this day's `places`, in position order (see places[].position)"
+          }
+        }
+      }
+    },
+    "places": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "day_number",
+          "position",
+          "place_name",
+          "activity_types",
+          "atom_count"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "day_number": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "null = mentioned by the tour without a day"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based order within the day: order of first mention (case-insensitive) in the day's title + body, i.e. itinerary order. Places the day text does not name come after, in a stable order that carries no itinerary meaning."
+          },
+          "place_name": {
+            "type": "string",
+            "description": "Place as the tour's content names it: the spelling written in the day text, else the most frequent spelling among the tour's atoms (deterministic)."
+          },
+          "place_card_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "place_display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "locality": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "destination_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "shared.destinations id (catalog.v_destination): the CIS place pipeline's link for this tour, day and place, else the place card's destination, else an exact name + country match; null = not located yet, or only a suspect / duplicate destination matched"
+          },
+          "destination_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lat": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Point of the destination. Draw it as located_by / precision say, with the Geoapify + OpenStreetMap attribution when located_by = geoapify"
+          },
+          "lng": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Point of the destination. Draw it as located_by / precision say, with the Geoapify + OpenStreetMap attribution when located_by = geoapify"
+          },
+          "activity_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "atom_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "located_by": {
+            "enum": [
+              "geoapify",
+              "llm",
+              "manual",
+              "mapbox",
+              null
+            ],
+            "description": "Who placed the point. geoapify = confirmed by the geocoder: wherever it is shown, show \"Powered by Geoapify\" (https://www.geoapify.com/) and \"© OpenStreetMap contributors\" (https://www.openstreetmap.org/copyright). llm = the model's point (usually precision area). manual = admin fix. mapbox = legacy TripPlanner row not yet re-confirmed. null = never located."
+          },
+          "precision": {
+            "enum": [
+              "point",
+              "area",
+              null
+            ],
+            "description": "point = draw a pin; area = draw an area, not a pin (unconfirmed point); null = legacy row the CIS place pipeline has not processed yet."
+          }
+        }
+      }
+    },
+    "photos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "photo_id",
+          "path",
+          "position"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "photo_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "path": {
+            "type": "string"
+          },
+          "place_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "destination_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1 = cover"
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "contract": "catalog.tour",
+      "version": 1.1,
+      "source_system": "cis",
+      "source_id": "3f0c2a8e-1b7d-4c55-9a7e-2d4b6f8a1c90",
+      "tour_id": "8d2e4f60-5a1b-4c3d-9e8f-7a6b5c4d3e2f",
+      "source_version": 2,
+      "sku": null,
+      "slug": "hanoi-and-ha-long-vietnam-3f0c2a8e",
+      "title": "Hanoi and Ha Long",
+      "subtitle": null,
+      "summary": "Summary",
+      "description": null,
+      "highlights": [
+        "Karsts"
+      ],
+      "country": "Vietnam",
+      "duration_raw": "3 days",
+      "duration_days": 3,
+      "activities": [
+        "kayaking"
+      ],
+      "inclusions": "Guide",
+      "exclusions": "Flights",
+      "best_time_to_go": null,
+      "group_size": null,
+      "lifecycle_stage": "active",
+      "itinerary_text": "Day 1 — Arrive in Hanoi\nWelcome dinner.\n\nDay 2 — Ha Long Bay\nCruise.",
+      "cover_photo_path": "/content/photos/0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9",
+      "photo_count": 1,
+      "published_at": "2026-10-01T08:00:00Z",
+      "updated_at": "2026-10-02T09:30:00Z",
+      "content_hash": "9e107d9d372bb6826bd81d3542a419d6",
+      "days": [
+        {
+          "day_number": 1,
+          "title": "Arrive in Hanoi",
+          "body": "Welcome dinner.",
+          "places": [
+            "Hanoi"
+          ]
+        },
+        {
+          "day_number": 2,
+          "title": "Ha Long Bay",
+          "body": "Cruise.",
+          "places": []
+        }
+      ],
+      "places": [
+        {
+          "day_number": 1,
+          "position": 1,
+          "place_name": "Hanoi",
+          "place_card_id": null,
+          "place_display_name": null,
+          "locality": null,
+          "region": null,
+          "country": "Vietnam",
+          "destination_id": "5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f",
+          "destination_name": "Hanoi",
+          "lat": 21.03,
+          "lng": 105.85,
+          "activity_types": [
+            "food"
+          ],
+          "atom_count": 2,
+          "located_by": "geoapify",
+          "precision": "point"
+        }
+      ],
+      "photos": [
+        {
+          "photo_id": "0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9",
+          "path": "/content/photos/0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9",
+          "place_label": "Old Quarter",
+          "destination_id": null,
+          "width": 1600,
+          "height": 1067,
+          "position": 1
+        }
+      ]
+    }
+  ]
+}

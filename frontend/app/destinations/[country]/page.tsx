@@ -69,7 +69,9 @@ export default async function DestinationRoute({ params }: Props) {
   const days = Math.min(30, Math.max(7, d.min_days ?? 7));
   const planHref = `/plan?${new URLSearchParams({ country: d.country, days: String(days) })}`;
   const listed = d.places.slice(0, LISTED_PLACES);
-  const points = listed.map((p) => ({ name: p.name ?? "", lat: p.lat, lng: p.lng }));
+  const points = listed.map((p) => ({
+    name: p.name ?? "", lat: p.lat, lng: p.lng, located_by: p.located_by, precision: p.precision,
+  }));
 
   return (
     <div className="aa-site">

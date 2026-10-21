@@ -268,11 +268,28 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   views of CIS migration 228 (`PLACES_SOURCE=cis`: `catalog.v_tour_component`, `v_tour_stop`,
   `v_tour_leg`, `v_tour_junction`, `v_destination`, contract `catalog.graph.v1`; keyed by catalog
   `source_id`, live tours only, no AA tenant needed; `backend/shared/places_source.py`). Every browse
-  response carries `x-places-source`. The **assembly** readers (`events._current_components`,
-  suggestions, coverage, activities, apply-route, handoff `leg_chain`) stay on the frozen tables until
-  slice 6c, which ships with the component id-map migration (next free key, tp-017 or later: tp-013
-  and tp-014 went to X1, AA-852, tp-015 to AA-858, tp-016 to AA-877); the views' component ids are new stable
-  uuid5 ids, so `cis` is set on both Lambdas together, in that window, not before.
+  response carries `x-places-source`. Since slice 6c (AA-847) the **assembly** readers follow the same
+  flag: `events._current_components` / `current_itinerary`, suggestions (taste, route candidates over
+  `catalog.v_graph_node` / `v_tour_stop` / `v_tour_component`, the fallback top-k), coverage (options + tour names
+  from `catalog.v_tour`), activities, apply-route, add-day and the narration day texts (`catalog.v_tour.itinerary_text`).
+  Browse search and the suggestion fallback rank through `backend/shared/vector_topk.py` with `source=CIS`: the
+  HNSW top-k scans `catalog.v_component_embedding` (CIS 253, not a security_barrier view, `tripplanner` only;
+  `hnsw.iterative_scan` on pgvector ≥ 0.8), the exact fallback `catalog.v_tour_component`. **Component ids across
+  the flip**: the views serve stable uuid5 component ids, the frozen table its own ids; `tripplanner.component_id_map`
+  (tp-017; filled once, right before the flip, by AA-CIS-Infra `db/scripts/aa847_component_id_map_fill.py`) maps an
+  old id to its catalog id, and every assembly reader resolves the ids it is given through
+  `backend/shared/component_ids.py` first (events of drafts from before the flip, and ids from browse answers a
+  browser cached for up to 30 minutes). The hand-off legs use the narration's day check (`master_content.guarded_days`,
+  TP #86): a tour day whose AA text does not name the stop moves to the nearest day that does. **Flag state:**
+  `PLACES_SOURCE=legacy` on both Lambdas until the AA-847 flip window (coverage gate 0, id-map fill, Terraform
+  `cis` on both Lambdas together, CDN invalidation); rollback = `legacy`. `tripplanner` reads no
+  `silver_aa_internal.raw_tours` / `acp_contract.tour_atoms` any more (guard in `backend/tests/test_extraction_ops.py`;
+  CIS 254 revokes those grants after the flip).
+- **Map attribution and precision (ADR 0007, AA-847)**: wherever a Geoapify-located point is shown (planner map,
+  static maps on tour / country pages, the destination popup) the page shows "Powered by Geoapify" (link) and
+  "© OpenStreetMap contributors" (`components/GeocodeAttribution.tsx`, `lib/types.ts GEOCODE_ATTRIBUTION`). A place
+  with `precision = 'area'` (the model's point) is drawn as a translucent area on the planner map and a grey pin on
+  static maps, never as an exact pin. Linear features (trails, rivers, roads) never reach this repo: CIS hides them.
 - Photos (AA-708, 01/10/2026): AA marketing photos are synced and matched by CIS (`photo_sync`,
   `shared.place_photo`). This repo reads them only through `shared.v_destination_photos` /
   `shared.v_tour_photos` and `shared.destinations.cover_image_url` (set by CIS from the photo
@@ -388,7 +405,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 | Other side | This repo reads | This repo writes | Granted by |
 |---|---|---|---|
 | AA-CIS-App (catalog, AA-812) | `catalog.v_tour`, `v_tour_day`, `v_tour_place`, `v_tour_photo`, `v_destination`, `v_destination_photo` (contract `catalog.tour.v1`); photo URLs = `CIS_PUBLIC_API_BASE` + path | — | CIS migration 225 |
-| AA-CIS-App (places / tour graph, AA-712) | with `PLACES_SOURCE=cis`: `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_destination` (+ `located_by`, `precision`) — contract `catalog.graph.v1` / `catalog.tour.v1.1` | — | CIS migration 228 |
+| AA-CIS-App (places / tour graph, AA-712) | with `PLACES_SOURCE=cis`: `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`, `v_destination` (+ `located_by`, `precision`), `v_component_embedding` (HNSW top-k, AA-847) — contract `catalog.graph.v1` / `catalog.tour.v1.1` | — | CIS migrations 228, 253 (`v_component_embedding`: SELECT to `tripplanner` only) |
 | AA-CIS-App (content) | `gold_aa_internal.published_tours` (tenant RLS, AA tenant set per transaction), `acp_contract.v_active_tour_atoms` (place/activity columns), `shared.destinations`, `shared.v_destination_photos` / `v_tour_photos` | — | CIS migrations 180 / 216, 201 |
 | AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
 | AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 / v1.2 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.2.json` (payload `version` 1.2 since AA-830: each leg also carries the catalog tour key `source_system` + `source_id`, resolved against `catalog.v_tour` at send time, both null when unresolvable; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |

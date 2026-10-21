@@ -12,7 +12,8 @@ import {
 } from "@/lib/mapbox";
 import { TileLoader, planTiles } from "@/lib/tileLoader";
 import type { BrowseFilters, DestinationPin } from "@/lib/types";
-import { COUNTRY_BBOX, COUNTRY_ISO } from "@/lib/types";
+import { COUNTRY_BBOX, COUNTRY_ISO, needsGeocodeAttribution } from "@/lib/types";
+import GeocodeAttribution from "./GeocodeAttribution";
 import { useTrip } from "@/lib/useTrip";
 import DestinationPopup from "./DestinationPopup";
 
@@ -87,6 +88,8 @@ export default function MapView() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pinsRef = useRef<Map<string, DestinationPin>>(new Map());
   const [selected, setSelected] = useState<string | null>(null);
+  // AA-847: the Geoapify / OSM attribution is shown while a Geoapify-located point is drawn.
+  const [attribution, setAttribution] = useState(false);
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
   // When search is active, the map shows the ranked result set instead of
@@ -104,9 +107,11 @@ export default function MapView() {
       features: pins.map((p) => ({
         type: "Feature",
         geometry: { type: "Point", coordinates: [p.lng, p.lat] },
-        properties: { id: p.id, name: p.name, count: p.component_count },
+        // AA-847: precision "area" (the model's point, not a geocoded one) is drawn as an area
+        properties: { id: p.id, name: p.name, count: p.component_count, area: p.precision === "area" },
       })),
     });
+    setAttribution(needsGeocodeAttribution(pins));
   }, []);
 
   // One loader per map: in-memory tile cache (per filter set), at most 4 requests in flight, the
@@ -276,11 +281,27 @@ export default function MapView() {
         },
         paint: { "text-color": "#ffffff" },
       });
+      // AA-847 (ADR 0007): a place located only approximately (precision "area") is a translucent area that
+      // grows with the zoom, with no pin in the middle: it never reads as an exact spot.
+      map.addLayer({
+        id: "unclustered-area",
+        type: "circle",
+        source: SOURCE_ID,
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "area"], true]],
+        paint: {
+          "circle-color": "#1F2933",
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 3, 10, 8, 26, 12, 60],
+          "circle-opacity": 0.16,
+          "circle-stroke-width": 1.5,
+          "circle-stroke-color": "#1F2933",
+          "circle-stroke-opacity": 0.55,
+        },
+      });
       map.addLayer({
         id: "unclustered",
         type: "circle",
         source: SOURCE_ID,
-        filter: ["!", ["has", "point_count"]],
+        filter: ["all", ["!", ["has", "point_count"]], ["!=", ["get", "area"], true]],
         paint: {
           "circle-color": "#1F2933",
           "circle-radius": 7,
@@ -454,11 +475,19 @@ export default function MapView() {
         paint: { "text-color": "#ffffff" },
       });
 
-      map.on("click", "unclustered", (e) => {
-        const f = e.features?.[0];
-        const id = f?.properties?.id as string | undefined;
-        if (id) setSelected(id);
-      });
+      for (const layer of ["unclustered", "unclustered-area"]) {
+        map.on("click", layer, (e) => {
+          const f = e.features?.[0];
+          const id = f?.properties?.id as string | undefined;
+          if (id) setSelected(id);
+        });
+        map.on("mouseenter", layer, () => {
+          map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", layer, () => {
+          map.getCanvas().style.cursor = "";
+        });
+      }
       map.on("click", "clusters", (e) => {
         const f = map.queryRenderedFeatures(e.point, { layers: ["clusters"] })[0];
         const clusterId = f.properties?.cluster_id;
@@ -471,13 +500,6 @@ export default function MapView() {
           });
         });
       });
-      map.on("mouseenter", "unclustered", () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-      map.on("mouseleave", "unclustered", () => {
-        map.getCanvas().style.cursor = "";
-      });
-
       map.on("moveend", onMoveEnd);
       refreshVisibleTiles();
     });
@@ -792,6 +814,9 @@ export default function MapView() {
         ref={containerRef}
         style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
       />
+      {(attribution || needsGeocodeAttribution(itinerary ?? [])) && (
+        <GeocodeAttribution className="absolute bottom-8 left-2 z-10" />
+      )}
       {selected && (
         <DestinationPopup
           destinationId={selected}

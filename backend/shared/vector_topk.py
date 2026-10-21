@@ -36,9 +36,18 @@ Callers pass two WHERE fragments over the alias ``c`` (query vector = ``$1``):
 
 Run ``ranked_destinations`` inside a transaction: ``hnsw.ef_search`` is set with
 ``set_config(..., true)`` (transaction-local), never leaking to other queries on a pooled connection.
+
+AA-847 (AA-712 slice 6c, ADR 0007 Consequences): the same ranking over the CIS catalog (``source=CIS``). The scan
+reads ``catalog.v_component_embedding`` (CIS 253: resolved components of live tours, NOT a security_barrier view,
+so ``ORDER BY embedding <=> q LIMIT k`` is served by the HNSW index on ``geo.tour_place``); the exact fallback and
+the component count read ``catalog.v_tour_component``; destinations come from ``catalog.v_destination``. Each is
+read through a subquery that renames its columns to the alias ``c`` the callers use (``c.id``,
+``c.source_tour_id``, ``c.destination_id``, ``c.activity`` …), so ``scan_where`` / ``keep_where`` are the same
+fragments on both paths except for the destination lookups (``Source.destinations`` / ``Source.dest_id``).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Optional, Protocol, Sequence
 
 # k per pass. Before pgvector 0.8 an HNSW scan returns at most hnsw.ef_search rows, and
@@ -59,6 +68,42 @@ class _Conn(Protocol):
     async def fetch(self, query: str, *args: Any) -> Any: ...
     async def fetchval(self, query: str, *args: Any) -> Any: ...
     async def execute(self, query: str, *args: Any) -> Any: ...
+
+
+@dataclass(frozen=True)
+class Source:
+    """Where the components and destinations are read (relations rendered under the alias ``c`` / ``od`` / ``d``)."""
+    scan: str          # the index-ordered top-k scan
+    exact: str         # the exact aggregate and the component count
+    destinations: str
+    dest_id: str       # the destination key column of ``destinations``
+
+
+LEGACY = Source(
+    scan="tripplanner.itinerary_components",
+    exact="tripplanner.itinerary_components",
+    destinations="shared.destinations",
+    dest_id="id",
+)
+_CIS_COLS = ("component_id AS id, source_id AS source_tour_id, day_index AS source_day_index, destination_id, "
+             "activity, intensity_level, season_months, embedding")
+CIS = Source(
+    scan="(SELECT component_id AS id, source_id AS source_tour_id, destination_id, activity, intensity_level, "
+         "season_months, embedding FROM catalog.v_component_embedding)",
+    exact=f"(SELECT {_CIS_COLS} FROM catalog.v_tour_component)",
+    destinations="catalog.v_destination",
+    dest_id="destination_id",
+)
+
+
+def _dest_select(alias: str, cols: Sequence[str], source: Source) -> tuple[str, str]:
+    """(select list, group-by list) of ``dest_cols``; ``id`` is the destination key of the source."""
+    sel, grp = [], []
+    for c in cols:
+        expr = f"{alias}.{source.dest_id}" if c == "id" else f"{alias}.{c}"
+        sel.append(f"{expr} AS {c}" if c == "id" and source.dest_id != "id" else expr)
+        grp.append(expr)
+    return ", ".join(sel), ", ".join(grp)
 
 
 def ef_search_for(k: int) -> int:
@@ -83,15 +128,16 @@ async def iterative_scan_supported(conn: _Conn) -> bool:
 
 
 def topk_sql(scan_where: str, keep_where: str, dest_cols: Sequence[str], k_param: int,
-             limit: int) -> str:
+             limit: int, source: Source = LEGACY) -> str:
     """Top-k components by distance (index-servable), filtered, grouped to destinations.
     ``k_param`` is the placeholder number bound to k."""
-    cols = ", ".join(f"od.{c}" for c in dest_cols)
+    cols, _ = _dest_select("od", dest_cols, source)
+    key = f"od.{source.dest_id}"
     return f"""
         WITH scan AS MATERIALIZED (
             SELECT c.id, c.destination_id, c.source_tour_id,
                    c.embedding <=> $1::vector AS distance
-            FROM tripplanner.itinerary_components c
+            FROM {source.scan} c
             WHERE {scan_where}
             ORDER BY c.embedding <=> $1::vector
             LIMIT ${k_param}
@@ -102,26 +148,28 @@ def topk_sql(scan_where: str, keep_where: str, dest_cols: Sequence[str], k_param
             GROUP BY c.destination_id
         )
         SELECT {cols}, b.best_distance,
-               (SELECT COUNT(*) FROM tripplanner.itinerary_components c
-                WHERE c.destination_id = od.id AND {scan_where} {keep_where}) AS component_count
+               (SELECT COUNT(*) FROM {source.exact} c
+                WHERE c.destination_id = {key} AND {scan_where} {keep_where}) AS component_count
         FROM best b
-        JOIN shared.destinations od ON od.id = b.destination_id
-        ORDER BY b.best_distance ASC, od.id
+        JOIN {source.destinations} od ON {key} = b.destination_id
+        ORDER BY b.best_distance ASC, {key}
         LIMIT {int(limit)}
     """
 
 
-def exact_sql(scan_where: str, keep_where: str, dest_cols: Sequence[str], limit: int) -> str:
+def exact_sql(scan_where: str, keep_where: str, dest_cols: Sequence[str], limit: int,
+              source: Source = LEGACY) -> str:
     """The pre-AA-712 aggregate over every matching component. Fallback only."""
-    cols = ", ".join(f"d.{c}" for c in dest_cols)
+    cols, group = _dest_select("d", dest_cols, source)
+    key = f"d.{source.dest_id}"
     return f"""
         SELECT {cols}, COUNT(c.id) AS component_count,
                MIN(c.embedding <=> $1::vector) AS best_distance
-        FROM tripplanner.itinerary_components c
-        JOIN shared.destinations d ON d.id = c.destination_id
+        FROM {source.exact} c
+        JOIN {source.destinations} d ON {key} = c.destination_id
         WHERE {scan_where} {keep_where}
-        GROUP BY {cols}
-        ORDER BY best_distance ASC, d.id
+        GROUP BY {group}
+        ORDER BY best_distance ASC, {key}
         LIMIT {int(limit)}
     """
 
@@ -136,14 +184,15 @@ async def ranked_destinations(
     limit: int,
     passes: Optional[Sequence[int]] = None,
     exact_first: bool = False,
+    source: Source = LEGACY,
 ) -> tuple[list, str]:
     """Return (rows, mode) — rows best-first with ``dest_cols`` + component_count + best_distance;
     mode is ``topk:<k>`` or ``exact``. Run inside a transaction. ``exact_first`` skips the top-k
     passes (a candidate set already bounded to a country — see the module docstring)."""
     if exact_first:
-        rows = list(await conn.fetch(exact_sql(scan_where, keep_where, dest_cols, limit), *params))
+        rows = list(await conn.fetch(exact_sql(scan_where, keep_where, dest_cols, limit, source), *params))
         return rows, "exact"
-    sql = topk_sql(scan_where, keep_where, dest_cols, len(params) + 1, limit)
+    sql = topk_sql(scan_where, keep_where, dest_cols, len(params) + 1, limit, source)
     if await iterative_scan_supported(conn):
         # relaxed_order is enough: the k rows are re-ordered by MIN(distance) per destination
         await conn.execute("SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)")
@@ -153,5 +202,5 @@ async def ranked_destinations(
         rows = list(await conn.fetch(sql, *params, int(k)))
         if len(rows) >= limit:
             return rows, f"topk:{k}"
-    rows = list(await conn.fetch(exact_sql(scan_where, keep_where, dest_cols, limit), *params))
+    rows = list(await conn.fetch(exact_sql(scan_where, keep_where, dest_cols, limit, source), *params))
     return rows, "exact"

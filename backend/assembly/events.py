@@ -8,6 +8,11 @@ appending the corresponding event — both happen inside append_event().
 The projection's itinerary is recomputed from the current component set
 using deterministic sequencing (tour blocks in day order, AA-805); manual reorder events pin an
 explicit order that overrides the algorithm until the component set changes again.
+
+AA-847 (AA-712 slice 6c): the component reads follow PLACES_SOURCE (backend/shared/places_source.py). On the cis
+path the components come from the CIS catalog views and every component id of the event log (add, remove,
+reorder) is first resolved through tripplanner.component_id_map (backend/shared/component_ids.py), so a draft
+started before the flip, or an id from a browse answer cached before it, still folds to the same components.
 """
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ import json
 from typing import Any, Optional, Protocol
 
 from backend.assembly import sequencing
+from backend.shared import component_ids, places_source
 
 VALID_EVENTS = {"add_component", "remove_component", "reorder", "sent", "add_day", "remove_day"}
 
@@ -29,6 +35,26 @@ class _Conn(Protocol):
     async def fetch(self, query: str, *args: Any) -> Any: ...
     async def fetchrow(self, query: str, *args: Any) -> Any: ...
     def transaction(self) -> Any: ...
+
+
+# The pinned components with their destination point. $1 = component ids (uuid[]).
+COMPONENTS_SQL = """
+    SELECT c.id, c.name, c.activity, c.duration_hint, c.text_extract,
+           c.source_tour_id, c.source_day_index, c.destination_id,
+           d.name AS destination_name, d.lat AS lat, d.lng AS lng
+    FROM tripplanner.itinerary_components c
+    JOIN shared.destinations d ON d.id = c.destination_id
+    WHERE c.id = ANY($1::uuid[])
+"""
+# AA-847 slice 6c: the catalog views (live tours, usable destinations only); keyed by catalog source_id.
+COMPONENTS_SQL_CIS = """
+    SELECT c.component_id AS id, c.name, c.activity, c.duration_hint, c.text_extract,
+           c.source_id AS source_tour_id, c.day_index AS source_day_index, c.destination_id,
+           d.name AS destination_name, d.lat AS lat, d.lng AS lng, d.located_by, d.precision
+    FROM catalog.v_tour_component c
+    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+    WHERE c.component_id = ANY($1::uuid[])
+"""
 
 
 def _project_itinerary(
@@ -60,33 +86,26 @@ async def _current_components(conn: _Conn, trip_id: str) -> list[dict]:
         "WHERE trip_id = $1 ORDER BY id ASC",
         trip_id,
     )
-    present: list[str] = []
+    folded: list[tuple[str, str]] = []
     for r in rows:
         payload = r["payload"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        etype = r["event_type"]
+        if r["event_type"] in ("add_component", "remove_component"):
+            folded.append((r["event_type"], str(payload["component_id"])))
+    # AA-847: one id per component across the flip (an old add and a new remove cancel out)
+    mapping = await component_ids.id_map(conn, [cid for _, cid in folded])
+    present: list[str] = []
+    for etype, raw in folded:
+        cid = mapping.get(raw, raw)
         if etype == "add_component":
-            cid = payload["component_id"]
             if cid not in present:
                 present.append(cid)
-        elif etype == "remove_component":
-            cid = payload["component_id"]
-            if cid in present:
-                present.remove(cid)
+        elif cid in present:
+            present.remove(cid)
     if not present:
         return []
-    comp_rows = await conn.fetch(
-        """
-        SELECT c.id, c.name, c.activity, c.duration_hint, c.text_extract,
-               c.source_tour_id, c.source_day_index, c.destination_id,
-               d.name AS destination_name, d.lat AS lat, d.lng AS lng
-        FROM tripplanner.itinerary_components c
-        JOIN shared.destinations d ON d.id = c.destination_id
-        WHERE c.id = ANY($1::uuid[])
-        """,
-        present,
-    )
+    comp_rows = await conn.fetch(places_source.pick(COMPONENTS_SQL, COMPONENTS_SQL_CIS), present)
     by_id = {str(r["id"]): dict(r) for r in comp_rows}
     # preserve add order for stable fallback
     return [by_id[cid] for cid in present if cid in by_id]
@@ -133,7 +152,10 @@ async def _latest_explicit_order(conn: _Conn, trip_id: str) -> Optional[list[str
     payload = row["payload"]
     if isinstance(payload, str):
         payload = json.loads(payload)
-    return payload.get("ordered_component_ids")
+    ordered = payload.get("ordered_component_ids")
+    if not ordered:
+        return ordered
+    return await component_ids.resolve(conn, ordered)  # AA-847: ids from before the flip
 
 
 async def current_itinerary(conn: _Conn, trip_id: str) -> list[dict]:
@@ -160,6 +182,9 @@ async def current_itinerary(conn: _Conn, trip_id: str) -> list[dict]:
             "destination_name": e.get("destination_name"),
             "lat": e.get("lat"),
             "lng": e.get("lng"),
+            # AA-847: how the point was located (cis path only; ADR 0007: 'area' is drawn as an area)
+            "located_by": e.get("located_by"),
+            "precision": e.get("precision"),
         }
         for e in itinerary
     ]

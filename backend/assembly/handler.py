@@ -40,7 +40,7 @@ from backend.assembly import registration as reg_mod
 from backend.assembly import activities as activities_mod
 from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
-from backend.shared import llm_gateway
+from backend.shared import component_ids, llm_gateway
 
 _COMPONENTS_RE = re.compile(r"^/trip/([^/]+)/components$")
 _COMPONENT_ITEM_RE = re.compile(r"^/trip/([^/]+)/components/([^/]+)$")
@@ -292,7 +292,8 @@ async def route(
             return _resp(400, {"error": "session_id and component_ids (1-60) required"})
         if denied := await _guard(conn, trip_id, session_id, guest_token, "apply_route"):
             return denied
-        ids = list(dict.fromkeys(str(i) for i in ids))
+        # AA-847: a route from a browse answer cached before the PLACES_SOURCE flip carries frozen ids
+        ids = await component_ids.resolve(conn, (str(i) for i in ids))
         present = {str(c["id"]) for c in await events_mod._current_components(conn, trip_id)}  # noqa: SLF001
         for cid in ids:
             if cid not in present:
@@ -311,7 +312,7 @@ async def route(
                                "kinds": sorted(events_mod.DAY_KINDS)})
         if denied := await _guard(conn, trip_id, session_id, guest_token, "add_day"):
             return denied
-        after = body.get("after_component_id")
+        after = await component_ids.resolve_one(conn, body.get("after_component_id"))  # AA-847
         if kind == "extra_night":
             pinned = {str(c["id"]) for c in await events_mod._current_components(conn, trip_id)}  # noqa: SLF001
             if not after or str(after) not in pinned:
