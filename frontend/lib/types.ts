@@ -2,11 +2,31 @@
 
 // AA-847 (ADR 0007): how a place was located, on the cis places source. "geoapify" (or "manual") points are
 // pins; "llm" points carry precision "area" and are drawn as an area, never as a pinpoint. Absent on the legacy
-// source. Linear features (trails, rivers, roads) are not returned at all (CIS hides them).
+// source. Slice 6d (owner decision S246): a "line" (river, road, trail) is DRAWN as a line from its geometry
+// (/browse/shapes), never a pin, a circle or hidden; lib/lines.ts isExactPin: anything but "point" is never a pin.
 export type LocatedBy = "geoapify" | "mapbox" | "llm" | "manual";
-export type GeoPrecision = "point" | "area";
+export type GeoPrecision = "point" | "area" | "line";
+export type ShapeStatus = "pending" | "ok" | "approximate" | "not_found" | "failed" | "manual";
+export type GeoJSONLine = { type: "LineString" | "MultiLineString"; coordinates: unknown };
 
-export interface DestinationPin {
+/** AA-847 slice 6d (CIS 256): the extra fields of a line destination (tiles, search, by-country, detail). */
+export interface LineFields {
+  shape_kind?: "line" | "area" | null;
+  shape_status?: ShapeStatus | null;
+  length_km?: number | null;
+  bbox?: [number, number, number, number] | null; // [min_lng, min_lat, max_lng, max_lat]
+}
+
+/** The day's stretch of a line (catalog.graph v1.2 component / catalog.tour v1.2 place). */
+export interface SegmentFields {
+  segment?: GeoJSONLine | null;
+  segment_basis?: "day_anchors" | "anchor_window" | "feature" | null;
+  segment_from_destination_id?: string | null;
+  segment_to_destination_id?: string | null;
+  segment_km?: number | null;
+}
+
+export interface DestinationPin extends LineFields {
   id: string;
   name: string;
   lat: number;
@@ -27,7 +47,7 @@ export interface Component {
   in_trip_day: number | null;
 }
 
-export interface DestinationDetail {
+export interface DestinationDetail extends LineFields {
   id: string;
   name: string;
   country: string;
@@ -37,7 +57,7 @@ export interface DestinationDetail {
   precision?: GeoPrecision | null;
 }
 
-export interface ItineraryDay {
+export interface ItineraryDay extends SegmentFields {
   day: number;
   component_id: string;
   name: string | null;

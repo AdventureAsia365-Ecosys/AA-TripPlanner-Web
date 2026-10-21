@@ -47,10 +47,15 @@ COMPONENTS_SQL = """
     WHERE c.id = ANY($1::uuid[])
 """
 # AA-847 slice 6c: the catalog views (live tours, usable destinations only); keyed by catalog source_id.
+# Slice 6d (CIS 256): a component on a LINE destination (river, road, trail; precision 'line') carries the stretch of
+# the line its tour-day follows (segment GeoJSON + basis + the two stops + km): the trip map draws it as a "feature"
+# leg instead of a road / flight leg between the same stops, and the line is never a waypoint.
+SEGMENT_KEYS = ("segment", "segment_basis", "segment_from_destination_id", "segment_to_destination_id", "segment_km")
 COMPONENTS_SQL_CIS = """
     SELECT c.component_id AS id, c.name, c.activity, c.duration_hint, c.text_extract,
            c.source_id AS source_tour_id, c.day_index AS source_day_index, c.destination_id,
-           d.name AS destination_name, d.lat AS lat, d.lng AS lng, d.located_by, d.precision
+           d.name AS destination_name, d.lat AS lat, d.lng AS lng, d.located_by, d.precision,
+           c.segment, c.segment_basis, c.segment_from_destination_id, c.segment_to_destination_id, c.segment_km
     FROM catalog.v_tour_component c
     JOIN catalog.v_destination d ON d.destination_id = c.destination_id
     WHERE c.component_id = ANY($1::uuid[])
@@ -106,9 +111,19 @@ async def _current_components(conn: _Conn, trip_id: str) -> list[dict]:
     if not present:
         return []
     comp_rows = await conn.fetch(places_source.pick(COMPONENTS_SQL, COMPONENTS_SQL_CIS), present)
-    by_id = {str(r["id"]): dict(r) for r in comp_rows}
+    by_id = {str(r["id"]): _segment_fields(dict(r)) for r in comp_rows}
     # preserve add order for stable fallback
     return [by_id[cid] for cid in present if cid in by_id]
+
+
+def _segment_fields(c: dict) -> dict:
+    """JSON-ready segment fields of a cis component row (GeoJSON decoded, ids as text); absent keys stay absent."""
+    if isinstance(c.get("segment"), str):
+        c["segment"] = json.loads(c["segment"])
+    for k in ("segment_from_destination_id", "segment_to_destination_id"):
+        if c.get(k) is not None:
+            c[k] = str(c[k])
+    return c
 
 
 async def current_custom_days(conn: _Conn, trip_id: str) -> list[dict]:
@@ -185,6 +200,8 @@ async def current_itinerary(conn: _Conn, trip_id: str) -> list[dict]:
             # AA-847: how the point was located (cis path only; ADR 0007: 'area' is drawn as an area)
             "located_by": e.get("located_by"),
             "precision": e.get("precision"),
+            # AA-847 slice 6d: the day's stretch of a line (cis path; None elsewhere)
+            **{k: e.get(k) for k in SEGMENT_KEYS},
         }
         for e in itinerary
     ]

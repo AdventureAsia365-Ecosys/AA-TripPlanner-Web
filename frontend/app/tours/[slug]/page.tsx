@@ -13,7 +13,7 @@ import type { MapPoint } from "@/lib/tourMap";
 import { getTour, siteUrl } from "@/lib/catalog";
 import type { TourDetail } from "@/lib/catalogTypes";
 import { clip, coverAlt, daysText, splitLines, titleCase } from "@/lib/text";
-import { routePoints } from "@/lib/tourMap";
+import { routeLines, routePoints } from "@/lib/tourMap";
 import { Badge, ButtonLink, Icon, Photo } from "@/ui";
 
 // Route segment config must be a literal (Next 15 reads it statically and fails the build on an
@@ -165,6 +165,8 @@ export default async function TourPage({ params }: Props) {
   if (t.slug !== slug) permanentRedirect(`/tours/${t.slug}`);
 
   const points = routePoints(t);
+  // AA-847 slice 6d: rivers, roads and trails of the tour, drawn as lines (never pins)
+  const lines = routeLines(t);
   const inclusions = splitLines(t.inclusions);
   const exclusions = splitLines(t.exclusions);
   const days = daysText(t.duration_days, t.duration_raw);
@@ -271,11 +273,11 @@ export default async function TourPage({ params }: Props) {
               )}
             </section>
 
-            {points.length > 0 && (
+            {(points.length > 0 || lines.length > 0) && (
               <section className="mt-8" aria-labelledby="route-map">
                 <h2 id="route-map" className="text-[22px] font-semibold">Where you go</h2>
                 <div className="mt-3 grid gap-4 md:grid-cols-[1fr_220px]">
-                  <StaticMap points={points} route title={`${t.title} route`} caption="Numbers follow the itinerary order." />
+                  <StaticMap points={points} lines={lines} route title={`${t.title} route`} caption="Numbers follow the itinerary order." />
                   <ol className="space-y-1.5 text-[13px] text-k-body">
                     {points.map((p, i) => (
                       <li key={`${p.name}-${i}`} className="flex items-center gap-2">
@@ -283,6 +285,14 @@ export default async function TourPage({ params }: Props) {
                           {i + 1}
                         </span>
                         {p.name}
+                      </li>
+                    ))}
+                    {lines.map((l) => (
+                      <li key={`line-${l.name}`} className="flex items-center gap-2">
+                        <span aria-label="Route" className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[13px] text-k-accent-deep">
+                          〰
+                        </span>
+                        {l.name}
                       </li>
                     ))}
                   </ol>

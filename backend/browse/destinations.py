@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from backend.browse.tiles import geo_fields
+from backend.browse.tiles import LINE_COLS, geo_fields
 from backend.shared import places_source
 
 
@@ -24,8 +24,8 @@ class _Pool(Protocol):
 # AA-712 slice 6b: PLACES_SOURCE=cis reads the CIS catalog views (228). Component ids are the views'
 # stable component_id (uuid5), not tripplanner.itinerary_components ids.
 DEST_SQL = "SELECT id, name, country, cover_image_url FROM shared.destinations WHERE id = $1"
-DEST_SQL_CIS = """
-    SELECT destination_id AS id, name, country, cover_image_url, located_by, precision
+DEST_SQL_CIS = f"""
+    SELECT destination_id AS id, name, country, cover_image_url, located_by, precision, {", ".join(LINE_COLS)}
     FROM catalog.v_destination WHERE destination_id = $1::uuid
 """
 COMPONENTS_SQL = """

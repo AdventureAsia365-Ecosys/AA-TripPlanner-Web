@@ -47,7 +47,7 @@ import time
 from typing import Any, Callable, Optional, Protocol
 
 from backend.browse.filters import BrowseFilters
-from backend.browse.tiles import geo_fields
+from backend.browse.tiles import LINE_COLS, LINE_COLS_SQL, geo_fields
 from backend.shared.catalog_rls import set_catalog_tenant
 from backend.shared import llm_gateway, places_source, vector_topk
 
@@ -107,7 +107,8 @@ def search_where(filters: BrowseFilters) -> tuple[str, str, list[Any]]:
 # inside the index-ordered scan of catalog.v_component_embedding (vector_topk.CIS).
 CIS_COUNTRY_CLAUSE = ("AND c.destination_id = ANY(ARRAY(SELECT dc.destination_id FROM catalog.v_destination dc "
                       "WHERE dc.country = ${i}))")
-CIS_DEST_COLS = ("id", "name", "lat", "lng", "located_by", "precision")
+# AA-847 slice 6d (CIS 256): a line carries its kind / status / length / bbox (the result map fits the bboxes)
+CIS_DEST_COLS = ("id", "name", "lat", "lng", "located_by", "precision") + LINE_COLS
 
 
 def cis_search_where(filters: BrowseFilters) -> tuple[str, str, list[Any]]:
@@ -263,13 +264,13 @@ KEYWORD_LEGACY_SQL = """
 """
 
 KEYWORD_CIS_SQL = """
-    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision, """ + LINE_COLS_SQL + """,
            COUNT(c.component_id) AS component_count, MAX(s.score) AS best_score
     FROM catalog.v_tour_component c
     JOIN catalog.v_destination d ON d.destination_id = c.destination_id
     {score}
     WHERE TRUE {where_frag}
-    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision, """ + LINE_COLS_SQL + """
     HAVING MAX(s.score) > 0
     ORDER BY best_score DESC, component_count DESC, d.destination_id
     LIMIT {limit}

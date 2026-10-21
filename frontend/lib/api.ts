@@ -7,7 +7,9 @@ import type {
   DestinationDetail,
   DestinationPin,
   ItineraryDay,
+  GeoJSONLine,
   RouteProposal,
+  ShapeStatus,
   StopActivity,
   TourRouteFallback,
 } from "./types";
@@ -42,6 +44,37 @@ export async function fetchTile(
   if (!res.ok) throw new Error(`tile ${tileId}: HTTP ${res.status}`);
   const data = await res.json();
   return data.destinations ?? [];
+}
+
+// AA-847 slice 6d: the geometry of line places (rivers, roads, trails) by id. Cached per id and level for the page's
+// lifetime (shapes change rarely; the CDN caches the answer too). Ids already cached are not asked again.
+export interface LineShape {
+  id: string;
+  status: ShapeStatus;
+  geometry: GeoJSONLine | null;
+}
+const SHAPE_BATCH = 50;
+const shapeCache = new Map<string, LineShape>();
+
+export async function fetchShapes(ids: string[], level: "lo" | "mid"): Promise<Map<string, LineShape>> {
+  const out = new Map<string, LineShape>();
+  const missing: string[] = [];
+  for (const id of new Set(ids)) {
+    const hit = shapeCache.get(`${level}:${id}`);
+    if (hit) out.set(id, hit);
+    else missing.push(id);
+  }
+  for (let i = 0; i < missing.length; i += SHAPE_BATCH) {
+    const batch = missing.slice(i, i + SHAPE_BATCH).sort();
+    const res = await fetch(`/api/browse?resource=shapes&level=${level}&ids=${batch.map(encodeURIComponent).join(",")}`);
+    if (!res.ok) continue; // a failed batch draws nothing now and is asked again on the next view
+    const data = await res.json();
+    for (const sh of (data.shapes ?? []) as LineShape[]) {
+      shapeCache.set(`${level}:${sh.id}`, sh);
+      out.set(sh.id, sh);
+    }
+  }
+  return out;
 }
 
 export async function fetchDestination(

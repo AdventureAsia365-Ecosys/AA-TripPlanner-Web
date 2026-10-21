@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
-import { fetchRouteLegs, formatLeg, nearestGateway, type RouteLeg } from "@/lib/mapbox";
+import { fetchTripLegs, formatLeg, nearestGateway, type RouteLeg } from "@/lib/mapbox";
+import { isLine, planTrip, stretchSubtitle } from "@/lib/lines";
 import { COUNTRY_GATEWAY } from "@/lib/types";
 import RoutePlanner from "@/components/RoutePlanner";
 import StopActivities from "@/components/StopActivities";
@@ -99,8 +100,9 @@ export default function TripPanel() {
   const [showReg, setShowReg] = useState(false);
   const [reg, setReg] = useState({ name: "", phone: "", email: "", consent: false });
   const [sentMsg, setSentMsg] = useState<string | null>(null);
-  // Per-leg travel estimates between consecutive days (index i = day i -> i+1).
-  const [legs, setLegs] = useState<RouteLeg[]>([]);
+  // Per-leg travel estimates between consecutive stops, keyed by the component the leg leaves from. AA-847 slice
+  // 6d: a river / road / trail day is a "feature" leg along the line between its two stops (lib/lines.ts planTrip).
+  const [legs, setLegs] = useState<Map<string, RouteLeg>>(new Map());
   // How many narration day-blocks are revealed so far — drives a light
   // "typing" reveal. The narration itself arrives in one response (mostly
   // AA's authored text, so instant); this just animates it in for polish.
@@ -109,19 +111,17 @@ export default function TripPanel() {
   // Recompute travel legs whenever the ordered set of geocoded stops changes.
   // Keyed on the id+coord sequence so a pure re-render doesn't refetch.
   const legKey = itinerary
-    .map((d) => `${d.component_id}:${d.lat ?? ""},${d.lng ?? ""}`)
+    .map((d) => `${d.component_id}:${d.lat ?? ""},${d.lng ?? ""}:${d.segment_basis ?? ""}`)
     .join("|");
   useEffect(() => {
-    const stops = itinerary
-      .filter((d) => typeof d.lat === "number" && typeof d.lng === "number")
-      .map((d) => [d.lng as number, d.lat as number] as [number, number]);
-    if (stops.length < 2) {
-      setLegs([]);
+    const plan = planTrip(itinerary);
+    if (plan.stops.length < 2) {
+      setLegs(new Map());
       return;
     }
     let cancelled = false;
-    fetchRouteLegs(stops).then((result) => {
-      if (!cancelled && result) setLegs(result);
+    fetchTripLegs(plan).then((result) => {
+      if (!cancelled) setLegs(new Map(result.map((leg, i) => [plan.stops[i].componentId, leg])));
     });
     return () => {
       cancelled = true;
@@ -151,14 +151,17 @@ export default function TripPanel() {
   // Total road distance — sum ONLY real road legs (flight legs have no
   // meaningful driving distance). Also count how many legs are flights so we
   // can label the total honestly ("road" km, not the whole journey).
-  const totalRoadKm = legs.reduce((s, l) => s + (l.distanceKm ?? 0), 0);
-  const hasFlightLeg = legs.some((l) => l.mode === "flight");
+  const allLegs = [...legs.values()].flatMap((l) => [l, ...(l.joins ?? [])]);
+  const totalRoadKm = allLegs.reduce((s, l) => s + (l.mode === "road" ? l.distanceKm ?? 0 : 0), 0);
+  const hasFlightLeg = allLegs.some((l) => l.mode === "flight");
+  // AA-847 slice 6d: the list subtitle of a line day names its two stops ("Huay Xai → Pak Beng · ≈ 88 km")
+  const nameOfDestination = (id: string) => itinerary.find((x) => x.destination_id === id && !isLine(x))?.name ?? null;
 
   // Arrival (fly into the gateway nearest the first stop) and departure (fly
   // out from the gateway nearest the last stop). Purely informative — an
   // advisor arranges the real flights.
   const geoStops = itinerary.filter(
-    (d) => typeof d.lat === "number" && typeof d.lng === "number",
+    (d) => typeof d.lat === "number" && typeof d.lng === "number" && !isLine(d),
   );
   const arrival =
     geoStops.length > 0
@@ -394,8 +397,14 @@ export default function TripPanel() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-aa-ink">
+                        {isLine(d) && (
+                          <span aria-label="Route" className="mr-1 text-aa-gold-dark">〰</span>
+                        )}
                         {d.name}
                       </p>
+                      {isLine(d) && (
+                        <p className="mt-0.5 text-xs text-aa-muted">{stretchSubtitle(d, nameOfDestination)}</p>
+                      )}
                       {d.rationale && (
                         <p className="mt-0.5 text-xs leading-relaxed text-aa-muted">
                           {d.rationale}
@@ -442,10 +451,10 @@ export default function TripPanel() {
 
                   {/* Travel connector to the next day. Road legs show real
                       driving distance/time; flight legs say so (no fake km). */}
-                  {index < itinerary.length - 1 && legs[index] && (
+                  {index < itinerary.length - 1 && legs.get(d.component_id) && (
                     <div className="flex flex-wrap items-center gap-x-1.5 py-1 pl-3.5 text-[11px] text-aa-muted">
                       <span aria-hidden className="text-aa-gold">↓</span>
-                      <span>{formatLeg(legs[index])}</span>
+                      <span>{formatLeg(legs.get(d.component_id) as RouteLeg)}</span>
                     </div>
                   )}
                 </li>

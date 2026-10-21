@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from backend.browse.tiles import geo_fields
+from backend.browse.tiles import LINE_COLS_SQL, geo_fields
 from backend.shared import places_source
 
 
@@ -66,13 +66,13 @@ COUNTRY_DESTINATIONS_SQL = """
 """
 
 
-COUNTRY_DESTINATIONS_SQL_CIS = """
-    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+COUNTRY_DESTINATIONS_SQL_CIS = f"""
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision, {LINE_COLS_SQL},
            COUNT(c.component_id) AS component_count
     FROM catalog.v_destination d
     JOIN catalog.v_tour_component c ON c.destination_id = d.destination_id
     WHERE d.country = $1
-    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision, {LINE_COLS_SQL}
     HAVING COUNT(c.component_id) > 0
     ORDER BY component_count DESC
 """

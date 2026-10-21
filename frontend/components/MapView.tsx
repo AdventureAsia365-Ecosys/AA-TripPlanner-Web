@@ -3,13 +3,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { fetchByCountry, fetchTile, tileScope } from "@/lib/api";
+import { fetchByCountry, fetchShapes, fetchTile, tileScope } from "@/lib/api";
 import {
-  fetchRouteLegs,
+  fetchTripLegs,
   hasMapboxToken,
   MAPBOX_TOKEN,
   nearestGateway,
 } from "@/lib/mapbox";
+import {
+  APPROXIMATE_LABEL,
+  LINE_COLOR,
+  TRIP_FEATURE_COLOR,
+  formatStretch,
+  isDrawable,
+  isExactPin,
+  isLine,
+  lineClass,
+  lineParts,
+  planTrip,
+  shapeLevel,
+} from "@/lib/lines";
 import { TileLoader, planTiles } from "@/lib/tileLoader";
 import type { BrowseFilters, DestinationPin } from "@/lib/types";
 import { COUNTRY_BBOX, COUNTRY_ISO, needsGeocodeAttribution } from "@/lib/types";
@@ -18,6 +31,22 @@ import { useTrip } from "@/lib/useTrip";
 import DestinationPopup from "./DestinationPopup";
 
 const SOURCE_ID = "destinations";
+// AA-847 slice 6d (owner decision S246, D1): rivers, roads and trails are drawn as lines (unclustered, deduped by id),
+// never a pin, a circle or hidden; the trip's stretch of a line is a gold "feature" leg.
+const LINES_SOURCE = "destination-lines";
+const TRIP_FEATURE_SOURCE = "trip-feature-line";
+// Kill switch: draw every line in the provisional (dashed ink) style. ⚠️ underscore env name — set by hand in Vercel.
+const LINES_PROVISIONAL = ["1", "true", "on"].includes((process.env.NEXT_PUBLIC_MAP_LINES_PROVISIONAL ?? "").toLowerCase());
+
+// Extend bounds by a destination: its bbox for a line, its point otherwise.
+function extendBy(b: mapboxgl.LngLatBounds, p: DestinationPin) {
+  if (isLine(p) && p.bbox) {
+    b.extend([p.bbox[0], p.bbox[1]]);
+    b.extend([p.bbox[2], p.bbox[3]]);
+  } else {
+    b.extend([p.lng, p.lat]);
+  }
+}
 const TRIP_LINE_SOURCE = "trip-line";
 const TRIP_FLIGHT_SOURCE = "trip-flight-line";
 const TRIP_STOP_SOURCE = "trip-stops";
@@ -87,6 +116,9 @@ export default function MapView() {
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pinsRef = useRef<Map<string, DestinationPin>>(new Map());
+  // AA-847 slice 6d: the line places on screen (by id) and the shape level drawn
+  const linesRef = useRef<DestinationPin[]>([]);
+  const lineLevelRef = useRef<"lo" | "mid">("lo");
   const [selected, setSelected] = useState<string | null>(null);
   // AA-847: the Geoapify / OSM attribution is shown while a Geoapify-located point is drawn.
   const [attribution, setAttribution] = useState(false);
@@ -97,6 +129,43 @@ export default function MapView() {
   const searchResultsRef = useRef(searchResults);
   searchResultsRef.current = searchResults;
 
+  // AA-847 slice 6d: draw the line places from their geometry (fetched by id, cached; light below zoom 7). A line
+  // whose geometry is missing (pending / not found) is not drawn here: it is listed by name, flagged on CIS
+  // /admin/places, and the trip map draws its provisional line between the day's stops.
+  const drawLines = useCallback(async () => {
+    const map = mapRef.current;
+    if (!map) return;
+    const lines = linesRef.current;
+    const level = shapeLevel(map.getZoom());
+    lineLevelRef.current = level;
+    const src = map.getSource(LINES_SOURCE) as mapboxgl.GeoJSONSource | undefined;
+    if (!src) return;
+    const drawable = lines.filter((p) => isDrawable(p.shape_status));
+    const shapes = drawable.length ? await fetchShapes(drawable.map((p) => p.id), level) : new Map();
+    if (linesRef.current !== lines || !mapRef.current) return; // a newer view replaced these lines
+    const features: GeoJSON.Feature[] = [];
+    for (const p of drawable) {
+      const sh = shapes.get(p.id);
+      if (!sh || !isDrawable(sh.status)) continue;
+      const parts = lineParts(sh.geometry);
+      if (!parts.length) continue;
+      const approx = sh.status === "approximate";
+      const cls = lineClass(p.name);
+      features.push({
+        type: "Feature",
+        geometry: parts.length === 1 ? { type: "LineString", coordinates: parts[0] }
+          : { type: "MultiLineString", coordinates: parts },
+        properties: {
+          id: p.id, name: p.name, cls,
+          dashed: LINES_PROVISIONAL || approx || cls === "trail",
+          color: LINES_PROVISIONAL ? LINE_COLOR.road : LINE_COLOR[cls],
+          label: approx || LINES_PROVISIONAL ? `${p.name} · ${APPROXIMATE_LABEL}` : p.name,
+        },
+      });
+    }
+    src.setData({ type: "FeatureCollection", features });
+  }, []);
+
   const setSourceData = useCallback((pins: DestinationPin[]) => {
     const map = mapRef.current;
     if (!map) return;
@@ -104,15 +173,18 @@ export default function MapView() {
     if (!src) return;
     src.setData({
       type: "FeatureCollection",
-      features: pins.map((p) => ({
+      features: pins.filter((p) => !isLine(p)).map((p) => ({
         type: "Feature",
         geometry: { type: "Point", coordinates: [p.lng, p.lat] },
-        // AA-847: precision "area" (the model's point, not a geocoded one) is drawn as an area
-        properties: { id: p.id, name: p.name, count: p.component_count, area: p.precision === "area" },
+        // AA-847: precision "area" (the model's point, not a geocoded one) is drawn as an area; slice 6d: any
+        // precision other than point (or a legacy row) is never an exact pin
+        properties: { id: p.id, name: p.name, count: p.component_count, area: !isExactPin(p) },
       })),
     });
-    setAttribution(needsGeocodeAttribution(pins));
-  }, []);
+    linesRef.current = pins.filter(isLine);
+    void drawLines();
+    setAttribution(needsGeocodeAttribution(pins) || linesRef.current.length > 0);
+  }, [drawLines]);
 
   // One loader per map: in-memory tile cache (per filter set), at most 4 requests in flight, the
   // previous view's requests aborted on a new view, and a request budget as a loop guard.
@@ -248,6 +320,58 @@ export default function MapView() {
         paint: { "line-color": "#B87A1A", "line-width": 2, "line-opacity": 0.85 },
       });
 
+      // AA-847 slice 6d: line places (rivers, roads, trails) under the pins: white casing, water blue, roads ink
+      // solid, trails / approximate routes ink dashed, the name along the line, a wide invisible hit line.
+      map.addSource(LINES_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      const lineWidth: mapboxgl.ExpressionSpecification = ["interpolate", ["linear"], ["zoom"], 3, 1.5, 8, 3, 12, 5];
+      map.addLayer({
+        id: "destination-lines-casing",
+        type: "line",
+        source: LINES_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 3, 3.5, 8, 6, 12, 9],
+                 "line-opacity": 0.9 },
+      });
+      map.addLayer({
+        id: "destination-lines-solid",
+        type: "line",
+        source: LINES_SOURCE,
+        filter: ["!=", ["get", "dashed"], true],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": ["get", "color"], "line-width": lineWidth, "line-opacity": 0.9 },
+      });
+      map.addLayer({
+        id: "destination-lines-dashed",
+        type: "line",
+        source: LINES_SOURCE,
+        filter: ["==", ["get", "dashed"], true],
+        layout: { "line-join": "round" },
+        paint: { "line-color": ["get", "color"], "line-width": lineWidth, "line-opacity": 0.9,
+                 "line-dasharray": [2, 1.5] },
+      });
+      map.addLayer({
+        id: "destination-lines-label",
+        type: "symbol",
+        source: LINES_SOURCE,
+        minzoom: 5,
+        layout: {
+          "symbol-placement": "line",
+          "text-field": ["get", "label"],
+          "text-size": 11,
+          "text-font": ["DIN Offc Pro Medium", "Arial Unicode MS Regular"],
+        },
+        paint: { "text-color": "#1F2933", "text-halo-color": "#ffffff", "text-halo-width": 1.4 },
+      });
+      map.addLayer({
+        id: "destination-lines-hit",
+        type: "line",
+        source: LINES_SOURCE,
+        paint: { "line-color": "#000000", "line-width": 14, "line-opacity": 0 },
+      });
+
       map.addSource(SOURCE_ID, {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
@@ -363,6 +487,47 @@ export default function MapView() {
           "line-dasharray": [1.5, 2],
         },
       });
+      // AA-847 slice 6d: the day's stretch of a river / road / trail between two stops, gold like the trip, dashed
+      // and labelled "approximate route" while the line has no geometry yet.
+      map.addSource(TRIP_FEATURE_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: "trip-feature-casing",
+        type: "line",
+        source: TRIP_FEATURE_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#ffffff", "line-width": 7, "line-opacity": 0.9 },
+      });
+      map.addLayer({
+        id: "trip-feature-line",
+        type: "line",
+        source: TRIP_FEATURE_SOURCE,
+        filter: ["!=", ["get", "approx"], true],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": TRIP_FEATURE_COLOR, "line-width": 4, "line-opacity": 0.95 },
+      });
+      map.addLayer({
+        id: "trip-feature-approx",
+        type: "line",
+        source: TRIP_FEATURE_SOURCE,
+        filter: ["==", ["get", "approx"], true],
+        layout: { "line-join": "round" },
+        paint: { "line-color": TRIP_FEATURE_COLOR, "line-width": 3, "line-opacity": 0.9, "line-dasharray": [2, 1.5] },
+      });
+      map.addLayer({
+        id: "trip-feature-label",
+        type: "symbol",
+        source: TRIP_FEATURE_SOURCE,
+        layout: {
+          "symbol-placement": "line",
+          "text-field": ["get", "label"],
+          "text-size": 11,
+          "text-font": ["DIN Offc Pro Medium", "Arial Unicode MS Regular"],
+        },
+        paint: { "text-color": "#7A5210", "text-halo-color": "#ffffff", "text-halo-width": 1.4 },
+      });
       map.addLayer({
         id: "trip-stop-dot",
         type: "circle",
@@ -475,7 +640,7 @@ export default function MapView() {
         paint: { "text-color": "#ffffff" },
       });
 
-      for (const layer of ["unclustered", "unclustered-area"]) {
+      for (const layer of ["unclustered", "unclustered-area", "destination-lines-hit"]) {
         map.on("click", layer, (e) => {
           const f = e.features?.[0];
           const id = f?.properties?.id as string | undefined;
@@ -501,6 +666,10 @@ export default function MapView() {
         });
       });
       map.on("moveend", onMoveEnd);
+      // a line's detail level follows the zoom (light below 7, detailed from 7)
+      map.on("zoomend", () => {
+        if (shapeLevel(map.getZoom()) !== lineLevelRef.current) void drawLines();
+      });
       refreshVisibleTiles();
     });
 
@@ -514,7 +683,7 @@ export default function MapView() {
       map.remove();
       mapRef.current = null;
     };
-  }, [refreshVisibleTiles]);
+  }, [refreshVisibleTiles, drawLines]);
 
   // Re-query when filters change (browse mode only).
   useEffect(() => {
@@ -572,7 +741,7 @@ export default function MapView() {
       const fitPins = inBox.length > 0 ? inBox : pins;
       if (fitPins.length > 0) {
         const b = new mapboxgl.LngLatBounds();
-        for (const p of fitPins) b.extend([p.lng, p.lat]);
+        for (const p of fitPins) extendBy(b, p);
         map.fitBounds(b, { padding: 80, maxZoom: 8, duration: 700 });
       }
     });
@@ -593,12 +762,14 @@ export default function MapView() {
     setSourceData(searchResults);
     if (searchResults.length > 0) {
       const b = new mapboxgl.LngLatBounds();
-      for (const p of searchResults) b.extend([p.lng, p.lat]);
+      for (const p of searchResults) extendBy(b, p); // a river result frames its whole bbox
       map.fitBounds(b, { padding: 80, maxZoom: 9, duration: 600 });
     }
   }, [searchResults, refreshVisibleTiles, setSourceData]);
 
   // Draw the trip path (day-ordered line + numbered stops) from the itinerary.
+  // AA-847 slice 6d: a river / road / trail day is not a stop; its stretch between the two stops is a gold "feature"
+  // leg that replaces the road / flight leg between them (lib/lines.ts planTrip).
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
@@ -608,19 +779,18 @@ export default function MapView() {
     const stopSrc = map.getSource(TRIP_STOP_SOURCE) as
       | mapboxgl.GeoJSONSource
       | undefined;
+    const featureSrc = map.getSource(TRIP_FEATURE_SOURCE) as mapboxgl.GeoJSONSource | undefined;
     if (!lineSrc || !stopSrc) return;
 
-    // Only days that carry coordinates (the assembly API includes lat/lng).
-    const pts = itinerary
-      .filter((d) => typeof d.lat === "number" && typeof d.lng === "number")
-      .map((d) => ({ day: d.day, coord: [d.lng as number, d.lat as number] as [number, number] }));
-
+    const plan = planTrip(itinerary);
+    // Day number of each stop (the first day it is reached), for the numbered markers.
+    const dayOf = new Map(itinerary.map((d) => [d.component_id, d.day]));
     stopSrc.setData({
       type: "FeatureCollection",
-      features: pts.map((p) => ({
+      features: plan.stops.map((p) => ({
         type: "Feature",
         geometry: { type: "Point", coordinates: p.coord },
-        properties: { day: String(p.day) },
+        properties: { day: String(dayOf.get(p.componentId) ?? "") },
       })),
     });
 
@@ -631,11 +801,7 @@ export default function MapView() {
       | mapboxgl.GeoJSONSource
       | undefined;
 
-    // A line needs at least 2 distinct points; dedupe consecutive identical
-    // coords (several components can share one destination's coordinate).
-    const stops = pts.map((p) => p.coord).filter(
-      (c, i, arr) => i === 0 || c[0] !== arr[i - 1][0] || c[1] !== arr[i - 1][1],
-    );
+    const stops = plan.stops.map((p) => p.coord);
 
     // Arrival/departure gateways: fly into the gateway nearest the first stop,
     // fly out from the gateway nearest the last stop. Draw a ✈ marker at each
@@ -675,6 +841,15 @@ export default function MapView() {
       features: gatewayFeatures,
     });
 
+    // Stretches that replace no leg (a window around one stop) are drawn right away.
+    const stretchFeature = (geometry: [number, number][], label: string, approx: boolean): GeoJSON.Feature => ({
+      type: "Feature",
+      geometry: { type: "LineString", coordinates: geometry },
+      properties: { label, approx },
+    });
+    const extraFeatures = plan.extras.map((x) => stretchFeature(x.geometry, formatStretch(x).replace(/^〰 /, ""), false));
+    featureSrc?.setData({ type: "FeatureCollection", features: extraFeatures });
+
     if (stops.length < 2) {
       lineSrc.setData({ type: "FeatureCollection", features: [] });
       // Even a single-stop trip shows its fly-in/out arcs.
@@ -689,24 +864,25 @@ export default function MapView() {
       return;
     }
 
-    // Resolve each consecutive pair into a road leg (real road geometry) or a
-    // flight leg (dashed arc). Road legs draw the ACTUAL road; flight legs
-    // draw a faint arc — we never draw a straight line pretending to be a road.
+    // Resolve each planned leg: a road leg (real road geometry), a flight leg (dashed arc) or a feature leg along a
+    // line (no Directions request). We never draw a straight line pretending to be a road.
     let cancelled = false;
-    fetchRouteLegs(stops).then((legs) => {
-      if (cancelled || !legs) return;
+    fetchTripLegs(plan).then((legs) => {
+      if (cancelled) return;
       const road = map.getSource(TRIP_LINE_SOURCE) as mapboxgl.GeoJSONSource | undefined;
       const flight = map.getSource(TRIP_FLIGHT_SOURCE) as mapboxgl.GeoJSONSource | undefined;
+      const feature = map.getSource(TRIP_FEATURE_SOURCE) as mapboxgl.GeoJSONSource | undefined;
       if (!road || !flight) return;
+      const all = legs.flatMap((l) => [l, ...(l.joins ?? [])]);
 
-      const roadFeatures = legs
+      const roadFeatures = all
         .filter((l) => l.mode === "road" && l.geometry.length >= 2)
         .map((l) => ({
           type: "Feature" as const,
           geometry: { type: "LineString" as const, coordinates: l.geometry },
           properties: {},
         }));
-      const flightFeatures = legs
+      const flightFeatures = all
         .filter((l) => l.mode === "flight")
         .map((l) => ({
           type: "Feature" as const,
@@ -716,6 +892,9 @@ export default function MapView() {
           },
           properties: {},
         }));
+      const featureLegs = legs
+        .filter((l) => l.mode === "feature" && l.stretch && l.geometry.length >= 2)
+        .map((l) => stretchFeature(l.geometry, formatStretch(l.stretch!).replace(/^〰 /, ""), l.stretch!.provisional));
 
       // Prepend the gateway fly-in/out arcs so the whole journey is dashed
       // consistently (airport -> first stop, last stop -> airport).
@@ -730,6 +909,7 @@ export default function MapView() {
         type: "FeatureCollection",
         features: [...gatewayArcFeatures, ...flightFeatures],
       });
+      feature?.setData({ type: "FeatureCollection", features: [...extraFeatures, ...featureLegs] });
     });
     return () => {
       cancelled = true;

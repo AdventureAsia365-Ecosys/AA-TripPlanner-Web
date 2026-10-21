@@ -66,15 +66,21 @@ def build_tile_query(
     if places_source.is_cis():
         # AA-712 slice 6b: CIS catalog views (228). Same filter columns on the component view; the
         # view hides components on suspect / duplicate destinations and of tours that are not live.
+        # AA-847 slice 6d (CIS 256): a destination is in the tile when its BBOX meets the cell (a river's
+        # bbox spans many cells; a point's bbox is the point), so a line is returned in every tile it
+        # crosses and the client dedupes by id. No geometry here: /browse/shapes serves it by id.
         sql = f"""
         SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+               d.shape_kind, d.shape_status, d.length_km,
+               d.min_lat, d.min_lng, d.max_lat, d.max_lng,
                COUNT(c.component_id) AS component_count
         FROM catalog.v_destination d
         JOIN catalog.v_tour_component c ON c.destination_id = d.destination_id
-        WHERE d.lat >= $1 AND d.lat < $2
-          AND d.lng >= $3 AND d.lng < $4
+        WHERE d.max_lat >= $1 AND d.min_lat < $2
+          AND d.max_lng >= $3 AND d.min_lng < $4
           {where_frag}
-        GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+        GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision,
+                 d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng
         HAVING COUNT(c.component_id) > 0
         ORDER BY component_count DESC
     """
@@ -112,9 +118,24 @@ async def query_tile(tile_id: str, filters: BrowseFilters, *, pool: _Pool) -> di
     }
 
 
+LINE_FIELDS = ("shape_kind", "shape_status", "length_km")
+BBOX_FIELDS = ("min_lat", "min_lng", "max_lat", "max_lng")
+# AA-847 slice 6d: the catalog.v_destination columns of a line (CIS 256) every cis destination read selects.
+LINE_COLS = LINE_FIELDS + BBOX_FIELDS
+LINE_COLS_SQL = ", ".join(f"d.{c}" for c in LINE_COLS)
+
+
 def geo_fields(r: Any) -> dict:
     """``located_by`` / ``precision`` of a cis-path destination row (catalog.v_destination, 228): the map
     draws ``precision = 'area'`` as an area and shows the Geoapify + OSM attribution for ``geoapify``
-    points. Empty on the legacy path (shared.destinations rows are not selected with them)."""
+    points. Empty on the legacy path (shared.destinations rows are not selected with them).
+    AA-847 slice 6d (CIS 256): a ``precision = 'line'`` row (river, road, trail) also carries ``shape_kind``,
+    ``shape_status``, ``length_km`` and ``bbox`` [min_lng, min_lat, max_lng, max_lat]; it is DRAWN as a line from
+    /browse/shapes, never a pin or a circle."""
     keys = r.keys() if hasattr(r, "keys") else ()
-    return {k: r[k] for k in ("located_by", "precision") if k in keys}
+    out = {k: r[k] for k in ("located_by", "precision") if k in keys}
+    if out.get("precision") == "line":
+        out.update({k: r[k] for k in LINE_FIELDS if k in keys})
+        if all(k in keys and r[k] is not None for k in BBOX_FIELDS):
+            out["bbox"] = [r["min_lng"], r["min_lat"], r["max_lng"], r["max_lat"]]
+    return out

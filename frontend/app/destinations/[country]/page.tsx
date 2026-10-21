@@ -8,6 +8,7 @@ import JsonLd from "@/components/site/JsonLd";
 import SiteFooter from "@/components/site/SiteFooter";
 import SiteHeader from "@/components/site/SiteHeader";
 import StaticMap from "@/components/site/StaticMap";
+import { placeLines } from "@/lib/tourMap";
 import TourCard from "@/components/site/TourCard";
 import { getDestination, siteUrl } from "@/lib/catalog";
 import type { DestinationPage } from "@/lib/catalogTypes";
@@ -69,9 +70,13 @@ export default async function DestinationRoute({ params }: Props) {
   const days = Math.min(30, Math.max(7, d.min_days ?? 7));
   const planHref = `/plan?${new URLSearchParams({ country: d.country, days: String(days) })}`;
   const listed = d.places.slice(0, LISTED_PLACES);
-  const points = listed.map((p) => ({
+  // AA-847 slice 6d: a river / road / trail is a line on the map (its shape_lo), never a numbered pin.
+  const pinPlaces = listed.filter((p) => p.precision !== "line");
+  const points = pinPlaces.map((p) => ({
     name: p.name ?? "", lat: p.lat, lng: p.lng, located_by: p.located_by, precision: p.precision,
   }));
+  const lines = placeLines(listed);
+  const pinNumber = new Map(pinPlaces.map((p, i) => [p.destination_id, i + 1]));
 
   return (
     <div className="aa-site">
@@ -141,14 +146,16 @@ export default async function DestinationRoute({ params }: Props) {
             </div>
           ) : (
             <div className="mt-4 grid gap-5 lg:grid-cols-[1fr_1fr]">
-              <StaticMap points={points} title={`Places in ${d.country}`} caption="Numbers match the list of places." />
+              <StaticMap points={points} lines={lines} title={`Places in ${d.country}`} caption="Numbers match the list of places." />
               <ol className="grid content-start gap-2 sm:grid-cols-2">
                 {listed.map((p, i) => (
                   <li key={p.destination_id} className="flex gap-3 rounded-xl border border-k-line bg-k-card p-2.5">
                     <Photo src={p.cover_url} alt={p.name ?? "Place"} className="h-14 w-14 shrink-0 rounded-lg" />
                     <div className="min-w-0">
                       <p className="truncate text-[14px] font-semibold text-k-ink">
-                        <span className="mr-1 text-k-accent-deep">{i + 1}.</span>
+                        <span className="mr-1 text-k-accent-deep" aria-label={p.precision === "line" ? "Route" : undefined}>
+                          {p.precision === "line" ? "〰" : `${pinNumber.get(p.destination_id) ?? i + 1}.`}
+                        </span>
                         {p.name}
                       </p>
                       <p className="text-[12px] text-k-muted">

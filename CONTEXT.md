@@ -291,7 +291,18 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   static maps on tour / country pages, the destination popup) the page shows "Powered by Geoapify" (link) and
   "© OpenStreetMap contributors" (`components/GeocodeAttribution.tsx`, `lib/types.ts GEOCODE_ATTRIBUTION`). A place
   with `precision = 'area'` (the model's point) is drawn as a translucent area on the planner map and a grey pin on
-  static maps, never as an exact pin. Linear features (trails, rivers, roads) never reach this repo: CIS hides them.
+  static maps, never as an exact pin (only `point`, or a legacy row, is an exact pin: `lib/lines.ts isExactPin`).
+- **Line places (slice 6d, AA-847, owner decision S246: drawn, never a pin, a circle or hidden)**: a destination with
+  `precision = 'line'` (river, road, trail; CIS 256) leaves the clustered point source for the unclustered
+  `destination-lines` source (white casing; water blue, roads ink solid, trails / approximate routes ink dashed;
+  the name along the line; a 14 px invisible hit line opens the same popup). Tiles select by bbox and carry no
+  geometry; `GET /browse/shapes?ids=&level=lo|mid` (`backend/browse/shapes.py`, `catalog.v_destination_shape`) serves
+  it by id (`lo` below zoom 7), cached per id in the client. On the trip map a line is never a waypoint: the day's
+  stretch (`segment` on the component) is a gold **`feature` leg** that replaces the road / flight leg between the
+  same two stops (no Directions request; joins only for an end > 2 km away), a line with no geometry yet is a dashed
+  "approximate route" between the day's stops (`lib/lines.ts planTrip`, `lib/mapbox.ts fetchTripLegs`). List: a
+  line glyph and "A → B · ≈ n km". Static maps: `path` overlays (≤ 3 lines, ≤ 60 vertices, `lib/staticMap.ts`).
+  Kill switch `NEXT_PUBLIC_MAP_LINES_PROVISIONAL` (⚠️ underscore name, set by hand) draws every line provisional.
 - Photos (AA-708, 01/10/2026): AA marketing photos are synced and matched by CIS (`photo_sync`,
   `shared.place_photo`). This repo reads them only through `shared.v_destination_photos` /
   `shared.v_tour_photos` and `shared.destinations.cover_image_url` (set by CIS from the photo
@@ -407,7 +418,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 | Other side | This repo reads | This repo writes | Granted by |
 |---|---|---|---|
 | AA-CIS-App (catalog, AA-812) | `catalog.v_tour`, `v_tour_day`, `v_tour_place`, `v_tour_photo`, `v_destination`, `v_destination_photo` (contract `catalog.tour.v1`); photo URLs = `CIS_PUBLIC_API_BASE` + path | — | CIS migration 225 |
-| AA-CIS-App (places / tour graph, AA-712) | with `PLACES_SOURCE=cis`: `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`, `v_destination` (+ `located_by`, `precision`), `v_component_embedding` (HNSW top-k, AA-847) — contract `catalog.graph.v1` / `catalog.tour.v1.1` | — | CIS migrations 228, 253 (`v_component_embedding`: SELECT to `tripplanner` only) |
+| AA-CIS-App (places / tour graph, AA-712) | with `PLACES_SOURCE=cis`: `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`, `v_destination` (+ `located_by`, `precision`; 256: shape kind / status / length / bbox / `shape_lo`), `v_component_embedding` (HNSW top-k, AA-847), `v_destination_shape` (line geometry by id, slice 6d) — contract `catalog.graph.v1.2` / `catalog.tour.v1.2` | — | CIS migrations 228, 253 (`v_component_embedding`), 256 (`v_destination_shape`): SELECT to `tripplanner` only |
 | AA-CIS-App (content) | `gold_aa_internal.published_tours` (tenant RLS, AA tenant set per transaction), `acp_contract.v_active_tour_atoms` (place/activity columns), `shared.destinations`, `shared.v_destination_photos` / `v_tour_photos` | — | CIS migrations 180 / 216, 201 |
 | AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
 | AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 / v1.2 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.2.json` (payload `version` 1.2 since AA-830: each leg also carries the catalog tour key `source_system` + `source_id`, resolved against `catalog.v_tour` at send time, both null when unresolvable; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
