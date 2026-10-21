@@ -180,6 +180,34 @@ jobs:
             echo "::notice::No VERCEL_AUTOMATION_BYPASS_SECRET — status only logged (401/403 = deployment protection)."
           fi
 
+      # AA-876 — the production site must send the security headers from frontend/next.config.mjs. Checked on
+      # the public production host (no deployment protection there), which `vercel deploy --prod` has just
+      # aliased to this deployment. TripPlanner has no UI smoke workflow, so this is its header smoke.
+      - name: Check the production security headers
+        if: steps.plan.outputs.target == 'production' && steps.deploy.outputs.url != ''
+        env:
+          PROD_URL: https://aa-tripplanner.vercel.app
+        run: |
+          set -uo pipefail
+          MISSING=""
+          for _ in 1 2 3; do
+            HEADERS=$(curl -sS -o /dev/null -D - --max-time 30 "$PROD_URL/" | tr -d '\r' || true)
+            MISSING=""
+            grep -qiE "^content-security-policy:.*frame-ancestors 'none'" <<<"$HEADERS" || MISSING="$MISSING csp-frame-ancestors"
+            grep -qiE '^x-content-type-options: *nosniff' <<<"$HEADERS" || MISSING="$MISSING nosniff"
+            grep -qiE '^x-frame-options: *DENY' <<<"$HEADERS" || MISSING="$MISSING x-frame-options"
+            grep -qiE '^referrer-policy: *strict-origin-when-cross-origin' <<<"$HEADERS" || MISSING="$MISSING referrer-policy"
+            grep -qiE '^strict-transport-security:.*max-age=63072000' <<<"$HEADERS" || MISSING="$MISSING hsts"
+            grep -qiE '^permissions-policy:' <<<"$HEADERS" || MISSING="$MISSING permissions-policy"
+            [ -z "$MISSING" ] && break
+            sleep 10
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::$PROD_URL/ is missing security headers:$MISSING"
+            exit 1
+          fi
+          echo "GET $PROD_URL/ carries all six security headers."
+
       - name: Job summary
         if: always() && steps.plan.outputs.enabled == 'true'
         env:

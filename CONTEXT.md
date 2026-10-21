@@ -89,6 +89,13 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   production. The Vercel Git integration is off (`frontend/vercel.json`, `git.deploymentEnabled:
   false`) because the Hobby team cap (~100 deployments / 24 h, all projects) was being used up.
   Needs the repo secret `VERCEL_TOKEN`. Check the "Vercel deploy" job on the PR for deploy success.
+- **Security headers (AA-876)** on every response (`frontend/next.config.mjs`, same list as the CIS admin and
+  portal): HSTS, `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, a minimal
+  CSP (`frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'` — no `script-src` yet),
+  `Permissions-Policy` (camera, microphone, geolocation off), and no `x-powered-by`. `frame-ancestors 'none'`
+  blocks any partner iframe of TripPlanner until an allow-list is designed (KAN-20 B2B). A production deploy
+  fails red if `https://aa-tripplanner.vercel.app/` lacks any of them ("Check the production security headers"
+  step in `vercel-deploy.yml`; TripPlanner has no UI smoke workflow, so this is its header smoke).
 
 ### Pages (AA-812)
 
