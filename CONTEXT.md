@@ -48,7 +48,7 @@ Next.js 15 frontend  ──(Mapbox GL)──►  interactive map UI
       │  same-origin /api/* (BFF, server-side; holds the TripPlanner API key)
       ▼
 API Gateway HTTP v2  (ANY /browse/{proxy+}, ANY /trip/{proxy+}; edge shared secret
-      │               X-TripPlanner-Key; guest token on trip mutations, AA-827)
+      │               X-TripPlanner-Key; guest token on trip mutations, AA-827, and reads, AA-909)
       ▼
 Two Python 3.12 Lambda functions
   ├─ browse      → stateless, cacheable reads (destinations, suggestions); embeds search text
@@ -157,8 +157,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `x-middleware-set-cookie` response header that client JS can read — and refuses a cross-site POST
   (403) before any mint, so another site can never overwrite the cookie. Client JS never sees it. The
   browser keeps only `{sessionId, tripId}` (v4 UUIDs) in localStorage.
-- The `/api/trip` BFF forwards the token on POST only, in `x-tripplanner-guest`; it refuses a
-  cross-origin POST (403) and never logs. `tripplanner.sessions.guest_token_hash` stores sha256(token)
+- The `/api/trip` BFF forwards the token on POST and on the GET reads (AA-909), in
+  `x-tripplanner-guest`; it refuses a cross-origin POST (403) and never logs. `tripplanner.sessions.guest_token_hash` stores sha256(token)
   only (`bytea`, 32 bytes, migration tp-011); the plaintext `guest_token` (= id::text before AA-827) is
   no longer written, tp-012 nulls the legacy values and `sessions_guest_token_retired_chk`
   (`CHECK (guest_token IS NULL)`) keeps it empty, so a pre-AA-827 Lambda artifact can no longer insert
@@ -187,7 +187,14 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - `trip_id` / `session_id` must be canonical UUIDs (400 otherwise, value not echoed); an unexpected
   error answers 500 and logs only its type, place and route name. Each guarded request prints one
   `{"evt":"guest_auth","outcome":…,"route":…}` line (no token, hash or ids).
-- GET reads (trip, suggestions, coverage, activities) are not gated yet (follow-up).
+- **Reads (AA-909):** the four trip GETs (`/trip/{id}`, `/suggestions`, `/coverage`,
+  `/stops/{dest}/activities`) run `_read_guard`: the token's sha256 must equal the hash of the session
+  that owns the trip (`trip_drafts.session_id` → `sessions.guest_token_hash`,
+  `guest_session.authorize_read`). Every refusal (no token, malformed, wrong, another trip's, no such
+  trip, no draft yet, owner session without a hash) is the unknown-route 404 `{"error": "not found"}`,
+  so existence never leaks. Reads never create or bind a session and never reset the client: the
+  frontend treats a failed read as an empty trip (a fresh trip has no draft and also reads 404).
+  Outcomes in the `guest_auth` line: `read_ok`, `no_token`, `no_owner`, `bad_token`, `token_mismatch`.
 
 ### Data model — event-sourced trips
 

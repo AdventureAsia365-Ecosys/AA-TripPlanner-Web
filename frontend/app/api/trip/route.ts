@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  GUEST_TOKEN_HEADER,
   MINTED_TOKEN_HEADER,
   guestCookieName,
   isGuestToken,
   isSameOrigin,
   mapMintedDenial,
 } from "@/lib/guestToken";
+import { tripHeaders as lambdaHeaders, tripReadPath } from "@/lib/tripProxy";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
 // Maps a single { op } POST body onto the Lambda's REST verbs/paths.
@@ -14,13 +14,11 @@ const TRIP_API_URL = process.env.TRIP_API_URL ?? "";
 // Shared secret the Lambdas verify (X-TripPlanner-Key). Server-side only.
 const TRIPPLANNER_API_KEY = process.env.TRIPPLANNER_API_KEY ?? "";
 
-// AA-827: mutations carry the guest token (HttpOnly cookie) to the Lambda, which checks it against
-// the session's stored sha256. Reads stay token-free for now. The token is never logged or echoed.
+// AA-827 / AA-909: mutations and the four trip reads carry the guest token (HttpOnly cookie) to the
+// Lambda, which checks it against the stored sha256 (reads: of the session that owns the trip, else
+// 404). The token is never logged or echoed.
 function tripHeaders(guestToken?: string | null): Record<string, string> {
-  const h: Record<string, string> = { "content-type": "application/json" };
-  if (TRIPPLANNER_API_KEY) h["x-tripplanner-key"] = TRIPPLANNER_API_KEY;
-  if (guestToken) h[GUEST_TOKEN_HEADER] = guestToken;
-  return h;
+  return lambdaHeaders(TRIPPLANNER_API_KEY, guestToken);
 }
 
 // The cookie, or the token middleware.ts minted on this very request (no cookie came in; `minted`).
@@ -32,8 +30,8 @@ function requestGuestToken(req: NextRequest): { token: string | null; minted: bo
   return isGuestToken(minted) ? { token: minted, minted: true } : { token: null, minted: false };
 }
 
-// GET /api/trip?trip_id=... — fetch the current itinerary for a trip, used to
-// restore a guest's trip after a page reload (trip_id persisted client-side).
+// GET /api/trip?trip_id=... — the trip reads: the current itinerary (restore after a page reload,
+// trip_id persisted client-side), suggestions, coverage and the activities at one stop.
 export async function GET(req: NextRequest) {
   if (!TRIP_API_URL) {
     return NextResponse.json(
@@ -41,38 +39,22 @@ export async function GET(req: NextRequest) {
       { status: 503 },
     );
   }
-  const tripId = encodeURIComponent(req.nextUrl.searchParams.get("trip_id") ?? "");
-  if (!tripId) {
-    return NextResponse.json({ error: "trip_id required" }, { status: 400 });
+  // resource=suggestions | coverage | activities, or none for the itinerary (lib/tripProxy.ts).
+  const read = tripReadPath(req.nextUrl.searchParams);
+  if ("error" in read) {
+    return NextResponse.json({ error: read.error }, { status: 400 });
   }
-  // resource=suggestions -> next-to-pin recommendations for this trip (with optional
-  // activity/intensity filters); coverage -> the AA leg chain (AA-674); activities -> what
-  // AA tours do at one stop (AA-674).
-  const q = req.nextUrl.searchParams;
-  const resource = q.get("resource");
-  let path = `/trip/${tripId}`;
-  if (resource === "suggestions") {
-    const f = new URLSearchParams();
-    for (const k of ["activity", "intensity_level"]) {
-      const v = q.get(k);
-      if (v) f.set(k, v);
-    }
-    path = `/trip/${tripId}/suggestions${f.toString() ? `?${f}` : ""}`;
-  } else if (resource === "coverage") {
-    path = `/trip/${tripId}/coverage`;
-  } else if (resource === "activities") {
-    const dest = encodeURIComponent(q.get("destination_id") ?? "");
-    if (!dest) return NextResponse.json({ error: "destination_id required" }, { status: 400 });
-    path = `/trip/${tripId}/stops/${dest}/activities`;
-  }
-  const upstream = await fetch(`${TRIP_API_URL}${path}`, {
+  // AA-909: a read without the owner's token is a 404 from the Lambda (a fresh trip with no draft
+  // too); the client treats it as an empty trip. No cookies_required mapping on reads: a 404 never
+  // resets the client's ids, so there is nothing to protect.
+  const upstream = await fetch(`${TRIP_API_URL}${read.path}`, {
     method: "GET",
-    headers: tripHeaders(),
+    headers: tripHeaders(requestGuestToken(req).token),
   });
   const text = await upstream.text();
   return new NextResponse(text, {
     status: upstream.status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    headers: { "content-type": "application/json", "cache-control": "no-store", vary: "Cookie" },
   });
 }
 

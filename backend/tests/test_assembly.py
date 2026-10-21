@@ -170,6 +170,10 @@ class FakeConn:
                             "email": c.get("email"), "contact_consent": c.get("contact_consent", False),
                             "contact_consent_at": c.get("contact_consent_at")}
             return None
+        if q.startswith("SELECT s.guest_token_hash FROM tripplanner.trip_drafts d JOIN tripplanner.sessions s"):
+            d = self.drafts.get(args[0])                  # AA-909 read guard: the owner's hash
+            row = self.sessions.get(d["session_id"]) if d else None
+            return {"guest_token_hash": row.get("guest_token_hash")} if row is not None else None
         if q.startswith("SELECT session_id FROM tripplanner.trip_drafts"):
             d = self.drafts.get(args[0])
             return {"session_id": d["session_id"]} if d else None
@@ -554,6 +558,7 @@ async def test_suggest_empty_trip_returns_empty():
 @pytest.mark.asyncio
 async def test_handler_suggestions_route_ok():
     conn = FakeConn()
+    conn.sessions[S1] = _session(S1)                   # AA-909: reads need the owner's token
     await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
     resp = await call("GET", f"/trip/{T1}/suggestions", {}, conn=conn)
     assert resp["statusCode"] == 200
