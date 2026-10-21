@@ -274,7 +274,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   from `catalog.v_tour`), activities, apply-route, add-day and the narration day texts (`catalog.v_tour.itinerary_text`).
   Browse search and the suggestion fallback rank through `backend/shared/vector_topk.py` with `source=CIS`: the
   HNSW top-k scans `catalog.v_component_embedding` (CIS 253, not a security_barrier view, `tripplanner` only;
-  `hnsw.iterative_scan` on pgvector ≥ 0.8), the exact fallback `catalog.v_tour_component`. **Component ids across
+  `hnsw.iterative_scan` on pgvector ≥ 0.8; the same rows as `v_tour_component` — live tours on usable places, never
+  a suspect or merged one — so the cis path checks nothing after the scan), the exact fallback
+  `catalog.v_tour_component`. **Component ids across
   the flip**: the views serve stable uuid5 component ids, the frozen table its own ids; `tripplanner.component_id_map`
   (tp-017; filled once, right before the flip, by AA-CIS-Infra `db/scripts/aa847_component_id_map_fill.py`) maps an
   old id to its catalog id, and every assembly reader resolves the ids it is given through

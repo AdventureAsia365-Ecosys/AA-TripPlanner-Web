@@ -316,6 +316,8 @@ async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT,
     # Transaction scopes hnsw.ef_search (SET LOCAL). Inside the trip's countries the candidate set
     # is already one country's components: the exact aggregate is cheap there, so skip the top-k
     # passes (they would mostly come up short for small countries, e.g. Bhutan with a 12-24 pool).
+    # keep_where "": on cis the views already hold only live tours on usable places (CIS 253: suspect and merged
+    # places never leave catalog.v_component_embedding / v_tour_component).
     async with conn.transaction():
         rows, mode = await vector_topk.ranked_destinations(
             conn, scan_where=scan_where, keep_where="", params=params,

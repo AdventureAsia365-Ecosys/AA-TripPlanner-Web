@@ -21,7 +21,8 @@ MIN(embedding <=> q) over every component (a full scan of every vector per searc
 
 AA-712 slice 6b / AA-847: with PLACES_SOURCE=cis it ranks the CIS catalog through the same vector_topk passes
 (``vector_topk.CIS``): the top-k scan reads catalog.v_component_embedding (CIS 253, not a security_barrier view,
-so the HNSW index on geo.tour_place serves it; live tours only), the exact fallback catalog.v_tour_component and
+so the HNSW index on geo.tour_place serves it; it shows the rows of v_tour_component: live tours, usable places,
+never a suspect or merged one), the exact fallback catalog.v_tour_component and
 the destinations catalog.v_destination. The views need no AA tenant, so this path has neither the active-tour
 EXISTS nor set_catalog_tenant. (Before 253 it ran the exact aggregate over v_tour_component: S237 decision D7.)
 
@@ -111,7 +112,8 @@ CIS_DEST_COLS = ("id", "name", "lat", "lng", "located_by", "precision")
 
 def cis_search_where(filters: BrowseFilters) -> tuple[str, str, list[Any]]:
     """(scan_where, keep_where, filter_params) of the cis path for vector_topk.CIS; the query embedding is $1. The
-    views are live-only, so nothing is checked after the scan."""
+    views show only components of live tours on usable places (CIS 253 filters v_component_embedding with the
+    v_tour_component rule: not suspect, not a merged duplicate), so nothing is checked after the scan."""
     frag, filter_params = filters.where_sql(start_index=2, country_clause=CIS_COUNTRY_CLAUSE)
     return f"c.embedding IS NOT NULL {frag}", "", filter_params
 

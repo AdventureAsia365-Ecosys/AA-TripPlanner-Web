@@ -38,8 +38,9 @@ Run ``ranked_destinations`` inside a transaction: ``hnsw.ef_search`` is set with
 ``set_config(..., true)`` (transaction-local), never leaking to other queries on a pooled connection.
 
 AA-847 (AA-712 slice 6c, ADR 0007 Consequences): the same ranking over the CIS catalog (``source=CIS``). The scan
-reads ``catalog.v_component_embedding`` (CIS 253: resolved components of live tours, NOT a security_barrier view,
-so ``ORDER BY embedding <=> q LIMIT k`` is served by the HNSW index on ``geo.tour_place``); the exact fallback and
+reads ``catalog.v_component_embedding`` (CIS 253: the components ``v_tour_component`` shows — live tours, usable
+places, never a suspect or merged one — NOT a security_barrier view, so ``ORDER BY embedding <=> q LIMIT k`` is
+served by the HNSW index on ``geo.tour_place``; callers need no ``keep_where`` on this path); the exact fallback and
 the component count read ``catalog.v_tour_component``; destinations come from ``catalog.v_destination``. Each is
 read through a subquery that renames its columns to the alias ``c`` the callers use (``c.id``,
 ``c.source_tour_id``, ``c.destination_id``, ``c.activity`` …), so ``scan_where`` / ``keep_where`` are the same
