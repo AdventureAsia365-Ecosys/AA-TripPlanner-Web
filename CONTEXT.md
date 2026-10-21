@@ -239,11 +239,21 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   enforces this: `migrations/tests/migration_lint.py` (TripPlanner rules), the AA-CIS-Infra
   `db/run_migration.py --inspect` lint at a pinned commit (`test_infra_runner.py`) and a replay of
   tp-001…013 on PostgreSQL 15 + pgvector (`test_tp013_pg.py`; `test_tp015_pg.py` continues it with tp-014/015 as
-  `tp_owner`). `test_replay_twice_pg.py` (AA-849) applies every file twice: the second run must not error and
+  `tp_owner`, `test_tp016_pg.py` with tp-016). `test_replay_twice_pg.py` (AA-849) applies every file twice: the second run must not error and
   must change nothing, and the registered `tp-NNN` keys must equal the files, so **every new file must be
   safe to run again** (`IF NOT EXISTS`, `CREATE OR REPLACE`, `ON CONFLICT (version) DO NOTHING`, no
   unguarded seed rows). Nothing in that job may be skipped (`--fail-on-skip`). Undoing tp-013 is the prepared Infra
   `roles/` file (branch `feat/x1-s7-tp013-undo`) run as the master, never a `tripplanner/` file.
+- **Column tags (data standards DM-6.1, tp-016, AA-877).** A column holding personal data carries
+  `COMMENT 'pii:<class>; <free text>'` (`contact`, `name`, `address`, `profile`, `online_id`, `free_text`, `travel`,
+  `payment`; further classes named later as `also pii:<class>`), credentials and their hashes
+  `conf:credential; …`. tp-016 tagged `customers.name` / `phone` / `email`, `outbox.payload`,
+  `v_inquiry_outbox.payload`, `trip_drafts.itinerary` / `date_start` / `date_end`, `trip_events.payload` and restated
+  the tp-011 `sessions.guest_token*` comments in the standard form. A new column holding such data ships its tag **in
+  the same migration file** that creates it (COMMENT replaces the whole comment; a view rebuilt with DROP + CREATE must
+  restate its tags). `migrations/tests/test_tp016_pg.py` fails on an untagged column named like personal data that is
+  not on its allowlist; the schema reference section *Personal and confidential data tags (DM-6.1)* (AA-CIS-Infra
+  `db/gen_schema_reference.py`, the authority) is the column inventory of the RoPA (AA-Ecosys `docs/legal/register.md`).
 - **Only CIS writes content** (root ADR 0002, 01/10/2026). This repo writes only `tripplanner.*`
   user state (sessions, drafts, customers, trip events) and `shared.llm_call_log`. The DB role
   `tripplanner` has no INSERT/UPDATE on `shared.destinations` any more (CIS migration 201).
@@ -260,8 +270,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `source_id`, live tours only, no AA tenant needed; `backend/shared/places_source.py`). Every browse
   response carries `x-places-source`. The **assembly** readers (`events._current_components`,
   suggestions, coverage, activities, apply-route, handoff `leg_chain`) stay on the frozen tables until
-  slice 6c, which ships with the component id-map migration (next free key, tp-016 or later: tp-013
-  and tp-014 went to X1, AA-852, tp-015 to AA-858); the views' component ids are new stable
+  slice 6c, which ships with the component id-map migration (next free key, tp-017 or later: tp-013
+  and tp-014 went to X1, AA-852, tp-015 to AA-858, tp-016 to AA-877); the views' component ids are new stable
   uuid5 ids, so `cis` is set on both Lambdas together, in that window, not before.
 - Photos (AA-708, 01/10/2026): AA marketing photos are synced and matched by CIS (`photo_sync`,
   `shared.place_photo`). This repo reads them only through `shared.v_destination_photos` /
