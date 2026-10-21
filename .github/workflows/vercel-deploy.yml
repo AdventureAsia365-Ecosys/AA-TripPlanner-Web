@@ -208,6 +208,18 @@ jobs:
           fi
           echo "GET $PROD_URL/ carries all six security headers."
 
+      # AA-879 — the same six headers on every PREVIEW deployment, before the change reaches production. The
+      # preview URL sits behind Vercel protection; the script reads it with `vercel curl` (team token from
+      # VERCEL_TOKEN), which uses the project's "Protection Bypass for Automation" token. Prerequisite: that
+      # bypass must exist on the aa-tripplanner project (Vercel → Settings → Deployment Protection); without it
+      # this step fails red with a "Vercel login page" hint. No GitHub secret is added.
+      - name: Check the preview security headers
+        if: steps.plan.outputs.target == 'preview' && steps.deploy.outputs.url != ''
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          URL: ${{ steps.deploy.outputs.url }}
+        run: bash .github/scripts/check_security_headers.sh "$URL" /
+
       - name: Job summary
         if: always() && steps.plan.outputs.enabled == 'true'
         env:
