@@ -113,6 +113,11 @@ ROUTE_CANDIDATES_SQL = f"""
 
 # AA-847 slice 6c (PLACES_SOURCE=cis): the same query over the catalog views; same parameters. The stops are read
 # once (MATERIALIZED) instead of once per candidate tour stop.
+# AA-847 gate (after CIS 258): the next stop is an equality join on the tour + GROUP BY, not a correlated subquery.
+# The subquery form was inlined into two places (the WHERE and the join to v_tour_component), each a CTE rescan of
+# every stop per row; with 258's better row estimates the join copy ran once per candidate pair (Dev Laos 16,544
+# rescans, 886 ms). The GROUP BY folds duplicate stops, which no output column can see (MIN / COUNT DISTINCT).
+# The destination id breaks best_distance ties, so the LIMIT keeps the same rows whatever the plan.
 ROUTE_CANDIDATES_SQL_CIS = f"""
     WITH near AS (
         SELECT n.destination_id, {_KM_SQL} AS transfer_km
@@ -123,12 +128,13 @@ ROUTE_CANDIDATES_SQL_CIS = f"""
     ), here AS (
         SELECT s.source_id, s.day_index, s.destination_id, nr.transfer_km
         FROM stops s JOIN near nr ON nr.destination_id = s.destination_id
-    ), nxt AS (
-        SELECT h.source_id, h.day_index AS from_day, h.transfer_km,
-               (SELECT min(s2.day_index) FROM stops s2
-                WHERE s2.source_id = h.source_id AND s2.day_index > h.day_index
-                  AND s2.destination_id <> h.destination_id) AS to_day
+    ), nxt AS MATERIALIZED (
+        -- the tour's next stop somewhere else (a stay of several nights is skipped over)
+        SELECT h.source_id, h.day_index AS from_day, h.transfer_km, min(s2.day_index) AS to_day
         FROM here h
+        JOIN stops s2 ON s2.source_id = h.source_id AND s2.day_index > h.day_index
+                     AND s2.destination_id <> h.destination_id
+        GROUP BY h.source_id, h.day_index, h.destination_id, h.transfer_km
     )
     SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.country,
            COUNT(DISTINCT c.component_id) AS component_count,
@@ -140,11 +146,11 @@ ROUTE_CANDIDATES_SQL_CIS = f"""
       ON c.source_id = nx.source_id
      AND c.day_index > nx.from_day AND c.day_index <= nx.to_day
     JOIN catalog.v_destination d ON d.destination_id = c.destination_id
-    WHERE nx.to_day IS NOT NULL AND c.embedding IS NOT NULL AND d.destination_id <> ALL($5::uuid[])
+    WHERE c.embedding IS NOT NULL AND d.destination_id <> ALL($5::uuid[])
       AND ($7::text IS NULL OR c.activity = $7::text)
       AND ($8::text IS NULL OR c.intensity_level = $8::text)
     GROUP BY d.destination_id, d.name, d.lat, d.lng, d.country
-    ORDER BY best_distance ASC
+    ORDER BY best_distance ASC, d.destination_id
     LIMIT $6
 """
 

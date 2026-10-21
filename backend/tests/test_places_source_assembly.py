@@ -222,3 +222,18 @@ async def test_unreadable_day_texts_never_refuse_a_hand_off(monkeypatch):
         raise RuntimeError("no grant")
     monkeypatch.setattr(master_content, "load_for_tours", boom)
     assert await handoff.load_day_texts(RecordingPool(), ["t"]) == {}
+
+
+def test_cis_route_candidates_find_the_next_stop_by_an_equality_join():
+    """AA-847 gate after CIS 258: no correlated subquery over the stops CTE (it was inlined twice and rescanned the
+    CTE once per candidate pair on Dev, 886 ms); the next stop is a join on the tour + GROUP BY, same parameters,
+    and the LIMIT breaks best_distance ties on the destination id. Legacy is unchanged."""
+    q = " ".join(suggestions.ROUTE_CANDIDATES_SQL_CIS.split())
+    assert "(SELECT min(" not in q and "FROM stops s2 WHERE" not in q
+    assert "nxt AS MATERIALIZED" in q and "JOIN stops s2 ON s2.source_id = h.source_id" in q
+    assert "min(s2.day_index) AS to_day" in q and "GROUP BY h.source_id, h.day_index, h.destination_id" in q
+    assert "ORDER BY best_distance ASC, d.destination_id LIMIT $6" in q
+    assert sorted(set(re.findall(r"\$\d", q))) == [f"${i}" for i in range(1, 9)]
+    legacy = " ".join(suggestions.ROUTE_CANDIDATES_SQL.split())
+    assert "(SELECT min(s2.day_index) FROM tripplanner.tour_stop s2" in legacy
+    assert "ORDER BY best_distance ASC LIMIT $6" in legacy

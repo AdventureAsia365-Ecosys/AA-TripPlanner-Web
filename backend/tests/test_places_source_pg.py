@@ -23,6 +23,7 @@ import pytest
 asyncpg = pytest.importorskip("asyncpg")
 
 from backend import config  # noqa: E402
+from backend.assembly import suggestions as suggest_sql  # noqa: E402
 from backend.browse import handler as h  # noqa: E402
 from backend.browse import routes as routes_mod  # noqa: E402
 from backend.browse import search as search_mod  # noqa: E402
@@ -524,3 +525,212 @@ async def test_cis_routes_force_custom_plans_inside_their_own_transaction(pool, 
     seen.clear()
     await routes_mod.proposals(pool, "Laos", 6)
     assert seen and all(mode == "auto" for _, mode in seen)
+
+
+# ── AA-847 gate after CIS 258: ROUTE_CANDIDATES_SQL_CIS without a per-row CTE rescan returns the same rows ───────
+
+# The cis route-candidates query as merged in slice 6c (TP #118), kept verbatim as the reference for the rewrite.
+ROUTE_CANDIDATES_SQL_CIS_V1 = f"""
+    WITH near AS (
+        SELECT n.destination_id, {suggest_sql._KM_SQL} AS transfer_km
+        FROM catalog.v_graph_node n
+        WHERE {suggest_sql._KM_SQL} <= $4
+    ), stops AS MATERIALIZED (
+        SELECT source_id, day_index, destination_id FROM catalog.v_tour_stop
+    ), here AS (
+        SELECT s.source_id, s.day_index, s.destination_id, nr.transfer_km
+        FROM stops s JOIN near nr ON nr.destination_id = s.destination_id
+    ), nxt AS (
+        SELECT h.source_id, h.day_index AS from_day, h.transfer_km,
+               (SELECT min(s2.day_index) FROM stops s2
+                WHERE s2.source_id = h.source_id AND s2.day_index > h.day_index
+                  AND s2.destination_id <> h.destination_id) AS to_day
+        FROM here h
+    )
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.country,
+           COUNT(DISTINCT c.component_id) AS component_count,
+           MIN(c.embedding <=> $1::vector) AS best_distance,
+           MIN(nx.transfer_km) AS transfer_km,
+           COUNT(DISTINCT nx.source_id) AS tour_count
+    FROM nxt nx
+    JOIN catalog.v_tour_component c
+      ON c.source_id = nx.source_id
+     AND c.day_index > nx.from_day AND c.day_index <= nx.to_day
+    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+    WHERE nx.to_day IS NOT NULL AND c.embedding IS NOT NULL AND d.destination_id <> ALL($5::uuid[])
+      AND ($7::text IS NULL OR c.activity = $7::text)
+      AND ($8::text IS NULL OR c.intensity_level = $8::text)
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.country
+    ORDER BY best_distance ASC
+    LIMIT $6
+"""
+
+SUGGEST_ACTS = ("cultural_heritage", "culinary", "trekking", "wildlife")
+SUGGEST_INTENSITY = ("leisurely", "moderate", "challenging")
+
+
+def suggest_graph(seed: int, countries: dict[str, int], places_per_country: int = 40, max_days: int = 16,
+                  quirks: bool = True) -> dict:
+    """A seeded catalog with Dev's shape for the route-candidates read: tours that stay 1-3 nights per place,
+    move to a place within 150 km or loop back, 1-4 components per day (some without an embedding), graph
+    nodes for every stop place. With ``quirks`` the stops also carry rows the subquery and the GROUP BY must
+    treat alike: duplicate stop rows, a second stop on the same day, a stop without a destination, and
+    components on days without a stop. Returns rows for the stand-in tables."""
+    rng = random.Random(seed)
+    places: list[tuple[uuid.UUID, str, str, float, float]] = []
+    by_country: dict[str, list[int]] = {}
+    for ci, country in enumerate(countries):
+        lat0, lng0 = 14.0 + 3 * ci, 101.0 + 2 * ci
+        by_country[country] = []
+        for _ in range(places_per_country):
+            by_country[country].append(len(places))
+            places.append((uuid.UUID(int=700_000 + len(places)), f"Place {len(places)}", country,
+                           round(lat0 + rng.uniform(0, 4), 4), round(lng0 + rng.uniform(0, 3), 4)))
+
+    def km(i: int, j: int) -> float:
+        a, b = places[i], places[j]
+        return 111.0 * math.hypot(a[3] - b[3], (a[4] - b[4]) * math.cos(math.radians((a[3] + b[3]) / 2)))
+    near = {i: [j for j in range(len(places)) if j != i and km(i, j) <= 150] for i in range(len(places))}
+    stops, comps = [], []
+    t = 0
+    for country, n_tours in countries.items():
+        for _ in range(n_tours):
+            t += 1
+            src = f"sug-{t:04d}"
+            here = rng.choice(by_country[country])
+            days: list[int] = []
+            target = rng.randint(3, max_days)
+            while len(days) < target:
+                days.extend([here] * min(rng.randint(1, 3), target - len(days)))
+                here = rng.choice(days) if rng.random() < 0.15 else rng.choice(near[here] or [here])
+            for d, p in enumerate(days, start=1):
+                stops.append((src, d, places[p][0]))
+                if quirks and rng.random() < 0.04:
+                    stops.append((src, d, places[p][0]))                         # duplicate stop row
+                if quirks and rng.random() < 0.04 and near[p]:
+                    stops.append((src, d, places[rng.choice(near[p])][0]))       # a second stop that day
+                if quirks and rng.random() < 0.01:
+                    stops.append((src, d, None))                                 # no destination
+                for _ in range(rng.randint(1, 4)):
+                    other = quirks and rng.random() < 0.03                       # a component elsewhere
+                    dest = places[rng.choice(near[p] or [p])][0] if other else places[p][0]
+                    v = None if rng.random() < 0.1 else \
+                        "[" + ",".join(f"{rng.uniform(-1, 1):.3f}" for _ in range(4)) + "]"
+                    comps.append((src, uuid.UUID(int=10_000_000 + len(comps)), d, dest, rng.choice(SUGGEST_ACTS),
+                                  rng.choice(SUGGEST_INTENSITY), v))
+            if quirks and rng.random() < 0.1:                                    # a component past the last stop
+                comps.append((src, uuid.UUID(int=10_000_000 + len(comps)), len(days) + 1, places[days[-1]][0],
+                              "culinary", "leisurely", "[1,0,0,0]"))
+    stop_places = {s[2] for s in stops if s[2] is not None}
+    nodes = [p for p in places if p[0] in stop_places]
+    return {"places": places, "nodes": nodes, "stops": stops, "components": comps}
+
+
+async def _load_suggest_graph(conn, g: dict) -> None:
+    await conn.execute("TRUNCATE catalog.v_tour_stop, catalog.v_tour_component, catalog.v_destination, "
+                       "catalog.v_graph_node")
+    await conn.copy_records_to_table("v_destination", schema_name="catalog",
+                                     records=[(str(p[0]), p[0], p[1], p[2], p[3], p[4]) for p in g["places"]],
+                                     columns=["source_id", "destination_id", "name", "country", "lat", "lng"])
+    await conn.copy_records_to_table("v_graph_node", schema_name="catalog",
+                                     records=[(p[0], p[1], p[2], p[3], p[4]) for p in g["nodes"]],
+                                     columns=["destination_id", "name", "country", "lat", "lng"])
+    await conn.copy_records_to_table("v_tour_stop", schema_name="catalog", records=g["stops"],
+                                     columns=["source_id", "day_index", "destination_id"])
+    await conn.execute("CREATE TEMP TABLE tmp_comp (source_id text, component_id uuid, day_index int, "
+                       "destination_id uuid, activity text, intensity_level text, embedding text)")
+    await conn.copy_records_to_table("tmp_comp", records=g["components"])
+    await conn.execute("INSERT INTO catalog.v_tour_component (source_id, component_id, day_index, destination_id, "
+                       "activity, intensity_level, embedding) SELECT source_id, component_id, day_index, "
+                       "destination_id, activity, intensity_level, embedding::vector FROM tmp_comp; "
+                       "DROP TABLE tmp_comp")
+    await conn.execute("ANALYZE catalog.v_tour_stop; ANALYZE catalog.v_tour_component; ANALYZE catalog.v_destination; "
+                       "ANALYZE catalog.v_graph_node")
+
+
+def suggest_args(g: dict, seed: int, n: int = 6) -> list[tuple]:
+    """Argument sets for ROUTE_CANDIDATES_SQL_CIS: a last stop at a graph node, its place (and a few more)
+    excluded, with and without the activity / intensity filters. $6 (the LIMIT) is set per call."""
+    rng = random.Random(seed)
+    out = []
+    for i in range(n):
+        p = rng.choice(g["nodes"])
+        exclude = [p[0]] + [q[0] for q in rng.sample(g["nodes"], min(3, len(g["nodes"])))]
+        act = SUGGEST_ACTS[i % len(SUGGEST_ACTS)] if i % 3 == 1 else None
+        inten = SUGGEST_INTENSITY[i % len(SUGGEST_INTENSITY)] if i % 3 == 2 else None
+        taste = "[" + ",".join(f"{rng.uniform(-1, 1):.3f}" for _ in range(4)) + "]"
+        out.append((taste, p[3], p[4], suggest_sql.JUNCTION_KM, exclude, act, inten))
+    return out
+
+
+async def route_candidates_equivalence(conn, args: tuple, limit: int = 24) -> dict:
+    """Old vs new ROUTE_CANDIDATES_SQL_CIS for one argument set: the full answers (LIMIT 1,000,000) compared
+    with EXCEPT ALL both ways, and the LIMIT ``limit`` answers by their best_distance keys plus the rows strictly
+    ahead of the last key (the old form leaves rows tied on best_distance to the plan)."""
+    taste, lat, lng, km, exclude, act, inten = args
+    full = (taste, lat, lng, km, exclude, 1_000_000, act, inten)
+    old, new = ROUTE_CANDIDATES_SQL_CIS_V1, suggest_sql.ROUTE_CANDIDATES_SQL_CIS
+    q = "SELECT count(*) FROM (({}) EXCEPT ALL ({})) x"
+    out = {"old_rows": await conn.fetchval(f"SELECT count(*) FROM ({old}) x", *full),
+           "new_rows": await conn.fetchval(f"SELECT count(*) FROM ({new}) x", *full),
+           "old_minus_new": await conn.fetchval(q.format(old, new), *full),
+           "new_minus_old": await conn.fetchval(q.format(new, old), *full)}
+    top = (taste, lat, lng, km, exclude, limit, act, inten)
+    o, n = await conn.fetch(old, *top), await conn.fetch(new, *top)
+    out["top_old"], out["top_new"] = [r["best_distance"] for r in o], [r["best_distance"] for r in n]
+    cut = out["top_new"][-1] if n else None
+    out["ahead_equal"] = ({tuple(r) for r in o if r["best_distance"] < cut} ==
+                          {tuple(r) for r in n if r["best_distance"] < cut}) if n else not o
+    out["new_sorted"] = [(r["best_distance"], str(r["id"])) for r in n] == \
+        sorted((r["best_distance"], str(r["id"])) for r in n)
+    return out
+
+
+async def test_route_candidates_rewrite_returns_the_same_rows(pool):
+    g = suggest_graph(847, {"Laos": 30, "Vietnam": 10, "Thailand": 8})
+    await _load_suggest_graph(pool, g)
+    checked = 0
+    for args in suggest_args(g, 847, n=12):
+        r = await route_candidates_equivalence(pool, args)
+        assert r["old_minus_new"] == 0 and r["new_minus_old"] == 0, (args[1:], r)
+        assert r["old_rows"] == r["new_rows"] and r["top_old"] == r["top_new"] and r["ahead_equal"], (args[1:], r)
+        assert r["new_sorted"]                                    # best_distance, then destination id
+        checked += r["new_rows"]
+    assert checked > 200
+
+
+async def test_route_candidates_quirks_alone_change_nothing(pool):
+    """Stops the GROUP BY folds (duplicate rows) or the subquery skips (no destination, a same-day second stop)
+    give the same rows as the subquery form, on a graph made of little else."""
+    g = suggest_graph(848, {"Laos": 12}, places_per_country=10, max_days=8)
+    extra = []
+    for src, day, dest in g["stops"]:
+        extra += [(src, day, dest)] * 2 + [(src, day, None)]
+    g["stops"] += extra
+    await _load_suggest_graph(pool, g)
+    for args in suggest_args(g, 848, n=6):
+        r = await route_candidates_equivalence(pool, args)
+        assert r["old_minus_new"] == r["new_minus_old"] == 0 and r["old_rows"] == r["new_rows"] > 0, r
+
+
+async def test_route_candidates_plan_never_rescans_a_cte_per_row(pool):
+    """The rewrite has no SubPlan: no CTE Scan runs more than once (the old form's next-stop subquery ran once
+    per here row and once per candidate pair)."""
+    g = suggest_graph(849, {"Laos": 30, "Vietnam": 10})
+    await _load_suggest_graph(pool, g)
+    taste, lat, lng, km, exclude, act, inten = suggest_args(g, 849, n=1)[0]
+    args = (taste, lat, lng, km, exclude, 24, act, inten)
+
+    async def loops(sql):
+        plan = json.loads(await pool.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))[0]["Plan"]
+        nodes, todo = [], [plan]
+        while todo:
+            n = todo.pop()
+            nodes.append(n)
+            todo += n.get("Plans", [])
+        return max(n["Actual Loops"] for n in nodes if n["Node Type"] == "CTE Scan"), \
+            any(n.get("Subplan Name", "").startswith("SubPlan") for n in nodes)
+    old_loops, old_sub = await loops(ROUTE_CANDIDATES_SQL_CIS_V1)
+    new_loops, new_sub = await loops(suggest_sql.ROUTE_CANDIDATES_SQL_CIS)
+    assert old_sub and old_loops > 1
+    assert not new_sub and new_loops == 1
