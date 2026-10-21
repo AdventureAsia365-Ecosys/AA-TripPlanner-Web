@@ -171,6 +171,11 @@ async def route(
     if m:
         data = await dest_mod.destination_detail(m.group(1), pool=pool)
         if data is None:
+            # AA-847: a destination CIS merged into another answers 301 to its keeper (relative Location: the
+            # last path segment is replaced, whatever prefix the CDN / BFF puts in front)
+            keeper = await dest_mod.destination_redirect(m.group(1), pool=pool)
+            if keeper:
+                return _resp(301, {"redirect_to": keeper}, {**_CACHE_HEADERS, "location": keeper})
             return _resp(404, {"error": "destination not found"}, _NO_STORE_HEADERS)
         return _resp(200, data, _CACHE_HEADERS)
 
