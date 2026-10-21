@@ -263,12 +263,23 @@ def test_registered_keys_match_the_files_after_pass_2(replay):
     assert replay["registered_2"] == _keys()
 
 
+# Reviewed exceptions to the runtime's full DML: table -> the privileges it keeps (sel / ins / upd / del).
+RUNTIME_DML_EXCEPTIONS = {
+    # tp-017 (AA-847): the id-map is filled once (INSERT, as tripplanner) and read by assembly; never edited.
+    "component_id_map": {"sel", "ins"},
+}
+
+
 def test_runtime_role_keeps_its_grants_on_every_table_and_sequence(replay):
     """The runtime role keeps what the tp_owner default privileges give (tp-013): DML on every table, USAGE + SELECT
     on every sequence, after both passes. A table that must deny the runtime something needs an explicit,
-    reviewed exception here."""
+    reviewed exception here (RUNTIME_DML_EXCEPTIONS: exactly the privileges it keeps)."""
     tables = [g for g in replay["grants"] if g["kind"] != "S"]
     sequences = [g for g in replay["grants"] if g["kind"] == "S"]
-    missing = [g["name"] for g in tables if not (g["sel"] and g["ins"] and g["upd"] and g["del"])]
+    dml = ("sel", "ins", "upd", "del")
+    missing = [g["name"] for g in tables if g["name"] not in RUNTIME_DML_EXCEPTIONS
+               and not all(g[k] for k in dml)]
+    missing += [g["name"] for g in tables if g["name"] in RUNTIME_DML_EXCEPTIONS
+                and {k for k in dml if g[k]} != RUNTIME_DML_EXCEPTIONS[g["name"]]]
     missing += [g["name"] for g in sequences if not g["seq"]]
     assert tables and sequences and not missing, f"tripplanner lacks its DML / sequence grants on: {missing}"
