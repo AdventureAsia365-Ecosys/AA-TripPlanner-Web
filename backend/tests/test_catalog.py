@@ -1,8 +1,10 @@
 """AA-812 — catalog reads for the home, tour pages and destination pages. Offline: no DB.
 
 The fake pool (catalog_fixture.py) answers the module's exact SQL constants from rows shaped like
-the CIS catalog views (migration 225). backend/tests/contracts/catalog.tour.v1.json is a vendored
-copy of AA-Ecosys docs/contracts/catalog.tour.v1.json (the root repo is the source of truth).
+the CIS catalog views (migration 225). backend/tests/contracts/catalog.tour.v1.2.json is a vendored
+copy of AA-Ecosys docs/contracts/catalog.tour.v1.2.json (the root repo is the source of truth); AA-847 moved the
+tour answer to v1.1 (places carry located_by / precision, CIS 228), then v1.2 (slice 6d, CIS 256: a line place
+carries its day stretch and shape_lo).
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ from backend.browse import handler as h
 from backend.browse import routes as routes_mod
 from backend.tests import catalog_fixture as fx
 
-SCHEMA = json.loads((Path(__file__).parent / "contracts" / "catalog.tour.v1.json").read_text())
+SCHEMA = json.loads((Path(__file__).parent / "contracts" / "catalog.tour.v1.2.json").read_text())
 
 
 async def _get(path: str, query: dict | None = None, pool=None):

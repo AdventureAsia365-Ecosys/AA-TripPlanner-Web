@@ -4,6 +4,7 @@ Routes:
   GET /browse/tiles/{tile_id}
   GET /browse/destinations/{destination_id}
   GET /browse/search?q=...
+  GET /browse/shapes?ids=<uuid>,…&level=lo|mid   (AA-847 slice 6d: line geometry by id, CIS 256)
   GET /browse/routes?country=Nepal&days=10   (AA-674: whole-route proposals from real tours)
   GET /browse/tour-route?tour_id=<uuid>&source_id=<id>  (AA-812: one tour's whole route, for
       "Customise"; source_id, when known, resolves the current tour_id)
@@ -37,6 +38,7 @@ from backend.browse import destinations as dest_mod
 from backend.browse import routes as routes_mod
 from backend.browse import tiles as tiles_mod
 from backend.browse import search as search_mod
+from backend.browse import shapes as shapes_mod
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import TileError
 from backend.shared import places_source
@@ -48,6 +50,7 @@ _COUNTRIES_RE = re.compile(r"^/browse/countries$")
 _BY_COUNTRY_RE = re.compile(r"^/browse/by-country$")
 _ROUTES_RE = re.compile(r"^/browse/routes$")
 _TOUR_ROUTE_RE = re.compile(r"^/browse/tour-route$")
+_SHAPES_RE = re.compile(r"^/browse/shapes$")
 # catalog source ids are uuids today; accept any short id-like token, never free text.
 _SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _CAT_TOURS_RE = re.compile(r"^/browse/catalog/tours$")
@@ -171,7 +174,22 @@ async def route(
     if m:
         data = await dest_mod.destination_detail(m.group(1), pool=pool)
         if data is None:
+            # AA-847: a destination CIS merged into another answers 301 to its keeper (relative Location: the
+            # last path segment is replaced, whatever prefix the CDN / BFF puts in front)
+            keeper = await dest_mod.destination_redirect(m.group(1), pool=pool)
+            if keeper:
+                return _resp(301, {"redirect_to": keeper}, {**_CACHE_HEADERS, "location": keeper})
             return _resp(404, {"error": "destination not found"}, _NO_STORE_HEADERS)
+        return _resp(200, data, _CACHE_HEADERS)
+
+    if _SHAPES_RE.match(path):
+        def _q1(key: str) -> Optional[str]:
+            v = query.get(key)
+            return (v[0] if v else None) if isinstance(v, list) else v
+        try:
+            data = await shapes_mod.shapes(_q1("ids"), _q1("level"), pool=pool)
+        except shapes_mod.ShapesError as e:
+            return _resp(400, {"error": str(e)}, _NO_STORE_HEADERS)
         return _resp(200, data, _CACHE_HEADERS)
 
     if _SEARCH_RE.match(path):

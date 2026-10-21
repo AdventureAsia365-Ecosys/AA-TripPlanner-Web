@@ -70,7 +70,9 @@ export default function TermsPage() {
       <LegalSection id="content" title="5. Content and maps">
         <p>
           The tours, texts, photos and design of the site belong to Adventure Asia or its licensors. Maps are provided by
-          Mapbox and OpenStreetMap contributors under their own terms. You may use the site for your personal, non-commercial
+          Mapbox and OpenStreetMap contributors under their own terms. Place locations are geocoded with Geoapify
+          (geoapify.com) from OpenStreetMap data (© OpenStreetMap contributors, ODbL); a place we could only place
+          approximately is shown as an area, not as an exact point. You may use the site for your personal, non-commercial
           trip planning.
         </p>
       </LegalSection>

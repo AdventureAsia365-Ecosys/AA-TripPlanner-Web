@@ -7,13 +7,23 @@ duration, description, thumbnail). Cacheable behind CloudFront.
 visitor's trip is per-visitor state owned by Lambda B, so the browse
 Lambda never joins trip state (keeps this endpoint cacheable). The
 frontend overlays trip membership from its own trip state.
+
+AA-847 (CIS 257): the CIS job place_dedupe merges duplicate destinations
+automatically. A merged id has no catalog.v_destination row any more;
+catalog.v_destination_redirect maps it to its keeper (always a root), so an
+old link / shared URL answers 301 to the keeper instead of 404. Drafts are not
+affected (trip events pin component_id, which survives a merge).
 """
 from __future__ import annotations
 
+import logging
+import uuid
 from typing import Any, Protocol
 
-from backend.browse.tiles import geo_fields
+from backend.browse.tiles import LINE_COLS, geo_fields
 from backend.shared import places_source
+
+log = logging.getLogger(__name__)
 
 
 class _Pool(Protocol):
@@ -24,9 +34,12 @@ class _Pool(Protocol):
 # AA-712 slice 6b: PLACES_SOURCE=cis reads the CIS catalog views (228). Component ids are the views'
 # stable component_id (uuid5), not tripplanner.itinerary_components ids.
 DEST_SQL = "SELECT id, name, country, cover_image_url FROM shared.destinations WHERE id = $1"
-DEST_SQL_CIS = """
-    SELECT destination_id AS id, name, country, cover_image_url, located_by, precision
+DEST_SQL_CIS = f"""
+    SELECT destination_id AS id, name, country, cover_image_url, located_by, precision, {", ".join(LINE_COLS)}
     FROM catalog.v_destination WHERE destination_id = $1::uuid
+"""
+REDIRECT_SQL_CIS = """
+    SELECT keeper_id FROM catalog.v_destination_redirect WHERE destination_id = $1::uuid
 """
 COMPONENTS_SQL = """
     SELECT id, name, activity, intensity_level, duration_hint,
@@ -68,3 +81,19 @@ async def destination_detail(destination_id: str, *, pool: _Pool) -> dict | None
             for r in rows
         ],
     }
+
+
+async def destination_redirect(destination_id: str, *, pool: _Pool) -> str | None:
+    """The keeper of a merged destination (PLACES_SOURCE=cis only), else None. A malformed id is never looked up."""
+    if not places_source.is_cis():
+        return None
+    try:
+        uuid.UUID(str(destination_id))
+    except ValueError:
+        return None
+    try:
+        row = await pool.fetchrow(REDIRECT_SQL_CIS, destination_id)
+    except Exception as e:  # noqa: BLE001 — e.g. the view before CIS 257: a 404 stays a 404, never a 500
+        log.warning("destination_redirect_unavailable: %s", type(e).__name__)
+        return None
+    return str(row["keeper_id"]) if row is not None and row["keeper_id"] else None

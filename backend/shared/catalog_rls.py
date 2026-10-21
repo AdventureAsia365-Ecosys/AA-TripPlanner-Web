@@ -23,9 +23,12 @@ async def fetch_catalog(db, sql: str, *args) -> list:
         return await db.fetch(sql, *args)
 
 
+# The live AA tours (extraction checks). AA-847: read from catalog.v_tour (CIS 225: live = master active, not
+# trashed, source active), not silver_aa_internal.raw_tours: the column grant on raw_tours(tour_id, country) (CIS
+# 179) is revoked by CIS 254, and backend/tests/test_extraction_ops.py fails if a module reads raw_tours or
+# acp_contract.tour_atoms again. Same column names as before. The view needs no tenant (fetch_catalog sets it
+# anyway, harmless).
 ACTIVE_TOURS_SQL = """
-    SELECT pt.tour_id::text AS tour_id, pt.aa_name, pt.aa_itineraries, rt.country
-    FROM gold_aa_internal.published_tours pt
-    JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id
-    WHERE pt.master_status = 'active'
+    SELECT tour_id::text AS tour_id, title AS aa_name, itinerary_text AS aa_itineraries, country
+    FROM catalog.v_tour
 """

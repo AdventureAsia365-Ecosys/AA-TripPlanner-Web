@@ -151,20 +151,72 @@ async def test_cis_destination_detail_lists_view_components(cis):
     _assert_cis_only(pool)
 
 
-async def test_cis_search_is_the_exact_aggregate_without_tenant_or_active_tour_join(cis):
+async def test_cis_merged_destination_redirects_to_its_keeper(cis):
+    """AA-847 (CIS 257): a merged id has no v_destination row; v_destination_redirect names the keeper → 301."""
+    pool = RecordingPool([("FROM catalog.v_destination_redirect", [{"keeper_id": LPB}])])
+    resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
+    assert resp["statusCode"] == 301 and resp["headers"]["location"] == LPB
+    assert json.loads(resp["body"]) == {"redirect_to": LPB}
+    assert "max-age" in resp["headers"]["cache-control"]
+    _assert_cis_only(pool)
+
+
+async def test_cis_unknown_destination_is_still_404(cis):
+    pool = RecordingPool([])
+    resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
+    assert resp["statusCode"] == 404
+    assert any("v_destination_redirect" in q for q in pool.sql)
+
+
+async def test_cis_redirect_lookup_failure_is_still_404(cis):
+    class Broken(RecordingPool):
+        async def fetchrow(self, query, *args):
+            if "v_destination_redirect" in query:
+                raise RuntimeError("relation does not exist")
+            return await super().fetchrow(query, *args)
+    resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=Broken([]))
+    assert resp["statusCode"] == 404
+
+
+async def test_legacy_never_reads_the_redirect_view():
+    pool = RecordingPool([("v_destination_redirect", [{"keeper_id": LPB}])])
+    resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
+    assert resp["statusCode"] == 404 and not any("v_destination_redirect" in q for q in pool.sql)
+
+
+async def test_cis_search_with_a_country_is_the_exact_aggregate_without_tenant_or_active_tour_join(cis):
     pool = RecordingPool([("catalog.v_tour_component", [DEST_ROW | {"best_distance": 0.2}])])
     out = await search_mod.search("night market", BrowseFilters(country="Laos", season=11), pool=pool,
                                   embedder=lambda q: [0.0] * 4)
     assert [d["id"] for d in out["destinations"]] == [VTE]
-    assert len(pool.sql) == 1                                     # no set_config, no hnsw settings
+    assert len(pool.sql) == 1                                     # exact first: no set_config, no hnsw settings
     q = pool.sql[0]
-    assert "MIN(c.embedding <=> $1::vector)" in q and "d.country = $2" in q and "$3 = ANY(c.season_months)" in q
+    assert "MIN(c.embedding <=> $1::vector)" in q and "dc.country = $2" in q and "$3 = ANY(c.season_months)" in q
+    assert "FROM catalog.v_destination dc" in q and "d.destination_id AS id" in q
     _assert_cis_only(pool)
 
 
-def test_cis_search_sql_limit_is_an_int():
-    sql, params = search_mod.cis_search_sql(BrowseFilters(activity="trekking"), 60)
-    assert sql.strip().endswith("LIMIT 60") and params == ["trekking"] and "c.activity = $2" in sql
+async def test_cis_search_without_a_country_is_the_hnsw_top_k_over_the_embedding_view(cis, monkeypatch):
+    """AA-847: catalog.v_component_embedding (CIS 253, not a barrier view) serves ORDER BY <=> LIMIT k."""
+    from backend.shared import vector_topk
+    monkeypatch.setattr(vector_topk, "_iterative", None)
+    pool = RecordingPool([("extversion", [{"extversion": "0.8.0"}]),
+                          ("catalog.v_component_embedding", [DEST_ROW | {"best_distance": 0.2}])])
+    out = await search_mod.search("night market", BrowseFilters(activity="culinary"), pool=pool,
+                                  embedder=lambda q: [0.0] * 4, limit=1)
+    assert [d["id"] for d in out["destinations"]] == [VTE] and out["destinations"][0]["precision"] == "point"
+    scan = next(q for q in pool.sql if "catalog.v_component_embedding" in q)
+    assert "ORDER BY c.embedding <=> $1::vector" in scan and "c.activity = $2" in scan and "LIMIT $3" in scan
+    assert "JOIN catalog.v_destination od ON od.destination_id = b.destination_id" in scan
+    assert any("hnsw.iterative_scan" in q for q in pool.sql)
+    assert not any("app.tenant_id" in q for q in pool.sql)
+    _assert_cis_only(pool)
+
+
+def test_cis_search_where_keeps_the_country_inside_the_scan():
+    scan, keep, params = search_mod.cis_search_where(BrowseFilters(activity="trekking", country="Laos"))
+    assert params == ["trekking", "Laos"] and keep == ""
+    assert "c.activity = $2" in scan and "ANY(ARRAY(SELECT dc.destination_id FROM catalog.v_destination dc" in scan
 
 
 def _graph_rules():
@@ -197,6 +249,22 @@ async def test_cis_routes_key_by_source_id_and_answer_the_current_tour_id(cis):
     assert [(d["tour_id"], d["source_id"], d["component_id"]) for d in p["days"]] == [
         (TOUR_A, SRC_A, "comp-1"), (TOUR_A, SRC_A, "comp-2"), (TOUR_A, SRC_A, "comp-3")]
     _assert_cis_only(pool)
+
+
+async def test_only_the_cis_candidate_reads_force_custom_plans(monkeypatch):
+    """AA-847: SET LOCAL plan_cache_mode precedes the cis single + chain reads (in their own transaction);
+    the legacy path never sets it."""
+    monkeypatch.setattr(config, "PLACES_SOURCE", "cis")
+    pool = RecordingPool(_graph_rules())
+    await h.route("GET", "/browse/routes", {"country": "Laos", "days": "3"}, pool=pool)
+    assert pool.sql[0] == rt.FORCE_CUSTOM_PLAN_SQL == "SET LOCAL plan_cache_mode = force_custom_plan"
+    assert pool.sql[1] == rt.SINGLE_SQL_CIS and pool.sql[2] == rt.CHAIN_SQL_CIS
+    assert pool.sql.count(rt.FORCE_CUSTOM_PLAN_SQL) == 1
+    monkeypatch.setattr(config, "PLACES_SOURCE", "legacy")
+    pool = RecordingPool()
+    await h.route("GET", "/browse/routes", {"country": "Laos", "days": "3"}, pool=pool)
+    assert pool.sql[:2] == [rt.SINGLE_SQL, rt.CHAIN_SQL]
+    assert not any("plan_cache_mode" in q for q in pool.sql)
 
 
 async def test_cis_chain_sql_reads_views_only():

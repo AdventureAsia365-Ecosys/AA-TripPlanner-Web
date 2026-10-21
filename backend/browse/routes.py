@@ -105,6 +105,14 @@ SINGLE_SQL_CIS = """
 
 # The legacy query's correlated min(day_index) per leg becomes one span CTE (each view read joins
 # catalog.v_tour, so it is computed once); the junction view is read once for the same reason.
+# AA-847 (routes gate): the pair join is an EQUALITY. `hop` lists, per first leg a, every place a second
+# leg may start at: a's own end (no transfer) and each junction from a's end (a transfer of j.km). The
+# earlier form joined every leg pair on the days range alone and then kept the pairs that met at a's end
+# or at a junction: 136,636 pairs and a disk-spilling sort on Dev Laos for 48,517 kept rows. The junction
+# branch skips a self-pair (destination_b = a's end): the first branch already covers "starts where a
+# ends" at 0 km, and the CIS junction table has no CHECK against self-pairs (only the graph builder).
+# The ORDER BY ends on the pair's own key, so equal-rank candidates come back in one fixed order (the
+# earlier form left ties to the plan, which changed when the join did; rank() keeps the first of a tie).
 CHAIN_SQL_CIS = """
     WITH span AS MATERIALIZED (
         SELECT source_id, min(day_index) AS first_day FROM catalog.v_tour_stop GROUP BY source_id
@@ -112,20 +120,25 @@ CHAIN_SQL_CIS = """
         SELECT l.source_id, l.day_from, l.day_to, l.days, l.start_destination_id, l.end_destination_id,
                l.destination_ids
         FROM catalog.v_tour_leg l WHERE $1 = ANY(l.countries) AND l.days < $2::int
-    ), a AS (
+    ), a AS MATERIALIZED (
         SELECT l.* FROM legs l JOIN span sp ON sp.source_id = l.source_id AND l.day_from = sp.first_day
     ), j AS MATERIALIZED (
         SELECT destination_a, destination_b, km FROM catalog.v_tour_junction
+    ), hop AS (
+        SELECT a.*, a.end_destination_id AS next_start, NULL::double precision AS km FROM a
+        UNION ALL
+        SELECT a.*, j.destination_b AS next_start, j.km
+        FROM a JOIN j ON j.destination_a = a.end_destination_id AND j.destination_b <> a.end_destination_id
     )
-    SELECT a.source_id AS a_tour, a.day_from AS a_from, a.day_to AS a_to, a.days AS a_days,
+    SELECT h.source_id AS a_tour, h.day_from AS a_from, h.day_to AS a_to, h.days AS a_days,
            b.source_id AS b_tour, b.day_from AS b_from, b.day_to AS b_to, b.days AS b_days,
-           coalesce(j.km, 0) AS transfer_km,
-           cardinality(a.destination_ids) + cardinality(b.destination_ids) AS places
-    FROM a
-    JOIN legs b ON b.source_id <> a.source_id AND a.days + b.days BETWEEN $2::int - $3::int AND $2::int
-    LEFT JOIN j ON j.destination_a = a.end_destination_id AND j.destination_b = b.start_destination_id
-    WHERE b.start_destination_id = a.end_destination_id OR j.destination_a IS NOT NULL
-    ORDER BY abs(a.days + b.days - $2::int), coalesce(j.km, 0), places DESC
+           coalesce(h.km, 0) AS transfer_km,
+           cardinality(h.destination_ids) + cardinality(b.destination_ids) AS places
+    FROM hop h
+    JOIN legs b ON b.start_destination_id = h.next_start AND b.source_id <> h.source_id
+               AND h.days + b.days BETWEEN $2::int - $3::int AND $2::int
+    ORDER BY abs(h.days + b.days - $2::int), coalesce(h.km, 0), places DESC,
+             h.source_id, h.day_from, h.day_to, b.source_id, b.day_from, b.day_to
     LIMIT 40
 """
 
@@ -151,6 +164,8 @@ TOURS_BY_SOURCE_SQL = """
     WHERE source_id = ANY($1::text[])
 """
 SOURCE_BY_TOUR_SQL = "SELECT source_id FROM catalog.v_tour WHERE tour_id = $1::uuid"
+# Scoped to the cis candidate reads' transaction (see proposals()).
+FORCE_CUSTOM_PLAN_SQL = "SET LOCAL plan_cache_mode = force_custom_plan"
 
 
 def rank(singles: list[dict], chains: list[dict], days: int, limit: int = MAX_PROPOSALS) -> list[dict]:
@@ -203,10 +218,19 @@ def day_by_day(proposal: dict, stops: dict[str, list[dict]],
 
 async def proposals(conn: Any, country: str, days: int) -> dict:
     cis = places_source.is_cis()
-    singles = [dict(r) for r in await conn.fetch(places_source.pick(SINGLE_SQL, SINGLE_SQL_CIS),
-                                                 country, days, SLACK)]
-    chains = [dict(r) for r in await conn.fetch(places_source.pick(CHAIN_SQL, CHAIN_SQL_CIS),
-                                                country, days, SLACK)]
+    if cis:
+        # AA-847: plan the two candidate reads for THESE arguments every time. asyncpg caches the
+        # prepared statement, and after five runs Postgres may switch to a generic plan whose 1-row
+        # estimates nest-loop over the catalog views (EXPLAIN 11.7 ms against 841 ms timed on Dev).
+        # SET LOCAL ends with this transaction: the legacy path, the other readers and the rest of
+        # the pooled connection's life keep the default plan_cache_mode.
+        async with conn.transaction():
+            await conn.execute(FORCE_CUSTOM_PLAN_SQL)
+            singles = [dict(r) for r in await conn.fetch(SINGLE_SQL_CIS, country, days, SLACK)]
+            chains = [dict(r) for r in await conn.fetch(CHAIN_SQL_CIS, country, days, SLACK)]
+    else:
+        singles = [dict(r) for r in await conn.fetch(SINGLE_SQL, country, days, SLACK)]
+        chains = [dict(r) for r in await conn.fetch(CHAIN_SQL, country, days, SLACK)]
     picked = rank(singles, chains, days)
     tours = sorted({t for p in picked for t, _, _ in p["segments"]})
     stops: dict[str, list[dict]] = {}

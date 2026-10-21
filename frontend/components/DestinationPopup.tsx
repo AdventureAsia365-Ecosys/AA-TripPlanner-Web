@@ -5,6 +5,7 @@ import { fetchDestination } from "@/lib/api";
 import type { DestinationDetail } from "@/lib/types";
 import { useTrip } from "@/lib/useTrip";
 import ActivityIcon from "./ActivityIcon";
+import GeocodeAttribution from "./GeocodeAttribution";
 import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "./AiLabel";
 
 interface Props {
@@ -63,6 +64,8 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
             <p className="mt-0.5 flex items-center gap-1 text-xs text-aa-muted">
               <span aria-hidden>📍</span>
               {detail.country}
+              {/* AA-847 (ADR 0007): the model's point, not a geocoded one */}
+              {detail.precision === "area" && <span className="ml-1">· approximate area</span>}
             </p>
           )}
         </div>
@@ -166,6 +169,7 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
             );
           })}
         </ul>
+        {detail?.located_by === "geoapify" && <GeocodeAttribution className="mt-2 px-0" />}
       </div>
     </div>
   );
