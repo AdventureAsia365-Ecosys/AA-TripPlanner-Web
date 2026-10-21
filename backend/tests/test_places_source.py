@@ -151,6 +151,39 @@ async def test_cis_destination_detail_lists_view_components(cis):
     _assert_cis_only(pool)
 
 
+async def test_cis_merged_destination_redirects_to_its_keeper(cis):
+    """AA-847 (CIS 257): a merged id has no v_destination row; v_destination_redirect names the keeper → 301."""
+    pool = RecordingPool([("FROM catalog.v_destination_redirect", [{"keeper_id": LPB}])])
+    resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
+    assert resp["statusCode"] == 301 and resp["headers"]["location"] == LPB
+    assert json.loads(resp["body"]) == {"redirect_to": LPB}
+    assert "max-age" in resp["headers"]["cache-control"]
+    _assert_cis_only(pool)
+
+
+async def test_cis_unknown_destination_is_still_404(cis):
+    pool = RecordingPool([])
+    resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
+    assert resp["statusCode"] == 404
+    assert any("v_destination_redirect" in q for q in pool.sql)
+
+
+async def test_cis_redirect_lookup_failure_is_still_404(cis):
+    class Broken(RecordingPool):
+        async def fetchrow(self, query, *args):
+            if "v_destination_redirect" in query:
+                raise RuntimeError("relation does not exist")
+            return await super().fetchrow(query, *args)
+    resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=Broken([]))
+    assert resp["statusCode"] == 404
+
+
+async def test_legacy_never_reads_the_redirect_view():
+    pool = RecordingPool([("v_destination_redirect", [{"keeper_id": LPB}])])
+    resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
+    assert resp["statusCode"] == 404 and not any("v_destination_redirect" in q for q in pool.sql)
+
+
 async def test_cis_search_with_a_country_is_the_exact_aggregate_without_tenant_or_active_tour_join(cis):
     pool = RecordingPool([("catalog.v_tour_component", [DEST_ROW | {"best_distance": 0.2}])])
     out = await search_mod.search("night market", BrowseFilters(country="Laos", season=11), pool=pool,
