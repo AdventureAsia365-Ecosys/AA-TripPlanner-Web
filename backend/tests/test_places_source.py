@@ -251,6 +251,22 @@ async def test_cis_routes_key_by_source_id_and_answer_the_current_tour_id(cis):
     _assert_cis_only(pool)
 
 
+async def test_only_the_cis_candidate_reads_force_custom_plans(monkeypatch):
+    """AA-847: SET LOCAL plan_cache_mode precedes the cis single + chain reads (in their own transaction);
+    the legacy path never sets it."""
+    monkeypatch.setattr(config, "PLACES_SOURCE", "cis")
+    pool = RecordingPool(_graph_rules())
+    await h.route("GET", "/browse/routes", {"country": "Laos", "days": "3"}, pool=pool)
+    assert pool.sql[0] == rt.FORCE_CUSTOM_PLAN_SQL == "SET LOCAL plan_cache_mode = force_custom_plan"
+    assert pool.sql[1] == rt.SINGLE_SQL_CIS and pool.sql[2] == rt.CHAIN_SQL_CIS
+    assert pool.sql.count(rt.FORCE_CUSTOM_PLAN_SQL) == 1
+    monkeypatch.setattr(config, "PLACES_SOURCE", "legacy")
+    pool = RecordingPool()
+    await h.route("GET", "/browse/routes", {"country": "Laos", "days": "3"}, pool=pool)
+    assert pool.sql[:2] == [rt.SINGLE_SQL, rt.CHAIN_SQL]
+    assert not any("plan_cache_mode" in q for q in pool.sql)
+
+
 async def test_cis_chain_sql_reads_views_only():
     for q in (rt.SINGLE_SQL_CIS, rt.CHAIN_SQL_CIS, rt.DAYS_SQL_CIS, rt.COMPONENTS_SQL_CIS,
               rt.PLACE_COMPONENTS_SQL_CIS, rt.TOURS_BY_SOURCE_SQL, rt.SOURCE_BY_TOUR_SQL):

@@ -13,6 +13,8 @@ a SQL cosine-distance ``<=>`` (enough for the query shapes; no index).
 from __future__ import annotations
 
 import json
+import math
+import random
 import uuid
 from urllib.parse import urlparse, urlunparse
 
@@ -22,6 +24,7 @@ asyncpg = pytest.importorskip("asyncpg")
 
 from backend import config  # noqa: E402
 from backend.browse import handler as h  # noqa: E402
+from backend.browse import routes as routes_mod  # noqa: E402
 from backend.browse import search as search_mod  # noqa: E402
 from backend.browse.filters import BrowseFilters  # noqa: E402
 from backend.shared import vector_topk as vt  # noqa: E402
@@ -59,11 +62,17 @@ CREATE TABLE catalog.v_tour_place (tour_id uuid, day_number int, position int, d
 CREATE TABLE catalog.v_destination (source_system text DEFAULT 'cis', source_id text, destination_id uuid,
     name text, country text, lat float8, lng float8, cover_photo_path text, cover_image_url text,
     photo_count bigint DEFAULT 0, created_at timestamptz, updated_at timestamptz, geo_status text,
-    located_by text, precision text);
+    located_by text, precision text,
+    -- CIS 256 (slice 6d): line shape and bbox; a point's bbox is its own lat/lng
+    shape_kind text, shape_status text, shape_source text, length_km float8, min_lat float8, min_lng float8,
+    max_lat float8, max_lng float8, shape_lo jsonb);
 CREATE TABLE catalog.v_tour_component (source_system text DEFAULT 'cis', source_id text, tour_id uuid,
     built_from_tour_id uuid, is_stale boolean DEFAULT false, component_id uuid, day_index int,
     destination_id uuid, name text, country text, activity text, intensity_level text, season_months int[],
-    duration_hint text, text_extract text, place_card_id uuid, embedding vector);
+    duration_hint text, text_extract text, place_card_id uuid, embedding vector,
+    -- CIS 256 (slice 6d): the day's stretch along a line
+    precision text, segment jsonb, segment_basis text, segment_from_destination_id uuid,
+    segment_to_destination_id uuid, segment_km float8);
 CREATE TABLE catalog.v_tour_stop (source_system text DEFAULT 'cis', source_id text, tour_id uuid, day_index int,
     destination_id uuid, country text, source text, build_id uuid);
 CREATE TABLE catalog.v_tour_leg (source_system text DEFAULT 'cis', source_id text, tour_id uuid, day_from int,
@@ -106,7 +115,8 @@ async def _load(conn) -> None:
         await conn.execute("INSERT INTO shared.destinations VALUES ($1,$2,$3,$4,$5,NULL)", D[k], name, country,
                            lat, lng)
         await conn.execute("INSERT INTO catalog.v_destination (source_id, destination_id, name, country, lat, lng, "
-                           "geo_status, located_by, precision) VALUES ($1,$2,$3,$4,$5,$6,'ok',$7,$8)",
+                           "geo_status, located_by, precision, min_lat, min_lng, max_lat, max_lng) "
+                           "VALUES ($1,$2,$3,$4,$5,$6,'ok',$7,$8,$5,$6,$5,$6)",
                            str(D[k]), D[k], name, country, lat, lng, by, prec)
     n = 0
     for src, tid, key, title, country, stops in TOURS:
@@ -343,3 +353,174 @@ async def test_suggestions_on_cis_from_a_pre_flip_pin(pool, monkeypatch):
     res = await suggest_mod.suggest(pool, "t-sug")
     names = [s["name"] for s in res["suggestions"]]
     assert res["mode"] == "route" and names and "Vientiane" not in names   # next stops of tours through VTE
+
+
+# ── AA-847 routes gate: the equality-join CHAIN_SQL_CIS returns what the range-join form returned ────────────────
+
+# The cis chain query as merged in slice 6b (TP #117), kept verbatim as the reference for the rewrite.
+CHAIN_SQL_CIS_V1 = """
+    WITH span AS MATERIALIZED (
+        SELECT source_id, min(day_index) AS first_day FROM catalog.v_tour_stop GROUP BY source_id
+    ), legs AS MATERIALIZED (
+        SELECT l.source_id, l.day_from, l.day_to, l.days, l.start_destination_id, l.end_destination_id,
+               l.destination_ids
+        FROM catalog.v_tour_leg l WHERE $1 = ANY(l.countries) AND l.days < $2::int
+    ), a AS (
+        SELECT l.* FROM legs l JOIN span sp ON sp.source_id = l.source_id AND l.day_from = sp.first_day
+    ), j AS MATERIALIZED (
+        SELECT destination_a, destination_b, km FROM catalog.v_tour_junction
+    )
+    SELECT a.source_id AS a_tour, a.day_from AS a_from, a.day_to AS a_to, a.days AS a_days,
+           b.source_id AS b_tour, b.day_from AS b_from, b.day_to AS b_to, b.days AS b_days,
+           coalesce(j.km, 0) AS transfer_km,
+           cardinality(a.destination_ids) + cardinality(b.destination_ids) AS places
+    FROM a
+    JOIN legs b ON b.source_id <> a.source_id AND a.days + b.days BETWEEN $2::int - $3::int AND $2::int
+    LEFT JOIN j ON j.destination_a = a.end_destination_id AND j.destination_b = b.start_destination_id
+    WHERE b.start_destination_id = a.end_destination_id OR j.destination_a IS NOT NULL
+    ORDER BY abs(a.days + b.days - $2::int), coalesce(j.km, 0), places DESC
+    LIMIT 40
+"""
+
+
+def chain_graph(seed: int, countries: dict[str, int], places_per_country: int = 30, max_days: int = 16):
+    """A seeded catalog tour graph with Dev's shape: tours that stay 1-3 nights per place and revisit places
+    (legs that start and end at the same place), every day range of a tour as a leg, a few cross-border
+    tours, and junctions between distinct places within 150 km in both directions (never a self-pair:
+    the graph builder never writes one). Returns (stops, legs, junctions) rows for the stand-in tables."""
+    rng = random.Random(seed)
+    places: dict[str, list[tuple[uuid.UUID, float, float]]] = {}
+    n = 0
+    for ci, country in enumerate(countries):
+        lat0, lng0 = 14.0 + 3 * ci, 101.0 + 2 * ci
+        places[country] = []
+        for _ in range(places_per_country):
+            n += 1
+            places[country].append((uuid.UUID(int=900_000 + n), lat0 + rng.uniform(0, 4), lng0 + rng.uniform(0, 3)))
+    every = [p for ps in places.values() for p in ps]
+    km = {}
+    for i, (a, alat, alng) in enumerate(every):
+        for b, blat, blng in every[i + 1:]:
+            d = 111.0 * math.hypot(alat - blat, (alng - blng) * math.cos(math.radians((alat + blat) / 2)))
+            if d <= 150:
+                km[(a, b)] = km[(b, a)] = round(d, 1)
+    near = {p[0]: [b for (a, b) in km if a == p[0]] for p in every}
+    country_of = {p[0]: c for c, ps in places.items() for p in ps}
+    stops, legs = [], []
+    t = 0
+    for country, n_tours in countries.items():
+        for _ in range(n_tours):
+            t += 1
+            src = f"gen-{t:04d}"
+            here = rng.choice(places[country])[0]
+            days: list[uuid.UUID] = []
+            target = rng.randint(3, max_days)
+            while len(days) < target:
+                days.extend([here] * min(rng.randint(1, 3), target - len(days)))
+                if rng.random() < 0.15 and days:          # loop back to an earlier place
+                    here = rng.choice(days)
+                else:
+                    here = rng.choice(near[here] or [here])
+            for d, dest in enumerate(days, start=1):
+                stops.append((src, d, dest))
+            for a in range(1, len(days) + 1):
+                for b in range(a + 1, len(days) + 1):
+                    ids = list(dict.fromkeys(days[a - 1:b]))
+                    legs.append((src, a, b, b - a + 1, days[a - 1], days[b - 1], ids,
+                                 sorted({country_of[x] for x in ids})))
+    junctions = [(a, b, v) for (a, b), v in km.items()]
+    return stops, legs, junctions
+
+
+async def _load_chain_graph(conn, stops, legs, junctions) -> None:
+    await conn.execute("TRUNCATE catalog.v_tour_stop, catalog.v_tour_leg, catalog.v_tour_junction")
+    await conn.copy_records_to_table("v_tour_stop", schema_name="catalog", records=stops,
+                                     columns=["source_id", "day_index", "destination_id"])
+    await conn.copy_records_to_table("v_tour_leg", schema_name="catalog", records=legs,
+                                     columns=["source_id", "day_from", "day_to", "days", "start_destination_id",
+                                              "end_destination_id", "destination_ids", "countries"])
+    await conn.copy_records_to_table("v_tour_junction", schema_name="catalog", records=junctions,
+                                     columns=["destination_a", "destination_b", "km"])
+    await conn.execute("ANALYZE catalog.v_tour_stop; ANALYZE catalog.v_tour_leg; ANALYZE catalog.v_tour_junction")
+
+
+def _no_limit(sql: str) -> str:
+    assert sql.count("LIMIT 40") == 1
+    return sql.replace("LIMIT 40", "")
+
+
+async def chain_equivalence(conn, country: str, days: int, slack: int = routes_mod.SLACK) -> dict:
+    """Old vs new chain SQL for one argument set: full candidate sets compared with EXCEPT ALL both ways
+    (row multiplicity included), and the LIMIT 40 answers compared by their sort keys (ties may pick
+    different rows of equal rank, so the rows themselves are not compared)."""
+    old, new = _no_limit(CHAIN_SQL_CIS_V1), _no_limit(routes_mod.CHAIN_SQL_CIS)
+    q = "SELECT count(*) FROM (({}) EXCEPT ALL ({})) x"
+    args = (country, days, slack)
+    out = {"old_rows": await conn.fetchval(f"SELECT count(*) FROM ({old}) x", *args),
+           "new_rows": await conn.fetchval(f"SELECT count(*) FROM ({new}) x", *args),
+           "old_minus_new": await conn.fetchval(q.format(old, new), *args),
+           "new_minus_old": await conn.fetchval(q.format(new, old), *args)}
+
+    def keys(rows):
+        return [(abs(r["a_days"] + r["b_days"] - days), float(r["transfer_km"]), -r["places"]) for r in rows]
+    out["top40_old"] = keys(await conn.fetch(CHAIN_SQL_CIS_V1, *args))
+    out["top40_new"] = keys(await conn.fetch(routes_mod.CHAIN_SQL_CIS, *args))
+    out["transfers"] = await conn.fetchval(f"SELECT count(*) FILTER (WHERE transfer_km > 0) FROM ({new}) x", *args)
+    return out
+
+
+async def test_chain_sql_cis_rewrite_returns_the_same_candidates(pool):
+    stops, legs, junctions = chain_graph(847, {"Laos": 24, "Vietnam": 8})
+    await _load_chain_graph(pool, stops, legs, junctions)
+    checked = 0
+    for country in ("Laos", "Vietnam"):
+        for days in (4, 7, 10, 14, 21):
+            r = await chain_equivalence(pool, country, days)
+            assert r["old_minus_new"] == 0 and r["new_minus_old"] == 0, (country, days, r)
+            assert r["old_rows"] == r["new_rows"], (country, days, r)
+            assert r["top40_old"] == r["top40_new"], (country, days)
+            checked += r["new_rows"]
+            if country == "Laos" and days >= 10:
+                assert r["new_rows"] > 500 and 0 < r["transfers"] < r["new_rows"], r  # both kinds of chain
+    assert checked > 5000
+
+
+async def test_chain_sql_cis_counts_a_self_pair_junction_once(pool):
+    """The CIS junction table has no CHECK against destination_a = destination_b. The range-join form
+    returned one row per such junction INSTEAD of the 0 km row (its km, usually 0); the rewrite keeps the
+    single 0 km row. Same answer as long as no self-pair exists (the graph builder writes none)."""
+    stops, legs, junctions = chain_graph(848, {"Laos": 10})
+    await _load_chain_graph(pool, stops, legs, junctions)
+    before = await chain_equivalence(pool, "Laos", 10)
+    assert before["old_minus_new"] == before["new_minus_old"] == 0
+    ends = await pool.fetch("SELECT DISTINCT end_destination_id AS d FROM catalog.v_tour_leg")
+    await pool.executemany("INSERT INTO catalog.v_tour_junction (destination_a, destination_b, km) "
+                           "VALUES ($1, $1, 0.0)", [(r["d"],) for r in ends])
+    after = await chain_equivalence(pool, "Laos", 10)
+    assert after["new_rows"] == before["new_rows"]                 # the rewrite is unaffected
+    assert after["old_rows"] == before["old_rows"]                 # one self-pair per place: old replaces the 0 km row
+    await pool.executemany("INSERT INTO catalog.v_tour_junction (destination_a, destination_b, km) "
+                           "VALUES ($1, $1, 0.0)", [(r["d"],) for r in ends])
+    doubled = await chain_equivalence(pool, "Laos", 10)
+    assert doubled["new_rows"] == before["new_rows"] and doubled["old_rows"] > before["old_rows"]
+
+
+async def test_cis_routes_force_custom_plans_inside_their_own_transaction(pool, monkeypatch):
+    """SET LOCAL scopes plan_cache_mode to the two candidate reads: the connection is back on auto after."""
+    monkeypatch.setattr(config, "PLACES_SOURCE", "cis")
+    seen = []
+    real_fetch = pool.c.fetch
+
+    async def fetch(query, *args):
+        seen.append((query.strip()[:30], await pool.c.fetchval("SHOW plan_cache_mode")))
+        return await real_fetch(query, *args)
+    monkeypatch.setattr(pool, "fetch", fetch, raising=False)   # _Pool delegates the rest to the connection
+    body = await routes_mod.proposals(pool, "Laos", 6)
+    assert body["proposals"]
+    assert seen[0][1] == seen[1][1] == "force_custom_plan"         # single + chain
+    assert all(mode == "auto" for _, mode in seen[2:])              # days, components, titles
+    assert await pool.c.fetchval("SHOW plan_cache_mode") == "auto"
+    monkeypatch.setattr(config, "PLACES_SOURCE", "legacy")
+    seen.clear()
+    await routes_mod.proposals(pool, "Laos", 6)
+    assert seen and all(mode == "auto" for _, mode in seen)
