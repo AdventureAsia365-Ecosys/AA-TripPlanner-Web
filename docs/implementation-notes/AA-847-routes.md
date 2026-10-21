@@ -58,3 +58,10 @@ separate CIS PR and changes no TripPlanner SQL.
 - `test_vector_topk_pg.py` needs real pgvector (errors on a PG without the extension); untouched here.
 - The probe READERS in AA-CIS-Infra are regenerated from this branch's HEAD (`gen_probe_sql.py`), so the probe runs
   the same `CHAIN_SQL_CIS` text.
+- Review notes (independent review, S246), not fixed here:
+  - `test_routes_same_proposals_keyed_by_source_id` compares cis with legacy. Legacy `CHAIN_SQL` still leaves equal
+    rank rows to the plan, so at days=6 the match rests on the legacy plan's current order. If that test flakes, look
+    at the legacy side's tie first, not at the cis SQL.
+  - Pre-existing in both paths: the chain SQL orders km before places, `rank()` orders places before km, so the
+    LIMIT 40 can drop a candidate `rank()` would have preferred. Old and new cis behave the same; a fix changes the
+    proposals and belongs in its own PR.
