@@ -46,6 +46,37 @@ def test_no_backend_module_writes_place_data():
     assert offenders == []
 
 
+# AA-847: CIS 254 revokes the tripplanner grants of CIS 179 (raw_tours(tour_id, country)) and 180 (tour_atoms
+# columns). No backend module may read those tables again; catalog.v_* is the read path (ADR 0001).
+_REVOKED_READ = re.compile(r"\bsilver_aa_internal\.raw_tours\b|\bacp_contract\.tour_atoms\b", re.IGNORECASE)
+
+
+def _sql_strings(text: str):
+    """String literals of a module that are not docstrings (SQL lives in literals; prose in docstrings / comments)."""
+    tree = ast.parse(text)
+    docs = {id(n.body[0].value) for n in ast.walk(tree)
+            if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and n.body
+            and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs:
+            yield n.value
+
+
+def test_no_backend_module_reads_raw_tours_or_tour_atoms():
+    offenders = [f"{rel}: {m.group(0)}" for rel, text in _backend_modules() for lit in _sql_strings(text)
+                 for m in _REVOKED_READ.finditer(lit)]
+    assert offenders == []
+
+
+def test_revoked_read_guard_catches_the_old_reader():
+    old = ('ACTIVE_TOURS_SQL = """\n    SELECT pt.tour_id FROM gold_aa_internal.published_tours pt\n'
+           '    JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id\n"""\n')
+    assert any(_REVOKED_READ.search(lit) for lit in _sql_strings(old))
+    doc = '"""Reads acp_contract.tour_atoms? No."""\n# nor silver_aa_internal.raw_tours\n'
+    assert not any(_REVOKED_READ.search(lit) for lit in _sql_strings(doc))
+    assert "catalog.v_tour" in catalog_rls.ACTIVE_TOURS_SQL
+
+
 def test_guard_pattern_catches_the_old_writers():
     samples = ["INSERT INTO shared.destinations (name) VALUES ($1)",
                "UPDATE tripplanner.tour_day SET overnight_destination_id = $3",

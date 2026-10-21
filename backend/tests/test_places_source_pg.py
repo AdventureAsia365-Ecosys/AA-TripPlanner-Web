@@ -71,6 +71,14 @@ CREATE TABLE catalog.v_tour_leg (source_system text DEFAULT 'cis', source_id tex
     countries text[], activities text[], build_id uuid);
 CREATE TABLE catalog.v_tour_junction (destination_a uuid, destination_b uuid, km float8, cross_border boolean,
     build_id uuid);
+-- AA-847 (CIS 253 / tp-017): the HNSW top-k view, the graph nodes, the id-map and the trip event log.
+CREATE TABLE catalog.v_component_embedding (component_id uuid, source_id text, destination_id uuid, activity text,
+    intensity_level text, season_months int[], embedding vector);
+CREATE TABLE catalog.v_graph_node (destination_id uuid, name text, country text, lat float8, lng float8,
+    located_by text, precision text);
+CREATE TABLE tripplanner.component_id_map (old_id uuid PRIMARY KEY, new_id uuid NOT NULL, matched_by text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE tripplanner.trip_events (id bigserial PRIMARY KEY, trip_id text, event_type text, payload jsonb);
 """
 
 D = {k: uuid.UUID(int=i + 1) for i, k in enumerate(("VTE", "VV", "LPB", "PKS", "HAN"))}
@@ -119,15 +127,21 @@ async def _load(conn) -> None:
             for act in ACT[: 2 if day == 1 else 1]:
                 n += 1
                 name = f"{PLACES[stop][0]} {act}"
+                old_id, new_id = uuid.uuid4(), uuid.uuid5(uuid.NAMESPACE_URL, f"{src}|{day}|{name}")
                 await conn.execute(
                     "INSERT INTO tripplanner.itinerary_components VALUES ($1,$2,$3,$4,$5,$6,'leisurely',"
-                    "'{1,11}',$7,$8,$9)", uuid.uuid4(), key, day, D[stop], name, act, "full_day", name, _vec(n))
+                    "'{1,11}',$7,$8,$9)", old_id, key, day, D[stop], name, act, "full_day", name, _vec(n))
                 await conn.execute(
                     "INSERT INTO catalog.v_tour_component (source_id, tour_id, built_from_tour_id, component_id, "
                     "day_index, destination_id, name, country, activity, intensity_level, season_months, "
                     "duration_hint, text_extract, embedding) VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,'leisurely',"
-                    "'{1,11}',$9,$10,$11)", src, tid, uuid.uuid5(uuid.NAMESPACE_URL, f"{src}|{day}|{name}"), day,
+                    "'{1,11}',$9,$10,$11)", src, tid, new_id, day,
                     D[stop], name, country, act, "full_day", name, _vec(n))
+                await conn.execute(
+                    "INSERT INTO catalog.v_component_embedding VALUES ($1,$2,$3,$4,'leisurely','{1,11}',$5)",
+                    new_id, src, D[stop], act, _vec(n))
+                await conn.execute("INSERT INTO tripplanner.component_id_map (old_id, new_id, matched_by) "
+                                   "VALUES ($1,$2,'name')", old_id, new_id)
         for a in range(1, len(stops) + 1):
             for b in range(a + 1, len(stops) + 1):
                 ids = list(dict.fromkeys(D[s] for s in stops[a - 1:b]))
@@ -137,6 +151,9 @@ async def _load(conn) -> None:
                                    "start_destination_id, end_destination_id, destination_ids, countries) VALUES "
                                    "($1,$2,$3,$4,$5,$6,$7,$8,$9)", src, tid, a, b, b - a + 1, D[stops[a - 1]],
                                    D[stops[b - 1]], ids, [country])
+    for k, (name, country, lat, lng, by, prec) in PLACES.items():
+        await conn.execute("INSERT INTO catalog.v_graph_node VALUES ($1,$2,$3,$4,$5,$6,$7)", D[k], name, country,
+                           lat, lng, by, prec)
     for a, b, km in JUNCTIONS:
         await conn.execute("INSERT INTO tripplanner.tour_junction VALUES ($1,$2,$3)", D[a], D[b], km)
         await conn.execute("INSERT INTO catalog.v_tour_junction VALUES ($1,$2,$3,false,NULL)", D[a], D[b], km)
@@ -280,3 +297,49 @@ async def test_tour_route_cis_finds_both_tours_on_the_graph(pool, monkeypatch):
     assert rb["legacy"][1]["proposal"]["match"] == "places"
     assert rb["cis"][1]["proposal"]["match"] == "tour_graph"
     assert all(d["component_id"] for d in rb["cis"][1]["proposal"]["days"])
+
+
+# ── AA-847 slice 6c: assembly on both paths, ids from before the flip through the id-map ───────────────────────
+
+async def test_a_draft_from_before_the_flip_folds_to_the_same_components_on_cis(pool, monkeypatch):
+    from backend.assembly import coverage as coverage_mod
+    from backend.assembly import events as events_mod
+
+    old = [r["id"] for r in await pool.fetch(
+        "SELECT id::text AS id FROM tripplanner.itinerary_components c WHERE source_tour_id = $1 "
+        "ORDER BY source_day_index, name", str(TOURS[0][1]))]
+    assert len(old) == 5
+    trip = "trip-aa847"
+    for cid in old:
+        await pool.execute("INSERT INTO tripplanner.trip_events (trip_id, event_type, payload) VALUES ($1, "
+                           "'add_component', $2::jsonb)", trip, json.dumps({"component_id": cid}))
+    # after the flip the browser removes one pin by its NEW id
+    new_first = await pool.fetchval("SELECT new_id::text FROM tripplanner.component_id_map WHERE old_id = $1::uuid",
+                                    old[0])
+    await pool.execute("INSERT INTO tripplanner.trip_events (trip_id, event_type, payload) VALUES ($1, "
+                       "'remove_component', $2::jsonb)", trip, json.dumps({"component_id": new_first}))
+    got = {}
+    for mode in ("legacy", "cis"):
+        monkeypatch.setattr(config, "PLACES_SOURCE", mode)
+        comps = await events_mod._current_components(pool, trip)  # noqa: SLF001
+        got[mode] = sorted((c["name"], c["source_day_index"]) for c in comps)
+        cov = await coverage_mod.coverage(pool, trip)
+        assert cov["coverable"], (mode, cov)
+    # legacy cannot see the removal by a new id (5 pins); cis folds old and new ids together (4 pins)
+    assert len(got["legacy"]) == 5 and len(got["cis"]) == 4
+    assert set(got["cis"]) < set(got["legacy"])
+
+
+async def test_suggestions_on_cis_from_a_pre_flip_pin(pool, monkeypatch):
+    """The legacy suggestion path reads tripplanner.tour_graph_node (not in this stand-in); test_route_suggest
+    covers it offline."""
+    from backend.assembly import suggestions as suggest_mod
+
+    old = await pool.fetchval("SELECT id::text FROM tripplanner.itinerary_components WHERE destination_id = $1 "
+                              "ORDER BY name LIMIT 1", D["VTE"])
+    await pool.execute("INSERT INTO tripplanner.trip_events (trip_id, event_type, payload) VALUES ('t-sug', "
+                       "'add_component', $1::jsonb)", json.dumps({"component_id": old}))
+    monkeypatch.setattr(config, "PLACES_SOURCE", "cis")
+    res = await suggest_mod.suggest(pool, "t-sug")
+    names = [s["name"] for s in res["suggestions"]]
+    assert res["mode"] == "route" and names and "Vientiane" not in names   # next stops of tours through VTE

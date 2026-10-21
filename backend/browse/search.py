@@ -19,12 +19,12 @@ AA-712: ranking goes through backend.shared.vector_topk — the nearest componen
 index (ORDER BY embedding <=> q LIMIT k) and are grouped per destination afterwards, instead of
 MIN(embedding <=> q) over every component (a full scan of every vector per search).
 
-AA-712 slice 6b: with PLACES_SOURCE=cis it ranks catalog.v_tour_component (CIS migration 228) instead,
-with the exact aggregate MIN(c.embedding <=> q) per destination (S237 decision D7: 228 has no top-k
-function, and through the security_barrier view the HNSW index on geo.tour_place cannot serve an
-index-ordered scan). The views return live tours only and need no AA tenant, so this path has neither
-the active-tour EXISTS nor set_catalog_tenant. Rewrite to a top-k object before the catalog-wide run
-(design 03 §6.5).
+AA-712 slice 6b / AA-847: with PLACES_SOURCE=cis it ranks the CIS catalog through the same vector_topk passes
+(``vector_topk.CIS``): the top-k scan reads catalog.v_component_embedding (CIS 253, not a security_barrier view,
+so the HNSW index on geo.tour_place serves it; it shows the rows of v_tour_component: live tours, usable places,
+never a suspect or merged one), the exact fallback catalog.v_tour_component and
+the destinations catalog.v_destination. The views need no AA tenant, so this path has neither the active-tour
+EXISTS nor set_catalog_tenant. (Before 253 it ran the exact aggregate over v_tour_component: S237 decision D7.)
 
 AA-856 (Cohere Embed V4 on acc2: 20 requests per minute, S239 burst test = search 500s):
   * query embeddings are cached in the Lambda container (``llm_gateway.query_embed_cache``: bounded
@@ -47,7 +47,7 @@ import time
 from typing import Any, Callable, Optional, Protocol
 
 from backend.browse.filters import BrowseFilters
-from backend.browse.tiles import geo_fields
+from backend.browse.tiles import LINE_COLS, LINE_COLS_SQL, geo_fields
 from backend.shared.catalog_rls import set_catalog_tenant
 from backend.shared import llm_gateway, places_source, vector_topk
 
@@ -103,25 +103,20 @@ def search_where(filters: BrowseFilters) -> tuple[str, str, list[Any]]:
     return f"c.embedding IS NOT NULL {frag}", ACTIVE_TOUR_SQL, filter_params
 
 
-# AA-712 slice 6b (PLACES_SOURCE=cis): exact aggregate over the catalog component view. Query vector
-# = $1, filter params from $2 (the country filter reads the joined catalog.v_destination ``d``).
-CIS_SEARCH_SQL = """
-    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
-           COUNT(c.component_id) AS component_count,
-           MIN(c.embedding <=> $1::vector) AS best_distance
-    FROM catalog.v_tour_component c
-    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
-    WHERE c.embedding IS NOT NULL {where_frag}
-    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
-    ORDER BY best_distance ASC, d.destination_id
-    LIMIT {limit}
-"""
+# AA-847 (PLACES_SOURCE=cis): the country filter as an InitPlan array over the catalog destinations, so it stays
+# inside the index-ordered scan of catalog.v_component_embedding (vector_topk.CIS).
+CIS_COUNTRY_CLAUSE = ("AND c.destination_id = ANY(ARRAY(SELECT dc.destination_id FROM catalog.v_destination dc "
+                      "WHERE dc.country = ${i}))")
+# AA-847 slice 6d (CIS 256): a line carries its kind / status / length / bbox (the result map fits the bboxes)
+CIS_DEST_COLS = ("id", "name", "lat", "lng", "located_by", "precision") + LINE_COLS
 
 
-def cis_search_sql(filters: BrowseFilters, limit: int) -> tuple[str, list[Any]]:
-    """(sql, filter_params) of the cis path; the query embedding is $1."""
-    frag, filter_params = filters.where_sql(start_index=2)
-    return CIS_SEARCH_SQL.format(where_frag=frag, limit=int(limit)), filter_params
+def cis_search_where(filters: BrowseFilters) -> tuple[str, str, list[Any]]:
+    """(scan_where, keep_where, filter_params) of the cis path for vector_topk.CIS; the query embedding is $1. The
+    views show only components of live tours on usable places (CIS 253 filters v_component_embedding with the
+    v_tour_component rule: not suspect, not a merged duplicate), so nothing is checked after the scan."""
+    frag, filter_params = filters.where_sql(start_index=2, country_clause=CIS_COUNTRY_CLAUSE)
+    return f"c.embedding IS NOT NULL {frag}", "", filter_params
 
 
 def exact_first_for(filters: BrowseFilters) -> bool:
@@ -196,25 +191,26 @@ async def search(
             return await keyword_search(q, filters, pool=pool, limit=limit, reason=reason)
     vec_literal = _vector_literal(vec)
 
-    if places_source.is_cis():
-        sql, filter_params = cis_search_sql(filters, limit)
-        rows = await pool.fetch(sql, vec_literal, *filter_params)
-        log.info("browse search: %d destinations via cis exact", len(rows))
-        return {"destinations": [_dest(r) for r in rows], "ranking": "semantic"}
-
-    scan_where, keep_where, filter_params = search_where(filters)
+    cis = places_source.is_cis()
+    if cis:
+        scan_where, keep_where, filter_params = cis_search_where(filters)
+    else:
+        scan_where, keep_where, filter_params = search_where(filters)
     params: list[Any] = [vec_literal, *filter_params]
 
-    # published_tours enforces tenant RLS: run with the AA tenant set (SET LOCAL in a transaction on
+    # Legacy: published_tours enforces tenant RLS: run with the AA tenant set (SET LOCAL in a transaction on
     # one connection), or the active-tour filter would match nothing. The same transaction scopes
-    # hnsw.ef_search (AA-712).
+    # hnsw.ef_search / hnsw.iterative_scan (AA-712). The cis views need no tenant.
     async def _run(conn) -> list:
         async with conn.transaction():
-            await set_catalog_tenant(conn)
+            if not cis:
+                await set_catalog_tenant(conn)
             rows, mode = await vector_topk.ranked_destinations(
                 conn, scan_where=scan_where, keep_where=keep_where, params=params,
-                dest_cols=DEST_COLS, limit=limit, exact_first=exact_first_for(filters))
-        log.info("browse search: %d destinations via %s", len(rows), mode)
+                dest_cols=CIS_DEST_COLS if cis else DEST_COLS, limit=limit,
+                exact_first=exact_first_for(filters),
+                source=vector_topk.CIS if cis else vector_topk.LEGACY)
+        log.info("browse search: %d destinations via %s%s", len(rows), "cis " if cis else "", mode)
         return rows
 
     rows = await _with_conn(pool, _run)
@@ -268,13 +264,13 @@ KEYWORD_LEGACY_SQL = """
 """
 
 KEYWORD_CIS_SQL = """
-    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision, """ + LINE_COLS_SQL + """,
            COUNT(c.component_id) AS component_count, MAX(s.score) AS best_score
     FROM catalog.v_tour_component c
     JOIN catalog.v_destination d ON d.destination_id = c.destination_id
     {score}
     WHERE TRUE {where_frag}
-    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision, """ + LINE_COLS_SQL + """
     HAVING MAX(s.score) > 0
     ORDER BY best_score DESC, component_count DESC, d.destination_id
     LIMIT {limit}

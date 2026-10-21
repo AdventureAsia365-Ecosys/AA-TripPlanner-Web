@@ -58,6 +58,16 @@ export interface TourPlace {
   lat: number | null;
   lng: number | null;
   activity_types: string[];
+  // catalog.tour v1.1 (CIS 228, AA-847): how the point was located; "area" is drawn as an area
+  located_by?: "geoapify" | "mapbox" | "llm" | "manual" | null;
+  // v1.2 (CIS 256): "line" = a river, road or trail, drawn from segment / shape_lo, never a pin
+  precision?: "point" | "area" | "line" | null;
+  segment?: { type: string; coordinates: unknown } | null;
+  segment_basis?: "day_anchors" | "anchor_window" | "feature" | null;
+  segment_from_destination_id?: string | null;
+  segment_to_destination_id?: string | null;
+  segment_km?: number | null;
+  shape_lo?: { type: string; coordinates: unknown } | null;
 }
 
 export interface CatalogPhoto {
@@ -120,6 +130,10 @@ export interface CountryPlace {
   tour_count: number;
   activity_types: string[];
   cover_url: string | null;
+  located_by?: "geoapify" | "mapbox" | "llm" | "manual" | null;
+  precision?: "point" | "area" | "line" | null;
+  // AA-847 slice 6d: a line place's geometry (≤ 60 vertices) for the static map
+  shape_lo?: { type: string; coordinates: unknown } | null;
 }
 
 export interface DestinationPage {

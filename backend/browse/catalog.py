@@ -78,9 +78,19 @@ TOUR_DAYS_SQL = """
 TOUR_PLACES_SQL = """
     SELECT day_number, position, place_name, place_card_id::text AS place_card_id, place_display_name,
            locality, region, country, destination_id::text AS destination_id, destination_name, lat, lng,
-           activity_types, atom_count
+           activity_types, atom_count, located_by, precision,
+           segment, segment_basis, segment_from_destination_id::text AS segment_from_destination_id,
+           segment_to_destination_id::text AS segment_to_destination_id, segment_km
     FROM catalog.v_tour_place WHERE tour_id = $1::uuid
     ORDER BY day_number NULLS LAST, position
+"""
+# AA-847 slice 6d (CIS 256, catalog.tour v1.2): the stretch of a LINE place its day follows is on v_tour_place
+# (segment …); the line's own geometry for static maps (≤ 60 vertices) is v_destination.shape_lo, read by id.
+SEGMENT_KEYS = ("segment_basis", "segment_from_destination_id", "segment_to_destination_id")
+LINE_SHAPES_LO_SQL = """
+    SELECT destination_id::text AS destination_id, shape_lo
+    FROM catalog.v_destination
+    WHERE destination_id = ANY($1::uuid[]) AND precision = 'line' AND shape_lo IS NOT NULL
 """
 
 TOUR_PHOTOS_SQL = """
@@ -107,14 +117,14 @@ COUNTRIES_SQL = f"""
 # join on the computed country slug would make it build every tour's places first (AA-812 review).
 COUNTRY_PLACES_SQL = """
     SELECT p.destination_id::text AS destination_id, p.destination_name, p.lat, p.lng,
-           p.tour_id::text AS tour_id, p.activity_types
+           p.tour_id::text AS tour_id, p.activity_types, p.located_by, p.precision
     FROM catalog.v_tour_place p
     WHERE p.tour_id = ANY($1::uuid[])
       AND p.destination_id IS NOT NULL AND p.lat IS NOT NULL AND p.lng IS NOT NULL
 """
 
 DESTINATION_COVERS_SQL = """
-    SELECT destination_id::text AS destination_id, cover_photo_path, photo_count
+    SELECT destination_id::text AS destination_id, cover_photo_path, photo_count, precision, shape_lo
     FROM catalog.v_destination WHERE destination_id = ANY($1::uuid[])
 """
 
@@ -462,9 +472,12 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
     days = await pool.fetch(TOUR_DAYS_SQL, tour_id)
     places = await pool.fetch(TOUR_PLACES_SQL, tour_id)
     photos = await pool.fetch(TOUR_PHOTOS_SQL, tour_id)
+    line_ids = sorted({p["destination_id"] for p in places if _geo(p)["precision"] == "line" and p["destination_id"]})
+    shapes = {r["destination_id"]: _json(r["shape_lo"])
+              for r in await pool.fetch(LINE_SHAPES_LO_SQL, line_ids)} if line_ids else {}
     out = {
         "contract": "catalog.tour",
-        "version": 1,
+        "version": 1.2,
         "source_system": t["source_system"],
         "source_id": t["source_id"],
         "tour_id": tour_id,
@@ -505,7 +518,11 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
                                "place_display_name", "locality", "region", "country",
                                "destination_id", "destination_name", "atom_count")}
             | {"lat": _num(p["lat"]), "lng": _num(p["lng"]),
-               "activity_types": list(p["activity_types"] or [])}
+               "activity_types": list(p["activity_types"] or []),
+               # AA-847 (ADR 0007): 'area' is drawn as an area; 'geoapify' needs the attribution
+               **_geo(p),
+               # AA-847 slice 6d (catalog.tour v1.2): a 'line' place is drawn as a line, never a pin
+               **_segment(p, shapes)}
             for p in places
         ],
         "photos": [
@@ -540,13 +557,31 @@ async def list_countries(*, pool: Any) -> dict:
     return {"countries": out}
 
 
+def _geo(r: Any) -> dict:
+    """``located_by`` / ``precision`` of a v_tour_place row (None when the row has no such column)."""
+    keys = r.keys() if hasattr(r, "keys") else ()
+    return {k: (r[k] if k in keys else None) for k in ("located_by", "precision")}
+
+
+def _segment(r: Any, shapes: dict) -> dict:
+    """catalog.tour v1.2 segment fields of a v_tour_place row (+ the line's shape_lo); {} on a row without them."""
+    keys = r.keys() if hasattr(r, "keys") else ()
+    if "segment" not in keys:
+        return {}
+    out = {"segment": _json(r["segment"]), "segment_km": _num(r["segment_km"])}
+    out.update({k: r[k] for k in SEGMENT_KEYS})
+    if r["precision"] == "line":
+        out["shape_lo"] = shapes.get(r["destination_id"])
+    return out
+
+
 def aggregate_places(rows: Iterable[Any], limit: int = TOP_PLACES_PER_COUNTRY) -> list[dict]:
     """Group place rows of a country's tours by destination: how many tours pass, top activities."""
     by: dict[str, dict] = {}
     for r in rows:
         d = by.setdefault(r["destination_id"], {
             "destination_id": r["destination_id"], "name": r["destination_name"],
-            "lat": _num(r["lat"]), "lng": _num(r["lng"]), "_tours": set(), "_acts": {},
+            "lat": _num(r["lat"]), "lng": _num(r["lng"]), "_tours": set(), "_acts": {}, **_geo(r),
         })
         d["_tours"].add(r["tour_id"])
         for a in r["activity_types"] or []:
@@ -582,6 +617,9 @@ async def destination_page(country: str, *, pool: Any) -> Optional[dict]:
     for p in places:
         c = covers.get(p["destination_id"])
         p["cover_url"] = photo_url(c["cover_photo_path"], "small") if c else None
+        # AA-847 slice 6d: a line place (river, road, trail) is drawn from its shape, never a pin
+        if c is not None and "shape_lo" in c.keys() and p.get("precision") == "line":
+            p["shape_lo"] = _json(c["shape_lo"])
     photos = []
     if ids:
         rank = {d: i for i, d in enumerate(ids)}  # gallery follows the place ranking

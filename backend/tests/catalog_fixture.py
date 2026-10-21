@@ -228,8 +228,11 @@ class FakeCatalogPool:
             return [p for p in PLACES if p["tour_id"] in ids and p["destination_id"] and p["lat"] is not None]
         if q == _norm(cat.DESTINATION_COVERS_SQL):
             return [{"destination_id": d, "cover_photo_path": self._dest_cover(d),
-                     "photo_count": sum(1 for p in self.dest_photos if p["destination_id"] == d)}
+                     "photo_count": sum(1 for p in self.dest_photos if p["destination_id"] == d),
+                     "precision": "point", "shape_lo": None}
                     for d in args[0]]
+        if q == _norm(cat.LINE_SHAPES_LO_SQL):     # AA-847 slice 6d: no line place in these fixtures
+            return []
         if q == _norm(cat.DESTINATION_PHOTOS_SQL):
             return [p for p in self.dest_photos if p["destination_id"] in args[0]]
         if q == _norm(cat.TOUR_DESTINATIONS_SQL):

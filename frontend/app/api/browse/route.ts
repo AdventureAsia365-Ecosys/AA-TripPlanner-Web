@@ -43,6 +43,10 @@ export async function GET(req: NextRequest) {
   } else if (resource === "search") {
     filters.set("q", q.get("q") ?? "");
     upstreamPath = `/browse/search?${filters}`;
+  } else if (resource === "shapes") {
+    // AA-847 slice 6d: line geometry by id (CDN-cacheable upstream).
+    const r = new URLSearchParams({ ids: q.get("ids") ?? "", level: q.get("level") ?? "lo" });
+    upstreamPath = `/browse/shapes?${r}`;
   } else if (resource === "countries") {
     upstreamPath = `/browse/countries`;
   } else if (resource === "routes") {
