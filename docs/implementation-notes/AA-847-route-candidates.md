@@ -76,3 +76,109 @@ Same pairwise pattern as the routes chain (`AA-847-routes.md`).
   to revisit, not the rewrite.
 - `test_vector_topk_pg.py` still needs real pgvector (it errors on a PG without the extension) and is untouched here,
   as in the routes notes.
+
+## Round 2 — each catalog view read once (S246)
+
+Trigger: the Dev probe after round 1 (TP #121 `ee5b0ba`, Infra READERS regenerated from it) measured
+`assembly_route_candidates Laos cis 213 ms` (runs 213.8 / 213.0 / 212.4) against legacy 23.8 ms and a 200 ms
+target: FAIL by 13 ms. Top nodes: `Seq Scan:published_tours own_ms=137 rows=892 loops=154`, two `Hash Join`
+`loops=154` (rows 967 and 776, ~39 ms each), `CTE Scan:nx rows=154 loops=1`, `Nested Loop rows=413 loops=1`.
+
+### Why the 154 loops
+- 154 is the row count of `nxt`. Every node inside `catalog.v_tour_component` ran once per `nxt` row: 967 is the
+  whole of `geo.tour_place` joined to the live tours, 892 the live rows of `published_tours`.
+- `v_tour_component` (and `v_destination`, `v_tour_stop`, `v_graph_node`) are `security_barrier` views. The planner
+  never flattens them: each stays a subquery that the join to `nxt` cannot be pushed into (no parameterized path).
+  `_live_tour` is not a barrier, so it is flattened *inside* the view, and the live-tour join
+  (`published_tours` ⋈ `raw_tours` on `source_key`) is part of that subquery's plan.
+- `nxt` is a MATERIALIZED CTE (a GROUP BY over a join of two CTE scans, under a haversine filter the planner gives a
+  default selectivity), so its estimate is rough. Locally it is estimated at **1 row** for 129 real ones. With a
+  1-row outer side, a nested loop with the view as its inner side and no Materialize costs one inner pass, about
+  the same as a hash join. On Dev the planner picked the nested loop. The view's plan then re-ran per real `nxt`
+  row: the hash tables were reused, but their probe side (the `published_tours` seq scan) was scanned 154 times.
+  This is read from the probe's top nodes (loops = nxt rows, no Materialize). The probe prints no full plan, so
+  the 1-row estimate on Dev is inferred, not printed.
+- Locally, for the same 1-row estimate, the planner hashes `nxt` instead (a cost tie). `SET enable_hashjoin = off`
+  is enough to reproduce Dev's order: `CTE Scan:nxt` outer, the `v_tour_component` subquery inner with
+  `loops = 129`, and `v_destination` re-read per joined row (`Seq Scan:destinations rows=1446 loops=501`).
+
+### Decisions
+- **Every catalog view in its own MATERIALIZED CTE**, so each runs exactly once whatever the join order:
+  `near` (v_graph_node, now MATERIALIZED too), `stops` (v_tour_stop, as before), `comp` (v_tour_component) and
+  `dest` (v_destination). The main query joins CTEs only, and a rescan of a CTE reads its tuplestore, not the
+  view. The other option, keeping the view joins and hoping for a hash join, depends on an estimate we cannot fix
+  from TripPlanner.
+- **`comp` reads only the candidate tours**: `c.source_id = ANY(ARRAY(SELECT DISTINCT x.source_id FROM nxt x))`,
+  an InitPlan evaluated once. `texteq` is leakproof, so the `= ANY` is allowed through the barrier. Locally it lands
+  on `raw_tours_source_key_idx` and the tour_place source index (19 of 41 live tours for one last stop), not a
+  full component scan. This is the `COUNTRY_CLAUSE_CIS` pattern. The activity / intensity / embedding filters move
+  in with it.
+- **`comp` keeps the distance, not the vector** (`c.embedding <=> $1::vector AS distance`). The Dev vectors are
+  1536-d, about 6 kB a row, and a CTE stores what it selects. `MIN(c.distance)` is the same value as
+  `MIN(c.embedding <=> $1)`: the same function on the same inputs.
+- **`dest` reads only the destinations `comp` reached** (`= ANY(ARRAY(SELECT DISTINCT ... FROM comp))`, `uuid_eq`
+  leakproof), with the pinned-place exclusion `<> ALL($5)` moved in. `v_destination`'s per-destination photo
+  LATERAL then runs for those rows only.
+- **Same rows by construction.** It is the same inner joins and the same filters, grouped by the same columns in
+  another order. Each `= ANY` keeps only keys that can join anyway (a component of a tour outside `nxt`, or a
+  destination no kept component reaches, has no join partner). No DISTINCT is applied to view rows, so the
+  multiplicities are the views'. The output, ORDER BY and tie-break are unchanged.
+
+### Changed
+- `backend/assembly/suggestions.py`: `ROUTE_CANDIDATES_SQL_CIS` only (same $1–$8, same columns). Legacy is
+  unchanged.
+- `backend/tests/test_places_source_pg.py`:
+  - `ROUTE_CANDIDATES_SQL_CIS_V2`, the round-1 text, frozen byte for byte (checked equal to `ee5b0ba`'s constant
+    before the edit);
+  - `route_candidates_equivalence(..., old=, new=)`;
+  - `CATALOG_VIEWS_SCHEMA`, stand-in **views**. The base tables use CIS's columns, keys and indexes
+    (`raw_tours.source_key` stored + indexed, `published_tours.tour_id` unique, `graph_build_one_current_uq`, the
+    tour_place / tour_stop / tour_segment keys). `published_tours` / `raw_tours` have FORCE RLS with the view
+    owner's AA-master policy plus `tenant_isolation`. The views are the 253 / 256 / 258 texts on Dev
+    (`_live_tour`, `v_tour_component`, `_live_stop`, `v_tour_stop`, `v_graph_node`, `v_destination`,
+    `shared.v_destination_photos`), owned by a throwaway non-superuser role and read as a second role;
+  - `catalog_rows()` / `load_catalog_views()`: a suggest_graph() catalog mapped onto the base tables, with what the
+    views must hide. That is tours of another tenant, master not active, deleted, source inactive or unpublished,
+    superseded group versions, suspect / merged / line destinations, an old build's stops and nodes, and stale
+    components. Filler tours and destinations bring the scans to Dev's sizes;
+  - fixture `views_pool` (a database plus two roles, all dropped after the test) and 2 tests:
+    `test_route_candidates_round2_same_rows_over_the_views` (V3 against V1 and V2, 8 argument sets, EXCEPT ALL
+    both ways) and `test_route_candidates_views_read_once`. The second checks that, with hash joins off, V2 reads
+    view tables outside any CTE more than once. In both the natural and the forced plan, V3 reads every table inside
+    one of its five CTEs, each CTE runs once (`loops = 1`), and no seq scan of published_tours / raw_tours runs
+    more than once.
+- `backend/tests/test_places_source_assembly.py`: an offline shape test (the five CTEs and which are MATERIALIZED,
+  the four views each named once, a main query with no `catalog.`, distance not vector, the two `= ANY` InitPlans,
+  the tie-break).
+
+### Tradeoffs
+- Two more CTE materializations (comp: the candidate tours' components, a few hundred rows of 5 columns; dest:
+  the reached destinations). Where the planner already hashes (the local natural plan), V3 is up to 2.4 ms slower
+  than V2 at Dev size and up to 5.4 ms at 3x on some argument sets, and faster on others. That is the price of the
+  guarantee. Where V2 takes Dev's order, V3 removes the per-row view runs.
+- `near` is materialized even though the Dev plan never re-ran `v_graph_node`. It is the same risk (a barrier
+  aggregate view over `_live_stop` joined to a CTE), and one evaluation costs the same as the inlined one.
+- Inside each view the planner is still free. On the stand-ins `_live_stop` probes `published_tours` by its
+  `tour_id` key once per live raw tour (`Index Scan loops=41`, 130 at 3x) and `comp` once per candidate tour
+  (19). These are per-tour index probes inside one evaluation, the same in V2 and V3, and they are CIS's view
+  plans. No *seq* scan of published_tours / raw_tours runs more than once, and nothing re-runs per `nxt` row.
+
+### Should know (local evidence)
+Throwaway PG **15.17 with pgvector 0.8.1** (Dev's major version; an initdb'd cluster on 127.0.0.1:54392, scratch
+`/tmp/claude-1000/-home-nghiep-projects-AA-Ecosys/2894b372-a5cb-41dc-8635-5df10ac7d5aa/scratchpad/rc2/run.py`).
+The vectors are 1536-d as on Dev. The reads run as the reader role through the barrier views, with RLS applied as
+the view owner.
+- **Dev size, 2 seeds × 6 argument sets** (seed 847: 845 raw tours, 842 published, 1,450 destinations, 473 stops,
+  1,132 tour_place. Views: v_tour_component 786, v_tour_stop 309, v_graph_node 85. Seed 1847: 955 / 371 / 105):
+  12 of 12 identical against **V1 and V2**, EXCEPT ALL 0 both ways, and the same top-24 keys and rows ahead of
+  the cut. Medians of 5: V1 10.6–114 ms, V2 2.4–20.5 ms, V3 2.0–12.1 ms. With `enable_hashjoin = off` (Dev's
+  order), EXPLAIN ANALYZE gives V2 17.7–156 ms (the view re-run 129×, `v_destination` 501×) against V3
+  3.6–23 ms, whose CTEs all run once.
+- **3x, seed 2847, 6 argument sets** (2,541 raw tours, 4,350 destinations, 1,286 stops, 3,060 tour_place. Views:
+  2,473 / 964 / 272): 6 of 6 identical against V1 and V2. V1 85–1,209 ms, V2 5.2–13.7 ms, V3 5.4–19.1 ms. Forced
+  order: V2 EXPLAIN 21–232 ms, and V3 8.6–58 ms with no table read outside its CTEs.
+- Local timings cannot reproduce Dev's 213 ms. Locally the natural plan is already a hash join, and the live-tour
+  join under a Sort is reused on rescan. The Dev probe has the final word (Infra `feat/aa-847-probe-rc2`, READERS
+  regenerated from this commit).
+- `test_vector_topk_pg.py` passes on this PG 15 + pgvector cluster. The full backend suite with `--pg-dsn` gives
+  426 passed.

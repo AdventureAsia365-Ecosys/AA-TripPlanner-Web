@@ -118,8 +118,14 @@ ROUTE_CANDIDATES_SQL = f"""
 # every stop per row; with 258's better row estimates the join copy ran once per candidate pair (Dev Laos 16,544
 # rescans, 886 ms). The GROUP BY folds duplicate stops, which no output column can see (MIN / COUNT DISTINCT).
 # The destination id breaks best_distance ties, so the LIMIT keeps the same rows whatever the plan.
+# AA-847 gate, round 2: every catalog view is read in its own MATERIALIZED CTE, so each is evaluated exactly once.
+# The views are security_barrier, so the planner keeps each as a subquery it cannot push a join into; joined to the
+# small nxt CTE it ran v_tour_component (its live-tour join on published_tours + raw_tours included) once per nxt
+# row (Dev Laos 154 loops, 213 ms). comp reads only the candidate tours' components (an InitPlan array of nxt's
+# tours: a leakproof = ANY the view lets through) and keeps the distance, not the 1536-d vector; dest reads only
+# the destinations comp reached. Inner joins in another order, the same filters: the same rows.
 ROUTE_CANDIDATES_SQL_CIS = f"""
-    WITH near AS (
+    WITH near AS MATERIALIZED (
         SELECT n.destination_id, {_KM_SQL} AS transfer_km
         FROM catalog.v_graph_node n
         WHERE {_KM_SQL} <= $4
@@ -135,20 +141,30 @@ ROUTE_CANDIDATES_SQL_CIS = f"""
         JOIN stops s2 ON s2.source_id = h.source_id AND s2.day_index > h.day_index
                      AND s2.destination_id <> h.destination_id
         GROUP BY h.source_id, h.day_index, h.destination_id, h.transfer_km
+    ), comp AS MATERIALIZED (
+        SELECT c.source_id, c.day_index, c.component_id, c.destination_id,
+               c.embedding <=> $1::vector AS distance
+        FROM catalog.v_tour_component c
+        WHERE c.source_id = ANY(ARRAY(SELECT DISTINCT x.source_id FROM nxt x))
+          AND c.embedding IS NOT NULL
+          AND ($7::text IS NULL OR c.activity = $7::text)
+          AND ($8::text IS NULL OR c.intensity_level = $8::text)
+    ), dest AS MATERIALIZED (
+        SELECT d.destination_id, d.name, d.lat, d.lng, d.country
+        FROM catalog.v_destination d
+        WHERE d.destination_id = ANY(ARRAY(SELECT DISTINCT y.destination_id FROM comp y))
+          AND d.destination_id <> ALL($5::uuid[])
     )
     SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.country,
            COUNT(DISTINCT c.component_id) AS component_count,
-           MIN(c.embedding <=> $1::vector) AS best_distance,
+           MIN(c.distance) AS best_distance,
            MIN(nx.transfer_km) AS transfer_km,
            COUNT(DISTINCT nx.source_id) AS tour_count
     FROM nxt nx
-    JOIN catalog.v_tour_component c
+    JOIN comp c
       ON c.source_id = nx.source_id
      AND c.day_index > nx.from_day AND c.day_index <= nx.to_day
-    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
-    WHERE c.embedding IS NOT NULL AND d.destination_id <> ALL($5::uuid[])
-      AND ($7::text IS NULL OR c.activity = $7::text)
-      AND ($8::text IS NULL OR c.intensity_level = $8::text)
+    JOIN dest d ON d.destination_id = c.destination_id
     GROUP BY d.destination_id, d.name, d.lat, d.lng, d.country
     ORDER BY best_distance ASC, d.destination_id
     LIMIT $6

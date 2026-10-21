@@ -237,3 +237,21 @@ def test_cis_route_candidates_find_the_next_stop_by_an_equality_join():
     legacy = " ".join(suggestions.ROUTE_CANDIDATES_SQL.split())
     assert "(SELECT min(s2.day_index) FROM tripplanner.tour_stop s2" in legacy
     assert "ORDER BY best_distance ASC LIMIT $6" in legacy
+
+
+def test_cis_route_candidates_read_each_catalog_view_once():
+    """AA-847 gate, round 2: v_tour_component was a security_barrier subquery on the inner side of a nested loop
+    over nxt and ran once per nxt row on Dev (213 ms). Each catalog view is now read in its own MATERIALIZED CTE
+    (one evaluation each); the main query joins CTEs only, and comp keeps the distance, not the vector."""
+    q = " ".join(suggestions.ROUTE_CANDIDATES_SQL_CIS.split())
+    ctes = dict(re.findall(r"(\w+) AS (MATERIALIZED )?\(", q))
+    assert ctes == {"near": "MATERIALIZED ", "stops": "MATERIALIZED ", "here": "", "nxt": "MATERIALIZED ",
+                    "comp": "MATERIALIZED ", "dest": "MATERIALIZED "}
+    views = re.findall(r"catalog\.(\w+)", q)
+    assert sorted(views) == ["v_destination", "v_graph_node", "v_tour_component", "v_tour_stop"]
+    main = q[q.rindex(") SELECT "):]
+    assert "catalog." not in main and "FROM nxt nx JOIN comp c" in main and "JOIN dest d" in main
+    assert "c.embedding <=> $1::vector AS distance" in q and "MIN(c.distance) AS best_distance" in main
+    assert "c.source_id = ANY(ARRAY(SELECT DISTINCT x.source_id FROM nxt x))" in q
+    assert "d.destination_id = ANY(ARRAY(SELECT DISTINCT y.destination_id FROM comp y))" in q
+    assert "ORDER BY best_distance ASC, d.destination_id LIMIT $6" in main

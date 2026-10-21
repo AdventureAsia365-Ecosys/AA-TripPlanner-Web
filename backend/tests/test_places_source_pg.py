@@ -16,6 +16,7 @@ import json
 import math
 import random
 import uuid
+from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
 
 import pytest
@@ -565,6 +566,45 @@ ROUTE_CANDIDATES_SQL_CIS_V1 = f"""
     LIMIT $6
 """
 
+# Round 1 of the AA-847 gate (TP #121 ee5b0ba): the next stop as an equality join, v_tour_component and
+# v_destination still joined in the main query. Kept verbatim as the second reference (Dev Laos 213 ms: the views
+# were read once per nxt row, see test_route_candidates_views_read_once).
+ROUTE_CANDIDATES_SQL_CIS_V2 = f"""
+    WITH near AS (
+        SELECT n.destination_id, {suggest_sql._KM_SQL} AS transfer_km
+        FROM catalog.v_graph_node n
+        WHERE {suggest_sql._KM_SQL} <= $4
+    ), stops AS MATERIALIZED (
+        SELECT source_id, day_index, destination_id FROM catalog.v_tour_stop
+    ), here AS (
+        SELECT s.source_id, s.day_index, s.destination_id, nr.transfer_km
+        FROM stops s JOIN near nr ON nr.destination_id = s.destination_id
+    ), nxt AS MATERIALIZED (
+        -- the tour's next stop somewhere else (a stay of several nights is skipped over)
+        SELECT h.source_id, h.day_index AS from_day, h.transfer_km, min(s2.day_index) AS to_day
+        FROM here h
+        JOIN stops s2 ON s2.source_id = h.source_id AND s2.day_index > h.day_index
+                     AND s2.destination_id <> h.destination_id
+        GROUP BY h.source_id, h.day_index, h.destination_id, h.transfer_km
+    )
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.country,
+           COUNT(DISTINCT c.component_id) AS component_count,
+           MIN(c.embedding <=> $1::vector) AS best_distance,
+           MIN(nx.transfer_km) AS transfer_km,
+           COUNT(DISTINCT nx.source_id) AS tour_count
+    FROM nxt nx
+    JOIN catalog.v_tour_component c
+      ON c.source_id = nx.source_id
+     AND c.day_index > nx.from_day AND c.day_index <= nx.to_day
+    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+    WHERE c.embedding IS NOT NULL AND d.destination_id <> ALL($5::uuid[])
+      AND ($7::text IS NULL OR c.activity = $7::text)
+      AND ($8::text IS NULL OR c.intensity_level = $8::text)
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.country
+    ORDER BY best_distance ASC, d.destination_id
+    LIMIT $6
+"""
+
 SUGGEST_ACTS = ("cultural_heritage", "culinary", "trekking", "wildlife")
 SUGGEST_INTENSITY = ("leisurely", "moderate", "challenging")
 
@@ -663,13 +703,15 @@ def suggest_args(g: dict, seed: int, n: int = 6) -> list[tuple]:
     return out
 
 
-async def route_candidates_equivalence(conn, args: tuple, limit: int = 24) -> dict:
+async def route_candidates_equivalence(conn, args: tuple, limit: int = 24, old: str | None = None,
+                                       new: str | None = None) -> dict:
     """Old vs new ROUTE_CANDIDATES_SQL_CIS for one argument set: the full answers (LIMIT 1,000,000) compared
     with EXCEPT ALL both ways, and the LIMIT ``limit`` answers by their best_distance keys plus the rows strictly
-    ahead of the last key (the old form leaves rows tied on best_distance to the plan)."""
+    ahead of the last key (the old form leaves rows tied on best_distance to the plan). ``old`` defaults to the
+    slice 6c text, ``new`` to the current one."""
     taste, lat, lng, km, exclude, act, inten = args
     full = (taste, lat, lng, km, exclude, 1_000_000, act, inten)
-    old, new = ROUTE_CANDIDATES_SQL_CIS_V1, suggest_sql.ROUTE_CANDIDATES_SQL_CIS
+    old, new = old or ROUTE_CANDIDATES_SQL_CIS_V1, new or suggest_sql.ROUTE_CANDIDATES_SQL_CIS
     q = "SELECT count(*) FROM (({}) EXCEPT ALL ({})) x"
     out = {"old_rows": await conn.fetchval(f"SELECT count(*) FROM ({old}) x", *full),
            "new_rows": await conn.fetchval(f"SELECT count(*) FROM ({new}) x", *full),
@@ -734,3 +776,415 @@ async def test_route_candidates_plan_never_rescans_a_cte_per_row(pool):
     new_loops, new_sub = await loops(suggest_sql.ROUTE_CANDIDATES_SQL_CIS)
     assert old_sub and old_loops > 1
     assert not new_sub and new_loops == 1
+
+
+# ── AA-847 gate, round 2: the same reads over stand-in security_barrier VIEWS with CIS's nesting ────────────────
+# The tables above stand in for the catalog views, so a plan that reads a view once per outer row cannot show on
+# them. Here the base tables (CIS column names, the keys and indexes the plans use, FORCE RLS with the view owner's
+# policies) carry the view definitions of CIS 253 / 256 / 258 as they are on Dev: catalog._live_tour (not a barrier,
+# flattened) under v_tour_component and _live_stop; v_tour_stop, v_graph_node, v_tour_component and v_destination
+# are security_barrier views owned by a non-superuser role, and the reads run as a second role (tripplanner's
+# place), so RLS applies as on Dev. {owner} is the view owner role.
+CATALOG_VIEWS_SCHEMA = """
+CREATE SCHEMA shared; CREATE SCHEMA gold_aa_internal; CREATE SCHEMA silver_aa_internal; CREATE SCHEMA geo;
+CREATE SCHEMA catalog;
+CREATE TABLE shared.destinations (id uuid PRIMARY KEY, name text NOT NULL, country text NOT NULL,
+    lat float8 NOT NULL, lng float8 NOT NULL, cover_image_url text, created_at timestamptz NOT NULL DEFAULT now(),
+    located_by text, located_at timestamptz, geo_status text NOT NULL DEFAULT 'ok', duplicate_of uuid,
+    geo_precision text);
+CREATE TABLE shared.place_photo (id uuid PRIMARY KEY, destination_id uuid, tour_id uuid, place_label text,
+    width int, height int, match_source text, updated_at timestamptz DEFAULT now(), status text, s3_key_large text,
+    file_name text);
+CREATE VIEW shared.v_destination_photos AS
+SELECT p.destination_id, p.id AS photo_id, '/content/photos/' || p.id::text AS path, p.place_label,
+       p.tour_id, p.width, p.height, p.match_source, p.updated_at,
+       row_number() OVER (PARTITION BY p.destination_id
+                          ORDER BY (p.match_source = 'manual') DESC, p.file_name) AS position
+  FROM shared.place_photo p
+ WHERE p.status = 'matched' AND p.destination_id IS NOT NULL AND p.s3_key_large IS NOT NULL;
+CREATE TABLE gold_aa_internal.published_tours (id uuid PRIMARY KEY, tour_id uuid NOT NULL UNIQUE,
+    tenant_id uuid NOT NULL, aa_name text NOT NULL, aa_subtitle text, aa_summary text, aa_description text,
+    aa_highlights jsonb, aa_itineraries text, published_at timestamptz DEFAULT now(), master_status text,
+    deleted_at timestamptz);
+CREATE TABLE silver_aa_internal.raw_tours (tour_id uuid PRIMARY KEY, tenant_id uuid NOT NULL,
+    source_group_id uuid, source_version int, sku text, country text, duration text, inclusions text,
+    exclusions text, activities text, best_time_to_go text, group_size text, lifecycle_stage text,
+    source_status text NOT NULL, deleted_at timestamptz,
+    source_key text GENERATED ALWAYS AS ((COALESCE(source_group_id, tour_id))::text) STORED);
+CREATE INDEX raw_tours_source_key_idx ON silver_aa_internal.raw_tours (source_key);
+CREATE UNIQUE INDEX uq_raw_tours_active_per_group ON silver_aa_internal.raw_tours (source_group_id)
+    WHERE source_status = 'active';
+CREATE TABLE geo.graph_build (build_id uuid PRIMARY KEY, is_current boolean NOT NULL,
+    built_at timestamptz NOT NULL DEFAULT now());
+CREATE UNIQUE INDEX graph_build_one_current_uq ON geo.graph_build (is_current) WHERE is_current;
+CREATE TABLE geo.graph_node (build_id uuid NOT NULL, destination_id uuid NOT NULL, activities text[] NOT NULL,
+    intensity_min text, intensity_max text, season_months int[] NOT NULL, PRIMARY KEY (build_id, destination_id));
+CREATE TABLE geo.tour_stop (build_id uuid NOT NULL, source_id text NOT NULL, day_index int NOT NULL,
+    destination_id uuid NOT NULL, country text, source text NOT NULL, PRIMARY KEY (build_id, source_id, day_index));
+CREATE TABLE geo.tour_place (component_id uuid PRIMARY KEY, source_id text NOT NULL, tour_id uuid NOT NULL,
+    day_index int NOT NULL, name text NOT NULL, country text NOT NULL, destination_id uuid, place_card_id uuid,
+    activity text NOT NULL, intensity_level text NOT NULL, season_months int[] NOT NULL DEFAULT '{}',
+    duration_hint text NOT NULL DEFAULT 'full_day', text_extract text NOT NULL DEFAULT '', embedding vector);
+CREATE INDEX tour_place_destination_idx ON geo.tour_place (destination_id);
+CREATE INDEX tour_place_source_idx ON geo.tour_place (source_id, day_index);
+CREATE TABLE geo.tour_segment (build_id uuid NOT NULL, source_id text NOT NULL, day_index int NOT NULL,
+    destination_id uuid NOT NULL, segment jsonb, basis text NOT NULL, from_destination_id uuid,
+    to_destination_id uuid, segment_km numeric(8, 1), PRIMARY KEY (build_id, source_id, day_index, destination_id));
+CREATE TABLE geo.place_shape (destination_id uuid PRIMARY KEY, kind text NOT NULL DEFAULT 'line',
+    status text NOT NULL DEFAULT 'pending', source text, geom_lo jsonb, min_lat float8 NOT NULL,
+    min_lng float8 NOT NULL, max_lat float8 NOT NULL, max_lng float8 NOT NULL, length_km numeric(8, 1));
+
+ALTER TABLE gold_aa_internal.published_tours ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gold_aa_internal.published_tours FORCE ROW LEVEL SECURITY;
+ALTER TABLE silver_aa_internal.raw_tours ENABLE ROW LEVEL SECURITY;
+ALTER TABLE silver_aa_internal.raw_tours FORCE ROW LEVEL SECURITY;
+CREATE POLICY owner_aa_master_read ON gold_aa_internal.published_tours FOR SELECT TO {owner}
+    USING (tenant_id = '00000000-0000-0000-0000-000000000001'::uuid);
+CREATE POLICY tenant_isolation ON gold_aa_internal.published_tours
+    USING (tenant_id = (NULLIF(current_setting('app.tenant_id', true), ''))::uuid);
+CREATE POLICY owner_aa_master_read ON silver_aa_internal.raw_tours FOR SELECT TO {owner}
+    USING (tenant_id = '00000000-0000-0000-0000-000000000001'::uuid);
+CREATE POLICY tenant_isolation ON silver_aa_internal.raw_tours
+    USING (tenant_id = (NULLIF(current_setting('app.tenant_id', true), ''))::uuid);
+GRANT USAGE ON SCHEMA shared, gold_aa_internal, silver_aa_internal, geo, catalog TO {owner};
+GRANT SELECT ON ALL TABLES IN SCHEMA shared, gold_aa_internal, silver_aa_internal, geo TO {owner};
+GRANT CREATE ON SCHEMA catalog TO {owner};
+SET ROLE {owner};
+
+-- CIS 258: the live-tour rule, joined on the stored key
+CREATE VIEW catalog._live_tour AS
+SELECT rt.tour_id,
+       rt.source_key AS source_id,
+       rt.source_version, rt.sku, rt.country, rt.duration, rt.inclusions, rt.exclusions,
+       rt.activities, rt.best_time_to_go, rt.group_size, rt.lifecycle_stage,
+       pt.aa_name, pt.aa_subtitle, pt.aa_summary, pt.aa_description, pt.aa_highlights,
+       pt.aa_itineraries, pt.published_at
+  FROM gold_aa_internal.published_tours pt
+  JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id
+ WHERE pt.tenant_id = '00000000-0000-0000-0000-000000000001'::uuid
+   AND pt.master_status = 'active'
+   AND pt.deleted_at IS NULL
+   AND rt.source_status = 'active'
+   AND rt.deleted_at IS NULL;
+
+-- CIS 258: components (the embedding column present), the day stretch as a left join on the current build
+CREATE VIEW catalog.v_tour_component WITH (security_barrier = true) AS
+SELECT 'cis'::text               AS source_system,
+       t.source_id,
+       t.tour_id,
+       gp.tour_id                AS built_from_tour_id,
+       (gp.tour_id <> t.tour_id) AS is_stale,
+       gp.component_id,
+       gp.day_index,
+       gp.destination_id,
+       gp.name,
+       gp.country,
+       gp.activity,
+       gp.intensity_level,
+       gp.season_months,
+       gp.duration_hint,
+       gp.text_extract,
+       gp.place_card_id,
+       gp.embedding,
+       d.geo_precision           AS precision,
+       seg.segment,
+       seg.basis                 AS segment_basis,
+       seg.from_destination_id   AS segment_from_destination_id,
+       seg.to_destination_id     AS segment_to_destination_id,
+       seg.segment_km::double precision AS segment_km
+  FROM geo.tour_place gp
+  JOIN catalog._live_tour t ON t.source_id = gp.source_id
+  JOIN shared.destinations d ON d.id = gp.destination_id
+                            AND d.geo_status <> 'suspect' AND d.duplicate_of IS NULL
+  LEFT JOIN geo.tour_segment seg
+         ON seg.build_id = (SELECT b.build_id FROM geo.graph_build b WHERE b.is_current)
+        AND seg.source_id = gp.source_id
+        AND seg.day_index = gp.day_index
+        AND seg.destination_id = gp.destination_id;
+
+-- CIS 256: live stops, never a line
+CREATE VIEW catalog._live_stop AS
+SELECT t.source_id,
+       t.tour_id,
+       s.day_index,
+       s.destination_id,
+       s.country,
+       s.source,
+       s.build_id
+  FROM geo.graph_build b
+  JOIN geo.tour_stop s ON s.build_id = b.build_id
+  JOIN catalog._live_tour t ON t.source_id = s.source_id
+  JOIN shared.destinations d ON d.id = s.destination_id
+                            AND d.geo_status <> 'suspect' AND d.duplicate_of IS NULL
+                            AND d.geo_precision IS DISTINCT FROM 'line'
+ WHERE b.is_current;
+
+-- CIS 253
+CREATE VIEW catalog.v_tour_stop WITH (security_barrier = true) AS
+SELECT 'cis'::text AS source_system,
+       s.source_id,
+       s.tour_id,
+       s.day_index,
+       s.destination_id,
+       s.country,
+       s.source,
+       s.build_id
+  FROM catalog._live_stop s;
+
+CREATE VIEW catalog.v_graph_node WITH (security_barrier = true) AS
+SELECT n.destination_id,
+       d.name,
+       d.country,
+       d.lat,
+       d.lng,
+       d.located_by,
+       d.geo_precision AS precision,
+       live.source_ids,
+       live.tour_ids,
+       live.stop_count,
+       n.activities,
+       n.intensity_min,
+       n.intensity_max,
+       n.season_months,
+       n.build_id,
+       b.built_at
+  FROM geo.graph_build b
+  JOIN geo.graph_node n ON n.build_id = b.build_id
+  JOIN shared.destinations d ON d.id = n.destination_id
+                            AND d.geo_status <> 'suspect' AND d.duplicate_of IS NULL
+  JOIN (SELECT x.destination_id,
+               array_agg(x.source_id ORDER BY x.source_id) AS source_ids,
+               array_agg(x.tour_id ORDER BY x.source_id)   AS tour_ids,
+               sum(x.n)::integer                           AS stop_count
+          FROM (SELECT s.destination_id, s.source_id, s.tour_id, count(*) AS n
+                  FROM catalog._live_stop s
+                 GROUP BY s.destination_id, s.source_id, s.tour_id) x
+         GROUP BY x.destination_id) live ON live.destination_id = n.destination_id
+ WHERE b.is_current;
+
+-- CIS 256
+CREATE VIEW catalog.v_destination WITH (security_barrier = true) AS
+SELECT 'cis'::text      AS source_system,
+       d.id::text       AS source_id,
+       d.id             AS destination_id,
+       d.name,
+       d.country,
+       d.lat,
+       d.lng,
+       photos.cover_path AS cover_photo_path,
+       d.cover_image_url,
+       COALESCE(photos.n, 0) AS photo_count,
+       d.created_at,
+       GREATEST(d.created_at, d.located_at, photos.last_update) AS updated_at,
+       d.geo_status,
+       d.located_by,
+       d.geo_precision  AS precision,
+       s.kind           AS shape_kind,
+       s.status         AS shape_status,
+       s.source         AS shape_source,
+       s.length_km::double precision AS length_km,
+       COALESCE(s.min_lat, d.lat) AS min_lat,
+       COALESCE(s.min_lng, d.lng) AS min_lng,
+       COALESCE(s.max_lat, d.lat) AS max_lat,
+       COALESCE(s.max_lng, d.lng) AS max_lng,
+       s.geom_lo        AS shape_lo
+  FROM shared.destinations d
+  LEFT JOIN geo.place_shape s ON s.destination_id = d.id AND d.geo_precision = 'line'
+  LEFT JOIN LATERAL (
+      SELECT count(*) AS n, max(p.updated_at) AS last_update,
+             (array_agg(p.path) FILTER (WHERE p.position = 1))[1] AS cover_path
+        FROM shared.v_destination_photos p
+       WHERE p.destination_id = d.id
+  ) photos ON true;
+RESET ROLE;
+"""
+AA_TENANT = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+
+def catalog_rows(g: dict, seed: int, filler_tours: int = 800, filler_places: int = 1300) -> dict:
+    """Base-table rows for CATALOG_VIEWS_SCHEMA from a suggest_graph() catalog, with what the views must hide:
+    tours that are not live (another tenant, master not active, deleted, source inactive, no published row),
+    suspect / merged / line destinations, an old build's stops, stale components (built from an older tour_id);
+    and ``filler_tours`` live tours / ``filler_places`` destinations without graph rows (Dev: ~890 published tours,
+    ~1,470 destinations; the graph ~60 tours, ~140 nodes).
+    geo.tour_stop has one stop per (build, tour, day), so suggest_graph()'s duplicate / same-day / NULL stop quirks
+    are dropped here. The live key is raw_tours.source_key: a group id for half the tours, the tour id otherwise."""
+    rng = random.Random(seed)
+    other_tenant, gone = uuid.UUID(int=999), datetime(2026, 1, 1, tzinfo=timezone.utc)
+    srcs = sorted({s[0] for s in g["stops"]} | {c[0] for c in g["components"]})
+    tours, published, key_of = [], [], {}
+    for i, src in enumerate(srcs):
+        tid, grp = uuid.UUID(int=20_000_000 + i), (uuid.UUID(int=30_000_000 + i) if i % 2 else None)
+        key_of[src] = str(grp or tid)
+        r = rng.random()
+        status, deleted = ("inactive", None) if r < 0.04 else ("active", gone if r < 0.07 else None)
+        tours.append((tid, AA_TENANT, grp, "Laos", status, deleted))
+        if grp is not None and rng.random() < 0.1:                       # an older version of the same group
+            tours.append((uuid.UUID(int=40_000_000 + i), AA_TENANT, grp, "Laos", "superseded", None))
+        r = rng.random()
+        if r < 0.03:
+            continue                                                     # never published
+        published.append((uuid.UUID(int=50_000_000 + i), tid,
+                          other_tenant if r < 0.06 else AA_TENANT,
+                          "draft" if r < 0.09 else "active", gone if r < 0.11 else None, f"Tour {i}"))
+    for j in range(filler_tours):
+        tid = uuid.UUID(int=60_000_000 + j)
+        tours.append((tid, AA_TENANT if j % 9 else other_tenant, None, "Laos", "active", None))
+        published.append((uuid.UUID(int=70_000_000 + j), tid, AA_TENANT if j % 9 else other_tenant, "active", None,
+                          f"Filler {j}"))
+    dests, photos, shapes = [], [], []
+    for k, (pid, name, country, lat, lng) in enumerate(g["places"]):
+        r = rng.random()
+        status, dup, prec = ("suspect", None, "point") if r < 0.03 else \
+            ("ok", g["places"][0][0] if 0.03 <= r < 0.05 and k else None, "line" if 0.05 <= r < 0.07 else "point")
+        dests.append((pid, name, country, lat, lng, status, dup, prec))
+        if prec == "line":
+            shapes.append((pid, lat - 0.1, lng - 0.1, lat + 0.1, lng + 0.1, 12.5))
+        for n in range(rng.randint(0, 2)):
+            photos.append((uuid.UUID(int=80_000_000 + 10 * k + n), pid, "matched", f"k{k}{n}", f"f{n}.jpg"))
+    for j in range(filler_places):
+        dests.append((uuid.UUID(int=85_000_000 + j), f"Elsewhere {j}", "Vietnam", round(rng.uniform(8, 23), 4),
+                      round(rng.uniform(102, 109), 4), "ok", None, "point"))
+    current, old = uuid.UUID(int=1), uuid.UUID(int=2)
+    stops, seen = [], set()
+    for src, day, dest in g["stops"]:
+        if dest is None or (src, day) in seen:
+            continue
+        seen.add((src, day))
+        stops.append((current, key_of[src], day, dest, "Laos", "overnight"))
+        if rng.random() < 0.05:
+            stops.append((old, key_of[src], day, g["places"][rng.randrange(len(g["places"]))][0], "Laos", "overnight"))
+    tid_of: dict[str, uuid.UUID] = {}
+    for t in tours:
+        tid_of.setdefault(str(t[2] or t[0]), t[0])
+    comps = []
+    for src, cid, day, dest, act, inten, vec in g["components"]:
+        built = tid_of[key_of[src]] if rng.random() > 0.05 else uuid.UUID(int=90_000_000 + len(comps))  # stale
+        comps.append((cid, key_of[src], built, day, f"C {cid.int % 100000}", "Laos", dest, act, inten, vec))
+    segs = [(current, s[1], s[2], s[3], "feature") for s in stops if s[0] == current and rng.random() < 0.3]
+    nodes = [(current, p[0]) for p in g["nodes"]] + [(old, p[0]) for p in g["nodes"][:5]]
+    return {"tours": tours, "published": published, "dests": dests, "photos": photos, "shapes": shapes,
+            "builds": [(current, True), (old, False)], "nodes": nodes, "stops": stops, "comps": comps,
+            "segs": segs}
+
+
+async def load_catalog_views(conn, rows: dict) -> None:
+    async def copy(table, records, columns):
+        schema, name = table.split(".")
+        await conn.copy_records_to_table(name, schema_name=schema, records=records, columns=columns)
+    await copy("shared.destinations", rows["dests"],
+               ["id", "name", "country", "lat", "lng", "geo_status", "duplicate_of", "geo_precision"])
+    await copy("shared.place_photo", rows["photos"], ["id", "destination_id", "status", "s3_key_large", "file_name"])
+    await copy("geo.place_shape", rows["shapes"], ["destination_id", "min_lat", "min_lng", "max_lat", "max_lng",
+                                                   "length_km"])
+    await copy("silver_aa_internal.raw_tours", rows["tours"],
+               ["tour_id", "tenant_id", "source_group_id", "country", "source_status", "deleted_at"])
+    await copy("gold_aa_internal.published_tours", rows["published"],
+               ["id", "tour_id", "tenant_id", "master_status", "deleted_at", "aa_name"])
+    await copy("geo.graph_build", rows["builds"], ["build_id", "is_current"])
+    await conn.executemany("INSERT INTO geo.graph_node (build_id, destination_id, activities, season_months) "
+                           "VALUES ($1, $2, '{}', '{}')", rows["nodes"])
+    await copy("geo.tour_stop", rows["stops"], ["build_id", "source_id", "day_index", "destination_id", "country",
+                                               "source"])
+    await copy("geo.tour_segment", rows["segs"], ["build_id", "source_id", "day_index", "destination_id", "basis"])
+    await conn.execute("CREATE TEMP TABLE tmp_place (component_id uuid, source_id text, tour_id uuid, day_index int, "
+                       "name text, country text, destination_id uuid, activity text, intensity_level text, "
+                       "embedding text)")
+    await conn.copy_records_to_table("tmp_place", records=rows["comps"])
+    await conn.execute("INSERT INTO geo.tour_place (component_id, source_id, tour_id, day_index, name, country, "
+                       "destination_id, activity, intensity_level, embedding) SELECT component_id, source_id, "
+                       "tour_id, day_index, name, country, destination_id, activity, intensity_level, "
+                       "embedding::vector FROM tmp_place; DROP TABLE tmp_place")
+    await conn.execute("ANALYZE")
+
+
+@pytest.fixture
+async def views_pool(pg_dsn):
+    """A fresh database with CATALOG_VIEWS_SCHEMA, the views owned by a throwaway non-superuser role and read as a
+    second one (the connection runs SET ROLE to it). Both roles and the database are dropped after the test."""
+    tag = uuid.uuid4().hex[:8]
+    name, owner, reader = f"tp_aa847_rc2_{tag}", f"tp_aa847_owner_{tag}", f"tp_aa847_reader_{tag}"
+    admin = await asyncpg.connect(pg_dsn)
+    await admin.execute(f'CREATE DATABASE "{name}"')
+    await admin.execute(f"CREATE ROLE {owner} NOLOGIN; CREATE ROLE {reader} NOLOGIN")
+    conn = await asyncpg.connect(urlunparse(urlparse(pg_dsn)._replace(path=f"/{name}")))
+    try:
+        try:
+            await conn.execute("CREATE EXTENSION vector")
+        except asyncpg.PostgresError:
+            await conn.execute(VECTOR_STANDIN)
+        await conn.execute(CATALOG_VIEWS_SCHEMA.replace("{owner}", owner))
+        await conn.execute(f"GRANT USAGE ON SCHEMA catalog TO {reader}; "
+                           f"GRANT SELECT ON ALL TABLES IN SCHEMA catalog TO {reader}")
+        wrapped = _Pool(conn)
+        wrapped.reader = reader                                    # the caller loads as superuser, then SET ROLE
+        yield wrapped
+    finally:
+        await conn.close()
+        await admin.execute(f'DROP DATABASE "{name}"')
+        await admin.execute(f"DROP ROLE {reader}; DROP ROLE {owner}")
+        await admin.close()
+
+
+def _plan_nodes(node: dict, in_cte: bool = False):
+    """(node, inside a CTE subplan) for every node of an EXPLAIN (FORMAT JSON) plan."""
+    in_cte = in_cte or str(node.get("Subplan Name", "")).startswith("CTE ")
+    yield node, in_cte
+    for child in node.get("Plans", []):
+        yield from _plan_nodes(child, in_cte)
+
+
+async def _explain(conn, sql: str, args: tuple) -> list[tuple[dict, bool]]:
+    return list(_plan_nodes(json.loads(await conn.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))[0]["Plan"]))
+
+
+async def _views_graph(conn, seed: int, tours: int = 30, places: int = 60) -> dict:
+    g = suggest_graph(seed, {"Laos": tours}, places_per_country=places)
+    await load_catalog_views(conn, catalog_rows(g, seed, filler_tours=200, filler_places=300))
+    await conn.execute(f"SET ROLE {conn.reader}")
+    return g
+
+
+async def test_route_candidates_round2_same_rows_over_the_views(views_pool):
+    """The round 2 text (each catalog view in its own MATERIALIZED CTE) against both frozen references, over the
+    security_barrier stand-in views with liveness, unusable destinations, an old build and stale components."""
+    g = await _views_graph(views_pool, 850)
+    assert await views_pool.fetchval("SELECT count(*) FROM catalog.v_tour_component") < sum(
+        1 for c in g["components"])                                # the views do hide rows
+    checked = 0
+    for args in suggest_args(g, 850, n=8):
+        for ref in (ROUTE_CANDIDATES_SQL_CIS_V1, ROUTE_CANDIDATES_SQL_CIS_V2):
+            r = await route_candidates_equivalence(views_pool, args, old=ref)
+            assert r["old_minus_new"] == 0 and r["new_minus_old"] == 0, (args[1:], r)
+            assert r["old_rows"] == r["new_rows"] and r["ahead_equal"], (args[1:], r)
+            assert r["new_sorted"]
+            if ref is ROUTE_CANDIDATES_SQL_CIS_V2:                  # same tie-break, so the same LIMIT rows
+                assert r["top_old"] == r["top_new"]
+        checked += r["new_rows"]
+    assert checked > 100
+
+
+async def test_route_candidates_views_read_once(views_pool):
+    """Dev Laos after round 1: nxt (estimated at a row) was the outer side of a nested loop and v_tour_component,
+    a security_barrier subquery, its inner side, re-run once per nxt row (published_tours scanned 154 times). With
+    hash joins off the local planner takes that order: round 1 reads view tables outside any CTE, more than once.
+    Round 2 reads every table inside a CTE that runs once (natural plan and the forced one), the main query only
+    joins CTEs, and no Seq Scan of published_tours / raw_tours runs more than once."""
+    g = await _views_graph(views_pool, 851)
+    taste, lat, lng, km, exclude, act, inten = suggest_args(g, 851, n=1)[0]
+    args = (taste, lat, lng, km, exclude, 24, act, inten)
+    await views_pool.execute("SET enable_hashjoin = off")
+    try:
+        old = await _explain(views_pool, ROUTE_CANDIDATES_SQL_CIS_V2, args)
+        forced = await _explain(views_pool, suggest_sql.ROUTE_CANDIDATES_SQL_CIS, args)
+    finally:
+        await views_pool.execute("RESET enable_hashjoin")
+    natural = await _explain(views_pool, suggest_sql.ROUTE_CANDIDATES_SQL_CIS, args)
+    assert max(n["Actual Loops"] for n, in_cte in old if not in_cte and "Relation Name" in n) > 1
+    for plan in (natural, forced):
+        assert not [n for n, in_cte in plan if not in_cte and "Relation Name" in n]
+        ctes = {n["Subplan Name"]: n["Actual Loops"] for n, _ in plan
+                if str(n.get("Subplan Name", "")).startswith("CTE ")}
+        assert set(ctes) == {"CTE near", "CTE stops", "CTE nxt", "CTE comp", "CTE dest"} and set(ctes.values()) == {1}
+        assert all(n["Actual Loops"] == 1 for n, _ in plan if n["Node Type"] == "Seq Scan"
+                   and n.get("Relation Name") in ("published_tours", "raw_tours"))
