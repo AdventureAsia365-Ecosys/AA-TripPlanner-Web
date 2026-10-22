@@ -1,0 +1,26 @@
+# CODEOWNERS - AA-TripPlanner-Web.
+#
+# Owners of the risky paths only: CI and workflows, database migrations, API-key and guest-session auth, catalog
+# row-level security and the agent rules. There is deliberately no catch-all `*` rule.
+# Dev phase: not enforced. Branch protection does not require code-owner review, so this file only adds a review
+# request; the agent still merges after green CI (risky classes after an agent review). From the first prod or the
+# first paying tenant, "Require review from Code Owners" is turned on and these paths need the owner's approval.
+# Later rules win over earlier ones.
+
+# CI, workflows, Dependabot, CI scripts and this file
+/.github/                                     @pqnghiep1354
+
+# Database migrations (copied to the infra repo and applied by its DB Migrate workflow)
+/migrations/                                  @pqnghiep1354
+
+# API-key and guest-session auth, catalog row-level security (Lambdas)
+/backend/shared/auth.py                       @pqnghiep1354
+/backend/shared/catalog_rls.py                @pqnghiep1354
+/backend/assembly/guest_session.py            @pqnghiep1354
+
+# Guest token handling (frontend)
+/frontend/lib/guestToken.ts                   @pqnghiep1354
+
+# Agent rules and specs
+/.claude/                                     @pqnghiep1354
+/.kiro/                                       @pqnghiep1354
