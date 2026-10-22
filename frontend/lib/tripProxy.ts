@@ -49,3 +49,14 @@ export function tripReadPath(q: SearchParamSource): { path: string } | { error: 
   }
   return { path: `/trip/${tripId}` };
 }
+
+// The POST body is one JSON object ({ op, trip_id, ... }). Anything else (not JSON, or JSON that is
+// not an object) is the caller's mistake: the route answers 400 instead of throwing a 500.
+export function parseTripBody(raw: string): Record<string, unknown> | null {
+  try {
+    const b: unknown = JSON.parse(raw);
+    return b !== null && typeof b === "object" && !Array.isArray(b) ? (b as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}

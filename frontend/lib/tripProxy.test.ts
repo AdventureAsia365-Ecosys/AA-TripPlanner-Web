@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GUEST_TOKEN_HEADER } from "./guestToken.ts";
-import { tripHeaders, tripReadPath } from "./tripProxy.ts";
+import { parseTripBody, tripHeaders, tripReadPath } from "./tripProxy.ts";
 
 const TRIP = "00000000-0000-4000-8000-0000000000b1";
 const DEST = "00000000-0000-4000-8000-0000000000d1";
@@ -52,4 +52,11 @@ test("a read without trip_id or destination_id is refused, and ids are URL-encod
     error: "destination_id required",
   });
   assert.deepEqual(tripReadPath(params({ trip_id: "a/../b" })), { path: "/trip/a%2F..%2Fb" });
+});
+
+test("the POST body must be one JSON object, else the route answers 400", () => {
+  assert.deepEqual(parseTripBody('{"op":"add","trip_id":"t1"}'), { op: "add", trip_id: "t1" });
+  for (const raw of ["", "not json", "null", "[]", "42", '"op"', "{"]) {
+    assert.equal(parseTripBody(raw), null, raw);
+  }
 });
