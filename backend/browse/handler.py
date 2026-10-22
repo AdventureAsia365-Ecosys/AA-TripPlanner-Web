@@ -41,7 +41,7 @@ from backend.browse import search as search_mod
 from backend.browse import shapes as shapes_mod
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import TileError
-from backend.shared import places_source
+from backend.shared import observability, places_source
 
 _TILE_RE = re.compile(r"^/browse/tiles/([^/]+)$")
 _DEST_RE = re.compile(r"^/browse/destinations/([^/]+)$")
@@ -217,7 +217,23 @@ def _extract_request(event: dict) -> tuple[str, str, dict]:
     return method, path, query
 
 
-def handler(event, context):  # pragma: no cover - thin AWS adapter
+# AA-871: the route NAME for the request_completed log line (never the path, which carries ids and slugs).
+_ROUTE_NAMES: tuple[tuple[re.Pattern, str], ...] = (
+    (_TILE_RE, "tiles"), (_DEST_RE, "destination"), (_SEARCH_RE, "search"), (_COUNTRIES_RE, "countries"),
+    (_BY_COUNTRY_RE, "by_country"), (_ROUTES_RE, "routes"), (_TOUR_ROUTE_RE, "tour_route"), (_SHAPES_RE, "shapes"),
+    (_CAT_TOURS_RE, "catalog_tours"), (_CAT_TOUR_RE, "catalog_tour"), (_CAT_DESTS_RE, "catalog_destinations"),
+    (_CAT_DEST_RE, "catalog_destination"), (_CAT_SITEMAP_RE, "catalog_sitemap"),
+)
+
+
+def route_name(method: str, path: str) -> str:
+    for rx, name in _ROUTE_NAMES:
+        if rx.match(path):
+            return name
+    return "unknown"
+
+
+def _handle(event, context):  # pragma: no cover - thin AWS adapter
     import asyncio
 
     from backend.shared import auth
@@ -234,3 +250,7 @@ def handler(event, context):  # pragma: no cover - thin AWS adapter
         return await route(method, path, query, pool=pool)
 
     return asyncio.get_event_loop().run_until_complete(_run())
+
+
+# AA-871: request id (BFF header > API Gateway requestId), one JSON request_completed line, Sentry when SENTRY_DSN set.
+handler = observability.instrument(_handle, "browse", route_name)

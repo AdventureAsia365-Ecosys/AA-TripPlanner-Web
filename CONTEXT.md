@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-10-19
+last_reviewed: 2026-10-22
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -406,6 +406,30 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   tours and atoms. It is frozen since AA-712 slice 6a; CIS builds the replacement
   (`catalog.v_tour_component` over `geo.*`) and the readers switch to it in slices 6b/7.
 - The trust and role wiring that make this call possible live in **AA-CIS-Infra**, not here.
+
+## Logs, request ids and errors (AA-871)
+
+- **One request id end to end.** The BFF (`frontend/lib/requestId.ts`) keeps a well-formed incoming `x-request-id`
+  (`[A-Za-z0-9._:-]{1,128}`) or makes a UUID, sends it to the Lambda as `x-request-id` and echoes it on its response.
+  The Lambda (`backend/shared/observability.py`, `instrument()` around both handlers) takes that header, else API
+  Gateway's `requestContext.requestId`, else the Lambda `aws_request_id`; it binds it to every log line of the
+  invocation and echoes it as `x-request-id`. The ISR catalog reads (`lib/catalog.ts`) send no id: a per-request header
+  would change Next's data-cache key; the Lambda then uses API Gateway's id.
+- **Lambda log lines are JSON.** The existing `{"evt": ...}` lines go through `observability.emit()` (same fields,
+  then the bound `request_id` / `aws_request_id`); stdlib `logging` calls are rendered as JSON by the root handler set
+  up on the first invocation; the former plain-text `[llm_gateway]` / `[narration_cache]` prints are `llm_gateway_note`
+  / `narration_cache_skipped` lines. One `request_completed` line per invocation: method, **route name** (never the
+  path: it carries trip and session ids), status, `duration_ms`. Everything passes `backend/shared/scrub.py` (a copy of
+  AA-Booking's: e-mails, `+` phones, Bearer tokens, JWTs, key-like query values, PII-named keys). BFF: one
+  `{"evt":"bff_upstream","route","op","status","ms","request_id"}` line per upstream call (Vercel logs).
+- **Sentry, only when `SENTRY_DSN` is set.** Lambdas: errors only (no tracing, no auto-enabled integrations),
+  `send_default_pii=False`, no frame locals, no request data, an isolation scope per invocation (a warm container
+  carries nothing over), exception messages of asyncpg / pydantic / jsonschema / json dropped (they echo input values),
+  the rest scrubbed; captured: unhandled errors (re-raised) and the assembly catch-all 500. `release` = `backend/GIT_SHA`
+  (written by `package_lambdas.sh` from the deployed commit) or `GIT_SHA`. `SENTRY_REQUIRED=true` without a DSN fails
+  every invocation (the missing-DSN guard; off by default). Next.js: `frontend/instrumentation.ts` `onRequestError`
+  posts server-side errors with a dependency-free reporter (`lib/sentryLite.ts`, no `@sentry/nextjs`): no browser
+  errors, no source maps, no headers / query / body; `release` = `VERCEL_GIT_COMMIT_SHA`.
 
 ## Deploy & CI
 

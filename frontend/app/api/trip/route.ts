@@ -6,6 +6,7 @@ import {
   isSameOrigin,
   mapMintedDenial,
 } from "@/lib/guestToken";
+import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
 import { tripHeaders as lambdaHeaders, tripReadPath } from "@/lib/tripProxy";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
@@ -17,8 +18,15 @@ const TRIPPLANNER_API_KEY = process.env.TRIPPLANNER_API_KEY ?? "";
 // AA-827 / AA-909: mutations and the four trip reads carry the guest token (HttpOnly cookie) to the
 // Lambda, which checks it against the stored sha256 (reads: of the session that owns the trip, else
 // 404). The token is never logged or echoed.
-function tripHeaders(guestToken?: string | null): Record<string, string> {
-  return lambdaHeaders(TRIPPLANNER_API_KEY, guestToken);
+// AA-871: plus the request id, which the Lambda binds to its log lines and echoes back.
+function tripHeaders(guestToken: string | null, requestId: string): Record<string, string> {
+  return lambdaHeaders(TRIPPLANNER_API_KEY, guestToken, requestId);
+}
+
+const READ_RESOURCES = new Set(["suggestions", "coverage", "activities"]);
+
+function logUpstream(op: string, status: number, started: number, requestId: string): void {
+  console.log(upstreamLogLine({ route: "trip", op, status, ms: Date.now() - started, request_id: requestId }));
 }
 
 // The cookie, or the token middleware.ts minted on this very request (no cookie came in; `minted`).
@@ -39,6 +47,7 @@ export async function GET(req: NextRequest) {
       { status: 503 },
     );
   }
+  const requestId = requestIdFor(req.headers);
   // resource=suggestions | coverage | activities, or none for the itinerary (lib/tripProxy.ts).
   const read = tripReadPath(req.nextUrl.searchParams);
   if ("error" in read) {
@@ -47,14 +56,23 @@ export async function GET(req: NextRequest) {
   // AA-909: a read without the owner's token is a 404 from the Lambda (a fresh trip with no draft
   // too); the client treats it as an empty trip. No cookies_required mapping on reads: a 404 never
   // resets the client's ids, so there is nothing to protect.
+  const started = Date.now();
   const upstream = await fetch(`${TRIP_API_URL}${read.path}`, {
     method: "GET",
-    headers: tripHeaders(requestGuestToken(req).token),
+    headers: tripHeaders(requestGuestToken(req).token, requestId),
   });
   const text = await upstream.text();
+  const resource = req.nextUrl.searchParams.get("resource");
+  const op = resource && READ_RESOURCES.has(resource) ? resource : "itinerary"; // never echo free text
+  logUpstream(`read:${op}`, upstream.status, started, requestId);
   return new NextResponse(text, {
     status: upstream.status,
-    headers: { "content-type": "application/json", "cache-control": "no-store", vary: "Cookie" },
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+      vary: "Cookie",
+      [REQUEST_ID_HEADER]: requestId,
+    },
   });
 }
 
@@ -120,16 +138,24 @@ export async function POST(req: NextRequest) {
   }
 
   const guest = requestGuestToken(req);
+  const requestId = requestIdFor(req.headers);
+  const started = Date.now();
   const upstream = await fetch(`${TRIP_API_URL}${path}`, {
     method,
-    headers: tripHeaders(guest.token),
+    headers: tripHeaders(guest.token, requestId),
     body: JSON.stringify(payload),
   });
   const text = await upstream.text();
+  logUpstream(String(b.op), upstream.status, started, requestId);
   // A refused token that was minted on this request -> 401 cookies_required (see mapMintedDenial).
   const mapped = mapMintedDenial(upstream.status, text, guest.minted);
   return new NextResponse(mapped ? mapped.body : text, {
     status: mapped ? mapped.status : upstream.status,
-    headers: { "content-type": "application/json", "cache-control": "no-store", vary: "Cookie" },
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+      vary: "Cookie",
+      [REQUEST_ID_HEADER]: requestId,
+    },
   });
 }

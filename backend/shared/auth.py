@@ -29,6 +29,7 @@ import time
 from typing import Any, Optional
 
 from backend import config
+from backend.shared import observability
 
 _PLACEHOLDER = "REPLACE_ME"
 
@@ -72,7 +73,7 @@ def _fetch_secret(name: str) -> Optional[str]:
 
 def _log_unavailable(reason: str) -> None:
     # Names only; never the value.
-    print(json.dumps({"evt": "api_key_unavailable", "reason": reason}))
+    observability.emit("api_key_unavailable", reason=reason)
 
 
 def _key_from_secrets_manager() -> str:

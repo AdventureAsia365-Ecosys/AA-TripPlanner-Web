@@ -40,7 +40,6 @@ AA-856 (Cohere Embed V4 on acc2: 20 requests per minute, S239 burst test = searc
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
@@ -49,7 +48,7 @@ from typing import Any, Callable, Optional, Protocol
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import LINE_COLS, LINE_COLS_SQL, geo_fields
 from backend.shared.catalog_rls import set_catalog_tenant
-from backend.shared import llm_gateway, places_source, vector_topk
+from backend.shared import llm_gateway, observability, places_source, vector_topk
 
 STAGE = "tp_search_embed"
 log = logging.getLogger(__name__)
@@ -130,7 +129,7 @@ def _log_embed(outcome: str, reason: Optional[str] = None) -> None:
     evt = {"evt": "search_embed", "outcome": outcome, **llm_gateway.query_embed_cache.stats()}
     if reason:
         evt["reason"] = reason
-    print(json.dumps(evt), flush=True)
+    observability.emit(**evt)  # AA-871: + request_id when bound
 
 
 async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Optional[str]]:
