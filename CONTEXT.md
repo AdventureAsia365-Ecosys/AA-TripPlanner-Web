@@ -427,7 +427,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   carries nothing over), exception messages of asyncpg / pydantic / jsonschema / json dropped (they echo input values),
   the rest scrubbed; captured: unhandled errors (re-raised) and the assembly catch-all 500. `release` = `backend/GIT_SHA`
   (written by `package_lambdas.sh` from the deployed commit) or `GIT_SHA`. `SENTRY_REQUIRED=true` without a DSN fails
-  every invocation (the missing-DSN guard; off by default). Next.js: `frontend/instrumentation.ts` `onRequestError`
+  every invocation (the missing-DSN guard; off by default). Live check: a direct `lambda invoke` with
+  `{"sentry_test": true}` (not reachable over HTTP) raises `SentryTestError`, which must appear in Sentry with its fake
+  e-mail shown as `[email]`. Next.js: `frontend/instrumentation.ts` `onRequestError`
   posts server-side errors with a dependency-free reporter (`lib/sentryLite.ts`, no `@sentry/nextjs`): no browser
   errors, no source maps, no headers / query / body; `release` = `VERCEL_GIT_COMMIT_SHA`.
 

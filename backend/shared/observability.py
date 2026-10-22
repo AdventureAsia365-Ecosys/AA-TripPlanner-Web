@@ -56,6 +56,13 @@ SAFE_HEADERS = frozenset({"accept", "content-type", "content-length", "user-agen
 _state: dict[str, Any] = {"configured": False, "sentry": False}
 
 
+SENTRY_TEST_KEY = "sentry_test"
+
+
+class SentryTestError(RuntimeError):
+    """Raised on purpose by a direct ``{"sentry_test": true}`` invoke (live check of the Sentry wiring)."""
+
+
 class SentryConfigError(RuntimeError):
     """SENTRY_REQUIRED is on but SENTRY_DSN is empty."""
 
@@ -89,10 +96,12 @@ def accept_request_id(value: Optional[str]) -> Optional[str]:
 
 
 def request_id_for(event: dict, context: Any = None) -> str:
-    headers = {str(k).lower(): v for k, v in (event.get("headers") or {}).items()}
+    raw_headers = event.get("headers")
+    headers = {str(k).lower(): v for k, v in raw_headers.items()} if isinstance(raw_headers, dict) else {}
+    rc = event.get("requestContext")
     return (
         accept_request_id(headers.get(REQUEST_ID_HEADER))
-        or accept_request_id((event.get("requestContext") or {}).get("requestId"))
+        or accept_request_id(rc.get("requestId") if isinstance(rc, dict) else None)
         or accept_request_id(getattr(context, "aws_request_id", None))
         or uuid.uuid4().hex
     )
@@ -303,13 +312,19 @@ def instrument(
 
     def wrapped(event: dict, context: Any = None) -> Any:
         setup(service)
-        http = (event.get("requestContext") or {}).get("http") or {}
-        method = http.get("method") or event.get("httpMethod") or "-"
-        path = http.get("path") or event.get("rawPath") or event.get("path") or ""
+        event = event if isinstance(event, dict) else {}
+        rc = event.get("requestContext")
+        http = (rc.get("http") if isinstance(rc, dict) else None) or {}
+        method = str(http.get("method") or event.get("httpMethod") or "-")
+        path = str(http.get("path") or event.get("rawPath") or event.get("path") or "")
         route = route_name(method, path) if path else "direct_invoke"
         started = time.perf_counter()
         with request_scope(event, context) as request_id:
             try:
+                if SENTRY_TEST_KEY in event and rc is None:
+                    # Operator check only (direct `lambda invoke`, IAM-authorised; an API Gateway event always has
+                    # requestContext, so this is not reachable over HTTP): proves the DSN, release and scrubbing.
+                    raise SentryTestError("AA-871 Sentry test event (expected); contact test@example.com")
                 response = handler(event, context)
             except Exception as exc:
                 emit("request_completed", method=method, route=route, status=500, error=type(exc).__name__,

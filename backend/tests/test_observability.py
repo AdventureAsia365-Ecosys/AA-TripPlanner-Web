@@ -93,6 +93,25 @@ def test_unhandled_error_is_logged_captured_and_reraised(capsys):
     assert done == {**done, "evt": "request_completed", "route": "search", "status": 500, "error": "RuntimeError"}
 
 
+def test_direct_sentry_test_invoke_raises_and_is_captured(capsys):
+    called = []
+    wrapped = obs.instrument(lambda e, c: called.append(1), "browse", browse_handler.route_name)
+    with patch.object(obs, "capture") as capture, pytest.raises(obs.SentryTestError):
+        wrapped({"sentry_test": True}, CTX)
+    assert called == [] and capture.call_count == 1
+    done = _lines(capsys.readouterr().out)[-1]
+    assert done["route"] == "direct_invoke" and done["error"] == "SentryTestError"
+    # over HTTP (requestContext present) the key is just ignored
+    wrapped2 = obs.instrument(lambda e, c: {"statusCode": 200}, "browse", browse_handler.route_name)
+    assert wrapped2({**_event(), "sentry_test": True}, CTX)["statusCode"] == 200
+
+
+def test_malformed_events_do_not_break_the_wrapper():
+    wrapped = obs.instrument(lambda e, c: {"statusCode": 200}, "browse", browse_handler.route_name)
+    for ev in ({"requestContext": "x", "headers": "y"}, {"headers": None}, {}):
+        assert wrapped(ev, CTX)["statusCode"] == 200
+
+
 def test_browse_route_names():
     assert browse_handler.route_name("GET", "/browse/tiles/10_100_5") == "tiles"
     assert browse_handler.route_name("GET", "/browse/catalog/tours/some-slug") == "catalog_tour"
