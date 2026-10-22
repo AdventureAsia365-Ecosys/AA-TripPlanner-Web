@@ -111,6 +111,8 @@ class ReleaseWorkflow(unittest.TestCase):
 
     def test_app_token_opens_the_release_pr(self) -> None:
         self.assertIn("uses: actions/create-github-app-token@v3", self.text)
+        for perm in ("permission-contents: write", "permission-pull-requests: write", "permission-issues: write"):
+            self.assertIn(perm, self.text)
         self.assertIn("app-id: ${{ vars.AA_CI_BOT_APP_ID }}", self.text)
         self.assertIn("private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}", self.text)
         self.assertIn("uses: googleapis/release-please-action@v5", self.text)
