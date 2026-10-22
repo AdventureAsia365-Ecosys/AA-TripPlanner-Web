@@ -298,6 +298,8 @@ def test_packaging_writes_the_manifest_version():
     """package_lambdas.sh bakes backend/VERSION from the manifest, like backend/GIT_SHA."""
     script = (Path(obs.__file__).resolve().parents[1] / "package_lambdas.sh").read_text()
     assert ".release-please-manifest.json" in script and '"${BUILD_DIR}/backend/VERSION"' in script
+    # In CI an unreadable manifest fails the build rather than shipping "unknown".
+    assert 'if [ -n "${GITHUB_ACTIONS:-}" ]; then' in script and "exit 1" in script
 
 
 def test_sentry_tags_the_version(monkeypatch, capsys):

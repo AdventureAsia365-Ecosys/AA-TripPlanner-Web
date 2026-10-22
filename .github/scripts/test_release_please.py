@@ -28,10 +28,6 @@ RELEASE_FILES = ["CHANGELOG.md", ".release-please-manifest.json", "release-pleas
 DEPLOY_WORKFLOWS = ["vercel-deploy.yml", "deploy-lambdas.yml"]
 
 
-def _semver(v: str) -> tuple[int, ...]:
-    return tuple(int(x) for x in v.split("."))
-
-
 def _glob_re(pattern: str) -> re.Pattern[str]:
     """GitHub `paths:` glob -> regex (`**` any depth, `*` one segment, `?` one char)."""
     out = ""
@@ -89,14 +85,12 @@ class ReleasePleaseConfig(unittest.TestCase):
         self.assertEqual(list(manifest), ["."])
         self.assertRegex(manifest["."], SEMVER)
 
-    def test_release_as_only_moves_forward(self) -> None:
-        """`release-as` pins the first release (0.4.0) and is deleted after that release PR merges. It may equal
-        the manifest (the release PR itself bumps the manifest to it) but never sit below it."""
-        release_as = json.loads(CONFIG.read_text())["packages"]["."].get("release-as")
-        if release_as is None:
-            return
-        self.assertRegex(release_as, SEMVER)
-        self.assertGreaterEqual(_semver(release_as), _semver(json.loads(MANIFEST.read_text())["."]))
+    def test_no_release_as(self) -> None:
+        """The next version comes from the manifest + the commits (0.3.0 + a `feat:` → 0.4.0). A `release-as` left
+        in the config would make release-please propose that same version on every later release PR."""
+        cfg = json.loads(CONFIG.read_text())
+        self.assertNotIn("release-as", cfg)
+        self.assertNotIn("release-as", cfg["packages"]["."])
 
 
 class ReleaseWorkflow(unittest.TestCase):
@@ -116,10 +110,10 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertRegex(self.text, r"\n    environment: release\n")
 
     def test_app_token_opens_the_release_pr(self) -> None:
-        self.assertIn("uses: actions/create-github-app-token@v2", self.text)
+        self.assertIn("uses: actions/create-github-app-token@v3", self.text)
         self.assertIn("app-id: ${{ vars.AA_CI_BOT_APP_ID }}", self.text)
         self.assertIn("private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}", self.text)
-        self.assertIn("uses: googleapis/release-please-action@v4", self.text)
+        self.assertIn("uses: googleapis/release-please-action@v5", self.text)
         self.assertIn("token: ${{ steps.app-token.outputs.token }}", self.text)
         self.assertNotIn("secrets.GITHUB_TOKEN", self.text)
         self.assertNotIn("github.token", self.text)

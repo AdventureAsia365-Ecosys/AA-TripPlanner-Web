@@ -8,8 +8,7 @@
     ".": {
       "release-type": "simple",
       "package-name": "aa-tripplanner-web",
-      "changelog-path": "CHANGELOG.md",
-      "release-as": "0.4.0"
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }

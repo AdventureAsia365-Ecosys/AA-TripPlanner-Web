@@ -54,9 +54,16 @@ printf '%s\n' "${GIT_SHA_VALUE}" > "${BUILD_DIR}/backend/GIT_SHA"
 
 # AA-891: the release version next to it (the `version` log field, observability.release_version()): the
 # release-please manifest of the commit being packaged, so a build between two releases reports the last release
-# it contains (git_sha tells the exact commit).
-APP_VERSION_VALUE="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["."])' \
-  "${REPO_ROOT}/.release-please-manifest.json" 2>/dev/null || echo unknown)"
+# it contains (git_sha tells the exact commit). In CI (GITHUB_ACTIONS set) an unreadable manifest fails the build
+# instead of shipping "unknown"; a local build without one still packages, with "unknown".
+if ! APP_VERSION_VALUE="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["."])' \
+  "${REPO_ROOT}/.release-please-manifest.json" 2>/dev/null)" || [ -z "${APP_VERSION_VALUE}" ]; then
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::error::cannot read the release version from .release-please-manifest.json" >&2
+    exit 1
+  fi
+  APP_VERSION_VALUE="unknown"
+fi
 printf '%s\n' "${APP_VERSION_VALUE}" > "${BUILD_DIR}/backend/VERSION"
 echo "==> Packaged version ${APP_VERSION_VALUE} (${GIT_SHA_VALUE})"
 
