@@ -421,7 +421,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   full history, both failing; reviewed findings in `.gitleaksignore` with a reason each).
 - **Security headers on previews (AA-879)**: `vercel-deploy.yml` step "Check the preview security headers"
   (`.github/scripts/check_security_headers.sh`, GET `/` through `vercel curl`). It needs the aa-tripplanner
-  project's "Protection Bypass for Automation" in Vercel (no GitHub secret). Production keeps its own
+  project's "Protection Bypass for Automation" in Vercel (no GitHub secret). Until that exists the step runs
+  with `ALLOW_PROTECTED=1`: a Vercel-protection answer (401/403, SSO redirect, no bypass token) is a warning,
+  while a page the app answers without a header still fails (tests: `.github/scripts/test_check_security_headers.py`,
+  run in "Backend (pytest)"). Production keeps its own
   header check on `https://aa-tripplanner.vercel.app/` (AA-876).
 
 ## Contracts with other apps

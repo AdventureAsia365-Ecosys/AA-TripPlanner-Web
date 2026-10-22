@@ -29,6 +29,12 @@ jobs:
         working-directory: .
         run: python3 .github/scripts/check_resource_ids.py
 
+      # AA-879: offline tests of the CI helper scripts (fake curl/npx on PATH, no network), e.g. that a
+      # preview behind Vercel protection only warns while a missing header on an app page still fails.
+      - name: CI script tests
+        working-directory: .
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
         with:
