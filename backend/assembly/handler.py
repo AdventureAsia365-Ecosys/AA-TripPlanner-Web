@@ -1,6 +1,10 @@
 """Lambda B entrypoint — Trip Assembly.
 
 Routes:
+  GET    /trip/{trip_id}                          current itinerary + added days
+  GET    /trip/{trip_id}/suggestions              next-to-pin suggestions
+  GET    /trip/{trip_id}/coverage                 AA tour leg chain
+  GET    /trip/{trip_id}/stops/{dest}/activities  AA activities at one stop
   POST   /trip/{trip_id}/components               add_component
   DELETE /trip/{trip_id}/components/{component_id} remove_component
   PATCH  /trip/{trip_id}/reorder                  reorder
@@ -9,7 +13,8 @@ Routes:
 
 Every mutating route runs _guard (AA-827) right after its required-field check: the guest token
 from the BFF must match the session (guest_session.py), and the session must own the trip.
-session_id is an identifier, never a credential.
+session_id is an identifier, never a credential. Every trip read GET runs _read_guard (AA-909): the
+token must match the session that owns the trip, else the same 404 as an unknown route.
 
 Stateful per-visitor; never cached. The framework-agnostic route()
 coroutine takes injectable conn + sender and is unit-tested directly.
@@ -112,6 +117,8 @@ async def route(
     m = _TRIP_RE.match(path)
     if m and method == "GET":
         trip_id = m.group(1)
+        if denied := await _read_guard(conn, trip_id, guest_token, "get_trip"):
+            return denied
         itinerary = await events_mod.current_itinerary(conn, trip_id)
         custom_days = await events_mod.current_custom_days(conn, trip_id)
         return _resp(200, {"trip_id": trip_id, "itinerary": itinerary, "custom_days": custom_days})
@@ -279,6 +286,8 @@ async def route(
     m = _SUGGEST_RE.match(path)
     if m and method == "GET":
         trip_id = m.group(1)
+        if denied := await _read_guard(conn, trip_id, guest_token, "suggestions"):
+            return denied
         filters = {k: body.get(k) for k in ("activity", "intensity_level") if body.get(k)}
         result = await suggest_mod.suggest(conn, trip_id, filters=filters)
         return _resp(200, {"trip_id": trip_id, **result})
@@ -341,13 +350,22 @@ async def route(
     m = _STOP_ACTIVITIES_RE.match(path)
     if m and method == "GET":
         trip_id, destination_id = m.group(1), m.group(2)
+        if denied := await _read_guard(conn, trip_id, guest_token, "activities"):
+            return denied
         return _resp(200, {"trip_id": trip_id, **await activities_mod.at_stop(conn, trip_id, destination_id)})
 
     m = _COVERAGE_RE.match(path)
     if m and method == "GET":
         trip_id = m.group(1)
+        if denied := await _read_guard(conn, trip_id, guest_token, "coverage"):
+            return denied
         return _resp(200, {"trip_id": trip_id, **await coverage_mod.coverage(conn, trip_id)})
 
+    return _not_found()
+
+
+def _not_found() -> dict:
+    """The one 404 body: an unknown route and every refused trip read answer exactly this."""
     return _resp(404, {"error": "not found"})
 
 
@@ -384,6 +402,16 @@ async def _guard(conn, trip_id: str, session_id: str, guest_token: Optional[str]
         return _resp(403, {"error": "forbidden", "detail": "this trip belongs to another session"})
     guest_session.emit(outcome, route_name)
     return None
+
+
+async def _read_guard(conn, trip_id: str, guest_token: Optional[str],
+                      route_name: str) -> Optional[dict]:
+    """AA-909: a trip read needs the token bound to the session that owns the trip. Any refusal
+    (no token, malformed, wrong, another trip's, no such trip, no draft yet) is the unknown-route
+    404, so existence never leaks. Returns the denial response, or None."""
+    outcome = await guest_session.authorize_read(conn, trip_id, guest_token)
+    guest_session.emit(outcome, route_name)
+    return None if outcome == guest_session.READ_OK else _not_found()
 
 
 async def _resolve_narrator(mode: str, narrator: Optional[Any], conn, calls: list):

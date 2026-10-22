@@ -16,6 +16,9 @@ bundle) is still accepted for a session that has no hash. After it, only a match
 The window is closed (the constant is in the past since S239: Dev has no real guests to carry
 over), so today a legacy session, a tokenless request and a bare session id all get 401. The grace
 branches below are kept, dormant, in case a future environment needs a rollout window again.
+
+Reads (AA-909): the four trip GETs carry no session_id. `authorize_read` checks the token against
+the hash of the session that owns the trip (trip_drafts.session_id); anything else is a 404.
 """
 from __future__ import annotations
 
@@ -44,6 +47,19 @@ TOKENLESS_BOUND = "tokenless_bound"    # no token for a session that already has
 FORBIDDEN_OWNER = "forbidden_owner"
 
 DENIED = frozenset({REJECTED_GRACE, BAD_TOKEN, TOKEN_MISMATCH, TOKENLESS_BOUND})
+
+# AA-909: the trip read GETs. READ_OK lets the read through; every other read outcome answers the
+# same 404 as an unknown route, so a caller cannot tell a trip that exists from one that does not.
+READ_OK = "read_ok"                    # token matches the hash of the session that owns the trip
+NO_TOKEN = "no_token"                  # read without a token
+NO_OWNER = "no_owner"                  # no such trip, no draft yet, or the owner session has no hash
+# BAD_TOKEN and TOKEN_MISMATCH are reused for reads.
+
+# The trip's owner is the session that created its draft (trip_drafts.session_id, never changed).
+_SELECT_OWNER_HASH = (
+    "SELECT s.guest_token_hash FROM tripplanner.trip_drafts d "
+    "JOIN tripplanner.sessions s ON s.id = d.session_id WHERE d.id = $1::uuid"
+)
 
 _SELECT = "SELECT guest_token_hash FROM tripplanner.sessions WHERE id = $1::uuid"
 _INSERT = (
@@ -117,6 +133,22 @@ async def authorize(conn, session_id: str, token: Optional[str], *,
     if not exists:
         await conn.execute(_INSERT, session_id, None, config.GUEST_SESSION_DAYS)
     return LEGACY_TOKENLESS
+
+
+async def authorize_read(conn, trip_id: str, token: Optional[str]) -> str:
+    """AA-909: may this token read the trip? READ_OK only when the token's sha256 equals the hash
+    bound to the session that owns the trip. Reads never create or bind a session, and the grace
+    window does not apply. The caller has already checked that trip_id is a UUID; a missing or
+    malformed token is refused before any query. Only the digest is compared, in constant time."""
+    if token is None or token == "":
+        return NO_TOKEN
+    if not is_token(token):
+        return BAD_TOKEN
+    row = await conn.fetchrow(_SELECT_OWNER_HASH, trip_id)
+    stored = row["guest_token_hash"] if row is not None else None
+    if stored is None:
+        return NO_OWNER
+    return READ_OK if _matches(bytes(stored), hash_token(token)) else TOKEN_MISMATCH
 
 
 def emit(outcome: str, route: str) -> None:
