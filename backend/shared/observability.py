@@ -16,7 +16,11 @@ One ``request_completed`` line per invocation: service, method, route **name** (
 session ids, which this repo does not log, AA-827), status, ``duration_ms``. Values pass through
 :func:`backend.shared.scrub.scrub`.
 
-**Sentry** starts only when ``SENTRY_DSN`` is set (Lambda environment, from Infra): errors only (no tracing),
+**Sentry** starts only when a DSN is found: the ``SENTRY_DSN`` env (local runs, tests) or, on Lambda with no env value,
+the Secrets Manager secret ``tripplanner/<ENVIRONMENT>/sentry-dsn`` read by name once per cold start (AA-871; the same
+by-name pattern as the edge key in :mod:`backend.shared.auth`, so no DSN sits in the Lambda environment; Infra grants
+the read). A missing secret value or a failed read leaves Sentry off (``sentry_disabled`` with the reason) and never
+fails a request. Errors only (no tracing),
 ``send_default_pii=False``, no frame locals, no request data, ``release`` = the git SHA baked into the zip
 (``backend/GIT_SHA``, written by ``package_lambdas.sh``) or ``GIT_SHA``. ``SENTRY_REQUIRED=true`` with no DSN makes the
 first invocation fail (the missing-DSN guard; off by default).
@@ -57,6 +61,8 @@ _state: dict[str, Any] = {"configured": False, "sentry": False}
 
 
 SENTRY_TEST_KEY = "sentry_test"
+# AA-871: where the Lambdas find the DSN when the env has none (AA-CIS-Infra tripplanner.tf, grant ReadSentryDsnSecret).
+SENTRY_DSN_SECRET_NAME_TEMPLATE = "tripplanner/{environment}/sentry-dsn"
 
 
 class SentryTestError(RuntimeError):
@@ -231,13 +237,40 @@ def _flag(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def init_sentry(service: str) -> bool:
-    """Start the SDK when ``SENTRY_DSN`` is set. Returns whether it started."""
+def _fetch_secret(name: str) -> Optional[str]:
+    """Read one secret string by name. Separate function so tests can replace it."""
+    import boto3  # lazy: local runs and tests never reach this
+
+    client = boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION") or "us-west-1")
+    return client.get_secret_value(SecretId=name).get("SecretString")
+
+
+def resolve_dsn() -> tuple[str, str]:
+    """``(dsn, reason)``: the ``SENTRY_DSN`` env, else (on Lambda only) the secret named after ``ENVIRONMENT``.
+    ``reason`` says why the DSN is empty; the value itself is never logged."""
     dsn = (os.environ.get("SENTRY_DSN") or "").strip()
+    if dsn:
+        return dsn, "env"
+    if not os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return "", "SENTRY_DSN not set"
+    env = (os.environ.get("ENVIRONMENT") or "").strip()
+    if not env:
+        return "", "ENVIRONMENT not set"
+    try:
+        value = _fetch_secret(SENTRY_DSN_SECRET_NAME_TEMPLATE.format(environment=env))
+    except Exception as exc:  # noqa: BLE001 - no value yet (ResourceNotFoundException), IAM, network: Sentry stays off
+        return "", f"secret_read_failed:{type(exc).__name__}"
+    value = (value or "").strip()
+    return (value, "secrets_manager") if value else ("", "secret_empty")
+
+
+def init_sentry(service: str) -> bool:
+    """Start the SDK when a DSN is found (:func:`resolve_dsn`). Returns whether it started."""
+    dsn, reason = resolve_dsn()
     if not dsn:
         if _flag("SENTRY_REQUIRED"):
-            raise SentryConfigError("SENTRY_REQUIRED is on but SENTRY_DSN is empty")
-        emit("sentry_disabled", reason="SENTRY_DSN not set")
+            raise SentryConfigError(f"SENTRY_REQUIRED is on but SENTRY_DSN is empty ({reason})")
+        emit("sentry_disabled", reason=reason)
         return False
     if not dsn.startswith("https://"):
         raise SentryConfigError("SENTRY_DSN must be an https:// URL")  # the value is never echoed
@@ -257,7 +290,7 @@ def init_sentry(service: str) -> bool:
         before_breadcrumb=before_breadcrumb,
     )
     sentry_sdk.set_tag("service", service)
-    emit("sentry_enabled", environment=_environment(), release=git_sha())
+    emit("sentry_enabled", environment=_environment(), release=git_sha(), outcome=f"dsn_from_{reason}")
     return True
 
 

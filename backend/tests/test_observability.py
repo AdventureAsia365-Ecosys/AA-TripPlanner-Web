@@ -30,6 +30,7 @@ def _event(path="/browse/countries", method="GET", headers=None, request_id="api
 def _fresh_state(monkeypatch):
     monkeypatch.delenv("SENTRY_DSN", raising=False)
     monkeypatch.delenv("SENTRY_REQUIRED", raising=False)
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
     monkeypatch.setitem(obs._state, "configured", True)  # skip root-logger set-up unless a test asks for it
     monkeypatch.setitem(obs._state, "sentry", False)
     yield
@@ -185,6 +186,69 @@ def test_sentry_init_options(monkeypatch):
     assert kw["send_default_pii"] is False and kw["include_local_variables"] is False
     assert kw["traces_sample_rate"] == 0.0 and kw["auto_enabling_integrations"] is False
     assert kw["before_send"] is obs.before_send
+
+
+def _on_lambda(monkeypatch, environment="dev"):
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "aa-tripplanner-dev-browse")
+    monkeypatch.setenv("ENVIRONMENT", environment)
+
+
+def test_dsn_from_secret_on_lambda(monkeypatch, capsys):
+    """AA-871: no SENTRY_DSN env on Lambda -> the secret tripplanner/<ENVIRONMENT>/sentry-dsn, read by name."""
+    _on_lambda(monkeypatch)
+    with patch.object(obs, "_fetch_secret", return_value=" https://k@o1.ingest.example/2\n") as fetch, \
+            patch("sentry_sdk.init") as init, patch("sentry_sdk.set_tag"):
+        assert obs.init_sentry("browse") is True
+    fetch.assert_called_once_with("tripplanner/dev/sentry-dsn")
+    assert init.call_args.kwargs["dsn"] == "https://k@o1.ingest.example/2"
+    out = capsys.readouterr().out
+    assert "ingest.example" not in out  # the DSN is never logged
+    assert _lines(out)[0]["evt"] == "sentry_enabled"
+
+
+def test_env_dsn_wins_over_the_secret(monkeypatch):
+    _on_lambda(monkeypatch)
+    monkeypatch.setenv("SENTRY_DSN", "https://k@o1.ingest.example/1")
+    with patch.object(obs, "_fetch_secret") as fetch, patch("sentry_sdk.init"), patch("sentry_sdk.set_tag"):
+        assert obs.init_sentry("browse") is True
+    fetch.assert_not_called()
+
+
+def test_no_secret_read_off_lambda(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    with patch.object(obs, "_fetch_secret") as fetch:
+        assert obs.resolve_dsn() == ("", "SENTRY_DSN not set")
+    fetch.assert_not_called()
+
+
+@pytest.mark.parametrize("fetched, reason", [
+    (RuntimeError("ResourceNotFoundException"), "secret_read_failed:RuntimeError"),
+    ("   ", "secret_empty"),
+    (None, "secret_empty"),
+])
+def test_secret_unavailable_leaves_sentry_off(monkeypatch, capsys, fetched, reason):
+    _on_lambda(monkeypatch)
+    kwargs = {"side_effect": fetched} if isinstance(fetched, Exception) else {"return_value": fetched}
+    with patch.object(obs, "_fetch_secret", **kwargs), patch("sentry_sdk.init") as init:
+        assert obs.init_sentry("assembly") is False
+    init.assert_not_called()
+    line = _lines(capsys.readouterr().out)[0]
+    assert line["evt"] == "sentry_disabled" and line["reason"] == reason
+
+
+def test_secret_unavailable_with_guard_raises(monkeypatch):
+    _on_lambda(monkeypatch)
+    monkeypatch.setenv("SENTRY_REQUIRED", "true")
+    with patch.object(obs, "_fetch_secret", side_effect=RuntimeError("x")):
+        with pytest.raises(obs.SentryConfigError, match="secret_read_failed"):
+            obs.init_sentry("browse")
+
+
+def test_no_environment_on_lambda_reads_nothing(monkeypatch):
+    _on_lambda(monkeypatch, environment="")
+    with patch.object(obs, "_fetch_secret") as fetch:
+        assert obs.resolve_dsn() == ("", "ENVIRONMENT not set")
+    fetch.assert_not_called()
 
 
 def test_git_sha_from_the_packaged_file(monkeypatch, tmp_path):
