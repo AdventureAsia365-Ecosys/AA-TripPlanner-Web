@@ -422,7 +422,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   path: it carries trip and session ids), status, `duration_ms`. Everything passes `backend/shared/scrub.py` (a copy of
   AA-Booking's: e-mails, `+` phones, Bearer tokens, JWTs, key-like query values, PII-named keys). BFF: one
   `{"evt":"bff_upstream","route","op","status","ms","request_id"}` line per upstream call (Vercel logs).
-- **Sentry, only when `SENTRY_DSN` is set.** Lambdas: errors only (no tracing, no auto-enabled integrations),
+- **Sentry, only when a DSN is found.** Lambdas: the `SENTRY_DSN` env (local, tests) or, on Lambda with no env value,
+  the secret `tripplanner/<ENVIRONMENT>/sentry-dsn` read by name once per cold start (same pattern as the edge key; no
+  DSN in the Lambda env; Infra creates the shell and grants the read); no value / failed read = Sentry off, logged as
+  `sentry_disabled` with the reason, requests unaffected. Errors only (no tracing, no auto-enabled integrations),
   `send_default_pii=False`, no frame locals, no request data, an isolation scope per invocation (a warm container
   carries nothing over), exception messages of asyncpg / pydantic / jsonschema / json dropped (they echo input values),
   the rest scrubbed; captured: unhandled errors (re-raised) and the assembly catch-all 500. `release` = `backend/GIT_SHA`
