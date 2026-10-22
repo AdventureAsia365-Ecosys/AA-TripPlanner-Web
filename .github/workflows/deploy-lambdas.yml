@@ -40,8 +40,17 @@ env:
   ASSEMBLY_FUNCTION: aa-tripplanner-dev-assembly
 
 jobs:
+  # AA-879: the deploy runs only after the full CI workflow passed on this commit (ci.yml is reusable via
+  # workflow_call). Before, a push to main deployed the Lambdas in parallel with CI, so a red commit shipped.
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   deploy:
     name: Build + deploy Lambda code
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -102,3 +111,35 @@ jobs:
           aws lambda wait function-updated --function-name "${BROWSE_FUNCTION}"
           aws lambda wait function-updated --function-name "${ASSEMBLY_FUNCTION}"
           echo "Both Lambdas updated."
+
+      # AA-879: post-deploy smoke through the public front door (the production BFF on Vercel calls the API
+      # Gateway with the edge key; the API host itself is not written in this public repo). Read-only:
+      #   browse   — /api/browse?resource=countries (a cache-buster skips the Vercel CDN, which would otherwise
+      #              answer from cache without touching the Lambda) → 200 + a non-empty country list;
+      #   assembly — /api/trip?trip_id=<all-zero UUID> (no-store; the Lambda reads trip state for an id that
+      #              never exists) → 200 + that trip_id with an empty itinerary array.
+      # 3 tries, 10 s apart (cold start of the new code).
+      - name: Smoke test (browse + assembly through the production BFF)
+        env:
+          BASE: https://aa-tripplanner.vercel.app
+          ZERO_TRIP: 00000000-0000-0000-0000-000000000000
+        run: |
+          set -uo pipefail
+          check() {  # $1 name, $2 path, $3 jq assertion
+            local code=000
+            for attempt in 1 2 3; do
+              code=$(curl -sS -o /tmp/smoke.json -w '%{http_code}' --max-time 30 "${BASE}$2" || echo 000)
+              if [ "$code" = "200" ] && jq -e "$3" /tmp/smoke.json >/dev/null 2>&1; then
+                echo "smoke [$1] $2 -> 200 OK (attempt $attempt)"; return 0
+              fi
+              sleep 10
+            done
+            echo "::error::smoke [$1] $2 -> HTTP $code, body: $(head -c 300 /tmp/smoke.json 2>/dev/null)"
+            return 1
+          }
+          fail=0
+          check browse "/api/browse?resource=countries&_cb=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            '(.countries | length) > 0' || fail=1
+          check assembly "/api/trip?trip_id=${ZERO_TRIP}" \
+            ".trip_id == \"${ZERO_TRIP}\" and (.itinerary | type) == \"array\"" || fail=1
+          [ "$fail" = "0" ] && echo "All Lambda smoke checks passed" || exit 1

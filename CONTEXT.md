@@ -419,6 +419,20 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - Because the org has "include repo ID in the OIDC subject" enabled, the trust uses the
   `AdventureAsia365-Ecosys*/...` wildcard form; a plain `repo:Ecosys/...` subject fails
   AccessDenied. This is the same OIDC fact that AA-588 corrected in Infra.
+- **Deploy after CI + smoke (AA-879)**: `deploy-lambdas.yml` calls the whole `ci.yml` (reusable via
+  `workflow_call`) as its `ci` job; `deploy` has `needs: ci`. After the update it runs a read-only smoke
+  through the production BFF (`/api/browse?resource=countries` with a cache-buster, and
+  `/api/trip?trip_id=<all-zero UUID>`), 200 + JSON shape, so a broken Lambda turns the run red.
+- **CI checks**: required "Backend (pytest)", "Frontend (lint + build)", "Migrations (lint, PG 15
+  replay)"; plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt` and gitleaks over the
+  full history, both failing; reviewed findings in `.gitleaksignore` with a reason each).
+- **Security headers on previews (AA-879)**: `vercel-deploy.yml` step "Check the preview security headers"
+  (`.github/scripts/check_security_headers.sh`, GET `/` through `vercel curl`). It needs the aa-tripplanner
+  project's "Protection Bypass for Automation" in Vercel (no GitHub secret). Until that exists the step runs
+  with `ALLOW_PROTECTED=1`: a Vercel-protection answer (401/403, SSO redirect, no bypass token) is a warning,
+  while a page the app answers without a header still fails (tests: `.github/scripts/test_check_security_headers.py`,
+  run in "Backend (pytest)"). Production keeps its own
+  header check on `https://aa-tripplanner.vercel.app/` (AA-876).
 
 ## Contracts with other apps
 

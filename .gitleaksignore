@@ -1,0 +1,6 @@
+# AA-879 — gitleaks findings reviewed and accepted (read by the "Security Audit" job). One fingerprint per line,
+# each with a comment saying why it is not a secret. Never add a real credential here: rotate it instead.
+#
+# backend/tests/test_assembly.py:197 — TOKEN is a made-up 43-char base64url string with the SHAPE of a BFF guest
+# token, used only by the offline unit tests (AA-827). Not a credential of any system.
+7150c0044a127522f8d927c487cf8d1a37694e29:backend/tests/test_assembly.py:generic-api-key:197

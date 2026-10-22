@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [main, "task/**", "chore/**", "feature/**"]
+  # AA-879: deploy-lambdas.yml calls this whole workflow as its `ci` job, so a Lambda deploy runs only
+  # after every check below passed on the commit it ships.
+  workflow_call:
 
 permissions:
   contents: read
@@ -26,6 +29,12 @@ jobs:
         working-directory: .
         run: python3 .github/scripts/check_resource_ids.py
 
+      # AA-879: offline tests of the CI helper scripts (fake curl/npx on PATH, no network), e.g. that a
+      # preview behind Vercel protection only warns while a missing header on an app page still fails.
+      - name: CI script tests
+        working-directory: .
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
         with:
@@ -43,6 +52,41 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: pytest -v --tb=short
 
+
+  # AA-879: the security job, same shape as AA-Booking's "Security Audit" (the resource-ID check stays in
+  # "Backend (pytest)", which is already required). pip-audit FAILS on any known vulnerability in the Lambda
+  # requirements; gitleaks scans the full git history. Reviewed findings live in .gitleaksignore (one
+  # fingerprint per line, each with a reason); a new finding turns this check red.
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: pip-audit (Lambda requirements, failing)
+        run: |
+          pip install pip-audit==2.10.1 --quiet
+          pip-audit -r backend/requirements.txt
+
+      - name: gitleaks (full history, failing)
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "/tmp/${tarball}" "${base}/${tarball}"
+          curl -sSfL -o /tmp/gitleaks_checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          (cd /tmp && grep " ${tarball}\$" gitleaks_checksums.txt | sha256sum -c -)
+          tar -xzf "/tmp/${tarball}" -C /tmp gitleaks
+          /tmp/gitleaks git --redact --verbose --exit-code 1 .
 
   # X1 (AA-852, plan S7 + review S241): the migrations/ checks, outside backend/ so a migration PR does
   # not redeploy the Lambdas. Two layers here (the third runs in AA-CIS-Infra), none may be skipped (a skip turns the job red):
