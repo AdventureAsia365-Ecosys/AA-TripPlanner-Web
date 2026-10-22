@@ -7,7 +7,7 @@ import {
   mapMintedDenial,
 } from "@/lib/guestToken";
 import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
-import { tripHeaders as lambdaHeaders, tripReadPath } from "@/lib/tripProxy";
+import { parseTripBody, tripHeaders as lambdaHeaders, tripReadPath } from "@/lib/tripProxy";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
 // Maps a single { op } POST body onto the Lambda's REST verbs/paths.
@@ -88,7 +88,12 @@ export async function POST(req: NextRequest) {
       { status: 503 },
     );
   }
-  const b = await req.json();
+  // A body that is not a JSON object is a 400, not an unhandled 500 (seen in the AA-871 Sentry check).
+  const parsed = parseTripBody(await req.text());
+  if (!parsed) {
+    return NextResponse.json({ error: "invalid_json" }, { status: 400 });
+  }
+  const b = parsed as Record<string, any>;
   const tripId = encodeURIComponent(b.trip_id ?? "");
   let method = "POST";
   let path = "";
