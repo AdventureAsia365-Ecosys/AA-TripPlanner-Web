@@ -61,6 +61,9 @@ CIS_PUBLIC_API_BASE=http://localhost:8011 python -m backend.tests.dev_browse_ser
   (OIDC role `aa-tripplanner-dev-app-deploy`, defined in AA-CIS-Infra; its ARN is the repo secret
   `AWS_DEPLOY_ROLE_ARN`, AA-902) updates both functions' code. The functions, API Gateway, S3 artifacts and secrets themselves are Terraform in
   `AA-CIS-Infra/accounts/aa365/tripplanner.tf`.
+- **Releases (AA-891):** release-please keeps a release PR open on `main` (version in
+  `.release-please-manifest.json`, notes in `CHANGELOG.md`, tag `vX.Y.Z`); merging it releases and deploys
+  nothing. `GET /api/health` on the web app shows `version` and `git_sha`.
 - **Migrations:** applied to Dev from an identical copy in `AA-CIS-Infra/db/migrations/tripplanner/`
   by the **DB Migrate** workflow (check → apply), before the code that needs them merges.
 

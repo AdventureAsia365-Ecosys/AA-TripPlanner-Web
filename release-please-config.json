@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "369e971dcd42aa673be0f0cf9141de0d5801b787",
+  "include-v-in-tag": true,
+  "include-component-in-tag": false,
+  "bump-minor-pre-major": true,
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "aa-tripplanner-web",
+      "changelog-path": "CHANGELOG.md",
+      "release-as": "0.4.0"
+    }
+  }
+}

@@ -1,0 +1,61 @@
+name: Release Please
+
+# AA-891: release-please (manifest mode) keeps one release PR open on main. It bumps the version in
+# .release-please-manifest.json and writes CHANGELOG.md from the conventional commit subjects; merging that PR
+# tags vX.Y.Z and creates the GitHub release. Config: release-please-config.json (one package, ".").
+#
+# The release PR is opened with a token of the GitHub App aa-ecosys-ci-bot (contents / issues / pull_requests
+# write), not GITHUB_TOKEN: a PR opened by GITHUB_TOKEN does not trigger workflows, so its required checks would
+# never run. The App id is the variable AA_CI_BOT_APP_ID and its private key the secret AA_CI_BOT_PRIVATE_KEY,
+# read in the environment "release" (deployment branch policy: main only). GITHUB_TOKEN itself is read-only.
+#
+# A release commit changes only CHANGELOG.md and .release-please-manifest.json (repo root), so neither
+# vercel-deploy.yml (frontend/**) nor deploy-lambdas.yml (backend/**) runs on it. The version a deployment reports
+# is the manifest version of the commit it was built from (the Lambdas' `version` log field, the BFF /api/health).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Release PR / tag
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 10
+    steps:
+      - name: Mint an aa-ecosys-ci-bot token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
+          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
+
+      - name: release-please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Job summary
+        env:
+          RELEASED: ${{ steps.release.outputs.release_created }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+          PR: ${{ steps.release.outputs.pr }}
+        run: |
+          {
+            echo "### release-please"
+            if [ "$RELEASED" = "true" ]; then echo "- Released: \`$TAG\`"; else echo "- No release on this commit."; fi
+            if [ -n "$PR" ]; then echo "- Release PR updated."; fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -22,8 +22,12 @@ by-name pattern as the edge key in :mod:`backend.shared.auth`, so no DSN sits in
 the read). A missing secret value or a failed read leaves Sentry off (``sentry_disabled`` with the reason) and never
 fails a request. Errors only (no tracing),
 ``send_default_pii=False``, no frame locals, no request data, ``release`` = the git SHA baked into the zip
-(``backend/GIT_SHA``, written by ``package_lambdas.sh``) or ``GIT_SHA``. ``SENTRY_REQUIRED=true`` with no DSN makes the
-first invocation fail (the missing-DSN guard; off by default).
+(``backend/GIT_SHA``, written by ``package_lambdas.sh``) or ``GIT_SHA``, tag ``version`` = the release version.
+``SENTRY_REQUIRED=true`` with no DSN makes the first invocation fail (the missing-DSN guard; off by default).
+
+**Release version** (AA-891): every log line carries ``version`` next to ``git_sha``: ``APP_VERSION`` env, else
+``backend/VERSION`` (written by ``package_lambdas.sh`` from ``.release-please-manifest.json``), else the manifest itself
+in a checkout (local runs, tests), else ``unknown``.
 """
 from __future__ import annotations
 
@@ -47,10 +51,13 @@ REQUEST_ID_HEADER = "x-request-id"
 _VALID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 HANDLER_NAME = "aa-json"
 _GIT_SHA_FILE = Path(__file__).resolve().parent.parent / "GIT_SHA"
+_VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
+# Only in a checkout (the Lambda zip has backend/ at its root and no manifest): the repo root's release-please manifest.
+_MANIFEST_FILE = Path(__file__).resolve().parent.parent.parent / ".release-please-manifest.json"
 # Fields this code writes itself; never redacted (an id is not personal data, DM-6.4).
 _KEEP = frozenset({
-    "evt", "timestamp", "level", "logger", "service", "environment", "git_sha", "request_id", "aws_request_id",
-    "method", "route", "status", "duration_ms", "outcome", "reason", "error", "at",
+    "evt", "timestamp", "level", "logger", "service", "environment", "git_sha", "version", "request_id",
+    "aws_request_id", "method", "route", "status", "duration_ms", "outcome", "reason", "error", "at",
 })
 # Exceptions whose message echoes input values (asyncpg: bad parameters; pydantic: input_value=...): the message is
 # not sent to Sentry at all, only the type and the stack.
@@ -81,6 +88,24 @@ def git_sha() -> str:
         return _GIT_SHA_FILE.read_text().strip() or "unknown"
     except OSError:
         return "unknown"
+
+
+def release_version() -> str:
+    """The release version this build carries (AA-891); see the module docstring for the lookup order."""
+    env = (os.environ.get("APP_VERSION") or "").strip()
+    if env:
+        return env
+    try:
+        value = _VERSION_FILE.read_text().strip()
+        if value:
+            return value
+    except OSError:
+        pass
+    try:
+        value = json.loads(_MANIFEST_FILE.read_text()).get(".")
+    except (OSError, ValueError, AttributeError):
+        return "unknown"
+    return value.strip() if isinstance(value, str) and value.strip() else "unknown"
 
 
 def _service() -> str:
@@ -139,7 +164,9 @@ def _scrub_event(_logger: Any, _method: str, event_dict: dict) -> dict:
 
 def configure_logging(stream: Optional[IO[str]] = None, level: int = logging.INFO) -> None:
     """Route stdlib logging through one JSON handler on the root logger. Idempotent."""
-    static = {"service": _service(), "environment": _environment(), "git_sha": git_sha()}
+    static = {
+        "service": _service(), "environment": _environment(), "git_sha": git_sha(), "version": release_version(),
+    }
 
     def add_static(_logger: Any, _method: str, event_dict: dict) -> dict:
         for k, v in static.items():
@@ -290,7 +317,9 @@ def init_sentry(service: str) -> bool:
         before_breadcrumb=before_breadcrumb,
     )
     sentry_sdk.set_tag("service", service)
-    emit("sentry_enabled", environment=_environment(), release=git_sha(), outcome=f"dsn_from_{reason}")
+    sentry_sdk.set_tag("version", release_version())
+    emit("sentry_enabled", environment=_environment(), release=git_sha(), version=release_version(),
+         outcome=f"dsn_from_{reason}")
     return True
 
 

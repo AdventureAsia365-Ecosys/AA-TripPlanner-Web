@@ -1,6 +1,5 @@
 {
   "name": "aa-tripplanner-frontend",
-  "version": "0.3.0",
   "private": true,
   "scripts": {
     "dev": "next dev",

@@ -429,7 +429,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `send_default_pii=False`, no frame locals, no request data, an isolation scope per invocation (a warm container
   carries nothing over), exception messages of asyncpg / pydantic / jsonschema / json dropped (they echo input values),
   the rest scrubbed; captured: unhandled errors (re-raised) and the assembly catch-all 500. `release` = `backend/GIT_SHA`
-  (written by `package_lambdas.sh` from the deployed commit) or `GIT_SHA`. `SENTRY_REQUIRED=true` without a DSN fails
+  (written by `package_lambdas.sh` from the deployed commit) or `GIT_SHA`; tag `version` = the release (AA-891). `SENTRY_REQUIRED=true` without a DSN fails
   every invocation (the missing-DSN guard; off by default). Live check: a direct `lambda invoke` with
   `{"sentry_test": true}` (not reachable over HTTP) raises `SentryTestError`, which must appear in Sentry with its fake
   e-mail shown as `[email]`. Next.js: `frontend/instrumentation.ts` `onRequestError`
@@ -462,6 +462,14 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   while a page the app answers without a header still fails (tests: `.github/scripts/test_check_security_headers.py`,
   run in "Backend (pytest)"). Production keeps its own
   header check on `https://aa-tripplanner.vercel.app/` (AA-876).
+- **Releases (AA-891)**: release-please in manifest mode (`release-please-config.json`,
+  `.release-please-manifest.json`, `CHANGELOG.md`, tags `vX.Y.Z`, `bump-minor-pre-major`), run by
+  `.github/workflows/release-please.yml` on push to `main` in the environment `release` with an `aa-ecosys-ci-bot`
+  App token (so the release PR gets its checks). The manifest is the only version file (the frontend `package.json`
+  has none). A release commit touches only root files, so it deploys nothing; a build reports the manifest version
+  of its commit: Lambdas `version` next to `git_sha` on log lines and as a Sentry tag (`backend/VERSION`, written
+  by `package_lambdas.sh`); web app `GET /api/health` → `{"status","service","version","git_sha"}` (`APP_VERSION` /
+  `GIT_SHA` set per deployment by `vercel-deploy.yml`).
 
 ## Contracts with other apps
 

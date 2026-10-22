@@ -4,6 +4,8 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -155,6 +157,8 @@ def test_stdlib_lines_are_json_with_the_request_id():
         structlog.reset_defaults()
     lines = _lines(buf.getvalue())
     assert lines[0]["event"] == "hand-off for trip1 logged" and lines[0]["request_id"] == "req-9"
+    # AA-891: the release version rides next to git_sha on every line.
+    assert lines[0]["version"] == obs.release_version() and "git_sha" in lines[0]
     assert lines[0]["logger"] == "backend.assembly.notify" and lines[0]["level"] == "info"
     assert lines[1]["event"] == "mail [email]"
 
@@ -259,6 +263,50 @@ def test_git_sha_from_the_packaged_file(monkeypatch, tmp_path):
     assert obs.git_sha() == "abc123"
     monkeypatch.setattr(obs, "_GIT_SHA_FILE", tmp_path / "missing")
     assert obs.git_sha() == "unknown"
+
+
+def _manifest_version() -> str:
+    manifest = Path(obs.__file__).resolve().parents[2] / ".release-please-manifest.json"
+    return json.loads(manifest.read_text())["."]
+
+
+def test_release_version_lookup_order(monkeypatch, tmp_path):
+    """AA-891: APP_VERSION env, then backend/VERSION (packaged), then the manifest (checkout), then unknown."""
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    f = tmp_path / "VERSION"
+    f.write_text("1.2.3\n")
+    monkeypatch.setattr(obs, "_VERSION_FILE", f)
+    assert obs.release_version() == "1.2.3"
+    monkeypatch.setenv("APP_VERSION", "9.9.9")
+    assert obs.release_version() == "9.9.9"
+    monkeypatch.delenv("APP_VERSION")
+    monkeypatch.setattr(obs, "_VERSION_FILE", tmp_path / "missing")
+    assert obs.release_version() == _manifest_version()
+    monkeypatch.setattr(obs, "_MANIFEST_FILE", tmp_path / "missing.json")
+    assert obs.release_version() == "unknown"
+
+
+def test_release_version_matches_the_manifest(monkeypatch):
+    """In a checkout (no packaged VERSION file) the version is the release-please manifest's."""
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    monkeypatch.setattr(obs, "_VERSION_FILE", Path("/nonexistent/VERSION"))
+    assert re.fullmatch(r"\d+\.\d+\.\d+", obs.release_version())
+    assert obs.release_version() == _manifest_version()
+
+
+def test_packaging_writes_the_manifest_version():
+    """package_lambdas.sh bakes backend/VERSION from the manifest, like backend/GIT_SHA."""
+    script = (Path(obs.__file__).resolve().parents[1] / "package_lambdas.sh").read_text()
+    assert ".release-please-manifest.json" in script and '"${BUILD_DIR}/backend/VERSION"' in script
+
+
+def test_sentry_tags_the_version(monkeypatch, capsys):
+    monkeypatch.setenv("SENTRY_DSN", "https://k@o1.ingest.example/1")
+    monkeypatch.setenv("APP_VERSION", "0.4.0")
+    with patch("sentry_sdk.init"), patch("sentry_sdk.set_tag") as set_tag:
+        assert obs.init_sentry("browse") is True
+    set_tag.assert_any_call("version", "0.4.0")
+    assert _lines(capsys.readouterr().out)[0]["version"] == "0.4.0"
 
 
 def test_before_send_strips_pii():
