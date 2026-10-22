@@ -132,15 +132,22 @@ jobs:
 
       # stdout of `vercel deploy` is the deployment URL; progress / build logs go to stderr.
       # The CLI waits for the remote build and exits non-zero when it fails.
+      # AA-891: APP_VERSION (the release-please manifest of the deployed commit) and GIT_SHA are runtime env of
+      # THIS deployment only (`--env`), read by GET /api/health. A release commit changes only root files
+      # (CHANGELOG.md, the manifest), so it never triggers this workflow; the next frontend deploy reports it.
       - name: Deploy (remote build of frontend/ via the project's Root Directory)
         if: steps.plan.outputs.enabled == 'true'
         id: deploy
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           TARGET: ${{ steps.plan.outputs.target }}
+          SHA: ${{ steps.plan.outputs.sha }}
         run: |
           set -euo pipefail
-          ARGS=(deploy --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_ORG_ID")
+          APP_VERSION=$(jq -r '."."' .release-please-manifest.json)
+          echo "Release version (manifest): $APP_VERSION"
+          ARGS=(deploy --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_ORG_ID"
+                --env "APP_VERSION=$APP_VERSION" --env "GIT_SHA=$SHA")
           if [ "$TARGET" = "production" ]; then ARGS+=(--prod); fi
           npx --yes "$VERCEL_CLI" "${ARGS[@]}" > "$RUNNER_TEMP/vercel-deploy.out"
           URL=$(grep -Eo 'https://[^[:space:]]+' "$RUNNER_TEMP/vercel-deploy.out" | tail -n1 || true)

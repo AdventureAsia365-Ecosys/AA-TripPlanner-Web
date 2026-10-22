@@ -31,6 +31,8 @@ Thumbs.db
 *.tfplan.bin
 /.[a-z]*.sh
 /.[a-z]*.json
+# AA-891: the release-please manifest is tracked (it holds the current release version).
+!/.release-please-manifest.json
 /.[a-z]*.txt
 /.dbcheck*.py
 /.probe*.sql
