@@ -113,7 +113,9 @@ export function buildEvent(
     level: "error",
     logger: "nextjs.onRequestError",
     server_name: "aa-tripplanner-web",
-    environment: env.VERCEL_ENV ?? "development",
+    // SENTRY_ENVIRONMENT names the platform environment ("dev" today: Vercel Production serves Dev, like the
+    // Lambdas' ENVIRONMENT); without it, the Vercel target (production / preview / development).
+    environment: env.SENTRY_ENVIRONMENT || env.VERCEL_ENV || "development",
     release: env.SENTRY_RELEASE || env.VERCEL_GIT_COMMIT_SHA || "unknown",
     tags,
     // Path only: the query string can hold search text or ids.
