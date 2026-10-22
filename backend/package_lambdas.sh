@@ -47,6 +47,11 @@ echo "==> Copying backend/ package into build dir"
 # The handlers import `backend.*`, so the package must sit at the zip root.
 cp -r backend "${BUILD_DIR}/backend"
 
+# AA-871: the commit the zip was built from, for the Sentry release and the git_sha log field
+# (backend/shared/observability.py git_sha(); the Lambda environment is Terraform's, not this workflow's).
+GIT_SHA_VALUE="${GITHUB_SHA:-$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)}"
+printf '%s\n' "${GIT_SHA_VALUE}" > "${BUILD_DIR}/backend/GIT_SHA"
+
 # Drop tests, caches, local-only files, and the packaging script itself from
 # the deployment artifact.
 find "${BUILD_DIR}/backend" -type d -name '__pycache__' -prune -exec rm -rf {} +

@@ -15,6 +15,7 @@ from typing import Any, Optional, Protocol
 
 from backend import config
 from backend.assembly import master_content
+from backend.shared import observability
 
 # Bump when the narration prompts (agent.py), grounding or the master-day choice
 # (master_content.resolve_days) change, so old text is not reused.
@@ -60,7 +61,7 @@ async def get(conn: _Conn, key: str) -> Optional[dict]:
             key, config.NARRATION_CACHE_TTL_HOURS,
         )
     except Exception as e:  # noqa: BLE001 — tp-010 not applied, permission, ...
-        print(f"[narration_cache] read skipped: {e}")
+        observability.emit("narration_cache_skipped", op="read", detail=str(e)[:500])
         return None
     return {"narration": row["narration"], "source": row["source"]} if row else None
 
@@ -80,4 +81,4 @@ async def put(conn: _Conn, key: str, mode: str, narration: str, source: str, day
             key, mode, narration, source, days,
         )
     except Exception as e:  # noqa: BLE001
-        print(f"[narration_cache] write skipped: {e}")
+        observability.emit("narration_cache_skipped", op="write", detail=str(e)[:500])

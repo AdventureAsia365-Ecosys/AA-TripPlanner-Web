@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -22,6 +23,8 @@ function passthroughFilters(src: URLSearchParams, dst: URLSearchParams) {
 }
 
 export async function GET(req: NextRequest) {
+  // AA-871: one id per request, sent to the Lambda and echoed on the response.
+  const requestId = requestIdFor(req.headers);
   if (!BROWSE_API_URL) {
     return NextResponse.json(
       { error: "BROWSE_API_URL not configured" },
@@ -77,14 +80,22 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "unknown resource" }, { status: 400 });
   }
 
+  const started = Date.now();
   const upstream = await fetch(`${BROWSE_API_URL}${upstreamPath}`, {
-    headers: upstreamHeaders({ accept: "application/json" }),
+    headers: upstreamHeaders({ accept: "application/json", [REQUEST_ID_HEADER]: requestId }),
   });
   const body = await upstream.text();
+  console.log(
+    upstreamLogLine({ route: "browse", op: resource ?? "unknown", status: upstream.status, ms: Date.now() - started, request_id: requestId }),
+  );
   // Preserve upstream cache-control (tiles/detail cacheable, search not).
   const cacheControl = upstream.headers.get("cache-control") ?? "no-store";
   return new NextResponse(body, {
     status: upstream.status,
-    headers: { "content-type": "application/json", "cache-control": cacheControl },
+    headers: {
+      "content-type": "application/json",
+      "cache-control": cacheControl,
+      [REQUEST_ID_HEADER]: requestId,
+    },
   });
 }

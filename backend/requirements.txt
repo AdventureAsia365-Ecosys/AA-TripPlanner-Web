@@ -4,6 +4,9 @@ pydantic==2.9.2
 boto3==1.35.36
 pgvector==0.3.6
 httpx==0.27.2
+# AA-871: JSON log lines (backend/shared/observability.py) and Sentry (off unless SENTRY_DSN is set).
+structlog==25.5.0
+sentry-sdk==2.70.0
 
 # Dev / test
 pytest==9.0.3

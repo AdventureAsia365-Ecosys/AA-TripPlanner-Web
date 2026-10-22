@@ -45,7 +45,7 @@ from backend.assembly import registration as reg_mod
 from backend.assembly import activities as activities_mod
 from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
-from backend.shared import component_ids, llm_gateway
+from backend.shared import component_ids, llm_gateway, observability
 
 _COMPONENTS_RE = re.compile(r"^/trip/([^/]+)/components$")
 _COMPONENT_ITEM_RE = re.compile(r"^/trip/([^/]+)/components/([^/]+)$")
@@ -575,8 +575,8 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
     except Exception as e:  # noqa: BLE001
         frames = traceback.extract_tb(e.__traceback__)
         at = f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}" if frames else ""
-        print(json.dumps({"evt": "assembly_error", "route": _route_name(method, path),
-                          "error": type(e).__name__, "at": at}), flush=True)
+        observability.emit("assembly_error", route=_route_name(method, path), error=type(e).__name__, at=at)
+        observability.capture(e)  # AA-871: Sentry, scrubbed (no-op when SENTRY_DSN is unset)
         return _resp(500, {"error": "internal"})
 
 
@@ -598,7 +598,7 @@ def _extract_request(event: dict) -> tuple[str, str, dict]:
     return method, path, body
 
 
-def handler(event, context):  # pragma: no cover - thin AWS adapter
+def _handle(event, context):  # pragma: no cover - thin AWS adapter
     import asyncio
 
     from backend.shared import auth
@@ -620,3 +620,7 @@ def handler(event, context):  # pragma: no cover - thin AWS adapter
 
     return asyncio.get_event_loop().run_until_complete(
         serve(method, path, body, guest_token=guest_token))
+
+
+# AA-871: request id (BFF header > API Gateway requestId), one JSON request_completed line, Sentry when SENTRY_DSN set.
+handler = observability.instrument(_handle, "assembly", _route_name)

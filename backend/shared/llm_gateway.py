@@ -50,7 +50,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from backend import config
-from backend.shared import bedrock_satellite
+from backend.shared import bedrock_satellite, observability
 from backend.shared.bedrock_satellite import BedrockError, ClientFactory
 
 APP = "tripplanner"
@@ -159,11 +159,12 @@ async def load_route(db: Any, stage: str) -> Route:
             raise LookupError(f"none of {keys} is in llm_model_catalog")
         shadow = cfg.get("shadow_model_id") if (cfg.get("shadow_sample_pct") or 0) > 0 else None
         if shadow:
-            print(f"[llm_gateway] {stage}: shadow {shadow!r} is configured but TripPlanner does not "
-                  "run shadows (AA-805); only the primary route is called")
+            observability.emit("llm_gateway_note", stage=stage,
+                               detail=f"shadow {shadow!r} is configured but TripPlanner does not "
+                                      "run shadows (AA-805); only the primary route is called")
         route = Route(stage, cfg["role"], models, cfg["account_route"], shadow)
     except Exception as e:  # noqa: BLE001 — a DB problem must not stop the call
-        print(f"[llm_gateway] route for {stage} unreadable ({e}); using builtin")
+        observability.emit("llm_gateway_note", detail=f"route for {stage} unreadable ({e}); using builtin")
         route = builtin_route(stage)
     _cache[stage] = (route, now)
     return route
@@ -206,10 +207,10 @@ def _cost(model: Model, tin: int, tout: int, cache_read: int = 0,
     A price is needed only when its token count is non-zero (an embedding has no output price)."""
     price_in, price_out = model.price_in, model.price_out
     if price_in is None and (tin or cache_read or cache_write):
-        print(f"[llm_gateway] {model.key}: no input price in llm_model_catalog; cost logged as NULL")
+        observability.emit("llm_gateway_note", detail=f"{model.key}: no input price in llm_model_catalog; cost logged as NULL")
         return None
     if price_out is None and tout:
-        print(f"[llm_gateway] {model.key}: no output price in llm_model_catalog; cost logged as NULL")
+        observability.emit("llm_gateway_note", detail=f"{model.key}: no output price in llm_model_catalog; cost logged as NULL")
         return None
     price_in, price_out = price_in or 0.0, price_out or 0.0
     cr = model.price_cache_read if model.price_cache_read is not None else price_in * 0.1
@@ -530,7 +531,7 @@ async def record(db: Any, call: Call, quality_signal: dict, *,
             call.cost_usd, json.dumps(signal), call.stop_reason, call.account,
             call.fallback_used, call.provider)
     except Exception as e:  # noqa: BLE001
-        print(f"[llm_gateway] llm_call_log write failed for {call.stage}: {e}")
+        observability.emit("llm_gateway_note", detail=f"llm_call_log write failed for {call.stage}: {e}")
     if call.stage in ONLINE_STAGES:
         await _add_spend(db, call)
 
@@ -561,7 +562,7 @@ async def _add_spend(db: Any, call: Call) -> None:
     try:
         await db.execute(_SPEND_UPSERT_SQL, call.stage, call.cost_usd or 0.0, unpriced)
     except Exception as e:  # noqa: BLE001 — e.g. tp-010 not applied yet
-        print(f"[llm_gateway] llm_spend_daily update failed for {call.stage}: {e}")
+        observability.emit("llm_gateway_note", detail=f"llm_spend_daily update failed for {call.stage}: {e}")
 
 
 async def budget_status(db: Any) -> dict:
@@ -575,6 +576,6 @@ async def budget_status(db: Any) -> dict:
         row = await db.fetchrow(_SPEND_TODAY_SQL, list(ONLINE_STAGES))
         spent = float(row["spent"]) if row and row["spent"] is not None else 0.0
     except Exception as e:  # noqa: BLE001
-        print(f"[llm_gateway] daily spend unreadable ({e}); TripPlanner spend cap NOT enforced")
+        observability.emit("llm_gateway_note", detail=f"daily spend unreadable ({e}); TripPlanner spend cap NOT enforced")
         return {"spent_usd": None, "cap_usd": cap, "exhausted": False}
     return {"spent_usd": round(spent, 6), "cap_usd": cap, "exhausted": spent >= cap}

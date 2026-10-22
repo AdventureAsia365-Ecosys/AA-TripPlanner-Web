@@ -2,15 +2,22 @@
 // maps to, and the headers every Lambda call carries. No Next imports, so `npm test` runs it.
 // Server-only by convention: the headers carry the shared API key and the guest token.
 import { GUEST_TOKEN_HEADER } from "./guestToken.ts";
+import { REQUEST_ID_HEADER } from "./requestId.ts";
 
 // AA-827 / AA-909: every Lambda call carries the shared key and, when the request has one, the guest
 // token (HttpOnly cookie, or the one middleware.ts minted on this request). Mutations and the four
 // trip reads both need it: the Lambda answers 404 to a read without the owner's token. The token is
 // never logged or echoed.
-export function tripHeaders(apiKey: string, guestToken?: string | null): Record<string, string> {
+// AA-871: and the request id (lib/requestId.ts), which the Lambda binds to its log lines.
+export function tripHeaders(
+  apiKey: string,
+  guestToken?: string | null,
+  requestId?: string | null,
+): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
   if (apiKey) h["x-tripplanner-key"] = apiKey;
   if (guestToken) h[GUEST_TOKEN_HEADER] = guestToken;
+  if (requestId) h[REQUEST_ID_HEADER] = requestId;
   return h;
 }
 

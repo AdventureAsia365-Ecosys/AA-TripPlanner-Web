@@ -24,12 +24,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from backend import config
+from backend.shared import observability
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 
@@ -153,4 +153,4 @@ async def authorize_read(conn, trip_id: str, token: Optional[str]) -> str:
 
 def emit(outcome: str, route: str) -> None:
     """One JSON log line per guarded request. Never carries a token, hash, session_id or trip_id."""
-    print(json.dumps({"evt": "guest_auth", "outcome": outcome, "route": route}), flush=True)
+    observability.emit("guest_auth", outcome=outcome, route=route)  # AA-871: + request_id when bound
