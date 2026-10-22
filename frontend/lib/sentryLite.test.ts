@@ -80,3 +80,9 @@ test("posts to the envelope endpoint with the public key", async () => {
   const auth = (seen!.init.headers as Record<string, string>)["x-sentry-auth"];
   assert.match(auth, /sentry_key=pubkey/);
 });
+
+test("SENTRY_ENVIRONMENT wins over the Vercel target", () => {
+  const ev = buildEvent(new Error("x"), REQ, CTX, { SENTRY_ENVIRONMENT: "dev", VERCEL_ENV: "production" });
+  assert.equal(ev.environment, "dev");
+  assert.equal(buildEvent(new Error("x"), REQ, CTX, { VERCEL_ENV: "preview" }).environment, "preview");
+});
