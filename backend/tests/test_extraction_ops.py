@@ -1,17 +1,15 @@
-"""AA-712 slice 6a (ADR 0007): the place pipeline is CIS's. This repo keeps only read-only checks
-over the frozen place tables; the writer ops answer 410 and no module writes place data."""
+"""AA-712 slice 6a (ADR 0007): the place pipeline is CIS's; AA-712 X4: this repo reads CIS content only through the
+catalog views. Every extraction op answers 410, no module writes place data, and no module reads anything of
+CIS but catalog.* (plus the model gateway tables) or a frozen tripplanner place table (dropped by tp-018)."""
 from __future__ import annotations
 
 import ast
 import re
-import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 
-from backend.extraction import checks, lambda_entry
-from backend.shared import catalog_rls
+from backend.extraction import lambda_entry
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -46,9 +44,20 @@ def test_no_backend_module_writes_place_data():
     assert offenders == []
 
 
-# AA-847: CIS 254 revokes the tripplanner grants of CIS 179 (raw_tours(tour_id, country)) and 180 (tour_atoms
-# columns). No backend module may read those tables again; catalog.v_* is the read path (ADR 0001).
-_REVOKED_READ = re.compile(r"\bsilver_aa_internal\.raw_tours\b|\bacp_contract\.tour_atoms\b", re.IGNORECASE)
+# AA-712 X4: CIS 270 revokes every tripplanner grant on CIS objects except the catalog views and the model gateway
+# (CIS 254 already revoked raw_tours (179) and tour_atoms (180)); tp-018 drops the frozen place tables. So the only
+# schema-qualified objects a backend SQL string may name are these.
+_QUALIFIED = re.compile(r"\b(shared|gold_aa_internal|silver_aa_internal|acp_\w+|geo|tripplanner|catalog|booking|public)"
+                        r"\.(\w+)\b", re.IGNORECASE)
+_ALLOWED_TRIPPLANNER = {"sessions", "customers", "trip_events", "trip_drafts", "outbox", "narration_cache",
+                        "llm_spend_daily", "component_id_map"}
+_ALLOWED_SHARED = {"llm_role_config", "llm_model_catalog", "llm_call_log"}   # CIS 173, the model gateway
+
+
+def _allowed(schema: str, name: str) -> bool:
+    schema, name = schema.lower(), name.lower()
+    return (schema == "catalog" or (schema == "tripplanner" and name in _ALLOWED_TRIPPLANNER)
+            or (schema == "shared" and name in _ALLOWED_SHARED))
 
 
 def _sql_strings(text: str):
@@ -62,19 +71,30 @@ def _sql_strings(text: str):
             yield n.value
 
 
-def test_no_backend_module_reads_raw_tours_or_tour_atoms():
-    offenders = [f"{rel}: {m.group(0)}" for rel, text in _backend_modules() for lit in _sql_strings(text)
-                 for m in _REVOKED_READ.finditer(lit)]
+def _foreign_reads(text: str) -> list[str]:
+    return [m.group(0) for lit in _sql_strings(text) for m in _QUALIFIED.finditer(lit)
+            if not _allowed(m.group(1), m.group(2))]
+
+
+def test_no_backend_module_reads_cis_internals_or_the_frozen_place_tables():
+    offenders = [f"{rel}: {hit}" for rel, text in _backend_modules() for hit in _foreign_reads(text)]
     assert offenders == []
 
 
-def test_revoked_read_guard_catches_the_old_reader():
+def test_read_guard_catches_the_old_readers():
     old = ('ACTIVE_TOURS_SQL = """\n    SELECT pt.tour_id FROM gold_aa_internal.published_tours pt\n'
-           '    JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id\n"""\n')
-    assert any(_REVOKED_READ.search(lit) for lit in _sql_strings(old))
-    doc = '"""Reads acp_contract.tour_atoms? No."""\n# nor silver_aa_internal.raw_tours\n'
-    assert not any(_REVOKED_READ.search(lit) for lit in _sql_strings(doc))
-    assert "catalog.v_tour" in catalog_rls.ACTIVE_TOURS_SQL
+           '    JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id\n"""\n'
+           'X = ("SELECT * FROM tripplanner.itinerary_components c "\n'
+           '     "JOIN shared.destinations d ON d.id = c.destination_id")\n'
+           'Y = "SELECT * FROM acp_contract.v_active_tour_atoms, tripplanner.tour_stop, shared.v_tour_photos"\n')
+    assert sorted(_foreign_reads(old)) == sorted([
+        "gold_aa_internal.published_tours", "silver_aa_internal.raw_tours", "tripplanner.itinerary_components",
+        "shared.destinations", "acp_contract.v_active_tour_atoms", "tripplanner.tour_stop", "shared.v_tour_photos"])
+    ok = ('"""Docstring prose may name gold_aa_internal.published_tours."""\n# and so may tripplanner.tour_stop\n'
+          'A = "SELECT * FROM catalog.v_tour_component c JOIN catalog.v_destination d USING (destination_id)"\n'
+          'B = "INSERT INTO shared.llm_call_log (stage) VALUES ($1)"\n'
+          'C = "SELECT * FROM tripplanner.component_id_map"\n')
+    assert _foreign_reads(ok) == []
 
 
 def test_guard_pattern_catches_the_old_writers():
@@ -94,8 +114,8 @@ def test_guard_pattern_catches_the_old_writers():
     assert not _COPY.search('copy_records_to_table("trip_events", schema_name="tripplanner")')
 
 
-# backend.extraction holds only the read-only checks now; every other submodule was a writer.
-_EXTRACTION_MODULES = {"checks", "lambda_entry"}
+# backend.extraction holds only the 410 entry point now (writers removed in slice 6a, checks in X4).
+_EXTRACTION_MODULES = {"lambda_entry"}
 
 
 def _extraction_imports(text: str) -> set[str]:
@@ -114,7 +134,7 @@ def _extraction_imports(text: str) -> set[str]:
     return found
 
 
-def test_extraction_package_holds_only_the_read_only_checks():
+def test_extraction_package_holds_only_the_entry_point():
     present = {p.stem for p in (BACKEND / "extraction").glob("*.py")} - {"__init__"}
     assert present == _EXTRACTION_MODULES
 
@@ -136,111 +156,16 @@ def no_db(monkeypatch):
     monkeypatch.setattr("backend.shared.db.get_pool", boom)
 
 
-@pytest.mark.parametrize("op", ["tour_days", "components", "relink", "tour_graph", "prune"])
-async def test_removed_writer_ops_answer_410(no_db, op):
+@pytest.mark.parametrize("op", ["tour_days", "components", "relink", "tour_graph", "prune",
+                                "list", "orphans", "neighbours"])
+async def test_removed_ops_answer_410(no_db, op):
     out = await lambda_entry.run_extraction_event({"op": op, "tour_ids": ["t1"]})
     assert out["status"] == 410 and out["removed"] is True
     assert out["error"] == f"unknown extraction op {op!r}"
-    assert "CIS" in out["moved_to"] and out["ops"] == ["list", "orphans", "neighbours"]
+    assert "CIS" in out["moved_to"] and out["ops"] == []
 
 
 @pytest.mark.parametrize("spec", [{"op": "nope"}, {}, None])
 async def test_unknown_op_answers_400(no_db, spec):
     out = await lambda_entry.run_extraction_event(spec)
     assert out["status"] == 400 and "removed" not in out and out["error"].startswith("unknown extraction op")
-
-
-class _Pool:
-    def __init__(self, conn):
-        self.conn = conn
-
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.conn
-
-
-async def test_neighbours_op_reads_the_frozen_graph(monkeypatch):
-    dest, via = uuid.uuid4(), uuid.uuid4()
-
-    class Conn:
-        async def fetch(self, sql, *args):
-            assert "tripplanner.tour_graph_edge" in sql and args == (str(dest), 5)
-            return [{"destination_id": dest, "via_destination_id": via, "tour_count": 2, "via_name": None}]
-
-    async def pool():
-        return _Pool(Conn())
-    monkeypatch.setattr("backend.shared.db.get_pool", pool)
-    out = await lambda_entry.run_extraction_event({"op": "neighbours", "destination_id": str(dest), "limit": 5})
-    assert out["op"] == "neighbours" and isinstance(out["query_ms"], float)
-    assert out["neighbours"] == [{"destination_id": str(dest), "via_destination_id": str(via),
-                                  "tour_count": 2, "via_name": None}]
-
-
-# --- checks ------------------------------------------------------------------------------------
-
-class _ListDb:
-    def __init__(self, tours, hashes):
-        self.tours, self.hashes = tours, hashes
-        self.tenant = None
-
-    @asynccontextmanager
-    async def transaction(self):
-        yield
-
-    async def execute(self, sql, *args):
-        if "set_config('app.tenant_id'" in sql:
-            self.tenant = args[0]
-
-    async def fetch(self, sql, *args):
-        # published_tours / raw_tours are tenant RLS: nothing is visible without app.tenant_id
-        return self.tours if self.tenant else []
-
-    async def fetchval(self, sql, tour_id):
-        return self.hashes.get(tour_id)
-
-
-def test_source_hash_changes_with_the_text_and_tolerates_none():
-    assert checks.source_hash("a") != checks.source_hash("b")
-    assert checks.source_hash(None) == checks.source_hash("")
-
-
-async def test_list_tours_marks_changed_or_missing_itineraries_stale():
-    tours = [{"tour_id": "a", "country": "Laos", "aa_name": "A", "aa_itineraries": "x"},
-             {"tour_id": "b", "country": "Laos", "aa_name": "B", "aa_itineraries": "y"},
-             {"tour_id": "c", "country": "Laos", "aa_name": "C", "aa_itineraries": "z"}]
-    db = _ListDb(tours, {"a": checks.source_hash("x"), "b": checks.source_hash("old")})
-    stale = {t["tour_id"]: t["stale"] for t in await checks.list_tours(db)}
-    assert stale == {"a": False, "b": True, "c": True}
-
-
-async def test_catalog_reads_set_the_aa_tenant_for_rls():
-    db = _ListDb([{"tour_id": "a", "country": "Laos", "aa_name": "A", "aa_itineraries": "x"}], {})
-    assert len(await checks.list_tours(db)) == 1
-    assert db.tenant == "00000000-0000-0000-0000-000000000001"
-
-
-async def test_orphans_counts_rows_of_tours_no_longer_active(monkeypatch):
-    """AA-731: read-only check after a rerun wave / Master trash."""
-    async def fake_catalog(db, sql, *args):
-        assert sql == catalog_rls.ACTIVE_TOURS_SQL
-        return [{"tour_id": "a"}, {"tour_id": "b"}]
-
-    class Db:
-        async def fetch(self, sql, active):
-            assert active == ["a", "b"] and "NOT (source_tour_id = ANY" in sql
-            return [{"source_tour_id": "gone", "n": 4}]
-
-        async def fetchval(self, sql, active):
-            return 2
-
-    monkeypatch.setattr(catalog_rls, "fetch_catalog", fake_catalog)
-    assert await checks.orphans(Db()) == {"active_tours": 2, "orphan_components": 4,
-                                          "orphan_component_tours": ["gone"], "orphan_tour_day": 2}
-
-
-async def test_orphans_refuses_when_no_active_tour_is_visible(monkeypatch):
-    async def empty(db, sql, *args):
-        return []
-
-    monkeypatch.setattr(catalog_rls, "fetch_catalog", empty)
-    assert await checks.orphans(object()) == {"error": "no active tours visible"}

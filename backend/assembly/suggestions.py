@@ -7,7 +7,7 @@ what they've already pinned, without repeating a destination already in the trip
 Route-constrained (AA-674, PR-11): every trip should stay coverable by tours we
 actually sell, possibly several chained. So the candidates are what real tours do
 NEXT from where the trip ends:
-  - take the Tour Graph stops (tripplanner.tour_stop, AA-673) within JUNCTION_KM
+  - take the Tour Graph stops (catalog.v_tour_stop, AA-673) within JUNCTION_KM
     of the trip's last stop (the same place, or a transfer to another tour);
   - for each tour stopping there, the components of the days that follow, up to
     its next stop somewhere else, are the candidates.
@@ -20,9 +20,10 @@ falls back to the previous behaviour: taste within the trip's countries.
 This lives in the Assembly Lambda (not Browse): it reads per-visitor trip
 state, so it must never be cached across visitors.
 
-AA-847 (AA-712 slice 6c): with PLACES_SOURCE=cis every read comes from the CIS catalog views — the taste vectors
-and countries from catalog.v_tour_component / v_destination, the route candidates from v_graph_node, v_tour_stop
-and v_tour_component, the fallback through vector_topk.CIS (HNSW top-k over catalog.v_component_embedding).
+AA-847 (AA-712 slice 6c): every read comes from the CIS catalog views — the taste vectors and countries from
+catalog.v_tour_component / v_destination, the route candidates from v_graph_node, v_tour_stop and
+v_tour_component, the fallback through vector_topk.CIS (HNSW top-k over catalog.v_component_embedding). The
+frozen tripplanner place tables of the first pilot are gone (AA-712 X4).
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ from typing import Any, Optional, Protocol
 
 from backend.assembly import events as events_mod
 from backend.assembly import sequencing
-from backend.shared import places_source, vector_topk
+from backend.shared import vector_topk
 
 log = logging.getLogger(__name__)
 
@@ -75,44 +76,9 @@ JUNCTION_KM = 150.0
 _KM_SQL = ("2 * 6371 * asin(sqrt(power(sin(radians(n.lat - $2) / 2), 2) + cos(radians($2)) "
            "* cos(radians(n.lat)) * power(sin(radians(n.lng - $3) / 2), 2)))")
 
-# $1 taste vector, $2/$3 last stop lat/lng, $4 junction km, $5 pinned destination ids, $6 limit.
-ROUTE_CANDIDATES_SQL = f"""
-    WITH near AS (
-        SELECT n.destination_id, {_KM_SQL} AS transfer_km
-        FROM tripplanner.tour_graph_node n
-        WHERE {_KM_SQL} <= $4
-    ), here AS (
-        SELECT s.source_tour_id, s.day_index, s.destination_id, nr.transfer_km
-        FROM tripplanner.tour_stop s JOIN near nr ON nr.destination_id = s.destination_id
-    ), nxt AS (
-        -- the tour's next stop somewhere else (a stay of several nights is skipped over)
-        SELECT h.source_tour_id, h.day_index AS from_day, h.transfer_km,
-               (SELECT min(s2.day_index) FROM tripplanner.tour_stop s2
-                WHERE s2.source_tour_id = h.source_tour_id AND s2.day_index > h.day_index
-                  AND s2.destination_id <> h.destination_id) AS to_day
-        FROM here h
-    )
-    SELECT d.id, d.name, d.lat, d.lng, d.country,
-           COUNT(DISTINCT c.id) AS component_count,
-           MIN(c.embedding <=> $1::vector) AS best_distance,
-           MIN(nx.transfer_km) AS transfer_km,
-           COUNT(DISTINCT nx.source_tour_id) AS tour_count
-    FROM nxt nx
-    JOIN tripplanner.itinerary_components c
-      ON c.source_tour_id = nx.source_tour_id
-     AND c.source_day_index > nx.from_day AND c.source_day_index <= nx.to_day
-    JOIN shared.destinations d ON d.id = c.destination_id
-    WHERE nx.to_day IS NOT NULL AND c.embedding IS NOT NULL AND d.id <> ALL($5::uuid[])
-      AND ($7::text IS NULL OR c.activity = $7::text)
-      AND ($8::text IS NULL OR c.intensity_level = $8::text)
-    GROUP BY d.id, d.name, d.lat, d.lng, d.country
-    ORDER BY best_distance ASC
-    LIMIT $6
-"""
-
-
-# AA-847 slice 6c (PLACES_SOURCE=cis): the same query over the catalog views; same parameters. The stops are read
-# once (MATERIALIZED) instead of once per candidate tour stop.
+# $1 taste vector, $2/$3 last stop lat/lng, $4 junction km, $5 pinned destination ids, $6 limit, $7 activity,
+# $8 intensity. AA-847 slice 6c: over the catalog views; the stops are read once (MATERIALIZED) instead of once per
+# candidate tour stop.
 # AA-847 gate (after CIS 258): the next stop is an equality join on the tour + GROUP BY, not a correlated subquery.
 # The subquery form was inlined into two places (the WHERE and the join to v_tour_component), each a CTE rescan of
 # every stop per row; with 258's better row estimates the join copy ran once per candidate pair (Dev Laos 16,544
@@ -124,7 +90,7 @@ ROUTE_CANDIDATES_SQL = f"""
 # row (Dev Laos 154 loops, 213 ms). comp reads only the candidate tours' components (an InitPlan array of nxt's
 # tours: a leakproof = ANY the view lets through) and keeps the distance, not the 1536-d vector; dest reads only
 # the destinations comp reached. Inner joins in another order, the same filters: the same rows.
-ROUTE_CANDIDATES_SQL_CIS = f"""
+ROUTE_CANDIDATES_SQL = f"""
     WITH near AS MATERIALIZED (
         SELECT n.destination_id, {_KM_SQL} AS transfer_km
         FROM catalog.v_graph_node n
@@ -173,21 +139,13 @@ ROUTE_CANDIDATES_SQL_CIS = f"""
 # Taste vectors + countries of the pinned components. $1 = component ids.
 TASTE_SQL = """
     SELECT c.embedding, d.country
-    FROM tripplanner.itinerary_components c
-    JOIN shared.destinations d ON d.id = c.destination_id
-    WHERE c.id = ANY($1::uuid[])
-"""
-TASTE_SQL_CIS = """
-    SELECT c.embedding, d.country
     FROM catalog.v_tour_component c
     JOIN catalog.v_destination d ON d.destination_id = c.destination_id
     WHERE c.component_id = ANY($1::uuid[])
 """
 # The trip's countries as an InitPlan array of destination ids (stays inside the index-ordered scan). {i} = param.
-COUNTRY_CLAUSE = ("AND c.destination_id = ANY(ARRAY(SELECT dc.id FROM shared.destinations dc "
+COUNTRY_CLAUSE = ("AND c.destination_id = ANY(ARRAY(SELECT dc.destination_id FROM catalog.v_destination dc "
                   "WHERE dc.country = ANY(${i}::text[])))")
-COUNTRY_CLAUSE_CIS = ("AND c.destination_id = ANY(ARRAY(SELECT dc.destination_id FROM catalog.v_destination dc "
-                      "WHERE dc.country = ANY(${i}::text[])))")
 
 
 def _rank_norm(index: int, count: int) -> float:
@@ -289,8 +247,8 @@ async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT,
 
     # Pull the embeddings of the pinned components to build the taste vector,
     # plus the set of countries the trip already touches (for a same-region
-    # bias). Both come from itinerary_components + destinations.
-    rows = await conn.fetch(places_source.pick(TASTE_SQL, TASTE_SQL_CIS), pinned_component_ids)
+    # bias). Both come from the catalog component + destination views.
+    rows = await conn.fetch(TASTE_SQL, pinned_component_ids)
     vectors = [
         _parse_vector(r["embedding"]) for r in rows if r["embedding"] is not None
     ]
@@ -309,8 +267,7 @@ async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT,
     # Route-constrained first: what real tours do next from here (AA-674).
     if last_stop is not None:
         route = [dict(r) for r in await conn.fetch(
-            places_source.pick(ROUTE_CANDIDATES_SQL, ROUTE_CANDIDATES_SQL_CIS), taste, last_stop[0], last_stop[1],
-            JUNCTION_KM,
+            ROUTE_CANDIDATES_SQL, taste, last_stop[0], last_stop[1], JUNCTION_KM,
             dest_exclude, candidate_limit, activity, intensity)]
         if route:
             return {"suggestions": _rerank_by_route(route, last_stop, int(limit)), "mode": "route"}
@@ -320,14 +277,13 @@ async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT,
     # If the trip touches no known country, fall back to global ranking. Pull
     # a WIDER pool than we return so the geography re-rank below has room to
     # promote a nearby-but-slightly-less-similar place.
-    # AA-712: every clause reads only itinerary_components (alias c), so the top-k scan stays
+    # AA-712: every clause reads only the component columns (alias c), so the top-k scan stays
     # index-ordered (HNSW) — the country as an InitPlan array of destination ids, not a join.
-    cis = places_source.is_cis()
     params: list[Any] = [taste, dest_exclude]
     extra = []
     if countries:
         params.append(countries)
-        extra.append((COUNTRY_CLAUSE_CIS if cis else COUNTRY_CLAUSE).replace("{i}", str(len(params))))
+        extra.append(COUNTRY_CLAUSE.replace("{i}", str(len(params))))
     if activity:
         params.append(activity)
         extra.append(f"AND c.activity = ${len(params)}::text")
@@ -338,13 +294,13 @@ async def suggest(conn: _Conn, trip_id: str, limit: int = SUGGEST_LIMIT,
     # Transaction scopes hnsw.ef_search (SET LOCAL). Inside the trip's countries the candidate set
     # is already one country's components: the exact aggregate is cheap there, so skip the top-k
     # passes (they would mostly come up short for small countries, e.g. Bhutan with a 12-24 pool).
-    # keep_where "": on cis the views already hold only live tours on usable places (CIS 253: suspect and merged
+    # keep_where "": the views already hold only live tours on usable places (CIS 253: suspect and merged
     # places never leave catalog.v_component_embedding / v_tour_component).
     async with conn.transaction():
         rows, mode = await vector_topk.ranked_destinations(
             conn, scan_where=scan_where, keep_where="", params=params,
             dest_cols=("id", "name", "lat", "lng", "country"), limit=candidate_limit,
-            exact_first=bool(countries), source=vector_topk.CIS if cis else vector_topk.LEGACY)
+            exact_first=bool(countries), source=vector_topk.CIS)
     log.info("suggest fallback: %d candidates via %s", len(rows), mode)
     candidates = [dict(r) for r in rows]
     if not candidates:

@@ -138,7 +138,7 @@ class FakeConn:
                 {"event_type": e["event_type"], "payload": e["payload"]}
                 for e in self.events if e["trip_id"] == trip_id
             ]
-        if q.startswith("SELECT c.id, c.name, c.activity"):
+        if q.startswith("SELECT c.component_id AS id, c.name, c.activity"):
             ids = args[0]
             return [dict(CATALOG[i]) for i in ids if i in CATALOG]
         return []

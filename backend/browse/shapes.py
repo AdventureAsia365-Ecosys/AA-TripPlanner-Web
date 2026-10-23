@@ -9,16 +9,13 @@ never carry geometry (a long river would ship in every tile it crosses); the cli
 response is CDN-cacheable (same ids → same answer until the next shape change).
 
 ``status``: ok / manual (draw it), approximate (draw it dashed, label "approximate route"), pending / not_found /
-failed (no geometry: the trip map draws the provisional dashed line between the day's stops). On the legacy places
-source there are no lines: the answer is empty.
+failed (no geometry: the trip map draws the provisional dashed line between the day's stops).
 """
 from __future__ import annotations
 
 import json
 import re
 from typing import Any, Optional, Protocol
-
-from backend.shared import places_source
 
 MAX_IDS = 50
 LEVELS = ("lo", "mid")
@@ -64,8 +61,6 @@ async def shapes(ids_raw: Optional[str], level: Optional[str], *, pool: _Pool) -
     lvl = (level or "lo").lower()
     if lvl not in LEVELS:
         raise ShapesError(f"level must be one of {LEVELS}")
-    if not places_source.is_cis():
-        return {"level": lvl, "shapes": []}
     rows = await pool.fetch(SHAPES_SQL[lvl], ids)
     return {"level": lvl,
             "shapes": [{"id": str(r["destination_id"]), "status": r["shape_status"], "geometry": _geojson(r["shape"])}

@@ -1,8 +1,9 @@
-"""AA-712 slice 6b — browse readers behind PLACES_SOURCE=legacy|cis. Offline: a recording fake pool.
+"""AA-712 slice 6b / X4 — the browse readers over the CIS catalog views. Offline: a recording fake pool.
 
-On the cis path every browse place / tour-graph read must come from the CIS catalog views (migration 228)
-and never touch the frozen tripplanner place tables, shared.destinations, the gold tables or the AA tenant
-GUC (the views are live-only and read with their owner's rights).
+Every browse place / tour-graph read must come from the CIS catalog views (migration 228 and later) and never
+touch a tripplanner place table (dropped by tp-018), shared.destinations, the gold tables or the AA tenant GUC
+(the views are live-only and read with their owner's rights). The PLACES_SOURCE=legacy|cis switch this file was
+named after is gone (AA-712 X4).
 """
 from __future__ import annotations
 
@@ -12,12 +13,10 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from backend import config
 from backend.browse import handler as h
 from backend.browse import routes as rt
 from backend.browse import search as search_mod
 from backend.browse.filters import BrowseFilters
-from backend.shared import places_source
 
 SRC_A = "664086a9-df2d-481c-a4fa-af67f782a6a8"
 SRC_B = "bd183835-73ef-494e-baf7-fb88e74b57f4"
@@ -26,7 +25,7 @@ TOUR_B = "2bc45c55-fb32-4ca1-818a-62c3353ec556"
 VTE = "5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f"
 LPB = "6d7e8f9a-0b1c-4d2e-8f3a-4b5c6d7e8f9a"
 
-# Anything the cis path must not read.
+# Anything a browse reader must not read.
 LEGACY_OBJECTS = re.compile(r"tripplanner\.|shared\.destinations|gold_aa_internal|silver_aa_internal|app\.tenant_id")
 
 
@@ -75,11 +74,6 @@ class RecordingPool:
         yield self
 
 
-@pytest.fixture
-def cis(monkeypatch):
-    monkeypatch.setattr(config, "PLACES_SOURCE", "cis")
-
-
 def _assert_cis_only(pool: RecordingPool):
     assert pool.sql, "no statement issued"
     for q in pool.sql:
@@ -87,37 +81,16 @@ def _assert_cis_only(pool: RecordingPool):
     assert any("catalog.v_" in q for q in pool.sql)
 
 
-# --- the flag ---------------------------------------------------------------
-
-@pytest.mark.parametrize("raw,want", [(None, "legacy"), ("", "legacy"), ("legacy", "legacy"), ("cis", "cis"),
-                                      (" CIS ", "cis"), ("views", "legacy")])
-def test_current_reads_the_env_value_and_defaults_to_legacy(monkeypatch, raw, want):
-    monkeypatch.setattr(config, "PLACES_SOURCE", raw)
-    assert places_source.current() == want
-
-
-def test_default_is_legacy():
-    assert config.PLACES_SOURCE == "legacy"  # unset in the test env
-    assert not places_source.is_cis()
-
-
-async def test_legacy_tiles_still_read_the_frozen_tables_and_say_so():
-    pool = RecordingPool()
-    resp = await h.route("GET", "/browse/tiles/17_102", {}, pool=pool)
-    assert resp["statusCode"] == 200 and resp["headers"]["x-places-source"] == "legacy"
-    assert "tripplanner.itinerary_components" in pool.sql[0]
-
-
-# --- cis path: one test per browse reader ------------------------------------
+# --- one test per browse reader ----------------------------------------------
 
 DEST_ROW = {"id": VTE, "name": "Vientiane", "lat": 17.97, "lng": 102.6, "located_by": "geoapify",
             "precision": "point", "component_count": 4}
 
 
-async def test_cis_tiles_read_the_catalog_views_and_carry_located_by(cis):
+async def test_tiles_read_the_catalog_views_and_carry_located_by():
     pool = RecordingPool([("catalog.v_tour_component", [DEST_ROW])])
     resp = await h.route("GET", "/browse/tiles/17_102", {"activity": "culinary", "country": "Laos"}, pool=pool)
-    assert resp["statusCode"] == 200 and resp["headers"]["x-places-source"] == "cis"
+    assert resp["statusCode"] == 200 and "x-places-source" not in resp["headers"]
     body = json.loads(resp["body"])
     assert body["destinations"] == [DEST_ROW | {"id": VTE}]
     _assert_cis_only(pool)
@@ -125,7 +98,7 @@ async def test_cis_tiles_read_the_catalog_views_and_carry_located_by(cis):
     assert "c.activity = $5" in q and "d.country = $6" in q   # same filter columns on the view
 
 
-async def test_cis_countries_and_by_country(cis):
+async def test_countries_and_by_country():
     pool = RecordingPool([("GROUP BY d.country", [{"country": "Laos", "component_count": 120}]),
                           ("WHERE d.country = $1", [DEST_ROW])])
     resp = await h.route("GET", "/browse/countries", {}, pool=pool)
@@ -135,7 +108,7 @@ async def test_cis_countries_and_by_country(cis):
     _assert_cis_only(pool)
 
 
-async def test_cis_destination_detail_lists_view_components(cis):
+async def test_destination_detail_lists_view_components():
     pool = RecordingPool([
         ("FROM catalog.v_destination WHERE destination_id", [
             {"id": VTE, "name": "Vientiane", "country": "Laos", "cover_image_url": None,
@@ -151,7 +124,7 @@ async def test_cis_destination_detail_lists_view_components(cis):
     _assert_cis_only(pool)
 
 
-async def test_cis_merged_destination_redirects_to_its_keeper(cis):
+async def test_merged_destination_redirects_to_its_keeper():
     """AA-847 (CIS 257): a merged id has no v_destination row; v_destination_redirect names the keeper → 301."""
     pool = RecordingPool([("FROM catalog.v_destination_redirect", [{"keeper_id": LPB}])])
     resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
@@ -161,14 +134,14 @@ async def test_cis_merged_destination_redirects_to_its_keeper(cis):
     _assert_cis_only(pool)
 
 
-async def test_cis_unknown_destination_is_still_404(cis):
+async def test_unknown_destination_is_still_404():
     pool = RecordingPool([])
     resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
     assert resp["statusCode"] == 404
     assert any("v_destination_redirect" in q for q in pool.sql)
 
 
-async def test_cis_redirect_lookup_failure_is_still_404(cis):
+async def test_redirect_lookup_failure_is_still_404():
     class Broken(RecordingPool):
         async def fetchrow(self, query, *args):
             if "v_destination_redirect" in query:
@@ -178,13 +151,7 @@ async def test_cis_redirect_lookup_failure_is_still_404(cis):
     assert resp["statusCode"] == 404
 
 
-async def test_legacy_never_reads_the_redirect_view():
-    pool = RecordingPool([("v_destination_redirect", [{"keeper_id": LPB}])])
-    resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
-    assert resp["statusCode"] == 404 and not any("v_destination_redirect" in q for q in pool.sql)
-
-
-async def test_cis_search_with_a_country_is_the_exact_aggregate_without_tenant_or_active_tour_join(cis):
+async def test_search_with_a_country_is_the_exact_aggregate_without_tenant_or_active_tour_join():
     pool = RecordingPool([("catalog.v_tour_component", [DEST_ROW | {"best_distance": 0.2}])])
     out = await search_mod.search("night market", BrowseFilters(country="Laos", season=11), pool=pool,
                                   embedder=lambda q: [0.0] * 4)
@@ -196,7 +163,7 @@ async def test_cis_search_with_a_country_is_the_exact_aggregate_without_tenant_o
     _assert_cis_only(pool)
 
 
-async def test_cis_search_without_a_country_is_the_hnsw_top_k_over_the_embedding_view(cis, monkeypatch):
+async def test_search_without_a_country_is_the_hnsw_top_k_over_the_embedding_view(monkeypatch):
     """AA-847: catalog.v_component_embedding (CIS 253, not a barrier view) serves ORDER BY <=> LIMIT k."""
     from backend.shared import vector_topk
     monkeypatch.setattr(vector_topk, "_iterative", None)
@@ -213,8 +180,8 @@ async def test_cis_search_without_a_country_is_the_hnsw_top_k_over_the_embedding
     _assert_cis_only(pool)
 
 
-def test_cis_search_where_keeps_the_country_inside_the_scan():
-    scan, keep, params = search_mod.cis_search_where(BrowseFilters(activity="trekking", country="Laos"))
+def test_search_where_keeps_the_country_inside_the_scan():
+    scan, keep, params = search_mod.search_where(BrowseFilters(activity="trekking", country="Laos"))
     assert params == ["trekking", "Laos"] and keep == ""
     assert "c.activity = $2" in scan and "ANY(ARRAY(SELECT dc.destination_id FROM catalog.v_destination dc" in scan
 
@@ -238,7 +205,7 @@ def _graph_rules():
     ]
 
 
-async def test_cis_routes_key_by_source_id_and_answer_the_current_tour_id(cis):
+async def test_routes_key_by_source_id_and_answer_the_current_tour_id():
     pool = RecordingPool(_graph_rules())
     resp = await h.route("GET", "/browse/routes", {"country": "Laos", "days": "3"}, pool=pool)
     body = json.loads(resp["body"])
@@ -251,57 +218,35 @@ async def test_cis_routes_key_by_source_id_and_answer_the_current_tour_id(cis):
     _assert_cis_only(pool)
 
 
-async def test_only_the_cis_candidate_reads_force_custom_plans(monkeypatch):
-    """AA-847: SET LOCAL plan_cache_mode precedes the cis single + chain reads (in their own transaction);
-    the legacy path never sets it."""
-    monkeypatch.setattr(config, "PLACES_SOURCE", "cis")
+async def test_the_candidate_reads_force_custom_plans():
+    """AA-847: SET LOCAL plan_cache_mode precedes the single + chain reads (in their own transaction)."""
     pool = RecordingPool(_graph_rules())
     await h.route("GET", "/browse/routes", {"country": "Laos", "days": "3"}, pool=pool)
     assert pool.sql[0] == rt.FORCE_CUSTOM_PLAN_SQL == "SET LOCAL plan_cache_mode = force_custom_plan"
-    assert pool.sql[1] == rt.SINGLE_SQL_CIS and pool.sql[2] == rt.CHAIN_SQL_CIS
+    assert pool.sql[1] == rt.SINGLE_SQL and pool.sql[2] == rt.CHAIN_SQL
     assert pool.sql.count(rt.FORCE_CUSTOM_PLAN_SQL) == 1
-    monkeypatch.setattr(config, "PLACES_SOURCE", "legacy")
-    pool = RecordingPool()
-    await h.route("GET", "/browse/routes", {"country": "Laos", "days": "3"}, pool=pool)
-    assert pool.sql[:2] == [rt.SINGLE_SQL, rt.CHAIN_SQL]
-    assert not any("plan_cache_mode" in q for q in pool.sql)
 
 
-async def test_cis_chain_sql_reads_views_only():
-    for q in (rt.SINGLE_SQL_CIS, rt.CHAIN_SQL_CIS, rt.DAYS_SQL_CIS, rt.COMPONENTS_SQL_CIS,
-              rt.PLACE_COMPONENTS_SQL_CIS, rt.TOURS_BY_SOURCE_SQL, rt.SOURCE_BY_TOUR_SQL):
+async def test_graph_sql_reads_views_only():
+    for q in (rt.SINGLE_SQL, rt.CHAIN_SQL, rt.DAYS_SQL, rt.COMPONENTS_SQL,
+              rt.PLACE_COMPONENTS_SQL, rt.TOURS_BY_SOURCE_SQL, rt.SOURCE_BY_TOUR_SQL):
         assert not LEGACY_OBJECTS.search(q) and "catalog.v_" in q
 
 
-async def test_cis_tour_route_uses_the_source_id_of_the_current_tour(cis):
+async def test_tour_route_uses_the_source_id_of_the_current_tour():
     pool = RecordingPool(_graph_rules())
     resp = await h.route("GET", "/browse/tour-route", {"tour_id": TOUR_A, "source_id": SRC_A}, pool=pool)
     body = json.loads(resp["body"])
     assert resp["statusCode"] == 200 and body["tour_id"] == TOUR_A
     assert body["proposal"]["match"] == "tour_graph"
     assert [d["component_id"] for d in body["proposal"]["days"]] == ["comp-1", "comp-2", "comp-3"]
-    # same shape as /browse/routes on cis: current tour_id + the catalog source_id
+    # same shape as /browse/routes: current tour_id + the catalog source_id
     assert [(s["tour_id"], s["source_id"]) for s in body["proposal"]["segments"]] == [(TOUR_A, SRC_A)]
     assert {(d["tour_id"], d["source_id"]) for d in body["proposal"]["days"]} == {(TOUR_A, SRC_A)}
     _assert_cis_only(pool)
 
 
-async def test_legacy_tour_route_has_no_source_id():
-    pool = RecordingPool([
-        ("FROM tripplanner.tour_stop s JOIN shared.destinations", [
-            {"tour_id": TOUR_A, "day_index": 1, "destination_id": VTE, "name": "Vientiane", "lat": 0.0,
-             "lng": 0.0, "country": "Laos"}]),
-        ("FROM tripplanner.itinerary_components", [
-            {"tour_id": TOUR_A, "day_index": 1, "destination_id": VTE, "component_id": "comp-1"}]),
-        ("SELECT title FROM catalog.v_tour", [{"title": "Mekong Valley"}]),
-    ])
-    resp = await h.route("GET", "/browse/tour-route", {"tour_id": TOUR_A}, pool=pool)
-    body = json.loads(resp["body"])
-    assert resp["statusCode"] == 200 and resp["headers"]["x-places-source"] == "legacy"
-    assert all("source_id" not in r for r in (*body["proposal"]["segments"], *body["proposal"]["days"]))
-
-
-async def test_cis_tour_route_without_a_catalog_source_answers_404(cis):
+async def test_tour_route_without_a_catalog_source_answers_404():
     pool = RecordingPool()   # v_tour knows neither the tour nor the source
     resp = await h.route("GET", "/browse/tour-route", {"tour_id": TOUR_B}, pool=pool)
     assert resp["statusCode"] == 404

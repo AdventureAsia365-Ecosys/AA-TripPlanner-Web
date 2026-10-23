@@ -1,6 +1,6 @@
-"""AA-847 (AA-712 slice 6c) — the assembly readers behind PLACES_SOURCE=legacy|cis. Offline: a recording fake.
+"""AA-847 (AA-712 slice 6c / X4) — the assembly readers over the CIS catalog views. Offline: a recording fake.
 
-On the cis path every assembly place read comes from the CIS catalog views and tripplanner.component_id_map (tp-017);
+Every assembly place read comes from the CIS catalog views and tripplanner.component_id_map (tp-017);
 the trip's own state (trip_events, trip_drafts, sessions) is still tripplanner's. Never the frozen place tables,
 shared.destinations, the gold / silver tables or the AA tenant GUC. Ids from before the flip (events of an older
 draft, a browse answer cached for 30 minutes) resolve through the id-map, in one place (backend/shared/component_ids).
@@ -12,12 +12,11 @@ import re
 
 import pytest
 
-from backend import config
 from backend.assembly import activities, coverage, events, handoff, master_content, suggestions
 from backend.shared import component_ids, vector_topk
 from backend.tests.test_places_source import RecordingPool
 
-# Place data the cis path must not read (trip state under tripplanner.* is fine).
+# Place data no assembly reader may read (trip state under tripplanner.* is fine).
 PLACE_LEGACY = re.compile(r"tripplanner\.(?:itinerary_components|tour_stop|tour_leg|tour_junction|tour_graph_\w+"
                           r"|tour_day)\b|shared\.destinations|gold_aa_internal|silver_aa_internal|app\.tenant_id")
 
@@ -31,25 +30,20 @@ LPB = "6d7e8f9a-0b1c-4d2e-8f3a-4b5c6d7e8f9a"
 SRC = "664086a9-df2d-481c-a4fa-af67f782a6a8"
 
 CIS_SQL = {
-    "events.COMPONENTS_SQL_CIS": events.COMPONENTS_SQL_CIS,
-    "activities.ACTIVITIES_SQL_CIS": activities.ACTIVITIES_SQL_CIS,
-    "coverage.OPTIONS_SQL_CIS": coverage.OPTIONS_SQL_CIS,
-    "coverage.TOUR_NAMES_SQL_CIS": coverage.TOUR_NAMES_SQL_CIS,
-    "suggestions.ROUTE_CANDIDATES_SQL_CIS": suggestions.ROUTE_CANDIDATES_SQL_CIS,
-    "suggestions.TASTE_SQL_CIS": suggestions.TASTE_SQL_CIS,
-    "suggestions.COUNTRY_CLAUSE_CIS": suggestions.COUNTRY_CLAUSE_CIS,
-    "master_content.CIS_TEXTS_SQL": master_content.CIS_TEXTS_SQL,
+    "events.COMPONENTS_SQL": events.COMPONENTS_SQL,
+    "activities.ACTIVITIES_SQL": activities.ACTIVITIES_SQL,
+    "coverage.OPTIONS_SQL": coverage.OPTIONS_SQL,
+    "coverage.TOUR_NAMES_SQL": coverage.TOUR_NAMES_SQL,
+    "suggestions.ROUTE_CANDIDATES_SQL": suggestions.ROUTE_CANDIDATES_SQL,
+    "suggestions.TASTE_SQL": suggestions.TASTE_SQL,
+    "suggestions.COUNTRY_CLAUSE": suggestions.COUNTRY_CLAUSE,
+    "master_content.TEXTS_SQL": master_content.TEXTS_SQL,
     "vector_topk.topk(CIS)": vector_topk.topk_sql("c.embedding IS NOT NULL", "", ("id", "name"), 2, 6,
                                                   vector_topk.CIS),
     "vector_topk.exact(CIS)": vector_topk.exact_sql("c.embedding IS NOT NULL", "", ("id", "name"), 6,
                                                     vector_topk.CIS),
     "component_ids.MAP_SQL": component_ids.MAP_SQL,
 }
-
-
-@pytest.fixture
-def cis(monkeypatch):
-    monkeypatch.setattr(config, "PLACES_SOURCE", "cis")
 
 
 def _cis_only(pool: RecordingPool):
@@ -69,14 +63,14 @@ def _comp(cid, dest, day, name, lat=17.97, lng=102.6):
 
 
 @pytest.mark.parametrize("name", sorted(CIS_SQL))
-def test_every_cis_reader_reads_only_catalog_views_and_the_id_map(name):
+def test_every_reader_reads_only_catalog_views_and_the_id_map(name):
     q = CIS_SQL[name]
     assert not PLACE_LEGACY.search(q), q
     assert "catalog.v_" in q or "tripplanner.component_id_map" in q
     assert not re.search(r"tripplanner\.(?!component_id_map\b)", q), q
 
 
-async def test_events_fold_resolves_ids_from_before_the_flip(cis):
+async def test_events_fold_resolves_ids_from_before_the_flip():
     """add OLD_A, add OLD_B, add NEW_C, remove NEW_A (the new id of OLD_A): OLD_B and NEW_C remain, as catalog ids."""
     pool = RecordingPool([
         ("FROM tripplanner.trip_events", [_event("add_component", OLD_A), _event("add_component", OLD_B),
@@ -89,15 +83,7 @@ async def test_events_fold_resolves_ids_from_before_the_flip(cis):
     _cis_only(pool)
 
 
-async def test_events_on_legacy_never_read_the_id_map():
-    pool = RecordingPool([("FROM tripplanner.trip_events", [_event("add_component", OLD_A)]),
-                          ("FROM tripplanner.itinerary_components", [_comp(OLD_A, VTE, 1, "Vientiane")])])
-    got = await events._current_components(pool, "trip")  # noqa: SLF001
-    assert [c["id"] for c in got] == [OLD_A]
-    assert not any("component_id_map" in q for q in pool.sql)
-
-
-async def test_a_reorder_from_before_the_flip_keeps_its_order(cis):
+async def test_a_reorder_from_before_the_flip_keeps_its_order():
     pool = RecordingPool([
         ("event_type IN ('reorder'", [{"event_type": "reorder",
                                        "payload": json.dumps({"ordered_component_ids": [OLD_B, OLD_A]})}]),
@@ -106,7 +92,7 @@ async def test_a_reorder_from_before_the_flip_keeps_its_order(cis):
     assert await events._latest_explicit_order(pool, "trip") == [NEW_B, NEW_A]  # noqa: SLF001
 
 
-async def test_current_itinerary_carries_located_by_and_precision(cis):
+async def test_current_itinerary_carries_located_by_and_precision():
     pool = RecordingPool([
         ("FROM tripplanner.trip_events", [_event("add_component", NEW_C)]),
         ("FROM catalog.v_tour_component", [_comp(NEW_C, LPB, 2, "Luang Prabang") | {"precision": "area",
@@ -116,7 +102,7 @@ async def test_current_itinerary_carries_located_by_and_precision(cis):
     assert entry["component_id"] == NEW_C and entry["precision"] == "area" and entry["located_by"] == "llm"
 
 
-async def test_activities_at_a_stop_read_the_catalog(cis):
+async def test_activities_at_a_stop_read_the_catalog():
     pool = RecordingPool([
         ("FROM tripplanner.trip_events", [_event("add_component", OLD_B)]),
         ("tripplanner.component_id_map", [{"old_id": OLD_B, "new_id": NEW_B}]),
@@ -131,7 +117,7 @@ async def test_activities_at_a_stop_read_the_catalog(cis):
     _cis_only(pool)
 
 
-async def test_coverage_names_legs_from_catalog_v_tour_without_the_tenant(cis):
+async def test_coverage_names_legs_from_catalog_v_tour_without_the_tenant():
     pool = RecordingPool([
         ("FROM tripplanner.trip_events", [_event("add_component", NEW_B), _event("add_component", NEW_C)]),
         ("SELECT c.component_id AS id", [_comp(NEW_B, VTE, 1, "Vientiane"),
@@ -148,7 +134,7 @@ async def test_coverage_names_legs_from_catalog_v_tour_without_the_tenant(cis):
     _cis_only(pool)
 
 
-async def test_suggestions_read_the_catalog_route_candidates(cis):
+async def test_suggestions_read_the_catalog_route_candidates():
     pool = RecordingPool([
         ("FROM tripplanner.trip_events", [_event("add_component", NEW_B)]),
         ("SELECT c.component_id AS id", [_comp(NEW_B, VTE, 1, "Vientiane")]),
@@ -162,7 +148,7 @@ async def test_suggestions_read_the_catalog_route_candidates(cis):
     _cis_only(pool)
 
 
-async def test_suggestion_fallback_is_the_cis_top_k(cis):
+async def test_suggestion_fallback_is_the_catalog_top_k():
     pool = RecordingPool([
         ("FROM tripplanner.trip_events", [_event("add_component", NEW_B)]),
         ("SELECT c.component_id AS id", [_comp(NEW_B, VTE, 1, "Vientiane")]),
@@ -177,7 +163,7 @@ async def test_suggestion_fallback_is_the_cis_top_k(cis):
     _cis_only(pool)
 
 
-async def test_master_texts_on_cis_come_from_catalog_v_tour(cis):
+async def test_master_texts_come_from_catalog_v_tour():
     pool = RecordingPool([("FROM catalog.v_tour", [{"tour_id": SRC,
                                                     "aa_itineraries": "Day 1 — Vientiane\nMarket.\nDay 2 — LPB\nX."}])])
     texts = await master_content.load_for_tours(pool, [SRC, SRC, None])
@@ -224,26 +210,23 @@ async def test_unreadable_day_texts_never_refuse_a_hand_off(monkeypatch):
     assert await handoff.load_day_texts(RecordingPool(), ["t"]) == {}
 
 
-def test_cis_route_candidates_find_the_next_stop_by_an_equality_join():
+def test_route_candidates_find_the_next_stop_by_an_equality_join():
     """AA-847 gate after CIS 258: no correlated subquery over the stops CTE (it was inlined twice and rescanned the
     CTE once per candidate pair on Dev, 886 ms); the next stop is a join on the tour + GROUP BY, same parameters,
-    and the LIMIT breaks best_distance ties on the destination id. Legacy is unchanged."""
-    q = " ".join(suggestions.ROUTE_CANDIDATES_SQL_CIS.split())
+    and the LIMIT breaks best_distance ties on the destination id."""
+    q = " ".join(suggestions.ROUTE_CANDIDATES_SQL.split())
     assert "(SELECT min(" not in q and "FROM stops s2 WHERE" not in q
     assert "nxt AS MATERIALIZED" in q and "JOIN stops s2 ON s2.source_id = h.source_id" in q
     assert "min(s2.day_index) AS to_day" in q and "GROUP BY h.source_id, h.day_index, h.destination_id" in q
     assert "ORDER BY best_distance ASC, d.destination_id LIMIT $6" in q
     assert sorted(set(re.findall(r"\$\d", q))) == [f"${i}" for i in range(1, 9)]
-    legacy = " ".join(suggestions.ROUTE_CANDIDATES_SQL.split())
-    assert "(SELECT min(s2.day_index) FROM tripplanner.tour_stop s2" in legacy
-    assert "ORDER BY best_distance ASC LIMIT $6" in legacy
 
 
-def test_cis_route_candidates_read_each_catalog_view_once():
+def test_route_candidates_read_each_catalog_view_once():
     """AA-847 gate, round 2: v_tour_component was a security_barrier subquery on the inner side of a nested loop
     over nxt and ran once per nxt row on Dev (213 ms). Each catalog view is now read in its own MATERIALIZED CTE
     (one evaluation each); the main query joins CTEs only, and comp keeps the distance, not the vector."""
-    q = " ".join(suggestions.ROUTE_CANDIDATES_SQL_CIS.split())
+    q = " ".join(suggestions.ROUTE_CANDIDATES_SQL.split())
     ctes = dict(re.findall(r"(\w+) AS (MATERIALIZED )?\(", q))
     assert ctes == {"near": "MATERIALIZED ", "stops": "MATERIALIZED ", "here": "", "nxt": "MATERIALIZED ",
                     "comp": "MATERIALIZED ", "dest": "MATERIALIZED "}

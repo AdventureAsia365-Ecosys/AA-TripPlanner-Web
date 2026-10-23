@@ -1,21 +1,18 @@
 """Component ids across the PLACES_SOURCE flip (AA-847, AA-712 slice 6c, tp-017).
 
-With ``PLACES_SOURCE=cis`` the readers serve catalog component ids (``catalog.v_tour_component.component_id``).
-Ids from before the flip — every ``add_component`` / ``remove_component`` / ``reorder`` event of an older draft,
-and an id a browser posts from a browse answer it cached for up to 30 minutes (``cache-control: public,
-max-age=1800``) — are frozen ``tripplanner.itinerary_components`` ids. ``tripplanner.component_id_map`` (tp-017,
-filled right before the flip) maps them to catalog ids.
+The readers serve catalog component ids (``catalog.v_tour_component.component_id``). Ids from before the flip
+(22/10/2026) — every ``add_component`` / ``remove_component`` / ``reorder`` event of an older draft, or an id
+posted from a page loaded before it — are ids of the former ``tripplanner.itinerary_components`` table (dropped by
+AA-712 X4). ``tripplanner.component_id_map`` (tp-017, filled right before the flip) maps them to catalog ids and
+outlives that table: trip_events keep the old ids for ever.
 
 The one rule every assembly reader follows: resolve the component ids it was given through this module before it
-reads or compares them. An id the map does not know is kept as it is (it is a catalog id already, or a frozen id
-with no catalog match, which then simply finds no component). With ``PLACES_SOURCE=legacy`` nothing is read and
-every id is kept.
+reads or compares them. An id the map does not know is kept as it is (it is a catalog id already, or an old id
+with no catalog match, which then simply finds no component).
 """
 from __future__ import annotations
 
 from typing import Any, Iterable, Optional, Protocol
-
-from backend.shared import places_source
 
 MAP_SQL = """
     SELECT old_id::text AS old_id, new_id::text AS new_id
@@ -29,9 +26,9 @@ class _Conn(Protocol):
 
 
 async def id_map(conn: _Conn, ids: Iterable[Optional[str]]) -> dict[str, str]:
-    """{old id: catalog id} for the given ids that the map knows ({} on the legacy path)."""
+    """{old id: catalog id} for the given ids that the map knows."""
     wanted = sorted({str(i) for i in ids if i})
-    if not wanted or not places_source.is_cis():
+    if not wanted:
         return {}
     return {r["old_id"]: r["new_id"] for r in await conn.fetch(MAP_SQL, wanted)}
 

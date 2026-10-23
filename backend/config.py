@@ -21,23 +21,12 @@ def _get(name: str, default: str | None = None, required: bool = False) -> str |
 # Full DSN, e.g. postgresql://user:pass@host:5432/dbname
 DATABASE_URL = _get("TRIPPLANNER_DATABASE_URL")
 
-# Schemas this service touches. tripplanner is owned (user state written here;
-# the place tables are frozen, read-only since AA-712 slice 6a). In shared it
-# reads destinations / photo views / gateway config and writes llm_call_log only.
+# Schemas this service touches. tripplanner is owned (user state written here). In shared it reads
+# the gateway config and writes llm_call_log only. CIS content is read only through the catalog views
+# (ADR 0001); since AA-712 X4 nothing else of CIS (gold_aa_internal, acp_contract, shared.destinations)
+# and no frozen tripplanner place table is read, and the PLACES_SOURCE switch is gone.
 SCHEMA_TRIPPLANNER = "tripplanner"
 SCHEMA_SHARED = "shared"
-
-# CIS source schemas this service READS (never writes).
-SCHEMA_GOLD = "gold_aa_internal"
-SCHEMA_ACP = "acp_contract"
-
-# --- Place / tour-graph read source (AA-712 slice 6b, ADR 0007) ---
-# "legacy" = the frozen TripPlanner tables (tripplanner.itinerary_components, tour_stop, tour_leg,
-# tour_junction + shared.destinations); "cis" = the CIS catalog views of migration 228
-# (catalog.v_tour_component, v_tour_stop, v_tour_leg, v_tour_junction, v_destination). Only the
-# browse readers follow it in slice 6b; the assembly readers switch with the tp-013 id-map (slice 6c),
-# so set it to "cis" on both Lambdas together, in that window. Unknown values read as "legacy".
-PLACES_SOURCE = _get("PLACES_SOURCE", "legacy")
 
 # --- CIS public API (AA-812) ---
 # Base URL that catalog photo paths are relative to: {base}{path}?size=large|small (CIS
@@ -82,17 +71,6 @@ EMBED_DIM = 1536
 # TripPlanner sends no e-mail: AA-Booking e-mails staff about a new inquiry (bk_notify_email, AA-811).
 # Optional label for the hand-off log line in assembly/notify.py; no personal address as a default.
 ADVISOR_NOTIFY_EMAIL = _get("ADVISOR_NOTIFY_EMAIL", "")
-
-# --- Master-content tenant (RLS on the shared gold schema) ---
-# gold_aa_internal.published_tours enforces row-level security by tenant
-# (policy: tenant_id = current_setting('app.tenant_id')). To read AA's
-# authored itinerary text the app sets this tenant id (SET LOCAL) before
-# querying. All active AA tours belong to this single tenant. Empty ->
-# skip setting it (local/tests), in which case RLS yields no rows and
-# narration falls back to the LLM.
-MASTER_CONTENT_TENANT_ID = _get(
-    "MASTER_CONTENT_TENANT_ID", "00000000-0000-0000-0000-000000000001"
-)
 
 # --- Edge shared-secret (API Gateway auth is NONE; the app checks this) ---
 # A shared secret the BFF must send in the X-TripPlanner-Key header. See shared/auth.py.

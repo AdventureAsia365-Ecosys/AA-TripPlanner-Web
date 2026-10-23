@@ -301,7 +301,7 @@ async def route(
             return _resp(400, {"error": "session_id and component_ids (1-60) required"})
         if denied := await _guard(conn, trip_id, session_id, guest_token, "apply_route"):
             return denied
-        # AA-847: a route from a browse answer cached before the PLACES_SOURCE flip carries frozen ids
+        # AA-847: a route from a page loaded before the PLACES_SOURCE flip carries old component ids
         ids = await component_ids.resolve(conn, (str(i) for i in ids))
         present = {str(c["id"]) for c in await events_mod._current_components(conn, trip_id)}  # noqa: SLF001
         for cid in ids:
@@ -468,7 +468,7 @@ async def _narrate(conn, itinerary: list[dict], narrate_fn,
     text over an LLM rewrite.
 
     Strategy:
-      1. Look up authored per-day text from published_tours.aa_itineraries
+      1. Look up authored per-day text from catalog.v_tour.itinerary_text
          (via source_tour_id + source_day_index).
       2. Days with authored text use it directly (no LLM call).
       3. Only the remaining days (unstructured itineraries, etc.) are sent

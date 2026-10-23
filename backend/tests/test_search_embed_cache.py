@@ -8,7 +8,7 @@ import pytest
 from backend.browse import handler as h
 from backend.browse import search as search_mod
 from backend.browse.filters import BrowseFilters
-from backend.shared import llm_gateway, places_source
+from backend.shared import llm_gateway
 
 
 class Pool:
@@ -76,12 +76,7 @@ def gateway(monkeypatch):
     monkeypatch.setattr(search_mod.llm_gateway, "load_route", load_route)
     monkeypatch.setattr(search_mod.llm_gateway, "embed_texts", embed_texts)
     monkeypatch.setattr(search_mod.llm_gateway, "record", record)
-    monkeypatch.setattr(search_mod, "set_catalog_tenant", _no_tenant)
     return state
-
-
-async def _no_tenant(_conn):
-    return None
 
 
 def _evts(capsys) -> list[dict]:
@@ -176,7 +171,7 @@ async def test_throttled_embed_falls_back_to_keyword_and_logs_it(gateway, capsys
     sql, args = next((q, a) for q, a in pool.calls if "best_score" in q)
     assert args[0] == ["%hoi%", "%an%", "%lanterns%"] and args[1] == "culinary"
     assert "c.activity = $2" in sql
-    assert "pt.master_status = 'active'" in sql            # same active-tour rule
+    assert "FROM catalog.v_tour_component c" in sql         # live tours only (the view's rule)
     assert "<=>" not in sql
     evt = _evts(capsys)[-1]
     assert evt["outcome"] == "fallback" and evt["reason"] == "throttle"
@@ -204,8 +199,7 @@ async def test_other_bedrock_error_falls_back_without_cooldown(gateway, capsys):
     assert search_mod._throttled_until == 0.0
 
 
-async def test_cis_keyword_fallback_reads_the_catalog_views_only(gateway, monkeypatch):
-    monkeypatch.setattr(places_source, "is_cis", lambda: True)
+async def test_keyword_fallback_reads_the_catalog_views_only(gateway):
     gateway["fail"] = "ThrottlingException"
     row = HOI_AN | {"located_by": "geoapify", "precision": "point", "best_score": 2}
     pool = Pool([("best_score", [row])])
@@ -213,7 +207,7 @@ async def test_cis_keyword_fallback_reads_the_catalog_views_only(gateway, monkey
     assert out["destinations"][0]["located_by"] == "geoapify"
     sql, args = next((q, a) for q, a in pool.calls if "best_score" in q)
     assert "catalog.v_tour_component" in sql and "catalog.v_destination" in sql
-    assert "tripplanner." not in sql and "published_tours" not in sql
+    assert "tripplanner." not in sql and "published_tours" not in sql and "app.tenant_id" not in sql
     assert "d.country = $2" in sql and args[1] == "Vietnam"
 
 
@@ -251,5 +245,5 @@ async def test_route_search_whitespace_query_makes_no_model_call(gateway):
 
 
 def test_keyword_sql_limit_is_an_int():
-    sql, params = search_mod.keyword_sql(BrowseFilters(season=5), 60, cis=False)
+    sql, params = search_mod.keyword_sql(BrowseFilters(season=5), 60)
     assert sql.strip().endswith("LIMIT 60") and params == [5] and "$2 = ANY(c.season_months)" in sql

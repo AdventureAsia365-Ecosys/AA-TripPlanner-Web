@@ -117,7 +117,9 @@ def test_build_tile_query_bounds_and_filters():
     # bounds are params 1..4, then filter param 5
     assert params[:4] == [22, 23, 103, 104]
     assert params[4] == "trekking"
-    assert "d.lat >= $1 AND d.lat < $2" in sql
+    # AA-847 slice 6d: a destination is in the tile when its bbox meets the cell (catalog.v_destination)
+    assert "d.max_lat >= $1 AND d.min_lat < $2" in sql and "d.max_lng >= $3 AND d.min_lng < $4" in sql
+    assert "FROM catalog.v_destination d" in sql
     assert "c.activity = $5" in sql
 
 
@@ -189,11 +191,10 @@ async def test_route_search_no_store_and_uses_embedder(monkeypatch):
     assert body["destinations"][0]["name"] == "Hoi An"
     # AA-685: every real search embed writes one llm_call_log row.
     assert recorded == [("tp_search_embed", {"texts": 1, "query_len_chars": 10})]
-    # AA-805: active tours only, read with the AA tenant set (published_tours RLS)
+    # AA-805: live tours only — the catalog views hold nothing else (AA-712 X4: no tenant GUC, no gold read)
     sql = next(q for q, _ in pool.calls if "best_distance" in q)
-    assert "pt.master_status = 'active'" in sql
-    assert "pt.deleted_at IS NULL" in sql
-    assert any("set_config('app.tenant_id'" in q for q, _ in pool.calls)
+    assert "catalog.v_component_embedding" in sql and "published_tours" not in sql
+    assert not any("app.tenant_id" in q for q, _ in pool.calls)
 
 
 @pytest.mark.asyncio
