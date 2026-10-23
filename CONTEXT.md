@@ -467,8 +467,11 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   through (AA-909); `/api/trip?trip_id=<all-zero UUID>` → the BFF's 200 empty trip (AA-837)), so a broken
   Lambda turns the run red.
 - **CI checks**: required "Backend (pytest)", "Frontend (lint + build)", "Migrations (lint, PG 15
-  replay)"; plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt` and gitleaks over the
-  full history, both failing; reviewed findings in `.gitleaksignore` with a reason each).
+  replay)"; plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan
+  (AA-981 follow-up): `secret-scan.yml`, check "gitleaks" on every PR (lines the PR adds, rules and baseline from
+  the base branch) and "gitleaks full history" nightly / on push to `main` (branches, tags, pull request heads);
+  rules in `.gitleaks.toml` (same as the root repo), reviewed findings pinned in `.gitleaksignore`; a PR that
+  changes either file needs the label `secret-scan-baseline-reviewed`.
 - **Security headers on previews (AA-879)**: `vercel-deploy.yml` step "Check the preview security headers"
   (`.github/scripts/check_security_headers.sh`, GET `/` through `vercel curl`). It needs the aa-tripplanner
   project's "Protection Bypass for Automation" in Vercel (no GitHub secret). Until that exists the step runs

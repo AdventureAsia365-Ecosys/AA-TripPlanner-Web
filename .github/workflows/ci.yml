@@ -55,17 +55,13 @@ jobs:
 
   # AA-879: the security job, same shape as AA-Booking's "Security Audit" (the resource-ID check stays in
   # "Backend (pytest)", which is already required). pip-audit FAILS on any known vulnerability in the Lambda
-  # requirements; gitleaks scans the full git history. Reviewed findings live in .gitleaksignore (one
-  # fingerprint per line, each with a reason); a new finding turns this check red.
+  # requirements. The gitleaks scan that ran here moved to .github/workflows/secret-scan.yml (AA-981 follow-up):
+  # check "gitleaks" on every PR with the base branch's rules, "gitleaks full history" nightly and on push to main.
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
-    env:
-      GITLEAKS_VERSION: "8.30.1"
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
@@ -76,17 +72,6 @@ jobs:
         run: |
           pip install pip-audit==2.10.1 --quiet
           pip-audit -r backend/requirements.txt
-
-      - name: gitleaks (full history, failing)
-        run: |
-          set -euo pipefail
-          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
-          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -sSfL -o "/tmp/${tarball}" "${base}/${tarball}"
-          curl -sSfL -o /tmp/gitleaks_checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
-          (cd /tmp && grep " ${tarball}\$" gitleaks_checksums.txt | sha256sum -c -)
-          tar -xzf "/tmp/${tarball}" -C /tmp gitleaks
-          /tmp/gitleaks git --redact --verbose --exit-code 1 .
 
   # X1 (AA-852, plan S7 + review S241): the migrations/ checks, outside backend/ so a migration PR does
   # not redeploy the Lambdas. Three layers here (the fourth runs in AA-CIS-Infra), none may be skipped (a skip turns the job red):

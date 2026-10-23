@@ -1,6 +1,17 @@
-# AA-879 — gitleaks findings reviewed and accepted (read by the "Security Audit" job). One fingerprint per line,
-# each with a comment saying why it is not a secret. Never add a real credential here: rotate it instead.
+# gitleaks ignore list for AA-TripPlanner-Web (AA-981 follow-up): one finding fingerprint per line, for a single known false
+# positive that a narrow allowlist entry in .gitleaks.toml cannot express. Read by .github/workflows/secret-scan.yml.
 #
-# backend/tests/test_assembly.py:197 — TOKEN is a made-up 43-char base64url string with the SHAPE of a BFF guest
-# token, used only by the offline unit tests (AA-827). Not a credential of any system.
+# Fingerprint format (printed by gitleaks with --redact, never the value itself):
+#   PR / history scan:  <commit sha>:<file>:<rule id>:<line>
+#   working-tree scan:  <file>:<rule id>:<line>
+# Add a short comment above each entry: what the value is and why it is not a secret. Never write the value here.
+# A real secret is never ignored here: remove it, rotate it, then pin the old commit.
+# A change to this file needs the PR label `secret-scan-baseline-reviewed` (see the workflow header).
+
+# --- Full-history baseline (AA-981 follow-up, S248): every finding of the first full-history scan with
+# .gitleaks.toml (branches, tags and pull request heads). Each entry is pinned to its commit, so the same
+# file/line in any later commit is still reported. Triage is in the private record (Linear AA-981), not here.
+
+# Synthetic test value: a made-up string with the shape of a BFF guest token (AA-827 unit tests).
 7150c0044a127522f8d927c487cf8d1a37694e29:backend/tests/test_assembly.py:generic-api-key:197
+c6a118b004e86511e6060507718b81158f9c6fae:backend/tests/test_assembly.py:generic-api-key:197
