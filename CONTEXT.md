@@ -478,6 +478,12 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   commits (remerge diff), renames and type changes are scanned too, every file as text. A red result means the
   value is public: rotate it, even if it was force-pushed away. False positives: prefer a narrow allowlist in `.gitleaks.toml`; a
   commit fingerprint does not survive the squash merge (header of `.gitleaksignore`).
+  The PR check runs on `pull_request_target`: GitHub always runs the base branch's copy of the workflow and the PR
+  head is only read as data, so a PR cannot change the check that judges it. It also scans a squash preview of the PR
+  (what the squash merge writes), and it fails when another workflow has a job named `gitleaks`. `.gitleaks.toml`
+  carries a copy of the gitleaks v8.30.1 default rules without gitleaks' global path allowlist, so text files such as
+  `.svg`, `go.sum` or `node_modules/` are scanned; a text file under a binary-format name (`.png`, `.pdf`, ...) needs
+  the label.
 - **Security headers on previews (AA-879)**: `vercel-deploy.yml` step "Check the preview security headers"
   (`.github/scripts/check_security_headers.sh`, GET `/` through `vercel curl`). It needs the aa-tripplanner
   project's "Protection Bypass for Automation" in Vercel (no GitHub secret). Until that exists the step runs
