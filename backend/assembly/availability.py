@@ -8,8 +8,8 @@ hand-off to AA-Booking can carry the same flag.
 Sources (CIS contract views only, contract ``catalog.tour.v1.3``):
 
 - ``catalog.v_tour`` — the served tours (``source_id`` = the catalog key);
-- ``catalog.v_tour_retired`` (CIS 274) — the tombstone: one row per key whose latest lifecycle event is
-  ``retired``, ``paused`` or ``superseded``, with ``state`` and ``reason``.
+- ``catalog.v_tour_retired`` (CIS 274) — the tombstone: one row per key whose state is
+  ``retired``, ``paused`` or ``restored`` (CIS 274), with ``state`` and ``reason``.
 
 Reasons, in the order they are decided:
 

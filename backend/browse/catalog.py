@@ -164,7 +164,7 @@ SITEMAP_SQL = f"""
 
 
 # AA-986 L6 (root ADR 0015 decision 5, Q5): the CIS tombstone (catalog.v_tour_retired, CIS 274, contract
-# catalog.tour.v1.3), one row per catalog key whose latest lifecycle event is retired, paused or superseded. A tour
+# catalog.tour.v1.3), one row per catalog key whose state is retired, paused or restored (CIS 274). A tour
 # page whose source-id suffix names a `retired` key answers 410; a paused one stays 404 (temporary, ADR 0015 decision
 # 5 table). A superseded version needs nothing here: its slug suffix is the stable source_id, so TOUR_BY_SLUG_SQL
 # already finds the current version and the page moves to its slug (permanent redirect).
