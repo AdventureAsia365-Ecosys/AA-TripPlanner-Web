@@ -49,14 +49,24 @@ export async function fetchRetiredSuffixes(): Promise<string[] | null> {
   }
 }
 
-/** A per-instance cache of the retired suffixes. One refresh at a time; a failed refresh keeps the last list. */
+/**
+ * A per-instance cache of the retired suffixes, stale-while-revalidate: a request never waits for the browse call.
+ * When the list is due, the request starts one background refresh (one at a time) and answers from the current list,
+ * which is empty on an instance's first request. A failed refresh keeps the last list and retries after
+ * GONE_RETRY_MS. Missing a 410 costs nothing: the tour page then answers 404 as before (review round, AA-986 L6).
+ */
 export function createGoneCache(fetcher: RetiredFetcher = fetchRetiredSuffixes) {
   let suffixes = new Set<string>();
   let nextRefresh = 0;
   let inflight: Promise<void> | null = null;
 
   async function refresh(now: number): Promise<void> {
-    const list = await fetcher();
+    let list: string[] | null = null;
+    try {
+      list = await fetcher();
+    } catch {
+      list = null; // never an unhandled rejection: nobody awaits this promise on the request path
+    }
     if (list) {
       suffixes = new Set(list);
       nextRefresh = now + GONE_TTL_MS;
@@ -66,16 +76,24 @@ export function createGoneCache(fetcher: RetiredFetcher = fetchRetiredSuffixes) 
   }
 
   return {
-    async isRetired(pathname: string, now: number = Date.now()): Promise<boolean> {
+    /** Answers from the list in memory; starts a background refresh when it is due, never awaits it. */
+    isRetired(pathname: string, now: number = Date.now()): boolean {
       const suffix = tourPathSuffix(pathname);
       if (!suffix) return false;
       if (now >= nextRefresh) {
         inflight ??= refresh(now).finally(() => {
           inflight = null;
         });
-        await inflight;
       }
       return suffixes.has(suffix);
+    },
+    /** The running background refresh, if any (the proxy hands it to waitUntil so the platform lets it finish). */
+    pending(): Promise<void> | null {
+      return inflight;
+    },
+    /** Resolves when no refresh is running (tests). */
+    async settled(): Promise<void> {
+      while (inflight) await inflight;
     },
   };
 }

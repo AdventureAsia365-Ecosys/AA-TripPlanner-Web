@@ -134,8 +134,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   planner read already hide them (they read `catalog.v_tour` / `v_tour_component`, live tours only). A tour page of a
   **retired** key answers **410 Gone** (a plain noindex page): Next has no "gone" for a page, so `frontend/proxy.ts`
   (matcher `/tours/:slug`, no cookie ever set there) checks the slug's source-id suffix against an in-memory list of
-  retired suffixes (`lib/goneTours.ts`, `GET /browse/catalog/retired`, refreshed every 30 min per instance; a failed
-  refresh keeps the last list). The browse Lambda reads the CIS tombstone `catalog.v_tour_retired` (CIS 274) and
+  retired suffixes (`lib/goneTours.ts`, `GET /browse/catalog/retired`, refreshed every 30 min per instance in the
+  background — stale-while-revalidate, a request never waits for the browse call; a failed refresh keeps the last
+  list). The browse Lambda reads the CIS tombstone `catalog.v_tour_retired` (CIS 274) and
   answers `/browse/catalog/tours/{slug}` 410 for a retired key too (the page shows 404 until the proxy list catches
   up). A **paused** key stays **404** (temporary). A **superseded** version needs nothing: the slug suffix is the
   stable `source_id`, so the old slug finds the current version and the page permanent-redirects (308) to its slug.

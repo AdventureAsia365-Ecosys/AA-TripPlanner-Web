@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 import {
   MINTED_TOKEN_HEADER,
   guestCookieAction,
@@ -8,7 +8,8 @@ import {
 import { createGoneCache, gonePage } from "./lib/goneTours";
 
 // AA-986 L6 (root ADR 0015 Q5): a retired tour's page answers 410 Gone (Next has no "gone" for a page). The list
-// of retired slug suffixes lives in this instance's memory (lib/goneTours.ts), refreshed every 30 min.
+// of retired slug suffixes lives in this instance's memory (lib/goneTours.ts), refreshed every 30 min in the
+// background: a tour page request never waits for the browse call (stale-while-revalidate).
 const goneTours = createGoneCache();
 
 // AA-906: Next 16 renamed `middleware.ts` to `proxy.ts` (official codemod `middleware-to-proxy`); the
@@ -25,10 +26,13 @@ const goneTours = createGoneCache();
 // The cookie is appended as a raw Set-Cookie header, never with `res.cookies.set`: that cookie wrapper
 // also writes `x-middleware-set-cookie` (the full cookie string) onto the response, which client JS can
 // read from a fetch() response and which would defeat HttpOnly.
-export async function proxy(req: NextRequest) {
+export async function proxy(req: NextRequest, event?: NextFetchEvent) {
   // Tour pages are CDN-cached and public: never a guest cookie here, only the retired check.
   if (req.nextUrl.pathname.startsWith("/tours/")) {
-    if (await goneTours.isRetired(req.nextUrl.pathname)) {
+    const retired = goneTours.isRetired(req.nextUrl.pathname);
+    const refreshing = goneTours.pending();
+    if (refreshing) event?.waitUntil(refreshing);
+    if (retired) {
       return new NextResponse(gonePage(), {
         status: 410,
         headers: {
