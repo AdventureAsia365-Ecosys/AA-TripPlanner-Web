@@ -8,8 +8,9 @@ import {
 import { createGoneCache, gonePage } from "./lib/goneTours";
 
 // AA-986 L6 (root ADR 0015 Q5): a retired tour's page answers 410 Gone (Next has no "gone" for a page). The list
-// of retired slug suffixes lives in this instance's memory (lib/goneTours.ts), refreshed every 30 min in the
-// background: a tour page request never waits for the browse call (stale-while-revalidate).
+// of retired slug suffixes lives in this instance's memory (lib/goneTours.ts), refreshed every minute in the
+// background; AA-987: a request waits for the browse call (≤ 1.5 s) only when the list is over 2 minutes old, so a
+// retired tour answers 410 within 2 minutes on every instance.
 const goneTours = createGoneCache();
 
 // AA-906: Next 16 renamed `middleware.ts` to `proxy.ts` (official codemod `middleware-to-proxy`); the
@@ -29,7 +30,7 @@ const goneTours = createGoneCache();
 export async function proxy(req: NextRequest, event?: NextFetchEvent) {
   // Tour pages are CDN-cached and public: never a guest cookie here, only the retired check.
   if (req.nextUrl.pathname.startsWith("/tours/")) {
-    const retired = goneTours.isRetired(req.nextUrl.pathname);
+    const retired = await goneTours.check(req.nextUrl.pathname);
     const refreshing = goneTours.pending();
     if (refreshing) event?.waitUntil(refreshing);
     if (retired) {
@@ -37,7 +38,10 @@ export async function proxy(req: NextRequest, event?: NextFetchEvent) {
         status: 410,
         headers: {
           "content-type": "text/html; charset=utf-8",
-          "cache-control": "public, max-age=0, s-maxage=1800",
+          // AA-987: no shared cache keeps the 410 (a restored tour must come back within 2 minutes); a browser
+          // may keep it for a minute.
+          "cache-control": "public, max-age=60",
+          "vercel-cdn-cache-control": "no-store",
           "x-robots-tag": "noindex",
         },
       });

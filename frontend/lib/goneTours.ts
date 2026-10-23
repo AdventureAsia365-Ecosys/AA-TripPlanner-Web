@@ -3,14 +3,23 @@
 // Next.js has no "gone" for a page (only notFound = 404, and redirects), so the 410 comes from the request proxy
 // (proxy.ts). The proxy keeps the slug suffixes of the retired tours (GET /browse/catalog/retired: the first 8 hex
 // of the catalog source_id, the same suffix every tour slug ends with) in memory and refreshes them every
-// CATALOG_REVALIDATE_S, so a tour page request costs a Set lookup, not a browse call. A suffix a live tour also has
+// GONE_TTL_MS, so a tour page request costs a Set lookup, not a browse call. A suffix a live tour also has
 // is never in the list (the browse Lambda leaves it out). Anything that fails (no BROWSE_API_URL, a timeout, a
 // browse error, CIS 274 not applied) keeps the last list, or none: the page then answers as before (404 for a tour
 // the catalog does not serve). Paused tours are not in the list: they stay 404, temporary (ADR 0015).
 //
+// AA-987: a retired tour must answer 410 within 2 minutes (it was up to 30). The list is refreshed in the background
+// once it is older than GONE_TTL_MS (60 s), and a request that finds it older than GONE_MAX_STALE_MS (120 s), or an
+// instance that has never loaded it, waits for the refresh (bounded by GONE_FETCH_TIMEOUT_MS) instead of answering
+// from an old list: an idle instance cannot serve a tour retired long ago. A failed refresh still keeps the last list
+// and does not make the next requests wait until GONE_RETRY_MS has passed. Cost: one small browse call per minute per
+// busy instance. CIS's lifecycle purge (lib/catalogPurge.ts) cannot reach this memory on other instances, so this
+// bound is the tour page's own.
+//
 // No next/server import here, so `npm test` (node --test) can load it.
 
-export const GONE_TTL_MS = 30 * 60 * 1000; // = CATALOG_REVALIDATE_S (lib/catalog.ts)
+export const GONE_TTL_MS = 60 * 1000;
+export const GONE_MAX_STALE_MS = 2 * 60 * 1000;
 export const GONE_RETRY_MS = 60 * 1000; // after a failed refresh
 export const GONE_FETCH_TIMEOUT_MS = 1500;
 
@@ -57,6 +66,7 @@ export async function fetchRetiredSuffixes(): Promise<string[] | null> {
  */
 export function createGoneCache(fetcher: RetiredFetcher = fetchRetiredSuffixes) {
   let suffixes = new Set<string>();
+  let loadedAt: number | null = null; // when the list in memory was fetched (null: never)
   let nextRefresh = 0;
   let inflight: Promise<void> | null = null;
 
@@ -69,10 +79,20 @@ export function createGoneCache(fetcher: RetiredFetcher = fetchRetiredSuffixes) 
     }
     if (list) {
       suffixes = new Set(list);
+      loadedAt = now;
       nextRefresh = now + GONE_TTL_MS;
     } else {
       nextRefresh = now + GONE_RETRY_MS;
     }
+  }
+
+  function startRefresh(now: number): Promise<void> | null {
+    if (now >= nextRefresh) {
+      inflight ??= refresh(now).finally(() => {
+        inflight = null;
+      });
+    }
+    return inflight;
   }
 
   return {
@@ -80,10 +100,22 @@ export function createGoneCache(fetcher: RetiredFetcher = fetchRetiredSuffixes) 
     isRetired(pathname: string, now: number = Date.now()): boolean {
       const suffix = tourPathSuffix(pathname);
       if (!suffix) return false;
-      if (now >= nextRefresh) {
-        inflight ??= refresh(now).finally(() => {
-          inflight = null;
-        });
+      startRefresh(now);
+      return suffixes.has(suffix);
+    },
+    /**
+     * The proxy's check (AA-987): like isRetired, but when the list is older than GONE_MAX_STALE_MS (or was never
+     * loaded) and a refresh may run, waits for it, at most `waitMs`. A failed refresh answers from the last list.
+     */
+    async check(pathname: string, now: number = Date.now(), waitMs: number = GONE_FETCH_TIMEOUT_MS): Promise<boolean> {
+      const suffix = tourPathSuffix(pathname);
+      if (!suffix) return false;
+      const tooOld = loadedAt === null || now - loadedAt >= GONE_MAX_STALE_MS;
+      const running = startRefresh(now);
+      if (tooOld && running) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([running, new Promise<void>((r) => (timer = setTimeout(r, waitMs)))]);
+        clearTimeout(timer);
       }
       return suffixes.has(suffix);
     },
