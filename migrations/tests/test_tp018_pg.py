@@ -79,9 +79,12 @@ async def _seed(su, *, written_at: str) -> None:
                      uuid.UUID(OLD_ID), uuid.UUID(NEW_ID))
 
 
-def _database(pg_dsn, *, written_at: str = "2026-10-10 08:00:00+00", extra_sql: str = ""):  # noqa: F811
+def _database(pg_dsn, *, written_at: str = "2026-10-10 08:00:00+00", extra_sql: str = "",  # noqa: F811
+              hold_reader: bool = False):
     """Builds a database up to tp-017, seeds the frozen tables, runs `extra_sql` as the master, then tp-018 as
-    tp_owner. Returns (context, the tp-018 error or None); the caller drops the database."""
+    tp_owner. With `hold_reader`, another session holds ACCESS SHARE on shared.destinations (an open read, like a
+    catalog-view reader) while tp-018 runs with a 1s lock_timeout. Returns (context, the tp-018 error or None); the
+    caller drops the database."""
     name = f"tp_aa712_{uuid.uuid4().hex[:8]}"
     password = secrets.token_urlsafe(16)
 
@@ -120,9 +123,16 @@ def _database(pg_dsn, *, written_at: str = "2026-10-10 08:00:00+00", extra_sql: 
                 await su_db.execute(extra_sql)
         finally:
             await su_db.close()
+        reader = None
+        if hold_reader:
+            reader = await asyncpg.connect(_dsn(pg_dsn, database=name))
+            await reader.execute("BEGIN")
+            await reader.fetchval("SELECT count(*) FROM shared.destinations")
         admin = await asyncpg.connect(admin_dsn)
         error = None
         try:
+            if hold_reader:
+                await admin.execute("SET lock_timeout = '1s'")
             await admin.execute("SET ROLE tp_owner")
             try:
                 await admin.execute(TP018.read_text(encoding="utf-8"))
@@ -132,6 +142,9 @@ def _database(pg_dsn, *, written_at: str = "2026-10-10 08:00:00+00", extra_sql: 
                     await admin.execute("ROLLBACK")
         finally:
             await admin.close()
+            if reader is not None:
+                await reader.execute("ROLLBACK")
+                await reader.close()
         return {"name": name, "admin_dsn": admin_dsn, "su_dsn": _dsn(pg_dsn, database=name)}, error
 
     return run(setup())
@@ -231,4 +244,13 @@ def test_a_dependent_view_refuses_and_changes_nothing(pg_dsn):  # noqa: F811
     view = "CREATE VIEW public.reads_the_pilot AS SELECT source_tour_id FROM tripplanner.tour_stop"
     error, tables, registered = _refused(pg_dsn, extra_sql=view)
     assert error and "depend on them" in error and "reads_the_pilot" in error, error
+    assert set(FROZEN) <= tables and registered == 0
+
+
+def test_an_open_reader_of_shared_destinations_blocks_the_drop_and_changes_nothing(pg_dsn):  # noqa: F811
+    """The header's Locks note: dropping the FKs removes their RI triggers on CIS's shared.destinations, so tp-018 needs
+    ACCESS EXCLUSIVE on that table too. A reader holding ACCESS SHARE on it (nothing on the eight tables) makes the
+    apply fail on lock_timeout and roll back; DB Migrate retries later."""
+    error, tables, registered = _refused(pg_dsn, hold_reader=True)
+    assert error and "lock timeout" in error, error
     assert set(FROZEN) <= tables and registered == 0
