@@ -1,7 +1,14 @@
 // AA-986 L6: the proxy's 410 for retired tours (lib/goneTours.ts). Run: npm test.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GONE_RETRY_MS, GONE_TTL_MS, createGoneCache, gonePage, tourPathSuffix } from "./goneTours.ts";
+import {
+  GONE_MAX_STALE_MS,
+  GONE_RETRY_MS,
+  GONE_TTL_MS,
+  createGoneCache,
+  gonePage,
+  tourPathSuffix,
+} from "./goneTours.ts";
 
 test("only a tour page path with a source-id suffix has a suffix", () => {
   assert.equal(tourPathSuffix("/tours/hanoi-and-ha-long-bay-vietnam-3f0c2a8e"), "3f0c2a8e");
@@ -92,6 +99,91 @@ test("no list at all (browse unreachable) or a throwing fetcher answers not gone
   assert.equal(throwing.isRetired("/tours/x-abcdef12", 0), false);
   await throwing.settled(); // no unhandled rejection
   assert.equal(throwing.isRetired("/tours/x-abcdef12", 1), false);
+});
+
+// ── AA-987: a retired tour answers 410 within 2 minutes on every instance ─────────────────────────────────────────
+
+test("the list refreshes every minute and is never older than two minutes when answered", () => {
+  assert.equal(GONE_TTL_MS, 60_000);
+  assert.equal(GONE_MAX_STALE_MS, 120_000);
+  assert.ok(GONE_RETRY_MS <= GONE_MAX_STALE_MS);
+});
+
+test("check waits for the first load of an instance, then answers from memory", async () => {
+  let calls = 0;
+  const cache = createGoneCache(async () => {
+    calls += 1;
+    return ["abcdef12"];
+  });
+  assert.equal(await cache.check("/tours/old-trip-abcdef12", 0), true); // first request waited for the list
+  assert.equal(await cache.check("/tours/live-trip-3f0c2a8e", 1), false);
+  assert.equal(calls, 1);
+});
+
+test("a tour retired while an instance was idle is gone on its next request", async () => {
+  const lists = [["aaaaaaaa"], ["aaaaaaaa", "abcdef12"]];
+  let calls = 0;
+  const cache = createGoneCache(async () => lists[Math.min(calls++, lists.length - 1)]);
+  assert.equal(await cache.check("/tours/x-abcdef12", 0), false);
+  // Idle for an hour, the tour was retired meanwhile: the list is too old, so this request waits for the refresh.
+  assert.equal(await cache.check("/tours/x-abcdef12", 60 * 60 * 1000), true);
+  assert.equal(calls, 2);
+});
+
+test("between one and two minutes old the request does not wait (background refresh)", async () => {
+  let release: (v: string[]) => void = () => {};
+  let calls = 0;
+  const cache = createGoneCache((): Promise<string[]> => {
+    calls += 1;
+    if (calls === 1) return Promise.resolve(["aaaaaaaa"]);
+    return new Promise<string[]>((resolve) => {
+      release = resolve;
+    });
+  });
+  await cache.check("/tours/x-abcdef12", 0);
+  const t = GONE_TTL_MS + 1; // due, not too old
+  assert.equal(await cache.check("/tours/x-abcdef12", t, 10_000), false); // answered at once from the old list
+  assert.notEqual(cache.pending(), null);
+  release(["abcdef12"]);
+  await cache.settled();
+  assert.equal(await cache.check("/tours/x-abcdef12", t + 1), true);
+  assert.equal(calls, 2);
+});
+
+test("a slow or failing browse call bounds the wait and keeps the last list", async () => {
+  let calls = 0;
+  const cache = createGoneCache((): Promise<string[] | null> => {
+    calls += 1;
+    if (calls === 1) return Promise.resolve(["abcdef12"]);
+    if (calls === 2) return new Promise<string[] | null>(() => {}); // never answers
+    return Promise.resolve(null);
+  });
+  await cache.check("/tours/x-abcdef12", 0);
+  const started = Date.now();
+  assert.equal(await cache.check("/tours/x-abcdef12", GONE_MAX_STALE_MS, 20), true); // waited ≤ 20 ms, old list
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(calls, 2);
+});
+
+test("after a failed refresh the next requests do not wait until the retry is due", async () => {
+  let calls = 0;
+  const cache = createGoneCache(async () => (calls++ === 0 ? ["abcdef12"] : null));
+  await cache.check("/tours/x-abcdef12", 0);
+  assert.equal(await cache.check("/tours/x-abcdef12", GONE_MAX_STALE_MS), true); // waited, failed, last list kept
+  assert.equal(calls, 2);
+  assert.equal(await cache.check("/tours/x-abcdef12", GONE_MAX_STALE_MS + 1), true);
+  assert.equal(cache.pending(), null); // no new call before GONE_RETRY_MS
+  assert.equal(calls, 2);
+});
+
+test("check on a path that is not a tour page reads nothing", async () => {
+  let calls = 0;
+  const cache = createGoneCache(async () => {
+    calls += 1;
+    return [];
+  });
+  assert.equal(await cache.check("/tours/no-suffix", 0), false);
+  assert.equal(calls, 0);
 });
 
 test("the 410 page is not indexed and links home and to the planner", () => {

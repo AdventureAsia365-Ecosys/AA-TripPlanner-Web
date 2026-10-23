@@ -130,13 +130,27 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   pins that tour's whole route through the existing apply-route flow (`&ask=1` opens the trip).
 - `/tours/[slug]` and `/destinations/[country]`: Server Components with ISR (30 min, the browse
   CDN TTL), JSON-LD (`TouristTrip`, `TouristDestination`), `sitemap.xml`, `robots.txt`.
+- **On-demand purge on a CIS tour lifecycle event (AA-987).** CIS posts one HMAC-signed notice per event of
+  `catalog.v_tour_lifecycle_outbox` (CIS job `tripplanner_purge`, retried with backoff, swept every 5 min) to
+  `POST /api/revalidate/catalog` (`app/api/revalidate/catalog/route.ts`, logic in `lib/catalogPurge.ts`). Header
+  `X-AA-Signature: t=<unix s>,v1=<hex hmac-sha256 of "t.body">`, secret = Vercel env `CATALOG_REVALIDATE_SECRET`
+  (same value as CIS secret `aa-cis/<env>/tripplanner-revalidate-hmac`), 5-minute timestamp window, body contract
+  `catalog.tour.lifecycle.v1` (`events[]`: `event_id`, `source_id`, `event`, …). It drops every cache that can show the
+  old state: `revalidateTag("tp-catalog", { expire: 0 })` (every catalog fetch of `lib/catalog.ts` carries that tag),
+  `revalidatePath` of `/`, `/tours/[slug]`, `/destinations/[country]`, and the Vercel CDN entries of `/api/browse`
+  (`dangerouslyDeleteByTag("tp-catalog")`, `@vercel/functions`). A cacheable `/api/browse` answer is now kept by the
+  CDN for the Lambda TTL (`vercel-cdn-cache-control`, tag `vercel-cache-tag: tp-catalog`) and by the browser for 60 s
+  at most. Idempotent (a replay purges again); 401 bad / stale signature, 400 bad body, 503 secret unset, 502 purge
+  failed (CIS retries). One `{"evt":"catalog_purge",…}` log line per call (event ids and kinds, no source ids).
 - **Tours AA no longer serves (AA-986 L6, root ADR 0015 decision 5 / Q5).** Lists, countries, the sitemap and every
   planner read already hide them (they read `catalog.v_tour` / `v_tour_component`, live tours only). A tour page of a
   **retired** key answers **410 Gone** (a plain noindex page): Next has no "gone" for a page, so `frontend/proxy.ts`
   (matcher `/tours/:slug`, no cookie ever set there) checks the slug's source-id suffix against an in-memory list of
-  retired suffixes (`lib/goneTours.ts`, `GET /browse/catalog/retired`, refreshed every 30 min per instance in the
-  background — stale-while-revalidate, a request never waits for the browse call; a failed refresh keeps the last
-  list). The browse Lambda reads the CIS tombstone `catalog.v_tour_retired` (CIS 274) and
+  retired suffixes (`lib/goneTours.ts`, `GET /browse/catalog/retired`, refreshed every minute per instance in the
+  background; AA-987: a request waits for the browse call, at most 1.5 s, only when the list is over 2 minutes old or
+  was never loaded, so a retired tour answers 410 within 2 minutes on every instance; a failed refresh keeps the last
+  list and makes nobody wait until its retry is due). The 410 is never kept by the CDN (`vercel-cdn-cache-control:
+  no-store`, browser 60 s), so a restored tour comes back as fast. The browse Lambda reads the CIS tombstone `catalog.v_tour_retired` (CIS 274) and
   answers `/browse/catalog/tours/{slug}` 410 for a retired key too (the page shows 404 until the proxy list catches
   up). A **paused** key stays **404** (temporary). A **superseded** version needs nothing: the slug suffix is the
   stable `source_id`, so the old slug finds the current version and the page permanent-redirects (308) to its slug.

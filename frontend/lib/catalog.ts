@@ -1,9 +1,11 @@
 // AA-812 — server-side reads of the browse Lambda's catalog resources, for Server Components
 // (home, tour pages, destination pages, sitemap). Runs only on the server: it uses
 // BROWSE_API_URL and the shared secret directly, like the BFF route does. Responses are cached
-// by Next (ISR) for CATALOG_REVALIDATE_S, matching the Lambda's CDN TTL.
+// by Next (ISR) for CATALOG_REVALIDATE_S, matching the Lambda's CDN TTL, and dropped at once on a CIS tour lifecycle
+// event (AA-987, tag CATALOG_CACHE_TAG, lib/catalogPurge.ts).
 // Never import this from a Client Component (it reads server-only env vars).
 
+import { CATALOG_CACHE_TAG } from "./catalogPurge.ts";
 import type {
   CountrySummary,
   DestinationPage,
@@ -29,7 +31,8 @@ async function browseOnce<T>(url: string, headers: Record<string, string>): Prom
   try {
     const res = await fetch(url, {
       headers,
-      next: { revalidate: CATALOG_REVALIDATE_S },
+      // AA-987: tagged, so a CIS lifecycle event (POST /api/revalidate/catalog) drops it and every page that read it.
+      next: { revalidate: CATALOG_REVALIDATE_S, tags: [CATALOG_CACHE_TAG] },
     });
     if (!res.ok) return { ok: false, status: res.status, error: `browse ${res.status}` };
     return { ok: true, data: (await res.json()) as T };

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
 import { tourRouteBffAnswer } from "@/lib/tourRoute";
+import { browseCacheHeaders } from "@/lib/catalogPurge";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -89,7 +90,9 @@ export async function GET(req: NextRequest) {
   console.log(
     upstreamLogLine({ route: "browse", op: resource ?? "unknown", status: upstream.status, ms: Date.now() - started, request_id: requestId }),
   );
-  // Preserve upstream cache-control (tiles/detail cacheable, search not).
+  // Upstream cache-control decides what is cacheable (tiles/detail cacheable, search not). AA-987: a cacheable answer
+  // is kept by the Vercel CDN for the Lambda's TTL under tag tp-catalog (purged on a CIS lifecycle event) and by the
+  // browser for 60 s at most (lib/catalogPurge.browseCacheHeaders).
   let cacheControl = upstream.headers.get("cache-control") ?? "no-store";
   let status = upstream.status;
   if (resource === "tour-route") {
@@ -101,11 +104,12 @@ export async function GET(req: NextRequest) {
       cacheControl = "no-store";
     }
   }
+  const cacheHeaders = status === 200 ? browseCacheHeaders(cacheControl) : { "cache-control": cacheControl };
   return new NextResponse(body, {
     status,
     headers: {
       "content-type": "application/json",
-      "cache-control": cacheControl,
+      ...cacheHeaders,
       [REQUEST_ID_HEADER]: requestId,
     },
   });
