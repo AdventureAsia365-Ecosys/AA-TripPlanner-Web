@@ -13,6 +13,7 @@ Routes:
   GET /browse/catalog/destinations           (AA-812: countries with live tours)
   GET /browse/catalog/destinations/{country} (AA-812: country page data)
   GET /browse/catalog/sitemap                (AA-812: slugs for sitemap.xml)
+  GET /browse/catalog/retired                (AA-986 L6: slug suffixes of retired tours, for the 410 proxy)
 
 Every read uses only the CIS catalog views (ADR 0001): /browse/catalog/* the tour views of CIS migration 225, the
 place / tour-graph reads (tiles, countries, by-country, destinations, search, routes, tour-route, shapes) the
@@ -58,6 +59,7 @@ _CAT_TOUR_RE = re.compile(r"^/browse/catalog/tours/([a-z0-9-]{1,120})$")
 _CAT_DESTS_RE = re.compile(r"^/browse/catalog/destinations$")
 _CAT_DEST_RE = re.compile(r"^/browse/catalog/destinations/([a-z0-9-]{1,80})$")
 _CAT_SITEMAP_RE = re.compile(r"^/browse/catalog/sitemap$")
+_CAT_RETIRED_RE = re.compile(r"^/browse/catalog/retired$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 _CACHE_HEADERS = {
@@ -117,8 +119,15 @@ async def route(
     if m:
         data = await catalog_mod.tour_detail(m.group(1), pool=pool)
         if data is None:
+            # AA-986 L6 (ADR 0015 Q5): a retired tour is 410 Gone; paused, never served or unknown stays 404.
+            gone = await catalog_mod.tour_gone(m.group(1), pool=pool)
+            if gone and gone["state"] == "retired":
+                return _resp(410, {"error": "tour_retired", "reason": gone["reason"]}, _NO_STORE_HEADERS)
             return _resp(404, {"error": "tour not found"}, _NO_STORE_HEADERS)
         return _resp(200, data, _CACHE_HEADERS)
+
+    if _CAT_RETIRED_RE.match(path):
+        return _resp(200, await catalog_mod.retired_suffixes(pool=pool), _CACHE_HEADERS)
 
     if _CAT_DESTS_RE.match(path):
         return _resp(200, await catalog_mod.list_countries(pool=pool), _CACHE_HEADERS)
@@ -219,7 +228,7 @@ _ROUTE_NAMES: tuple[tuple[re.Pattern, str], ...] = (
     (_TILE_RE, "tiles"), (_DEST_RE, "destination"), (_SEARCH_RE, "search"), (_COUNTRIES_RE, "countries"),
     (_BY_COUNTRY_RE, "by_country"), (_ROUTES_RE, "routes"), (_TOUR_ROUTE_RE, "tour_route"), (_SHAPES_RE, "shapes"),
     (_CAT_TOURS_RE, "catalog_tours"), (_CAT_TOUR_RE, "catalog_tour"), (_CAT_DESTS_RE, "catalog_destinations"),
-    (_CAT_DEST_RE, "catalog_destination"), (_CAT_SITEMAP_RE, "catalog_sitemap"),
+    (_CAT_DEST_RE, "catalog_destination"), (_CAT_SITEMAP_RE, "catalog_sitemap"), (_CAT_RETIRED_RE, "catalog_retired"),
 )
 
 

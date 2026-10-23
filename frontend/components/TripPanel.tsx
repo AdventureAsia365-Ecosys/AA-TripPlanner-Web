@@ -12,6 +12,7 @@ import AiLabel from "@/components/AiLabel";
 import { parseNarration } from "@/lib/narration";
 import { LEGAL_LINKS } from "@/lib/legal";
 import { formatDays } from "@/lib/text";
+import { reasonText, stopLabel, unavailableBanner } from "@/lib/availability";
 
 const DAY_KIND_LABEL: Record<string, string> = {
   extra_night: "Extra night",
@@ -91,6 +92,7 @@ export default function TripPanel() {
     customDays,
     addDay,
     removeDay,
+    unavailableStops,
   } = useTrip();
   // AA-674: which day card has its activity list open.
   const [openStop, setOpenStop] = useState<string | null>(null);
@@ -231,6 +233,42 @@ export default function TripPanel() {
           </div>
         )}
       </div>
+
+      {/* AA-986 L6 (ADR 0015 decision 5): saved stops whose tour AA no longer serves. They are not on the map
+          or in the day list; they stay here, greyed, until the traveller removes them or AA serves them again. */}
+      {unavailableStops.length > 0 && (
+        <div className="border-b border-k-line px-4 py-3">
+          <div
+            role="status"
+            className="rounded-xl border border-k-accent-border bg-k-accent-tint p-2.5 text-xs text-k-accent-deep"
+          >
+            {unavailableBanner(unavailableStops)}
+          </div>
+          <ul className="mt-2 space-y-1.5" aria-label="Stops no longer available">
+            {unavailableStops.map((s) => (
+              <li
+                key={s.component_id}
+                className="flex items-start gap-3 rounded-xl border border-dashed border-k-line bg-k-bg p-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm text-k-muted line-through">{stopLabel(s)}</p>
+                  <p className="mt-0.5 text-[11px] text-k-muted">
+                    {reasonText(s.reason)}
+                    {s.destination_name && s.name && s.destination_name !== s.name && <> · {s.destination_name}</>}
+                  </p>
+                </div>
+                <button
+                  onClick={() => remove(s.component_id)}
+                  aria-label={`Remove ${stopLabel(s)}`}
+                  className="aa-focus shrink-0 rounded-md px-1.5 py-0.5 text-xs text-k-muted hover:text-k-danger"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {itinerary.length === 0 ? (
         <div className="flex flex-1 flex-col justify-center px-5 py-8">

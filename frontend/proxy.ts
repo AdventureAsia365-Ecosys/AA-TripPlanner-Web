@@ -1,16 +1,22 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 import {
   MINTED_TOKEN_HEADER,
   guestCookieAction,
   guestCookieName,
   serializeGuestCookie,
 } from "./lib/guestToken";
+import { createGoneCache, gonePage } from "./lib/goneTours";
+
+// AA-986 L6 (root ADR 0015 Q5): a retired tour's page answers 410 Gone (Next has no "gone" for a page). The list
+// of retired slug suffixes lives in this instance's memory (lib/goneTours.ts), refreshed every 30 min in the
+// background: a tour page request never waits for the browse call (stale-while-revalidate).
+const goneTours = createGoneCache();
 
 // AA-906: Next 16 renamed `middleware.ts` to `proxy.ts` (official codemod `middleware-to-proxy`); the
 // proxy runs on the Node.js runtime (it was Edge before). Behaviour and matcher are unchanged.
 // AA-827: the visitor holds the HttpOnly guest-token cookie before the planner makes its first fetch:
 // it is minted on the /plan document, so parallel first POSTs usually carry the same token. Only the
-// dynamic /plan page and /api/trip are matched: the home, destination and tour pages are cached by the
+// dynamic /plan page and /api/trip get the cookie (tour pages are matched for the AA-986 410 only): the home, destination and tour pages are cached by the
 // CDN (s-maxage), and a per-visitor Set-Cookie must never ride on a shared cached response. Every
 // matched request renews the cookie (sliding lifetime). On /api/trip
 // itself (no page load first, or the cookie was cleared) the minted token is also handed to the BFF
@@ -20,7 +26,25 @@ import {
 // The cookie is appended as a raw Set-Cookie header, never with `res.cookies.set`: that cookie wrapper
 // also writes `x-middleware-set-cookie` (the full cookie string) onto the response, which client JS can
 // read from a fetch() response and which would defeat HttpOnly.
-export function proxy(req: NextRequest) {
+export async function proxy(req: NextRequest, event?: NextFetchEvent) {
+  // Tour pages are CDN-cached and public: never a guest cookie here, only the retired check.
+  if (req.nextUrl.pathname.startsWith("/tours/")) {
+    const retired = goneTours.isRetired(req.nextUrl.pathname);
+    const refreshing = goneTours.pending();
+    if (refreshing) event?.waitUntil(refreshing);
+    if (retired) {
+      return new NextResponse(gonePage(), {
+        status: 410,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "public, max-age=0, s-maxage=1800",
+          "x-robots-tag": "noindex",
+        },
+      });
+    }
+    return NextResponse.next();
+  }
+
   const action = guestCookieAction(req, req.cookies.get(guestCookieName())?.value);
   if (action.kind === "reject") {
     return NextResponse.json({ error: "cross_origin" }, { status: 403 });
@@ -40,5 +64,6 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/plan/:path*", "/api/trip"],
+  // AA-986 L6: "/tours/:slug" for the 410 of a retired tour (no cookie is ever set on it).
+  matcher: ["/plan/:path*", "/api/trip", "/tours/:slug"],
 };

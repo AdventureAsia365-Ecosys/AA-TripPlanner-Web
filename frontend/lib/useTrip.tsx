@@ -20,6 +20,7 @@ import type {
   DestinationPin,
   ItineraryDay,
   RouteProposal,
+  UnavailableStop,
 } from "./types";
 import type { Suggestion } from "./api";
 
@@ -70,6 +71,8 @@ interface TripState {
   // AA-674 / Jira PR-11: routes of real AA tours.
   coverage: Coverage | null;
   customDays: CustomDay[];
+  // AA-986 L6: saved stops whose tour AA no longer serves (greyed in the trip panel, never on the map).
+  unavailableStops: UnavailableStop[];
   // A proposed route drawn on the map as a preview (hover / selection), or null.
   routePreview: RouteProposal | null;
   setRoutePreview: (p: RouteProposal | null) => void;
@@ -158,6 +161,7 @@ export function TripProvider({
   const [searching, setSearching] = useState<boolean>(false);
   const [coverage, setCoverage] = useState<Coverage | null>(null);
   const [customDays, setCustomDays] = useState<CustomDay[]>([]);
+  const [unavailableStops, setUnavailableStops] = useState<UnavailableStop[]>([]);
   const [routePreview, setRoutePreview] = useState<RouteProposal | null>(null);
   // The latest filters for the suggestion fetch and runSearch without making them dependencies.
   // AA-906 (React Compiler lint: no ref writes during render): synced after each commit, in a layout
@@ -193,6 +197,7 @@ export function TripProvider({
         if (res.status) setStatus(res.status);
       }
       if (active && res?.custom_days) setCustomDays(res.custom_days);
+      if (active && res?.unavailable_stops) setUnavailableStops(res.unavailable_stops);
       if (active) setReady(true);
     });
     return () => {
@@ -285,7 +290,11 @@ export function TripProvider({
   const remove = useCallback(
     async (componentId: string) => {
       const res = await api.removeComponent(tripId, sessionId, componentId);
-      if (res.itinerary) setItinerary(res.itinerary);
+      if (res.itinerary) {
+        setItinerary(res.itinerary);
+        // AA-986 L6: removing a stop AA no longer serves takes it off the greyed list too.
+        setUnavailableStops((stops) => stops.filter((s) => s.component_id !== componentId));
+      }
     },
     [tripId, sessionId],
   );
@@ -388,6 +397,7 @@ export function TripProvider({
     send,
     coverage,
     customDays,
+    unavailableStops,
     routePreview,
     setRoutePreview,
     applyRoute,

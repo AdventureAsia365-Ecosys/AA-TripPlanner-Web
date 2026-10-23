@@ -1,7 +1,7 @@
 """Lambda B entrypoint — Trip Assembly.
 
 Routes:
-  GET    /trip/{trip_id}                          current itinerary + added days
+  GET    /trip/{trip_id}                          current itinerary + added days + stops AA no longer serves
   GET    /trip/{trip_id}/suggestions              next-to-pin suggestions
   GET    /trip/{trip_id}/coverage                 AA tour leg chain
   GET    /trip/{trip_id}/stops/{dest}/activities  AA activities at one stop
@@ -119,9 +119,15 @@ async def route(
         trip_id = m.group(1)
         if denied := await _read_guard(conn, trip_id, guest_token, "get_trip"):
             return denied
-        itinerary = await events_mod.current_itinerary(conn, trip_id)
+        itinerary, missing = await events_mod.current_itinerary_and_missing(conn, trip_id)
         custom_days = await events_mod.current_custom_days(conn, trip_id)
-        return _resp(200, {"trip_id": trip_id, "itinerary": itinerary, "custom_days": custom_days})
+        # AA-986 L6 (ADR 0015 decision 5): every served stop says available: true; the stops whose tour AA no
+        # longer serves are listed apart, available: false with a reason, so the planner can show a banner and
+        # grey them without changing the map, the legs or the narration (which use the served stops only).
+        unavailable = await events_mod.unavailable_stops(conn, trip_id, missing)
+        return _resp(200, {"trip_id": trip_id,
+                           "itinerary": [{**e, "available": True, "reason": None} for e in itinerary],
+                           "unavailable_stops": unavailable, "custom_days": custom_days})
 
     m = _COMPONENTS_RE.match(path)
     if m and method == "POST":
@@ -217,10 +223,12 @@ async def route(
             )
             handoff = await _last_event(conn, trip_id)
             # AA-676: the inquiry.submitted outbox row commits with the `sent` event (same transaction).
+            # AA-986 L6: a stop whose tour AA no longer serves does not stop the hand-off; it goes along flagged
+            # (available: false + reason), so staff see why that leg cannot be matched.
             await handoff_mod.write_inquiry(
                 conn, trip_id=trip_id, handoff_id=handoff["id"], session_id=session_id,
                 itinerary=itinerary, custom_days=await events_mod.current_custom_days(conn, trip_id),
-                submitted=submitted,
+                submitted=submitted, unavailable=await events_mod.unavailable_stops(conn, trip_id),
             )
             event_log = await _event_log(conn, trip_id)
             await notify_mod.notify_advisor(trip_id, event_log, sender=sender)
