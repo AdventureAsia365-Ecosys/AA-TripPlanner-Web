@@ -19,17 +19,17 @@ function label(v: string): string {
 
 export default function DestinationPopup({ destinationId, onClose }: Props) {
   const { add, remove, inTripComponentIds, itinerary } = useTrip();
-  const [detail, setDetail] = useState<DestinationDetail | null>(null);
-  const [loading, setLoading] = useState(true);
+  // AA-906 (React Compiler lint, no setState in an effect body): the fetched detail is tagged with
+  // the destination it belongs to, so "loading" is derived (no answer yet for this id) instead of set
+  // from the effect. As before, the previous detail stays on screen until the new one lands.
+  const [fetched, setFetched] = useState<{ id: string; detail: DestinationDetail | null } | null>(null);
+  const detail = fetched?.detail ?? null;
+  const loading = fetched?.id !== destinationId;
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
     fetchDestination(destinationId).then((d) => {
-      if (active) {
-        setDetail(d);
-        setLoading(false);
-      }
+      if (active) setFetched({ id: destinationId, detail: d });
     });
     return () => {
       active = false;

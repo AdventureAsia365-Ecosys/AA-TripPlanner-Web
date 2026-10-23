@@ -22,28 +22,37 @@ export default function TourListPane() {
   const { filters, applyRoute, itinerary } = useTrip();
   const [sort, setSort] = useState<Extract<TourSort, "duration_asc" | "duration_desc">>("duration_asc");
   const [month, setMonth] = useState(0); // 0 = any month
-  const [load, setLoad] = useState<Load>({ state: "loading" });
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<Record<string, string>>({});
   const [attempt, setAttempt] = useState(0);
-  const [confirm, setConfirm] = useState<{ tourId: string; p: RouteProposal } | null>(null);
   const [more, setMore] = useState<"idle" | "loading" | "error">("idle");
+
+  // AA-906 (React Compiler lint, no setState in an effect body): the fetched page and the open
+  // "add to your trip?" question are both tagged with the query they belong to. A new query
+  // (country, month, sort, retry) shows "loading" and drops the question by derivation, instead of
+  // resetting them from the effect; a page that lands for an older query is simply not shown.
+  const queryKey = `${filters.country ?? ""}|${month}|${sort}|${attempt}`;
+  const [loaded, setLoaded] = useState<{ key: string; load: Load } | null>(null);
+  const load: Load = loaded?.key === queryKey ? loaded.load : { state: "loading" };
+  const [confirmState, setConfirmState] = useState<{ key: string; tourId: string; p: RouteProposal } | null>(null);
+  const confirm = confirmState?.key === queryKey ? confirmState : null;
+  const setConfirm = (c: { tourId: string; p: RouteProposal } | null) =>
+    setConfirmState(c ? { key: queryKey, ...c } : null);
 
   useEffect(() => {
     let active = true;
-    setLoad({ state: "loading" });
-    setConfirm(null);
     fetchCatalogTours({ country: filters.country, month: month || undefined, sort, limit: PAGE_SIZE }).then((r) => {
       if (!active) return;
-      setLoad(r ? { state: "done", tours: r.tours, total: r.total } : { state: "error" });
+      setLoaded({ key: queryKey, load: r ? { state: "done", tours: r.tours, total: r.total } : { state: "error" } });
     });
     return () => {
       active = false;
     };
-  }, [filters.country, month, sort, attempt]);
+  }, [filters.country, month, sort, queryKey]);
 
   const showMore = async () => {
     if (load.state !== "done") return;
+    const key = queryKey;
     setMore("loading");
     const r = await fetchCatalogTours({
       country: filters.country,
@@ -57,7 +66,9 @@ export default function TourListPane() {
       return;
     }
     const seen = new Set(load.tours.map((t) => t.tour_id));
-    setLoad({ state: "done", tours: [...load.tours, ...r.tours.filter((t) => !seen.has(t.tour_id))], total: r.total });
+    const tours = [...load.tours, ...r.tours.filter((t) => !seen.has(t.tour_id))];
+    // Only onto the page it extends: a query changed meanwhile (key differs) keeps its own page.
+    setLoaded((cur) => (cur?.key === key ? { key, load: { state: "done", tours, total: r.total } } : cur));
     setMore("idle");
   };
 

@@ -29,8 +29,8 @@ function logUpstream(op: string, status: number, started: number, requestId: str
   console.log(upstreamLogLine({ route: "trip", op, status, ms: Date.now() - started, request_id: requestId }));
 }
 
-// The cookie, or the token middleware.ts minted on this very request (no cookie came in; `minted`).
-// The BFF never sets the cookie itself: middleware.ts does, as a raw Set-Cookie header.
+// The cookie, or the token proxy.ts minted on this very request (no cookie came in; `minted`).
+// The BFF never sets the cookie itself: proxy.ts does, as a raw Set-Cookie header.
 function requestGuestToken(req: NextRequest): { token: string | null; minted: boolean } {
   const cookie = req.cookies.get(guestCookieName())?.value;
   if (isGuestToken(cookie)) return { token: cookie, minted: false };
@@ -78,7 +78,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   // AA-827: a cross-site browser POST never reaches the Lambda (the cookie is SameSite=Lax anyway).
-  // middleware.ts already refuses it before minting; this is defence in depth.
+  // proxy.ts already refuses it before minting; this is defence in depth.
   if (!isSameOrigin(req)) {
     return NextResponse.json({ error: "cross_origin" }, { status: 403 });
   }

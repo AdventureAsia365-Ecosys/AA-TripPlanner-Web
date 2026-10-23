@@ -1,5 +1,5 @@
 // AA-871 — Next.js instrumentation hook: server-side errors (route handlers, Server Components,
-// middleware) go to Sentry when SENTRY_DSN is set. Dependency-free reporter in lib/sentryLite.ts
+// proxy.ts) go to Sentry when SENTRY_DSN is set. Dependency-free reporter in lib/sentryLite.ts
 // (see there for why not @sentry/nextjs and what is scrubbed). Nothing to register at start-up.
 import { reportRequestError, type ErrorContext, type RequestInfo } from "./lib/sentryLite";
 

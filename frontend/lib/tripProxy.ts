@@ -5,7 +5,7 @@ import { GUEST_TOKEN_HEADER } from "./guestToken.ts";
 import { REQUEST_ID_HEADER } from "./requestId.ts";
 
 // AA-827 / AA-909: every Lambda call carries the shared key and, when the request has one, the guest
-// token (HttpOnly cookie, or the one middleware.ts minted on this request). Mutations and the four
+// token (HttpOnly cookie, or the one proxy.ts minted on this request). Mutations and the four
 // trip reads both need it: the Lambda answers 404 to a read without the owner's token. The token is
 // never logged or echoed.
 // AA-871: and the request id (lib/requestId.ts), which the Lambda binds to its log lines.

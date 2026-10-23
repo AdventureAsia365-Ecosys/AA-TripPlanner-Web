@@ -106,19 +106,27 @@ export default function TripPanel() {
   // How many narration day-blocks are revealed so far — drives a light
   // "typing" reveal. The narration itself arrives in one response (mostly
   // AA's authored text, so instant); this just animates it in for polish.
-  const [revealCount, setRevealCount] = useState(0);
+  // AA-906: tagged with the narration it counts for, so a new narration starts at 0 by derivation
+  // (React Compiler lint, no setState in an effect body).
+  const [reveal, setReveal] = useState<{ text: string; n: number }>({ text: "", n: 0 });
+  const revealCount = reveal.text === narration ? reveal.n : 0;
 
   // Recompute travel legs whenever the ordered set of geocoded stops changes.
   // Keyed on the id+coord sequence so a pure re-render doesn't refetch.
   const legKey = itinerary
     .map((d) => `${d.component_id}:${d.lat ?? ""},${d.lng ?? ""}:${d.segment_basis ?? ""}`)
     .join("|");
+  // AA-906 (React Compiler lint, no setState in an effect body): a trip that drops below two stops
+  // clears its legs during render ("adjust state when a prop changes", once per new key); otherwise the
+  // previous legs stay drawn until the new ones land, as before.
+  const [legKeySeen, setLegKeySeen] = useState(legKey);
+  if (legKey !== legKeySeen) {
+    setLegKeySeen(legKey);
+    if (planTrip(itinerary).stops.length < 2) setLegs(new Map());
+  }
   useEffect(() => {
     const plan = planTrip(itinerary);
-    if (plan.stops.length < 2) {
-      setLegs(new Map());
-      return;
-    }
+    if (plan.stops.length < 2) return;
     let cancelled = false;
     fetchTripLegs(plan).then((result) => {
       if (!cancelled) setLegs(new Map(result.map((leg, i) => [plan.stops[i].componentId, leg])));
@@ -133,16 +141,12 @@ export default function TripPanel() {
   // changes, then ticks up to the block count.
   const narrationBlocks = narration ? parseNarration(narration) : [];
   useEffect(() => {
-    if (!narration) {
-      setRevealCount(0);
-      return;
-    }
-    setRevealCount(0);
+    if (!narration) return;
     const total = parseNarration(narration).length;
     let n = 0;
     const id = setInterval(() => {
       n += 1;
-      setRevealCount(n);
+      setReveal({ text: narration, n });
       if (n >= total) clearInterval(id);
     }, 180);
     return () => clearInterval(id);
