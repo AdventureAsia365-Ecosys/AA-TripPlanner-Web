@@ -44,7 +44,7 @@ AA-CIS-App. What it shares with the rest of the ecosystem is a small set of AWS-
 Traveler (browser)
       │
       ▼
-Next.js 15 frontend  ──(Mapbox GL)──►  interactive map UI
+Next.js 16 frontend  ──(Mapbox GL)──►  interactive map UI
       │  same-origin /api/* (BFF, server-side; holds the TripPlanner API key)
       ▼
 API Gateway HTTP v2  (ANY /browse/{proxy+}, ANY /trip/{proxy+}; edge shared secret
@@ -74,14 +74,22 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 
 ### Frontend
 
-- **Next.js 15.5** (App Router) on **React 19.2**, deployed on **Vercel** (AA-904). Route `params` /
-  `searchParams` are Promises (await them); route segment config (`export const revalidate`) must be
-  a number literal (`lib/segmentConfig.test.ts` keeps the catalog pages equal to `CATALOG_REVALIDATE_S`).
-  Lint is the ESLint 9 CLI with a flat config (`frontend/eslint.config.mjs`, `next/core-web-vitals`);
-  `next-env.d.ts` is generated, not committed. `package.json` `overrides` lifts Next's own pinned
-  postcss to the top-level version (advisories fixed only in Next 16) and pins
-  `postcss-selector-parser` 7.1.6 under Tailwind 3 (advisory fixed only in 7.x; Tailwind 3 asks `^6`).
-  Drop that override when Tailwind moves to v4.
+- **Next.js 16.4** (App Router, Turbopack build) on **React 19.2**, deployed on **Vercel** (AA-904 15.5,
+  AA-906 16 — same major as the CIS admin/portal and Booking). Route `params` / `searchParams` are
+  Promises (await them); route segment config (`export const revalidate`) must be a number literal
+  (`lib/segmentConfig.test.ts` keeps the catalog pages equal to `CATALOG_REVALIDATE_S`). The request
+  hook is `frontend/proxy.ts` (Next 16 name for `middleware.ts`; runs on the Node.js runtime).
+  Lint is the ESLint 9 CLI with a native flat config (`frontend/eslint.config.mjs`,
+  `eslint-config-next/core-web-vitals`), which includes the **React Compiler rules** of
+  eslint-plugin-react-hooks 7 as errors: no ref read/write during render (`react-hooks/refs`), no
+  synchronous setState in an effect body (`set-state-in-effect`), no self-reference before declaration
+  (`immutability`). Fix them with lazy state init, derived state (tag async results with the key they
+  were fetched for), the "adjust state when a prop changes" render pattern, or a layout-effect ref
+  sync — not with rule disables (see `docs/implementation-notes/AA-906.md`). The React Compiler itself
+  is not enabled (no `babel-plugin-react-compiler`). `next-env.d.ts` is generated, not committed.
+  `package.json` `overrides` pins `postcss-selector-parser` 7.1.6 under Tailwind 3 (advisory fixed
+  only in 7.x; Tailwind 3 asks `^6`); drop it when Tailwind moves to v4. Next 16 no longer pins a
+  vulnerable postcss, so the AA-904 postcss override is gone (`npm audit --omit=dev`: 0).
 - **Mapbox GL** for the interactive map (destination pins, trip routing, day-by-day view).
 - Talks to the backend Lambdas over HTTP; no direct DB access from the browser.
 - Deploy is CI-driven (S241): `.github/workflows/vercel-deploy.yml` runs `vercel deploy` when a PR
@@ -150,7 +158,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   base64url, 43 chars) that the BFF keeps in an HttpOnly cookie (`__Host-tp_guest` in production,
   `tp_guest` under local http; Secure, SameSite=Lax, Path=/). **Lifetime rule:** Max-Age 400 days
   (the browser cap), sliding — every matched request re-sends it with a fresh Max-Age; nothing else
-  expires a guest (`sessions.expires_at` is informational, not enforced). `frontend/middleware.ts`
+  expires a guest (`sessions.expires_at` is informational, not enforced). `frontend/proxy.ts`
   mints it on `/plan` and on `/api/trip` only (the home, destination and tour pages are CDN-cached, so a
   per-visitor Set-Cookie must never ride on them), as a
   raw `Set-Cookie` header — never `res.cookies.set`, which also echoes the value into an
@@ -171,7 +179,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   its ids (only if localStorage still holds the failing ones) and reloads with a new trip on either
   answer; a second reset in the same tab within 60 s does not reload.
 - **No cookie is not "another browser".** When a POST came without a cookie, the BFF uses the token
-  the middleware minted for it; if the Lambda refuses that token, the BFF answers 401
+  the proxy minted for it; if the Lambda refuses that token, the BFF answers 401
   `cookies_required` instead of `guest_session_invalid`. The client retries once (a cookie lost once is
   now replaced) and, on a second `cookies_required`, keeps its ids and says cookies are needed. A
   browser that blocks the cookie can make the first edit of a trip only.

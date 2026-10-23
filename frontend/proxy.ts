@@ -6,6 +6,8 @@ import {
   serializeGuestCookie,
 } from "./lib/guestToken";
 
+// AA-906: Next 16 renamed `middleware.ts` to `proxy.ts` (official codemod `middleware-to-proxy`); the
+// proxy runs on the Node.js runtime (it was Edge before). Behaviour and matcher are unchanged.
 // AA-827: the visitor holds the HttpOnly guest-token cookie before the planner makes its first fetch:
 // it is minted on the /plan document, so parallel first POSTs usually carry the same token. Only the
 // dynamic /plan page and /api/trip are matched: the home, destination and tour pages are cached by the
@@ -15,10 +17,10 @@ import {
 // on this same request. A cross-site POST is refused here, before any mint, so it can never overwrite
 // the visitor's real cookie (guestToken.guestCookieAction).
 //
-// The cookie is appended as a raw Set-Cookie header, never with `res.cookies.set`: that proxy also
-// writes `x-middleware-set-cookie` (the full cookie string) onto the response, which client JS can
+// The cookie is appended as a raw Set-Cookie header, never with `res.cookies.set`: that cookie wrapper
+// also writes `x-middleware-set-cookie` (the full cookie string) onto the response, which client JS can
 // read from a fetch() response and which would defeat HttpOnly.
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const action = guestCookieAction(req, req.cookies.get(guestCookieName())?.value);
   if (action.kind === "reject") {
     return NextResponse.json({ error: "cross_origin" }, { status: 403 });
@@ -27,7 +29,7 @@ export function middleware(req: NextRequest) {
   let res: NextResponse;
   if (req.nextUrl.pathname.startsWith("/api/")) {
     const headers = new Headers(req.headers);
-    headers.delete(MINTED_TOKEN_HEADER); // only this middleware may set it
+    headers.delete(MINTED_TOKEN_HEADER); // only this proxy may set it
     if (action.minted && action.token) headers.set(MINTED_TOKEN_HEADER, action.token);
     res = NextResponse.next({ request: { headers } });
   } else {

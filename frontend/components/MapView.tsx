@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { fetchByCountry, fetchShapes, fetchTile, tileScope } from "@/lib/api";
@@ -123,11 +123,16 @@ export default function MapView() {
   // AA-847: the Geoapify / OSM attribution is shown while a Geoapify-located point is drawn.
   const [attribution, setAttribution] = useState(false);
   const filtersRef = useRef(filters);
-  filtersRef.current = filters;
   // When search is active, the map shows the ranked result set instead of
   // tiles-by-bounds. Kept in a ref so the moveend handler can bail out.
   const searchResultsRef = useRef(searchResults);
-  searchResultsRef.current = searchResults;
+  // AA-906 (React Compiler lint: no ref writes during render): the Mapbox handlers read the latest
+  // filters / search results through these refs, synced after each commit. A layout effect runs
+  // before every passive effect below (which re-query on a filter change), so they see the new values.
+  useLayoutEffect(() => {
+    filtersRef.current = filters;
+    searchResultsRef.current = searchResults;
+  }, [filters, searchResults]);
 
   // AA-847 slice 6d: draw the line places from their geometry (fetched by id, cached; light below zoom 7). A line
   // whose geometry is missing (pending / not found) is not drawn here: it is listed by name, flagged on CIS
@@ -191,7 +196,7 @@ export default function MapView() {
   // The fetcher gets the filters load() was called with, so a tile is never cached under a
   // scope built from different filters than the request used.
   const loaderRef = useRef<TileLoader<DestinationPin, BrowseFilters> | null>(null);
-  if (!loaderRef.current) {
+  if (loaderRef.current === null) {
     loaderRef.current = new TileLoader<DestinationPin, BrowseFilters>(
       (id, signal, f) => fetchTile(id, f, signal),
       {
@@ -207,48 +212,53 @@ export default function MapView() {
   const drawnScopeRef = useRef<string | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // AA-906: the one-shot retry calls `run` (same closure), not `refreshVisibleTiles` itself — a
+  // callback must not reference its own binding before it is declared (React Compiler lint).
   const refreshVisibleTiles = useCallback(
-    async (opts?: { retry?: boolean }) => {
-      const map = mapRef.current;
-      const loader = loaderRef.current;
-      if (!map || !loader) return;
-      if (retryTimerRef.current) {
-        clearTimeout(retryTimerRef.current);
-        retryTimerRef.current = null;
-      }
-      // In search mode the map shows the ranked results, not tiles — don't let
-      // a pan/zoom overwrite them.
-      if (searchResultsRef.current) return;
-      const bounds = map.getBounds();
-      if (!bounds) return;
-      const plan = planTiles({
-        west: bounds.getWest(),
-        south: bounds.getSouth(),
-        east: bounds.getEast(),
-        north: bounds.getNorth(),
-      });
-      const f = filtersRef.current;
-      const scope = tileScope(f);
-      const res = await loader.loadView(plan.ids, scope, f);
-      // null: a newer view superseded this one; keep the pins that view will draw.
-      if (res === null || searchResultsRef.current) return;
-      // Dedup by destination id across tiles. A partial result under the same filters is merged
-      // into the pins already drawn instead of replacing them, so a failed tile or an exhausted
-      // budget never blanks the map.
-      const merged = pinsRef.current;
-      if (res.complete || drawnScopeRef.current !== scope) merged.clear();
-      for (const p of res.pins) merged.set(p.id, p);
-      drawnScopeRef.current = scope;
-      setSourceData(Array.from(merged.values()));
-      if (!res.complete && opts?.retry !== true) {
-        retryTimerRef.current = setTimeout(
-          () => {
-            retryTimerRef.current = null;
-            void refreshVisibleTiles({ retry: true });
-          },
-          Math.max(PARTIAL_RETRY_MS, res.retryAfterMs),
-        );
-      }
+    (opts?: { retry?: boolean }) => {
+      const run = async (o?: { retry?: boolean }): Promise<void> => {
+        const map = mapRef.current;
+        const loader = loaderRef.current;
+        if (!map || !loader) return;
+        if (retryTimerRef.current) {
+          clearTimeout(retryTimerRef.current);
+          retryTimerRef.current = null;
+        }
+        // In search mode the map shows the ranked results, not tiles — don't let
+        // a pan/zoom overwrite them.
+        if (searchResultsRef.current) return;
+        const bounds = map.getBounds();
+        if (!bounds) return;
+        const plan = planTiles({
+          west: bounds.getWest(),
+          south: bounds.getSouth(),
+          east: bounds.getEast(),
+          north: bounds.getNorth(),
+        });
+        const f = filtersRef.current;
+        const scope = tileScope(f);
+        const res = await loader.loadView(plan.ids, scope, f);
+        // null: a newer view superseded this one; keep the pins that view will draw.
+        if (res === null || searchResultsRef.current) return;
+        // Dedup by destination id across tiles. A partial result under the same filters is merged
+        // into the pins already drawn instead of replacing them, so a failed tile or an exhausted
+        // budget never blanks the map.
+        const merged = pinsRef.current;
+        if (res.complete || drawnScopeRef.current !== scope) merged.clear();
+        for (const p of res.pins) merged.set(p.id, p);
+        drawnScopeRef.current = scope;
+        setSourceData(Array.from(merged.values()));
+        if (!res.complete && o?.retry !== true) {
+          retryTimerRef.current = setTimeout(
+            () => {
+              retryTimerRef.current = null;
+              void run({ retry: true });
+            },
+            Math.max(PARTIAL_RETRY_MS, res.retryAfterMs),
+          );
+        }
+      };
+      return run(opts);
     },
     [setSourceData],
   );
@@ -961,9 +971,16 @@ export default function MapView() {
   // Open a destination's popup when something (e.g. a suggestion click) asks
   // to focus it, then clear the request. The user still picks a specific
   // component from the popup (never a whole-destination add).
+  // AA-906 (React Compiler lint, no setState in an effect body): opening the popup is the "adjust
+  // state when a prop changes" pattern (during render, once per new request); the effect keeps the
+  // external part only (camera move) and hands the request back.
+  const [focusSeen, setFocusSeen] = useState<string | null>(null);
+  if (focusDestinationId !== focusSeen) {
+    setFocusSeen(focusDestinationId);
+    if (focusDestinationId) setSelected(focusDestinationId);
+  }
   useEffect(() => {
     if (!focusDestinationId) return;
-    setSelected(focusDestinationId);
     const map = mapRef.current;
     const pin = pinsRef.current.get(focusDestinationId);
     if (map && pin) {

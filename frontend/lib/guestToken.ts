@@ -1,18 +1,18 @@
 // AA-827: the guest credential. A random token (32 bytes, base64url, 43 chars) lives in an HttpOnly
-// cookie that only the server side (middleware.ts + the /api/trip BFF) reads; the BFF forwards it to
+// cookie that only the server side (proxy.ts + the /api/trip BFF) reads; the BFF forwards it to
 // the assembly Lambda in a header, and the Lambda stores only its sha256. Client JS never sees it:
 // the cookie is written as a raw Set-Cookie header (serializeGuestCookie), never through Next's
-// `res.cookies.set`, whose proxy also copies the value into an `x-middleware-set-cookie` response
+// `res.cookies.set`, whose cookie wrapper also copies the value into an `x-middleware-set-cookie` response
 // header that a same-origin fetch() can read.
 // Server-only by convention: do not import this from client components. Pure (no Next imports), so
-// it runs in the edge middleware, the Node route handler and `npm test` alike.
+// it runs in the Next proxy (proxy.ts, formerly middleware.ts), the Node route handler and `npm test` alike.
 
 // BFF -> assembly Lambda (backend config.GUEST_TOKEN_HEADER).
 export const GUEST_TOKEN_HEADER = "x-tripplanner-guest";
-// middleware -> BFF, on the same request, for a token minted before the browser holds the cookie.
-// The middleware drops any client-supplied value first.
+// proxy.ts -> BFF, on the same request, for a token minted before the browser holds the cookie.
+// proxy.ts drops any client-supplied value first.
 export const MINTED_TOKEN_HEADER = "x-tp-guest-minted";
-// 400 days, the most a browser keeps a cookie (Chrome caps Max-Age there). Sliding: the middleware
+// 400 days, the most a browser keeps a cookie (Chrome caps Max-Age there). Sliding: proxy.ts
 // re-sends the cookie with a fresh Max-Age on every matched request, so an active guest never loses it.
 // The localStorage ids it guards have no expiry, and sessions.expires_at is not enforced.
 export const GUEST_COOKIE_MAX_AGE = 60 * 60 * 24 * 400;
@@ -81,7 +81,7 @@ export type GuestCookieAction =
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-// What middleware.ts does with the guest cookie on one request.
+// What proxy.ts does with the guest cookie on one request.
 // - A cross-site POST never carries the SameSite=Lax cookie, so it would look cookie-less and a new
 //   token would overwrite the visitor's real cookie (a top-level cross-site POST accepts a Lax
 //   Set-Cookie): it is rejected before any mint.

@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -130,11 +131,8 @@ export function TripProvider({
   children: React.ReactNode;
   initialIntent?: PlanIntent;
 }) {
-  const idsRef = useRef<{ sessionId: string; tripId: string }>(undefined);
-  if (!idsRef.current) {
-    idsRef.current = loadOrCreateIds();
-  }
-  const { sessionId, tripId } = idsRef.current;
+  // AA-906: fixed for the provider's life, so a lazy state initializer (read during render), not a ref.
+  const [{ sessionId, tripId }] = useState(loadOrCreateIds);
 
   const [intent] = useState<PlanIntent>(initialIntent);
   const [ready, setReady] = useState(false);
@@ -161,8 +159,13 @@ export function TripProvider({
   const [coverage, setCoverage] = useState<Coverage | null>(null);
   const [customDays, setCustomDays] = useState<CustomDay[]>([]);
   const [routePreview, setRoutePreview] = useState<RouteProposal | null>(null);
-  const filtersRef = useRef<BrowseFilters>({});
-  filtersRef.current = filters;
+  // The latest filters for the suggestion fetch and runSearch without making them dependencies.
+  // AA-906 (React Compiler lint: no ref writes during render): synced after each commit, in a layout
+  // effect so every passive effect below already sees the new value.
+  const filtersRef = useRef<BrowseFilters>(filters);
+  useLayoutEffect(() => {
+    filtersRef.current = filters;
+  }, [filters]);
 
   const inTripComponentIds = useMemo(
     () => new Set(itinerary.map((d) => d.component_id)),
@@ -205,11 +208,22 @@ export function TripProvider({
     .join(",");
   // AA-674: the map's activity/intensity filters also narrow the suggestions.
   const filterKey = `${filters.activity ?? ""}|${filters.intensity_level ?? ""}`;
+  // AA-674: which real tours cover the trip — refreshed when the day order or added days change.
+  const coverageKey = `${itinerary.map((d) => d.component_id).join(",")}|${customDays
+    .map((d) => d.day_id)
+    .join(",")}`;
+  const tripEmpty = itinerary.length === 0 && customDays.length === 0;
+  // AA-906 (React Compiler lint, no setState in an effect body): an emptied trip clears its
+  // suggestions / coverage during render, once per key change ("adjust state when a prop changes");
+  // the effects below only fetch.
+  const [keysSeen, setKeysSeen] = useState({ suggestKey, coverageKey });
+  if (keysSeen.suggestKey !== suggestKey || keysSeen.coverageKey !== coverageKey) {
+    setKeysSeen({ suggestKey, coverageKey });
+    if (!suggestKey && keysSeen.suggestKey !== suggestKey) setSuggestions([]);
+    if (tripEmpty && keysSeen.coverageKey !== coverageKey) setCoverage(null);
+  }
   useEffect(() => {
-    if (!suggestKey) {
-      setSuggestions([]);
-      return;
-    }
+    if (!suggestKey) return;
     let active = true;
     api.fetchSuggestions(tripId, filtersRef.current).then((s) => {
       if (active) setSuggestions(s);
@@ -219,15 +233,9 @@ export function TripProvider({
     };
   }, [suggestKey, filterKey, tripId]);
 
-  // AA-674: which real tours cover the trip — refreshed when the day order or added days change.
-  const coverageKey = `${itinerary.map((d) => d.component_id).join(",")}|${customDays
-    .map((d) => d.day_id)
-    .join(",")}`;
+  // coverageKey is the trigger (day order / added days); tripEmpty is derived from the same values.
   useEffect(() => {
-    if (itinerary.length === 0 && customDays.length === 0) {
-      setCoverage(null);
-      return;
-    }
+    if (tripEmpty) return;
     let active = true;
     api.fetchCoverage(tripId).then((c) => {
       if (active) setCoverage(c);
@@ -235,8 +243,7 @@ export function TripProvider({
     return () => {
       active = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coverageKey, tripId]);
+  }, [coverageKey, tripEmpty, tripId]);
 
   const applyRoute = useCallback(
     async (p: RouteProposal) => {
