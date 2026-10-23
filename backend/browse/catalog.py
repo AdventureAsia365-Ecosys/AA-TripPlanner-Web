@@ -578,9 +578,11 @@ async def tour_gone(slug: str, *, pool: Any) -> Optional[dict]:
     names a key in the tombstone (retired wins when two keys share the suffix), else None (never served, unknown, or
     the tombstone cannot be read)."""
     slug = (slug or "").strip().lower()
-    if not re.fullmatch(r".*-[0-9a-f]{8}", slug):
+    # Linear check of the "-<8 hex>" suffix (no backtracking regex over user input; CodeQL py/polynomial-redos).
+    suffix = slug[-8:]
+    if len(slug) < 10 or slug[-9] != "-" or not re.fullmatch(r"[0-9a-f]{8}", suffix):
         return None
-    rows = await _tombstone(pool, TOMBSTONE_BY_SUFFIX_SQL, slug.rsplit("-", 1)[-1])
+    rows = await _tombstone(pool, TOMBSTONE_BY_SUFFIX_SQL, suffix)
     if not rows:
         return None
     best = next((r for r in rows if r["state"] == "retired"), rows[0])
