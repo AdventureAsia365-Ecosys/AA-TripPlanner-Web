@@ -275,9 +275,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   enforces this: `migrations/tests/migration_lint.py` (TripPlanner rules), the AA-CIS-Infra
   `db/run_migration.py --inspect` lint at a pinned commit (`test_infra_runner.py`) and a replay of
   tp-001…013 on PostgreSQL 15 + pgvector (`test_tp013_pg.py`; `test_tp015_pg.py` continues it with tp-014/015 as
-  `tp_owner`, `test_tp016_pg.py` with tp-016). `test_replay_twice_pg.py` (AA-849) applies every file twice: the second run must not error and
+  `tp_owner`, `test_tp016_pg.py` with tp-016, `test_tp017_pg.py` / `test_tp018_pg.py` with tp-017 / tp-018). `test_replay_twice_pg.py` (AA-849) applies every file twice: the second run must not error and
   must change nothing, and the registered `tp-NNN` keys must equal the files, so **every new file must be
-  safe to run again** (`IF NOT EXISTS`, `CREATE OR REPLACE`, `ON CONFLICT (version) DO NOTHING`, no
+  safe to run again** (a file whose objects a later file dropped — tp-003, tp-004, tp-013 after the tp-018 drop — is
+  listed in `SUPERSEDED_BY_DROP` with the dropping file, and must still fail or change the state when re-run) (`IF NOT EXISTS`, `CREATE OR REPLACE`, `ON CONFLICT (version) DO NOTHING`, no
   unguarded seed rows). Nothing in that job may be skipped (`--fail-on-skip`). Undoing tp-013 is the prepared Infra
   `roles/` file (branch `feat/x1-s7-tp013-undo`) run as the master, never a `tripplanner/` file.
 - **Column tags (data standards DM-6.1, tp-016, AA-877).** A column holding personal data carries
