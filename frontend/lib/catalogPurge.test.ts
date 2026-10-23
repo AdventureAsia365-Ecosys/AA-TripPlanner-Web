@@ -119,9 +119,17 @@ test("a replay of the same notice gives the same answer and the same purges (ide
   assert.deepEqual(calls.cdn, [CATALOG_CACHE_TAG, CATALOG_CACHE_TAG]);
 });
 
+test("a secret with surrounding whitespace (an env set by piping) still verifies", async () => {
+  const { deps, calls } = recorder({ secret: `${VECTOR_SECRET}\n` });
+  const answer = await handlePurge(VECTOR_SIGNATURE, VECTOR_BODY, deps);
+  assert.equal(answer.status, 200);
+  assert.deepEqual(calls.cdn, [CATALOG_CACHE_TAG]);
+});
+
 test("refusals purge nothing", async () => {
   const cases: [string | null, string, Partial<PurgeDeps>, number][] = [
     [VECTOR_SIGNATURE, VECTOR_BODY, { secret: "" }, 503],
+    [VECTOR_SIGNATURE, VECTOR_BODY, { secret: " \n" }, 503],
     [VECTOR_SIGNATURE, VECTOR_BODY, { secret: "wrong" }, 401],
     [null, VECTOR_BODY, {}, 401],
     [VECTOR_SIGNATURE, VECTOR_BODY, { nowS: VECTOR_TS + 3600 }, 401], // a captured notice replayed an hour later

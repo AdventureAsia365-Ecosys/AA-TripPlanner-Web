@@ -125,7 +125,10 @@ export async function handlePurge(
 ): Promise<PurgeAnswer> {
   const started = Date.now();
   const log = (fields: Record<string, unknown>) => deps.log(JSON.stringify({ evt: "catalog_purge", ...fields }));
-  if (!deps.secret) {
+  // Trimmed like the CIS side (parse_secret): an env set by piping (`echo ... | vercel env add`) carries a trailing
+  // newline, and an untrimmed key would refuse every notice with 401 (NonRetryable on CIS = the purge never runs).
+  const secret = deps.secret.trim();
+  if (!secret) {
     log({ result: "not_configured" });
     return { status: 503, body: { error: "not_configured" } };
   }
@@ -133,7 +136,7 @@ export async function handlePurge(
     log({ result: "too_large" });
     return { status: 413, body: { error: "too_large" } };
   }
-  const sig = verifySignature(deps.secret, signature, body, deps.nowS);
+  const sig = verifySignature(secret, signature, body, deps.nowS);
   if (!sig.ok) {
     log({ result: "unauthorized", reason: sig.reason });
     return { status: 401, body: { error: "unauthorized" } };

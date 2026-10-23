@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
 import { tourRouteBffAnswer } from "@/lib/tourRoute";
-import { browseCacheHeaders } from "@/lib/catalogPurge";
+import { addCacheTag } from "@vercel/functions";
+import { CATALOG_CACHE_TAG, browseCacheHeaders } from "@/lib/catalogPurge";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -104,7 +105,17 @@ export async function GET(req: NextRequest) {
       cacheControl = "no-store";
     }
   }
-  const cacheHeaders = status === 200 ? browseCacheHeaders(cacheControl) : { "cache-control": cacheControl };
+  const cacheHeaders: Record<string, string> =
+    status === 200 ? browseCacheHeaders(cacheControl) : { "cache-control": cacheControl };
+  if (cacheHeaders["vercel-cache-tag"]) {
+    // The documented API for the same tag as the `Vercel-Cache-Tag` header (Vercel docs, @vercel/functions
+    // addCacheTag); both are kept so the purge reaches the entry whichever one the CDN reads. A no-op outside Vercel.
+    try {
+      await addCacheTag(CATALOG_CACHE_TAG);
+    } catch {
+      // tagging is best effort: the header still carries the tag, and the CDN TTL bounds the lag
+    }
+  }
   return new NextResponse(body, {
     status,
     headers: {
