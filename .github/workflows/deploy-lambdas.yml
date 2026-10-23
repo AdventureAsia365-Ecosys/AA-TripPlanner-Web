@@ -116,8 +116,14 @@ jobs:
       # Gateway with the edge key; the API host itself is not written in this public repo). Read-only:
       #   browse   — /api/browse?resource=countries (a cache-buster skips the Vercel CDN, which would otherwise
       #              answer from cache without touching the Lambda) → 200 + a non-empty country list;
-      #   assembly — /api/trip?trip_id=<all-zero UUID> (no-store) with no guest session → 404 {"error": "not found"}:
-      #              the trip read GETs check the guest token and never leak existence (AA-909).
+      #   assembly — two trip reads of the all-zero UUID (no-store) with no guest session. The Lambda answers
+      #              both with 404 {"error": "not found"}: the trip read GETs check the guest token and never
+      #              leak existence (AA-909). What the browser sees differs per read:
+      #              - coverage  (/api/trip?resource=coverage&trip_id=…): the BFF passes the Lambda's 404 through,
+      #                so this check pins the Lambda's own contract;
+      #              - itinerary (/api/trip?trip_id=…): since AA-837 the BFF turns that one 404 into a 200 empty
+      #                trip {"itinerary": [], "custom_days": []} (lib/tripProxy.ts tripReadAnswer), so a first
+      #                visit to /plan logs no console error. A Lambda 5xx still passes through and fails it.
       # 3 tries, 10 s apart (cold start of the new code).
       - name: Smoke test (browse + assembly through the production BFF)
         env:
@@ -140,6 +146,8 @@ jobs:
           fail=0
           check browse "/api/browse?resource=countries&_cb=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             '(.countries | length) > 0' || fail=1
-          check assembly "/api/trip?trip_id=${ZERO_TRIP}" \
+          check assembly-coverage "/api/trip?resource=coverage&trip_id=${ZERO_TRIP}" \
             '.error == "not found"' 404 || fail=1
+          check assembly-itinerary "/api/trip?trip_id=${ZERO_TRIP}" \
+            '.itinerary == [] and .custom_days == []' 200 || fail=1
           [ "$fail" = "0" ] && echo "All Lambda smoke checks passed" || exit 1
