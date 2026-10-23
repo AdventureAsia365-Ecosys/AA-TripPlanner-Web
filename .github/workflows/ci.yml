@@ -89,7 +89,7 @@ jobs:
           /tmp/gitleaks git --redact --verbose --exit-code 1 .
 
   # X1 (AA-852, plan S7 + review S241): the migrations/ checks, outside backend/ so a migration PR does
-  # not redeploy the Lambdas. Two layers here (the third runs in AA-CIS-Infra), none may be skipped (a skip turns the job red):
+  # not redeploy the Lambdas. Three layers here (the fourth runs in AA-CIS-Infra), none may be skipped (a skip turns the job red):
   #   1. migrations/tests/migration_lint.py: TripPlanner rules (migration role per file number, OWNER TO
   #      only in tp-013, ALTER DEFAULT PRIVILEGES FOR ROLE tp_owner IN SCHEMA tripplanner, no role switch,
   #      no role membership GRANT, no set_config('role')), offline;
@@ -99,7 +99,8 @@ jobs:
   #      test_replay_twice_pg.py (AA-849): every file applied twice, each as the role DB Migrate uses
   #      (live owner of schema tripplanner, XD8); the second pass must not error and must change nothing
   #      (catalog, row counts, registry rows), and the registered tp-NNN keys must equal the files;
-  #   3. The DB Migrate runner lint (AA-CIS-Infra run_migration.py --inspect) runs in AA-CIS-Infra's
+  #   3. (AA-712 X4) the backend tests that run the catalog-view SQL on a real Postgres, same cluster;
+  #   4. The DB Migrate runner lint (AA-CIS-Infra run_migration.py --inspect) runs in AA-CIS-Infra's
   #      required 'Migration lint and unique numbers' check on the byte copy, before any apply (S241:
   #      no cross-repo token or deploy key here; test_infra_runner.py stays for local runs).
   migrations:
@@ -145,6 +146,31 @@ jobs:
           fi
           for module in test_migration_lint test_tp013_pg test_tp015_pg test_tp016_pg test_tp017_pg test_replay_twice_pg; do
             if ! grep -qE "^migrations/tests/${module}\.py::[^ ]+ PASSED" /tmp/migrations.txt; then
+              echo "::error::${module}.py reported no PASSED test"; exit 1
+            fi
+          done
+
+      # AA-712 X4: after the reader removal the catalog-view SQL is TripPlanner's only read path, and the
+      # tests that run that SQL against a real Postgres (browse/search/suggestions on catalog.v_*, the
+      # route-suggestion property, the pgvector top-k search) need --pg-dsn, so "Backend (pytest)" (offline)
+      # skips them. They run here on the same PostgreSQL 15 + pgvector cluster; nothing may be skipped and
+      # each module must report PASSED lines.
+      - name: Catalog-view SQL on PostgreSQL 15 + pgvector (backend integration tests)
+        working-directory: backend
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -o pipefail
+          pip install -r requirements.txt
+          pytest tests/test_places_source_pg.py tests/test_route_property_pg.py tests/test_vector_topk_pg.py \
+            -v --tb=short -rs -p no:cacheprovider \
+            --pg-dsn postgresql://postgres@127.0.0.1:5433/postgres \
+            | tee /tmp/backend-pg.txt
+          if grep -qE "[0-9]+ (skipped|xfailed|xpassed|deselected)" /tmp/backend-pg.txt; then
+            echo "::error::backend PG tests were skipped, xfailed, xpassed or deselected"; exit 1
+          fi
+          for module in test_places_source_pg test_route_property_pg test_vector_topk_pg; do
+            if ! grep -qE "^tests/${module}\.py::[^ ]+ PASSED" /tmp/backend-pg.txt; then
               echo "::error::${module}.py reported no PASSED test"; exit 1
             fi
           done
