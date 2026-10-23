@@ -21,8 +21,8 @@ const VECTOR_TS = 1761200000;
 const VECTOR_BODY =
   '{"contract":"catalog.tour.lifecycle.v1","events":[{"event":"retired","event_id":42,' +
   '"idempotency_key":"trash_master:t1:retired:abc","occurred_at":"2026-10-23T14:33:41+00:00",' +
-  '"reason":"master_trashed","replaced_by_tour_id":null,"source_id":"3f0c2a8e-0000-4000-8000-' +
-  '000000000001","source_system":"cis","tour_id":"00000000-0000-4000-8000-0000000000t1"}]}';
+  '"reason":"master_trashed","replaced_by_tour_id":null,"source_id":' +
+  '"3f0c2a8e-0000-4000-8000-000000000001","source_system":"cis","tour_id":"00000000-0000-4000-8000-0000000000t1"}]}';
 const VECTOR_SIGNATURE = "t=1761200000,v1=0ea3fd2093eca674137f8046bd84405dcd77280f4d7b2dad4ae8a52bff80d41a";
 
 function sign(secret: string, body: string, ts: number): string {
