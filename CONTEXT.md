@@ -462,8 +462,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   AccessDenied. This is the same OIDC fact that AA-588 corrected in Infra.
 - **Deploy after CI + smoke (AA-879)**: `deploy-lambdas.yml` calls the whole `ci.yml` (reusable via
   `workflow_call`) as its `ci` job; `deploy` has `needs: ci`. After the update it runs a read-only smoke
-  through the production BFF (`/api/browse?resource=countries` with a cache-buster, and
-  `/api/trip?trip_id=<all-zero UUID>`), 200 + JSON shape, so a broken Lambda turns the run red.
+  through the production BFF (`/api/browse?resource=countries` with a cache-buster → 200 + countries;
+  `/api/trip?resource=coverage&trip_id=<all-zero UUID>` → the Lambda's 404 `{"error": "not found"}` passed
+  through (AA-909); `/api/trip?trip_id=<all-zero UUID>` → the BFF's 200 empty trip (AA-837)), so a broken
+  Lambda turns the run red.
 - **CI checks**: required "Backend (pytest)", "Frontend (lint + build)", "Migrations (lint, PG 15
   replay)"; plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt` and gitleaks over the
   full history, both failing; reviewed findings in `.gitleaksignore` with a reason each).
