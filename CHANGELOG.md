@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.5.0...v0.6.0) (2026-10-23)
+
+
+### Features
+
+* saved trips flag stops AA no longer serves, retired tour pages answer 410 ([#142](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/142)) ([e6f5c4a](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/e6f5c4a86b1b872f36ca06e468bb7b2b4e7fc267))
+* tp-018 drops the frozen place tables (needs approval after the DRY RUN) ([#139](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/139)) ([46f3bfb](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/46f3bfb9d0bdfb5d17e25332e95ed2a80fab9a29))
+
+
+### Bug Fixes
+
+* Lambda smoke checks the BFF itinerary and the Lambda 404 separately ([#136](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/136)) ([dfbe785](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/dfbe78514cb170af863b87a7bc7ca2d1de5c007c))
+
 ## [0.5.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.4.0...v0.5.0) (2026-10-23)
 
 
