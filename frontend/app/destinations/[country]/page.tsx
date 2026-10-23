@@ -12,7 +12,7 @@ import { placeLines } from "@/lib/tourMap";
 import TourCard from "@/components/site/TourCard";
 import { getDestination, siteUrl } from "@/lib/catalog";
 import type { DestinationPage } from "@/lib/catalogTypes";
-import { slugify, titleCase } from "@/lib/text";
+import { formatDayRange, slugify, titleCase } from "@/lib/text";
 import { ButtonLink, EmptyState, Icon, Photo } from "@/ui";
 
 // Route segment config must be a literal (Next 15 reads it statically and fails the build on an
@@ -28,7 +28,7 @@ type Props = { params: Promise<{ country: string }> };
 
 function intro(d: DestinationPage): string {
   const range =
-    d.min_days && d.max_days ? (d.min_days === d.max_days ? `${d.min_days} days` : `${d.min_days} to ${d.max_days} days`) : null;
+    d.min_days && d.max_days ? formatDayRange(d.min_days, d.max_days) : null;
   const places = d.places.slice(0, 4).map((p) => p.name).filter(Boolean);
   const parts = [
     `Adventure Asia has ${d.tour_count} tour${d.tour_count > 1 ? "s" : ""} in ${d.country}${range ? `, from ${range}` : ""}.`,

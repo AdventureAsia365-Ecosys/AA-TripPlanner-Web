@@ -991,9 +991,9 @@ export default function MapView() {
 
   if (!hasMapboxToken()) {
     return (
-      <div className="absolute inset-0 flex items-center justify-center bg-aa-sand text-center text-aa-muted">
-        <div className="max-w-sm rounded-2xl border border-aa-line bg-white p-6 shadow-aa">
-          <p className="font-semibold text-aa-ink">Map token not set</p>
+      <div className="absolute inset-0 flex items-center justify-center bg-k-neutral-bg text-center text-k-muted">
+        <div className="max-w-sm rounded-2xl border border-k-line bg-k-card p-6 shadow-aa">
+          <p className="font-semibold text-k-ink">Map token not set</p>
           <p className="mt-1 text-sm">
             Add NEXT_PUBLIC_MAPBOX_TOKEN to frontend/.env.local to load the map.
           </p>

@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GUEST_TOKEN_HEADER } from "./guestToken.ts";
-import { parseTripBody, tripHeaders, tripReadPath } from "./tripProxy.ts";
+import { EMPTY_TRIP_BODY, parseTripBody, tripHeaders, tripReadAnswer, tripReadPath } from "./tripProxy.ts";
 
 const TRIP = "00000000-0000-4000-8000-0000000000b1";
 const DEST = "00000000-0000-4000-8000-0000000000d1";
@@ -59,4 +59,21 @@ test("the POST body must be one JSON object, else the route answers 400", () => 
   for (const raw of ["", "not json", "null", "[]", "42", '"op"', "{"]) {
     assert.equal(parseTripBody(raw), null, raw);
   }
+});
+
+// AA-837: a first visit to /plan reads a trip the Lambda does not have yet (404) — the browser gets a
+// 200 empty trip, so the console stays clean; nothing else is rewritten.
+test("the itinerary read's 404 reaches the browser as a 200 empty trip", () => {
+  const a = tripReadAnswer("itinerary", 404, '{"error":"not found"}');
+  assert.equal(a.status, 200);
+  assert.deepEqual(JSON.parse(a.body), { itinerary: [], custom_days: [] });
+  assert.equal(a.body, EMPTY_TRIP_BODY);
+});
+
+test("other reads and other statuses pass through untouched", () => {
+  for (const op of ["suggestions", "coverage", "activities"]) {
+    assert.deepEqual(tripReadAnswer(op, 404, '{"error":"not found"}'), { status: 404, body: '{"error":"not found"}' });
+  }
+  assert.deepEqual(tripReadAnswer("itinerary", 200, '{"itinerary":[1]}'), { status: 200, body: '{"itinerary":[1]}' });
+  assert.deepEqual(tripReadAnswer("itinerary", 500, "boom"), { status: 500, body: "boom" });
 });

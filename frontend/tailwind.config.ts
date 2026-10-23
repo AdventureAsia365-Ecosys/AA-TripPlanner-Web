@@ -10,7 +10,9 @@ const config: Config = {
     extend: {
       colors: {
         // AA-812: kit tokens (ui/tokens.css, same values as the CIS kit), theme-aware.
-        // New pages use `k-*`; the map planner keeps the light-only `aa-*` hex palette.
+        // Every page uses `k-*`, the map planner included (AA-837 retired the light-only `aa-*` hex
+        // palette). Colours are CSS variables, so Tailwind opacity modifiers (`/40`) do not apply:
+        // pick a token instead (e.g. `k-accent-border` for a soft gold border).
         k: {
           accent: "var(--aa-accent)",
           "accent-deep": "var(--aa-accent-deep)",
@@ -20,6 +22,7 @@ const config: Config = {
           slate: "var(--aa-slate)",
           danger: "var(--aa-red)",
           "danger-soft": "var(--aa-red-soft)",
+          "danger-border": "var(--aa-red-border)",
           success: "var(--aa-green)",
           "success-soft": "var(--aa-green-soft)",
           info: "var(--aa-info)",
@@ -38,17 +41,6 @@ const config: Config = {
           "on-accent": "var(--aa-on-accent)",
           scrim: "var(--aa-scrim)",
           "hero-bg": "var(--aa-hero-bg)",
-        },
-        aa: {
-          gold: "#DB9628",
-          "gold-dark": "#B87A1A",
-          "gold-soft": "#FBF1DE",
-          ink: "#1F2933",
-          "ink-soft": "#33363D",
-          offwhite: "#F8F6F2",
-          sand: "#F4F1EC",
-          line: "#E6E0D8",
-          muted: "#6B7280",
         },
       },
       fontFamily: {

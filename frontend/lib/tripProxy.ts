@@ -50,6 +50,24 @@ export function tripReadPath(q: SearchParamSource): { path: string } | { error: 
   return { path: `/trip/${tripId}` };
 }
 
+// AA-837: the itinerary read of a trip this browser has not saved yet (a first visit, or after a
+// reset) is a 404 from the Lambda, which the client already treats as an empty trip. A 404 on a
+// browser fetch prints a red console error on every first visit to /plan, so the BFF answers that
+// one read with a 200 empty trip instead. Same body for "no such trip" and "not your trip", so
+// existence still never leaks. Other reads (suggestions, coverage, activities) and statuses pass
+// through untouched.
+export const EMPTY_TRIP_BODY = JSON.stringify({ itinerary: [], custom_days: [] });
+
+// `op`: the read tripReadPath mapped to ("itinerary" when no known resource was asked for).
+export function tripReadAnswer(
+  op: string,
+  upstreamStatus: number,
+  upstreamBody: string,
+): { status: number; body: string } {
+  if (op === "itinerary" && upstreamStatus === 404) return { status: 200, body: EMPTY_TRIP_BODY };
+  return { status: upstreamStatus, body: upstreamBody };
+}
+
 // The POST body is one JSON object ({ op, trip_id, ... }). Anything else (not JSON, or JSON that is
 // not an object) is the caller's mistake: the route answers 400 instead of throwing a 500.
 export function parseTripBody(raw: string): Record<string, unknown> | null {

@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { fetchRoutes } from "@/lib/api";
+import { formatDays } from "@/lib/text";
 import { Icon } from "@/ui/Icon";
 import type { RouteProposal } from "@/lib/types";
 
@@ -63,7 +64,7 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
     return (
       <button
         onClick={() => setOpen(true)}
-        className="aa-focus mb-3 w-full rounded-xl border border-dashed border-aa-gold/60 px-3 py-2 text-xs font-semibold text-aa-gold-dark transition hover:bg-aa-gold-soft"
+        className="aa-focus mb-3 w-full rounded-xl border border-dashed border-k-accent-border px-3 py-2 text-xs font-semibold text-k-accent-deep transition hover:bg-k-accent-tint"
       >
         <Icon name="compass" className="mr-1 inline h-3.5 w-3.5 align-[-2px]" />
         Start from an Adventure Asia route
@@ -72,16 +73,16 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
   }
 
   return (
-    <div className="mb-3 rounded-xl border border-aa-line bg-white p-3" aria-label="Plan from an AA route">
+    <div className="mb-3 rounded-xl border border-k-line bg-k-card p-3" aria-label="Plan from an AA route">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold text-aa-ink">Plan from an Adventure Asia route</p>
+        <p className="text-xs font-semibold text-k-ink">Plan from an Adventure Asia route</p>
         {compact && (
-          <button onClick={() => { setOpen(false); setRoutePreview(null); }} className="aa-focus text-[11px] text-aa-muted">
+          <button onClick={() => { setOpen(false); setRoutePreview(null); }} className="aa-focus text-[11px] text-k-muted">
             Close
           </button>
         )}
       </div>
-      <p className="mt-0.5 text-[11px] text-aa-muted">
+      <p className="mt-0.5 text-[11px] text-k-muted">
         Routes built only from our real tours — pick one, then make it yours.
         {intent.travellers ? ` Planning for ${intent.travellers} traveller${intent.travellers > 1 ? "s" : ""}.` : ""}
       </p>
@@ -90,7 +91,7 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
           aria-label="Heading to"
           value={country}
           onChange={(e) => setCountry(e.target.value)}
-          className="aa-focus min-w-0 flex-1 rounded-lg border border-aa-line px-2 py-1.5 text-xs text-aa-ink"
+          className="aa-focus min-w-0 flex-1 rounded-lg border border-k-line bg-k-card px-2 py-1.5 text-xs text-k-ink"
         >
           <option value="">Heading to…</option>
           {/* AA-812: a country pre-filled from the home page that the planner list does not have yet */}
@@ -108,20 +109,20 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
           max={30}
           value={days}
           onChange={(e) => setDays(Math.max(2, Math.min(30, Number(e.target.value) || 2)))}
-          className="aa-focus w-16 rounded-lg border border-aa-line px-2 py-1.5 text-xs text-aa-ink"
+          className="aa-focus w-16 rounded-lg border border-k-line bg-k-card px-2 py-1.5 text-xs text-k-ink"
         />
         <button
           onClick={find}
           disabled={!country || loading}
-          className="aa-focus shrink-0 rounded-lg bg-aa-gold px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-aa-gold-dark disabled:opacity-50"
+          className="aa-focus shrink-0 rounded-lg bg-k-accent px-3 py-1.5 text-xs font-semibold text-k-on-accent transition hover:brightness-95 disabled:opacity-50"
         >
           {loading ? "Finding…" : "Find routes"}
         </button>
       </div>
 
       {proposals && proposals.length === 0 && (
-        <p className="mt-2 text-[11px] text-aa-muted">
-          No Adventure Asia route of about {days} days in {country} yet — try another length.
+        <p className="mt-2 text-[11px] text-k-muted">
+          No Adventure Asia route of about {formatDays(days)} in {country} yet — try another length.
         </p>
       )}
 
@@ -132,18 +133,18 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
               key={i}
               onMouseEnter={() => setRoutePreview(p)}
               onFocus={() => setRoutePreview(p)}
-              className="rounded-lg border border-aa-line p-2.5 transition hover:border-aa-gold/60"
+              className="rounded-lg border border-k-line p-2.5 transition hover:border-k-accent-border"
             >
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-semibold text-aa-ink">
-                  {p.total_days} days
+                <p className="text-xs font-semibold text-k-ink">
+                  {formatDays(p.total_days)}
                   {p.whole_tour && (
-                    <span className="ml-1.5 rounded-full bg-aa-gold-soft px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-aa-gold-dark">
+                    <span className="ml-1.5 rounded-full bg-k-accent-tint px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-k-accent-deep">
                       Whole tour
                     </span>
                   )}
                   {p.transfers > 0 && (
-                    <span className="ml-1.5 text-[10px] font-normal text-aa-muted">
+                    <span className="ml-1.5 text-[10px] font-normal text-k-muted">
                       2 tours · {Math.round(p.transfer_km)} km transfer
                     </span>
                   )}
@@ -151,19 +152,19 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
                 <button
                   onClick={() => start(p, i)}
                   disabled={applying !== null}
-                  className="aa-focus shrink-0 rounded-md border border-aa-gold px-2 py-0.5 text-[11px] font-semibold text-aa-gold-dark transition hover:bg-aa-gold-soft disabled:opacity-50"
+                  className="aa-focus shrink-0 rounded-md border border-k-accent px-2 py-0.5 text-[11px] font-semibold text-k-accent-deep transition hover:bg-k-accent-tint disabled:opacity-50"
                 >
                   {applying === i ? "Adding…" : "Start with this route"}
                 </button>
               </div>
               <ul className="mt-1 space-y-0.5">
                 {p.segments.map((s) => (
-                  <li key={`${s.tour_id}-${s.day_from}`} className="text-[11px] text-aa-ink-soft">
+                  <li key={`${s.tour_id}-${s.day_from}`} className="text-[11px] text-k-body">
                     {s.tour_name ?? "AA tour"} · day {s.day_from}–{s.day_to}
                   </li>
                 ))}
               </ul>
-              <p className="mt-1 text-[11px] leading-relaxed text-aa-muted">{placesLine(p)}</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-k-muted">{placesLine(p)}</p>
             </li>
           ))}
         </ul>

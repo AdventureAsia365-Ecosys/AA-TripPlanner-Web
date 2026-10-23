@@ -12,7 +12,7 @@ import { useTrip } from "@/lib/useTrip";
 import { fetchCatalogTours, fetchTourRoute } from "@/lib/api";
 import type { TourCard, TourSort } from "@/lib/catalogTypes";
 import type { RouteProposal } from "@/lib/types";
-import { coverAlt, MONTH_NAMES } from "@/lib/text";
+import { coverAlt, daysText, formatDays, MONTH_NAMES } from "@/lib/text";
 
 const PAGE_SIZE = 24;
 
@@ -101,20 +101,20 @@ export default function TourListPane() {
 
   // Above the filter panel (z-15 < the Map/List toggle); the country follows the map filter.
   return (
-    <div className="absolute inset-0 z-[15] overflow-y-auto bg-aa-offwhite px-4 pb-20 pt-4" aria-label="Tours list">
+    <div className="absolute inset-0 z-[15] overflow-y-auto bg-k-bg px-4 pb-20 pt-4" aria-label="Tours list">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-semibold text-aa-ink">
+        <p className="text-sm font-semibold text-k-ink">
           {filters.country ? `Tours in ${filters.country}` : "All Adventure Asia tours"}
-          {load.state === "done" && <span className="ml-1.5 font-normal text-aa-muted">({load.total})</span>}
-          <span className="block text-[11px] font-normal text-aa-muted">Change the country on the Map view.</span>
+          {load.state === "done" && <span className="ml-1.5 font-normal text-k-muted">({load.total})</span>}
+          <span className="block text-[11px] font-normal text-k-muted">Change the country on the Map view.</span>
         </p>
         <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-1.5 text-xs text-aa-muted">
+          <label className="flex items-center gap-1.5 text-xs text-k-muted">
             Travel in
             <select
               value={month}
               onChange={(e) => setMonth(Number(e.target.value))}
-              className="aa-focus rounded-lg border border-aa-line bg-white px-2 py-1 text-xs text-aa-ink"
+              className="aa-focus rounded-lg border border-k-line bg-k-card px-2 py-1 text-xs text-k-ink"
             >
               <option value={0}>Any month</option>
               {MONTH_NAMES.map((m, i) => (
@@ -122,12 +122,12 @@ export default function TourListPane() {
               ))}
             </select>
           </label>
-          <label className="flex items-center gap-1.5 text-xs text-aa-muted">
+          <label className="flex items-center gap-1.5 text-xs text-k-muted">
             Sort
             <select
               value={sort}
               onChange={(e) => setSort(e.target.value as typeof sort)}
-              className="aa-focus rounded-lg border border-aa-line bg-white px-2 py-1 text-xs text-aa-ink"
+              className="aa-focus rounded-lg border border-k-line bg-k-card px-2 py-1 text-xs text-k-ink"
             >
               <option value="duration_asc">Shortest first</option>
               <option value="duration_desc">Longest first</option>
@@ -136,17 +136,17 @@ export default function TourListPane() {
         </div>
       </div>
 
-      {load.state === "loading" && <p className="mt-6 text-center text-xs text-aa-muted">Loading tours…</p>}
+      {load.state === "loading" && <p className="mt-6 text-center text-xs text-k-muted">Loading tours…</p>}
       {load.state === "error" && (
-        <div role="alert" className="mt-6 rounded-xl border border-aa-line bg-white p-4 text-center text-xs text-aa-muted">
+        <div role="alert" className="mt-6 rounded-xl border border-k-line bg-k-card p-4 text-center text-xs text-k-muted">
           We couldn&apos;t load tours right now.{" "}
-          <button onClick={() => setAttempt((a) => a + 1)} className="aa-focus font-semibold text-aa-gold-dark underline">
+          <button onClick={() => setAttempt((a) => a + 1)} className="aa-focus font-semibold text-k-accent-deep underline">
             Try again
           </button>
         </div>
       )}
       {load.state === "done" && load.tours.length === 0 && (
-        <p className="mt-6 rounded-xl border border-dashed border-aa-line bg-white p-4 text-center text-xs text-aa-muted">
+        <p className="mt-6 rounded-xl border border-dashed border-k-line bg-k-card p-4 text-center text-xs text-k-muted">
           {month
             ? `No tours ${filters.country ? `in ${filters.country} ` : ""}list ${MONTH_NAMES[month - 1]} as a good time to go. Try another month.`
             : `No Adventure Asia tours ${filters.country ? `in ${filters.country} ` : ""}yet. Try another country.`}
@@ -155,7 +155,7 @@ export default function TourListPane() {
       {load.state === "done" && load.tours.length > 0 && (
         <ul className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {load.tours.map((t) => (
-            <li key={t.tour_id} className="flex gap-3 rounded-xl border border-aa-line bg-white p-2.5">
+            <li key={t.tour_id} className="flex gap-3 rounded-xl border border-k-line bg-k-card p-2.5">
               {t.cover_url_small ? (
                 // A fallback (no tour photo) is a destination photo: named so in alt and title.
                 // eslint-disable-next-line @next/next/no-img-element
@@ -167,28 +167,28 @@ export default function TourListPane() {
                   className="h-20 w-24 shrink-0 rounded-lg object-cover"
                 />
               ) : (
-                <div aria-hidden className="h-20 w-24 shrink-0 rounded-lg bg-aa-gold-soft" />
+                <div aria-hidden className="h-20 w-24 shrink-0 rounded-lg bg-k-accent-tint" />
               )}
               <div className="min-w-0 flex-1">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-aa-gold-dark">
-                  {t.duration_days ? `${t.duration_days} days` : t.duration_raw ?? ""}
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-k-accent-deep">
+                  {daysText(t.duration_days, t.duration_raw) ?? ""}
                   {t.country && !filters.country ? ` · ${t.country}` : ""}
                 </p>
                 {/* AA-833: no prefetch; the list shows many tours at once (see TourCard). */}
-                <Link href={`/tours/${t.slug}`} prefetch={false} className="aa-focus line-clamp-2 text-sm font-semibold text-aa-ink hover:underline">
+                <Link href={`/tours/${t.slug}`} prefetch={false} className="aa-focus line-clamp-2 text-sm font-semibold text-k-ink hover:underline">
                   {t.title}
                 </Link>
                 {confirm?.tourId === t.tour_id ? (
-                  <div className="mt-1.5 text-[11px] text-aa-ink" role="group" aria-label="Add to your current trip?">
-                    <p>Add its route ({confirm.p.total_days} days) to your current trip?</p>
+                  <div className="mt-1.5 text-[11px] text-k-ink" role="group" aria-label="Add to your current trip?">
+                    <p>Add its route ({formatDays(confirm.p.total_days)}) to your current trip?</p>
                     <div className="mt-1 flex gap-2">
                       <button
                         onClick={() => add(t.tour_id, confirm.p)}
-                        className="aa-focus rounded-md bg-aa-gold px-2 py-0.5 font-semibold text-white"
+                        className="aa-focus rounded-md bg-k-accent px-2 py-0.5 font-semibold text-k-on-accent"
                       >
                         Add its route
                       </button>
-                      <button onClick={() => setConfirm(null)} className="aa-focus rounded-md border border-aa-line px-2 py-0.5 text-aa-muted">
+                      <button onClick={() => setConfirm(null)} className="aa-focus rounded-md border border-k-line px-2 py-0.5 text-k-muted">
                         Not now
                       </button>
                     </div>
@@ -198,11 +198,11 @@ export default function TourListPane() {
                     <button
                       onClick={() => plan(t)}
                       disabled={busy !== null}
-                      className="aa-focus rounded-md border border-aa-gold px-2 py-0.5 text-[11px] font-semibold text-aa-gold-dark transition hover:bg-aa-gold-soft disabled:opacity-50"
+                      className="aa-focus rounded-md border border-k-accent px-2 py-0.5 text-[11px] font-semibold text-k-accent-deep transition hover:bg-k-accent-tint disabled:opacity-50"
                     >
                       {busy === t.tour_id ? "Adding…" : "Plan this route"}
                     </button>
-                    {note[t.tour_id] && <span className="text-[11px] text-aa-muted">{note[t.tour_id]}</span>}
+                    {note[t.tour_id] && <span className="text-[11px] text-k-muted">{note[t.tour_id]}</span>}
                   </div>
                 )}
               </div>
@@ -215,11 +215,11 @@ export default function TourListPane() {
           <button
             onClick={showMore}
             disabled={more === "loading"}
-            className="aa-focus rounded-full border border-aa-line bg-white px-4 py-1.5 text-xs font-semibold text-aa-ink transition hover:bg-aa-gold-soft disabled:opacity-50"
+            className="aa-focus rounded-full border border-k-line bg-k-card px-4 py-1.5 text-xs font-semibold text-k-ink transition hover:bg-k-accent-tint disabled:opacity-50"
           >
             {more === "loading" ? "Loading…" : `Show more (${load.tours.length} of ${load.total})`}
           </button>
-          {more === "error" && <p className="mt-1 text-[11px] text-aa-muted">Couldn&apos;t load more tours. Try again.</p>}
+          {more === "error" && <p className="mt-1 text-[11px] text-k-muted">Couldn&apos;t load more tours. Try again.</p>}
         </div>
       )}
     </div>

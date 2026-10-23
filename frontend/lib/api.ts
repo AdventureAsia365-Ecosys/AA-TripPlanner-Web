@@ -11,9 +11,9 @@ import type {
   RouteProposal,
   ShapeStatus,
   StopActivity,
-  TourRouteFallback,
 } from "./types";
 import type { TourList, TourSort } from "./catalogTypes";
+import { readTourRoute, type TourRouteResult } from "./tourRoute";
 import { COOKIES_NOTICE, COOKIES_REQUIRED, resetGuestIds, showGuestNotice } from "./guestIds";
 
 function filterParams(f: BrowseFilters): string {
@@ -354,13 +354,9 @@ export async function fetchCatalogTours(q: {
   }
 }
 
-// One tour's whole route as a route proposal (for "Customise this trip"). `missing` = the planner
-// has nothing for the tour (carries the tour's title and day list when the catalog knows it);
-// "error" = the read failed.
-export type TourRouteResult =
-  | RouteProposal
-  | { missing: true; tour: TourRouteFallback | null }
-  | "error";
+// One tour's whole route as a route proposal (for "Customise this trip"); see lib/tourRoute.ts.
+// AA-837: "no planner route" comes back as a 200 `{ match: "none" }`, so the console stays clean.
+export type { TourRouteResult } from "./tourRoute";
 
 export async function fetchTourRoute(
   tourId: string | undefined,
@@ -371,13 +367,8 @@ export async function fetchTourRoute(
     if (tourId) p.set("tour_id", tourId);
     if (sourceId) p.set("source_id", sourceId);
     const res = await fetch(`/api/browse?${p}`);
-    if (res.status === 404) {
-      const body = await res.json().catch(() => null);
-      return { missing: true, tour: (body?.tour as TourRouteFallback | undefined) ?? null };
-    }
-    if (!res.ok) return "error";
-    const data = await res.json();
-    return (data.proposal as RouteProposal | undefined) ?? { missing: true, tour: null };
+    const data = res.status === 404 || res.ok ? await res.json().catch(() => null) : null;
+    return readTourRoute(res.status, data);
   } catch {
     return "error";
   }

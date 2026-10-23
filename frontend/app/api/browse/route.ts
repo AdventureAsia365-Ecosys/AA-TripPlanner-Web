@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
+import { tourRouteBffAnswer } from "@/lib/tourRoute";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -84,14 +85,24 @@ export async function GET(req: NextRequest) {
   const upstream = await fetch(`${BROWSE_API_URL}${upstreamPath}`, {
     headers: upstreamHeaders({ accept: "application/json", [REQUEST_ID_HEADER]: requestId }),
   });
-  const body = await upstream.text();
+  let body = await upstream.text();
   console.log(
     upstreamLogLine({ route: "browse", op: resource ?? "unknown", status: upstream.status, ms: Date.now() - started, request_id: requestId }),
   );
   // Preserve upstream cache-control (tiles/detail cacheable, search not).
-  const cacheControl = upstream.headers.get("cache-control") ?? "no-store";
+  let cacheControl = upstream.headers.get("cache-control") ?? "no-store";
+  let status = upstream.status;
+  if (resource === "tour-route") {
+    // AA-837 (D11): "no planner route for this tour" is a 200 `{ match: "none", tour }` for the
+    // browser (an expected answer, not a red console error); the Lambda keeps its 404.
+    const answer = tourRouteBffAnswer(upstream.status, body);
+    if (answer.rewritten) {
+      ({ status, body } = answer);
+      cacheControl = "no-store";
+    }
+  }
   return new NextResponse(body, {
-    status: upstream.status,
+    status,
     headers: {
       "content-type": "application/json",
       "cache-control": cacheControl,

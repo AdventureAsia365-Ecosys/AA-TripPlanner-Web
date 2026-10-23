@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-10-22
+last_reviewed: 2026-10-23
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -105,6 +105,23 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   fails red if `https://aa-tripplanner.vercel.app/` lacks any of them ("Check the production security headers"
   step in `vercel-deploy.yml`; TripPlanner has no UI smoke workflow, so this is its header smoke).
 
+### Theme and contrast (AA-812, AA-837)
+
+- One palette: the `--aa-*` tokens in `frontend/ui/tokens.css` (CIS kit values, three light values
+  darkened for WCAG AA), exposed to Tailwind as `k-*` (`bg-k-card`, `text-k-muted`,
+  `text-k-accent-deep`, `bg-k-accent text-k-on-accent`, inverted `bg-k-ink text-k-bg`…). Every page
+  uses them, **the map planner included**: AA-837 retired the planner's light-only `aa-*` hex palette.
+  Tokens are CSS variables, so Tailwind opacity modifiers (`/40`) do not apply — pick a token.
+- Light / dark / system theme on every page (`ui/theme.ts`, restore script in `app/layout.tsx`,
+  `ThemeToggle` in both the site header and the planner header). The Mapbox basemap stays the light
+  `outdoors-v12` style in both themes (map imagery, drawn on a canvas); the planner chrome around it
+  follows the theme.
+- Guards (`npm test`): `lib/contrast.test.ts` checks every planner text/background token pair at
+  ≥ 4.5:1 in both themes and fails on raw palette classes (`aa-*`, `bg-white`, `text-gray-500`,
+  `[#hex]`…) in the planner's files. Rendered-page check: axe `color-contrast` on `/plan` in light
+  and dark at 1440 and 390 px (AA-837 implementation notes).
+- Day counts go through `formatDays` / `formatDayRange` (`lib/text.ts`): "1 day", "3 to 8 days".
+
 ### Pages (AA-812)
 
 - `/` search-first home (destination, days, travellers → `/plan?country=&days=&travellers=`),
@@ -130,7 +147,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   country page, sitemap), reading **only** the CIS catalog views (`catalog.v_*`, ADR 0001), and
   `/browse/tour-route` (one tour's whole route for "Customise this trip": the Tour Graph under the
   current or the linked tour_id, else built from the tour's catalog places onto planner experiences
-  at those places, `match` = `tour_graph` | `places`; a 404 carries the tour's title and day list).
+  at those places, `match` = `tour_graph` | `places`; a 404 carries the tour's title and day list —
+  the `/api/browse` BFF hands that 404 to the browser as a 200 `{ "match": "none", "tour": … }`,
+  `frontend/lib/tourRoute.ts`, AA-837, so an expected "no planner route" logs no console error).
   Map tiles (`/browse/tiles/{lat}_{lng}[_{size}]`) are fixed-grid cells of 1–90 degrees; the map
   (`frontend/lib/tileLoader.ts`) picks the finest grid that covers the view in ≤ 16 cells, caches
   them, runs ≤ 4 requests at a time and has a request budget (AA-812 hotfix). Its one model
@@ -201,7 +220,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `guest_session.authorize_read`). Every refusal (no token, malformed, wrong, another trip's, no such
   trip, no draft yet, owner session without a hash) is the unknown-route 404 `{"error": "not found"}`,
   so existence never leaks. Reads never create or bind a session and never reset the client: the
-  frontend treats a failed read as an empty trip (a fresh trip has no draft and also reads 404).
+  frontend treats a failed read as an empty trip (a fresh trip has no draft and also reads 404). The
+  `/api/trip` BFF sends the itinerary read's 404 to the browser as a 200 empty trip
+  (`tripReadAnswer`, AA-837: no red console error on a first visit); the other reads pass through.
   Outcomes in the `guest_auth` line: `read_ok`, `no_token`, `no_owner`, `bad_token`, `token_mismatch`.
 
 ### Data model — event-sourced trips
