@@ -121,29 +121,29 @@ DEST_PHOTOS = [
      "width": 1600, "height": 1067, "position": 1},
 ]
 
-# Planner tables (tripplanner.tour_stop / itinerary_components) for tour 0, for the tour-route read.
+# The Tour Graph views (catalog.v_tour_stop / v_tour_component) for tour 0, for the tour-route read. Keyed by the
+# catalog source_id (stable across re-uploads); the read rows alias it as ``tour_id``.
 STOPS = [
-    {"tour_id": TOURS[0]["tour_id"], "day_index": d, "destination_id": did, "name": DESTS[did][0],
+    {"tour_id": TOURS[0]["source_id"], "day_index": d, "destination_id": did, "name": DESTS[did][0],
      "lat": DESTS[did][2], "lng": DESTS[did][3], "country": "Vietnam"}
     for d, did in ((1, HANOI), (2, HALONG), (3, HALONG), (4, HANOI))
 ]
 
-# AA-812 hotfix (D2), shaped like Dev: the Tour Graph is keyed by the published tour_id of the day it
-# was extracted. Tour 1 (Mekong) was extracted under an OLDER tour_id and re-uploaded since (catalog
-# tour_id is newer); its tour page link carries the tour_id it was rendered with.
+# AA-812 hotfix (D2): tour 1 (Mekong) was re-uploaded since its graph was built; its tour page link may still
+# carry the OLD tour_id. The graph is keyed by the source_id, which the re-upload keeps.
 MEKONG_OLD_ID = "0e1f2a3b-4c5d-4e6f-8a7b-8c9d0e1f2a3b"
-STOPS.append({"tour_id": MEKONG_OLD_ID, "day_index": 1, "destination_id": CANTHO, "name": "Can Tho",
+STOPS.append({"tour_id": TOURS[1]["source_id"], "day_index": 1, "destination_id": CANTHO, "name": "Can Tho",
               "lat": DESTS[CANTHO][2], "lng": DESTS[CANTHO][3], "country": "Vietnam"})
-# Sri Lanka (tour 2) was never extracted into the graph, but another (older, unpublished) Sri Lanka
-# tour left planner experiences at Kandy (two) and Ella; Nuwara Eliya has no shared.destinations row.
+# Sri Lanka (tour 2) is not in the graph, but another (older, unpublished) Sri Lanka tour left planner
+# experiences at Kandy (two) and Ella; Nuwara Eliya has no destination row.
 OTHER_SL_TOUR = "4d5e6f7a-8b9c-4d0e-8f1a-2b3c4d5e6f7a"
 
-# tripplanner.itinerary_components rows (embedding NULL = not searchable, ignored by the reads).
+# catalog.v_tour_component rows (source_tour_id = the tour's source_id; embedding NULL = not searchable, ignored).
 PLANNER_COMPONENTS: list[dict] = (
-    [{"id": f"c0000000-0000-4000-8000-00000000000{s['day_index']}", "source_tour_id": TOURS[0]["tour_id"],
+    [{"id": f"c0000000-0000-4000-8000-00000000000{s['day_index']}", "source_tour_id": TOURS[0]["source_id"],
       "source_day_index": s["day_index"], "destination_id": s["destination_id"], "embedding": True}
-     for s in STOPS if s["tour_id"] == TOURS[0]["tour_id"]]
-    + [{"id": "c1000000-0000-4000-8000-000000000001", "source_tour_id": MEKONG_OLD_ID,
+     for s in STOPS if s["tour_id"] == TOURS[0]["source_id"]]
+    + [{"id": "c1000000-0000-4000-8000-000000000001", "source_tour_id": TOURS[1]["source_id"],
         "source_day_index": 1, "destination_id": CANTHO, "embedding": True},
        {"id": "c2000000-0000-4000-8000-000000000001", "source_tour_id": OTHER_SL_TOUR,
         "source_day_index": 3, "destination_id": KANDY, "embedding": True},
@@ -158,7 +158,7 @@ PLANNER_COMPONENTS: list[dict] = (
 COMPONENTS = [
     {"tour_id": c["source_tour_id"], "day_index": c["source_day_index"], "destination_id": c["destination_id"],
      "component_id": c["id"]}
-    for c in PLANNER_COMPONENTS if c["source_tour_id"] == TOURS[0]["tour_id"]
+    for c in PLANNER_COMPONENTS if c["source_tour_id"] == TOURS[0]["source_id"]
 ]
 
 
@@ -296,6 +296,9 @@ class FakeCatalogPool:
             return t["title"] if t else None
         if _norm(query) == _norm(routes_mod.TOUR_ID_BY_SOURCE_SQL):
             return next((t["tour_id"] for t in self.tours if t["source_id"] == args[0]), None)
+        if _norm(query) == _norm(routes_mod.SOURCE_BY_TOUR_SQL):
+            t = self._by_id(args[0])
+            return t["source_id"] if t else None
         if _norm(query) == _norm(routes_mod.TOUR_DAYS_COUNT_SQL):
             t = self._by_id(args[0])
             return (t["duration_days"] or 0) if t else None

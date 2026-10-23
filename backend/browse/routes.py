@@ -11,85 +11,25 @@ Its total days fall between `days - SLACK` and `days`: the traveller can add day
 point 3). A whole tour (its first to last stop, sold as is) ranks first; then closeness to the
 asked duration, fewer transfers, more places seen. Stateless read, cacheable per (country, days).
 
-AA-712 slice 6b: PLACES_SOURCE=cis reads the tour graph from the CIS catalog views (migration 228,
-contract catalog.graph.v1: v_tour_stop / v_tour_leg / v_tour_junction / v_tour_component, coordinates
-from v_destination, titles from v_tour) instead of the frozen tripplanner tables. That path keys tours
-by catalog source_id only (stable across re-uploads); a proposal's segment and day ``tour_id`` is the
-tour's current catalog tour_id, with ``source_id`` alongside. The views are live-only and need no AA
-tenant, so the cis path never calls fetch_catalog / set_catalog_tenant.
+AA-712 slice 6b: the tour graph comes from the CIS catalog views (migration 228, contract catalog.graph.v1:
+v_tour_stop / v_tour_leg / v_tour_junction / v_tour_component, coordinates from v_destination, titles from
+v_tour); since AA-712 X4 that is the only source (the frozen tripplanner tables are gone). Tours are keyed by
+catalog source_id only (stable across re-uploads); a proposal's segment and day ``tour_id`` is the tour's
+current catalog tour_id, with ``source_id`` alongside. The views are live-only and need no AA tenant.
 """
 from __future__ import annotations
 
 import json
 from typing import Any, Optional
 
-from backend.shared import places_source
 
 SLACK = 3
 MAX_PROPOSALS = 5
 
+# --- AA-712 slice 6b: the reads over the CIS catalog views ------------------------------------------
+# The tour key is aliased ``tour_id`` so rank() / day_by_day() stay generic; proposals() relabels it to the current
+# catalog tour_id at the end.
 SINGLE_SQL = """
-    WITH span AS (
-        SELECT source_tour_id, min(day_index) AS first_day, max(day_index) AS last_day
-        FROM tripplanner.tour_stop GROUP BY source_tour_id
-    )
-    SELECT DISTINCT ON (l.source_tour_id)
-           l.source_tour_id AS tour_id, l.day_from, l.day_to, l.days, cardinality(l.destination_ids) AS places,
-           (l.day_from = sp.first_day AND l.day_to = sp.last_day) AS whole
-    FROM tripplanner.tour_leg l JOIN span sp USING (source_tour_id)
-    WHERE $1 = ANY(l.countries) AND l.days BETWEEN $2::int - $3::int AND $2::int
-    ORDER BY l.source_tour_id, (l.day_from = sp.first_day AND l.day_to = sp.last_day) DESC,
-             abs(l.days - $2::int), l.day_from
-"""
-
-CHAIN_SQL = """
-    WITH a AS (
-        SELECT l.* FROM tripplanner.tour_leg l
-        WHERE $1 = ANY(l.countries) AND l.days < $2::int
-          AND l.day_from = (SELECT min(s.day_index) FROM tripplanner.tour_stop s
-                            WHERE s.source_tour_id = l.source_tour_id)
-    ), b AS (
-        SELECT l.* FROM tripplanner.tour_leg l WHERE $1 = ANY(l.countries) AND l.days < $2::int
-    )
-    SELECT a.source_tour_id AS a_tour, a.day_from AS a_from, a.day_to AS a_to, a.days AS a_days,
-           b.source_tour_id AS b_tour, b.day_from AS b_from, b.day_to AS b_to, b.days AS b_days,
-           coalesce(j.km, 0) AS transfer_km,
-           cardinality(a.destination_ids) + cardinality(b.destination_ids) AS places
-    FROM a
-    JOIN b ON b.source_tour_id <> a.source_tour_id AND a.days + b.days BETWEEN $2::int - $3::int AND $2::int
-    LEFT JOIN tripplanner.tour_junction j
-           ON j.destination_a = a.end_destination_id AND j.destination_b = b.start_destination_id
-    WHERE b.start_destination_id = a.end_destination_id OR j.destination_a IS NOT NULL
-    ORDER BY abs(a.days + b.days - $2::int), coalesce(j.km, 0), places DESC
-    LIMIT 40
-"""
-
-DAYS_SQL = """
-    SELECT s.source_tour_id AS tour_id, s.day_index, s.destination_id::text AS destination_id,
-           d.name, d.lat, d.lng, d.country
-    FROM tripplanner.tour_stop s JOIN shared.destinations d ON d.id = s.destination_id
-    WHERE s.source_tour_id = ANY($1::text[])
-    ORDER BY s.source_tour_id, s.day_index
-"""
-
-COMPONENTS_SQL = """
-    SELECT source_tour_id AS tour_id, source_day_index AS day_index, destination_id::text AS destination_id,
-           id::text AS component_id
-    FROM tripplanner.itinerary_components
-    WHERE source_tour_id = ANY($1::text[]) AND embedding IS NOT NULL
-    ORDER BY source_tour_id, source_day_index, id
-"""
-
-TOUR_NAMES_SQL = """
-    SELECT tour_id::text AS tour_id, aa_name FROM gold_aa_internal.published_tours
-    WHERE tour_id::text = ANY($1::text[])
-"""
-
-# --- AA-712 slice 6b: the same reads over the CIS catalog views (PLACES_SOURCE=cis) ---------------
-# Column mapping (catalog.graph.v1): source_tour_id <- source_id, source_day_index <- day_index,
-# itinerary_components.id <- component_id. The tour key is aliased ``tour_id`` so rank() /
-# day_by_day() are shared; proposals() relabels it to the current catalog tour_id at the end.
-SINGLE_SQL_CIS = """
     WITH span AS MATERIALIZED (
         SELECT source_id, min(day_index) AS first_day, max(day_index) AS last_day
         FROM catalog.v_tour_stop GROUP BY source_id
@@ -103,8 +43,8 @@ SINGLE_SQL_CIS = """
              abs(l.days - $2::int), l.day_from
 """
 
-# The legacy query's correlated min(day_index) per leg becomes one span CTE (each view read joins
-# catalog.v_tour, so it is computed once); the junction view is read once for the same reason.
+# The first stop of each tour is one span CTE (each view read joins catalog.v_tour, so it is computed once); the
+# junction view is read once for the same reason.
 # AA-847 (routes gate): the pair join is an EQUALITY. `hop` lists, per first leg a, every place a second
 # leg may start at: a's own end (no transfer) and each junction from a's end (a transfer of j.km). The
 # earlier form joined every leg pair on the days range alone and then kept the pairs that met at a's end
@@ -113,7 +53,7 @@ SINGLE_SQL_CIS = """
 # ends" at 0 km, and the CIS junction table has no CHECK against self-pairs (only the graph builder).
 # The ORDER BY ends on the pair's own key, so equal-rank candidates come back in one fixed order (the
 # earlier form left ties to the plan, which changed when the join did; rank() keeps the first of a tie).
-CHAIN_SQL_CIS = """
+CHAIN_SQL = """
     WITH span AS MATERIALIZED (
         SELECT source_id, min(day_index) AS first_day FROM catalog.v_tour_stop GROUP BY source_id
     ), legs AS MATERIALIZED (
@@ -142,7 +82,7 @@ CHAIN_SQL_CIS = """
     LIMIT 40
 """
 
-DAYS_SQL_CIS = """
+DAYS_SQL = """
     SELECT s.source_id AS tour_id, s.day_index, s.destination_id::text AS destination_id,
            d.name, d.lat, d.lng, d.country
     FROM catalog.v_tour_stop s JOIN catalog.v_destination d ON d.destination_id = s.destination_id
@@ -150,7 +90,7 @@ DAYS_SQL_CIS = """
     ORDER BY s.source_id, s.day_index
 """
 
-COMPONENTS_SQL_CIS = """
+COMPONENTS_SQL = """
     SELECT source_id AS tour_id, day_index, destination_id::text AS destination_id,
            component_id::text AS component_id
     FROM catalog.v_tour_component
@@ -217,45 +157,36 @@ def day_by_day(proposal: dict, stops: dict[str, list[dict]],
 
 
 async def proposals(conn: Any, country: str, days: int) -> dict:
-    cis = places_source.is_cis()
-    if cis:
-        # AA-847: plan the two candidate reads for THESE arguments every time. asyncpg caches the
-        # prepared statement, and after five runs Postgres may switch to a generic plan whose 1-row
-        # estimates nest-loop over the catalog views (EXPLAIN 11.7 ms against 841 ms timed on Dev).
-        # SET LOCAL ends with this transaction: the legacy path, the other readers and the rest of
-        # the pooled connection's life keep the default plan_cache_mode.
-        async with conn.transaction():
-            await conn.execute(FORCE_CUSTOM_PLAN_SQL)
-            singles = [dict(r) for r in await conn.fetch(SINGLE_SQL_CIS, country, days, SLACK)]
-            chains = [dict(r) for r in await conn.fetch(CHAIN_SQL_CIS, country, days, SLACK)]
-    else:
+    # AA-847: plan the two candidate reads for THESE arguments every time. asyncpg caches the
+    # prepared statement, and after five runs Postgres may switch to a generic plan whose 1-row
+    # estimates nest-loop over the catalog views (EXPLAIN 11.7 ms against 841 ms timed on Dev).
+    # SET LOCAL ends with this transaction: the other readers and the rest of the pooled
+    # connection's life keep the default plan_cache_mode.
+    async with conn.transaction():
+        await conn.execute(FORCE_CUSTOM_PLAN_SQL)
         singles = [dict(r) for r in await conn.fetch(SINGLE_SQL, country, days, SLACK)]
         chains = [dict(r) for r in await conn.fetch(CHAIN_SQL, country, days, SLACK)]
     picked = rank(singles, chains, days)
     tours = sorted({t for p in picked for t, _, _ in p["segments"]})
     stops: dict[str, list[dict]] = {}
-    for r in await conn.fetch(places_source.pick(DAYS_SQL, DAYS_SQL_CIS), tours) if tours else []:
+    for r in await conn.fetch(DAYS_SQL, tours) if tours else []:
         stops.setdefault(r["tour_id"], []).append(dict(r))
     comps: dict[tuple, list[dict]] = {}
-    for r in await conn.fetch(places_source.pick(COMPONENTS_SQL, COMPONENTS_SQL_CIS), tours) if tours else []:
+    for r in await conn.fetch(COMPONENTS_SQL, tours) if tours else []:
         comps.setdefault((r["tour_id"], r["day_index"]), []).append(dict(r))
     names: dict[str, str] = {}
-    current: dict[str, str] = {}  # cis: source_id -> current catalog tour_id
-    if tours and cis:
+    current: dict[str, str] = {}  # source_id -> current catalog tour_id
+    if tours:
         for r in await conn.fetch(TOURS_BY_SOURCE_SQL, tours):
             names[r["source_id"]], current[r["source_id"]] = r["title"], r["tour_id"]
-    elif tours:
-        from backend.shared.catalog_rls import fetch_catalog  # tenant-scoped (RLS)
-        names = {r["tour_id"]: r["aa_name"] for r in await fetch_catalog(conn, TOUR_NAMES_SQL, tours)}
     out = []
     for p in picked:
         segments = [{"tour_id": t, "tour_name": names.get(t), "day_from": a, "day_to": b,
                      "days": b - a + 1} for t, a, b in p["segments"]]
         day_list = day_by_day(p, stops, comps)
-        if cis:
-            for row in (*segments, *day_list):
-                row["source_id"] = row["tour_id"]
-                row["tour_id"] = current.get(row["source_id"], row["source_id"])
+        for row in (*segments, *day_list):
+            row["source_id"] = row["tour_id"]
+            row["tour_id"] = current.get(row["source_id"], row["source_id"])
         out.append({"total_days": p["total_days"], "transfers": p["transfers"], "transfer_km": p["transfer_km"],
                     "whole_tour": p["whole"], "segments": segments, "days": day_list})
     return {"country": country, "days": days, "proposals": out}
@@ -269,12 +200,9 @@ TOUR_TITLE_SQL = "SELECT title FROM catalog.v_tour WHERE tour_id = $1::uuid"
 # so a cached or bookmarked "Customise" link still finds the CURRENT tour_id.
 TOUR_ID_BY_SOURCE_SQL = "SELECT tour_id::text FROM catalog.v_tour WHERE source_id = $1 LIMIT 1"
 
-# AA-812 hotfix (D2). The Tour Graph (tour_stop / itinerary_components) is keyed by the published
-# tour_id of the day it was extracted, and covers only the tours extracted so far (~650 tour_day
-# rows against ~890 live catalog tours); a CIS re-upload gives the tour a NEW tour_id the graph
-# does not know. So the graph lookup alone answered 404 for most tours. Second way in: the tour's
-# own places from the catalog (catalog.v_tour_place, destination_id = shared.destinations, the same
-# ids the planner's components use) and the planner's experiences at those places.
+# AA-812 hotfix (D2). Second way in when the Tour Graph has no route for a tour: the tour's own places from the
+# catalog (catalog.v_tour_place, the same destination ids the planner's components use) and the planner's
+# experiences at those places.
 TOUR_ROUTE_PLACES_SQL = """
     SELECT day_number, position, destination_id::text AS destination_id, destination_name AS name,
            lat, lng, country
@@ -283,14 +211,8 @@ TOUR_ROUTE_PLACES_SQL = """
       AND lat IS NOT NULL AND lng IS NOT NULL
     ORDER BY day_number, position
 """
-# Planner experiences at those places; the tour's own components (any of its known ids) first.
+# Planner experiences at those places; the tour's own components (its source_id) first.
 PLACE_COMPONENTS_SQL = """
-    SELECT destination_id::text AS destination_id, id::text AS component_id
-    FROM tripplanner.itinerary_components
-    WHERE destination_id = ANY($1::uuid[]) AND embedding IS NOT NULL
-    ORDER BY destination_id, (source_tour_id = ANY($2::text[])) DESC, source_tour_id, source_day_index, id
-"""
-PLACE_COMPONENTS_SQL_CIS = """
     SELECT destination_id::text AS destination_id, component_id::text AS component_id
     FROM catalog.v_tour_component
     WHERE destination_id = ANY($1::uuid[]) AND embedding IS NOT NULL
@@ -336,11 +258,11 @@ def _proposal(tour_id: str, title: Optional[str], stops_rows: list[dict],
 
 async def _graph_route(conn: Any, key: str, tour_id: str) -> Optional[tuple[list[dict], dict]]:
     """Stops + components from the Tour Graph under one tour key, relabelled to `tour_id`."""
-    stops_rows = [dict(r) for r in await conn.fetch(places_source.pick(DAYS_SQL, DAYS_SQL_CIS), [key])]
+    stops_rows = [dict(r) for r in await conn.fetch(DAYS_SQL, [key])]
     if not stops_rows:
         return None
     comps: dict[tuple, list[dict]] = {}
-    for r in await conn.fetch(places_source.pick(COMPONENTS_SQL, COMPONENTS_SQL_CIS), [key]):
+    for r in await conn.fetch(COMPONENTS_SQL, [key]):
         comps.setdefault((tour_id, r["day_index"]), []).append(dict(r))
     if not comps:
         return None
@@ -357,7 +279,7 @@ async def _places_route(conn: Any, tour_id: str, keys: list[str]) -> Optional[tu
         return None
     dest_ids = list(dict.fromkeys(p["destination_id"] for p in places))
     by_dest: dict[str, list[str]] = {}
-    for r in await conn.fetch(places_source.pick(PLACE_COMPONENTS_SQL, PLACE_COMPONENTS_SQL_CIS), dest_ids, keys):
+    for r in await conn.fetch(PLACE_COMPONENTS_SQL, dest_ids, keys):
         by_dest.setdefault(r["destination_id"], []).append(r["component_id"])
     if not by_dest:
         return None
@@ -388,25 +310,17 @@ async def _places_route(conn: Any, tour_id: str, keys: list[str]) -> Optional[tu
     return stops_rows, comps
 
 
-async def tour_route(conn: Any, tour_id: str, also: tuple[Optional[str], ...] = ()) -> Optional[dict]:
+async def tour_route(conn: Any, tour_id: str) -> Optional[dict]:
     """The tour's first to last day as one proposal, or None when the planner has nothing for it.
 
-    1. the Tour Graph under the current tour_id, then under the other ids the link carried (an older
-       tour_id the graph was extracted under) — match "tour_graph";
+    1. the Tour Graph under the tour's catalog source_id (it survives re-uploads) — match "tour_graph";
     2. else the tour's catalog places mapped onto planner experiences at those places — match
-       "places".
-
-    PLACES_SOURCE=cis: the graph and the components are keyed by the tour's catalog source_id, which
-    survives re-uploads, so the one key is the current tour's source_id (the other ids are not needed)."""
-    source_id = None
-    if places_source.is_cis():
-        source_id = await conn.fetchval(SOURCE_BY_TOUR_SQL, tour_id)
-        keys = [source_id] if source_id else []
-    else:
-        keys = list(dict.fromkeys(k for k in (tour_id, *also) if k))
+       "places"."""
+    source_id = await conn.fetchval(SOURCE_BY_TOUR_SQL, tour_id)
+    keys = [source_id] if source_id else []
 
     def _with_source(p: dict) -> dict:
-        # cis: segments / days carry the catalog source_id next to the current tour_id, as in proposals()
+        # segments / days carry the catalog source_id next to the current tour_id, as in proposals()
         if source_id:
             for row in (*p["segments"], *p["days"]):
                 row["source_id"] = source_id

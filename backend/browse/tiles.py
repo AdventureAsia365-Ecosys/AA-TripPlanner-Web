@@ -18,7 +18,6 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from backend.browse.filters import BrowseFilters
-from backend.shared import places_source
 
 
 class _Pool(Protocol):
@@ -63,13 +62,12 @@ def build_tile_query(
     where_frag, filter_params = filters.where_sql(start_index=5)
     params: list[Any] = [lat_cell, lat_cell + size, lng_cell, lng_cell + size]
     params.extend(filter_params)
-    if places_source.is_cis():
-        # AA-712 slice 6b: CIS catalog views (228). Same filter columns on the component view; the
-        # view hides components on suspect / duplicate destinations and of tours that are not live.
-        # AA-847 slice 6d (CIS 256): a destination is in the tile when its BBOX meets the cell (a river's
-        # bbox spans many cells; a point's bbox is the point), so a line is returned in every tile it
-        # crosses and the client dedupes by id. No geometry here: /browse/shapes serves it by id.
-        sql = f"""
+    # AA-712 slice 6b: CIS catalog views (228), the only source since AA-712 X4. The view hides components on
+    # suspect / duplicate destinations and of tours that are not live.
+    # AA-847 slice 6d (CIS 256): a destination is in the tile when its BBOX meets the cell (a river's
+    # bbox spans many cells; a point's bbox is the point), so a line is returned in every tile it
+    # crosses and the client dedupes by id. No geometry here: /browse/shapes serves it by id.
+    sql = f"""
         SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
                d.shape_kind, d.shape_status, d.length_km,
                d.min_lat, d.min_lng, d.max_lat, d.max_lng,
@@ -82,18 +80,6 @@ def build_tile_query(
         GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision,
                  d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng
         HAVING COUNT(c.component_id) > 0
-        ORDER BY component_count DESC
-    """
-        return sql, params
-    sql = f"""
-        SELECT d.id, d.name, d.lat, d.lng, COUNT(c.id) AS component_count
-        FROM shared.destinations d
-        JOIN tripplanner.itinerary_components c ON c.destination_id = d.id
-        WHERE d.lat >= $1 AND d.lat < $2
-          AND d.lng >= $3 AND d.lng < $4
-          {where_frag}
-        GROUP BY d.id, d.name, d.lat, d.lng
-        HAVING COUNT(c.id) > 0
         ORDER BY component_count DESC
     """
     return sql, params
@@ -126,9 +112,9 @@ LINE_COLS_SQL = ", ".join(f"d.{c}" for c in LINE_COLS)
 
 
 def geo_fields(r: Any) -> dict:
-    """``located_by`` / ``precision`` of a cis-path destination row (catalog.v_destination, 228): the map
+    """``located_by`` / ``precision`` of a destination row (catalog.v_destination, 228): the map
     draws ``precision = 'area'`` as an area and shows the Geoapify + OSM attribution for ``geoapify``
-    points. Empty on the legacy path (shared.destinations rows are not selected with them).
+    points. Absent keys stay absent.
     AA-847 slice 6d (CIS 256): a ``precision = 'line'`` row (river, road, trail) also carries ``shape_kind``,
     ``shape_status``, ``length_km`` and ``bbox`` [min_lng, min_lat, max_lng, max_lat]; it is DRAWN as a line from
     /browse/shapes, never a pin or a circle."""

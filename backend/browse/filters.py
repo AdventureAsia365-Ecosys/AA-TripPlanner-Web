@@ -13,11 +13,6 @@ from typing import Any, Optional
 from backend.shared.schemas import Activity, Intensity
 
 
-# AA-712: the country filter without a join (see BrowseFilters.component_where_sql).
-COMPONENT_COUNTRY_CLAUSE = ("AND c.destination_id = ANY(ARRAY(SELECT dc.id FROM shared.destinations dc "
-                            "WHERE dc.country = ${i}))")
-
-
 @dataclass
 class BrowseFilters:
     activity: Optional[str] = None
@@ -85,10 +80,3 @@ class BrowseFilters:
             idx += 1
 
         return (" ".join(clauses), params)
-
-    def component_where_sql(self, start_index: int = 1) -> tuple[str, list[Any]]:
-        """Like where_sql, but every clause reads only itinerary_components (alias ``c``): the
-        country becomes ``c.destination_id = ANY(ARRAY(<destinations of that country>))`` — an
-        InitPlan array, not a join — so the clauses can sit inside an index-ordered vector scan
-        (AA-712). Same rows as where_sql over the destinations join."""
-        return self.where_sql(start_index, country_clause=COMPONENT_COUNTRY_CLAUSE)

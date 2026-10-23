@@ -14,10 +14,10 @@ Routes:
   GET /browse/catalog/destinations/{country} (AA-812: country page data)
   GET /browse/catalog/sitemap                (AA-812: slugs for sitemap.xml)
 
-The /browse/catalog/* reads use only the CIS catalog views (ADR 0001, CIS migration 225). The place /
-tour-graph reads (tiles, countries, by-country, destinations, search, routes, tour-route) follow
-PLACES_SOURCE: legacy = the frozen tripplanner tables, cis = the CIS catalog views of migration 228
-(AA-712 slice 6b; backend/shared/places_source.py). Every response says which in x-places-source.
+Every read uses only the CIS catalog views (ADR 0001): /browse/catalog/* the tour views of CIS migration 225, the
+place / tour-graph reads (tiles, countries, by-country, destinations, search, routes, tour-route, shapes) the
+place and graph views of migration 228 and later (AA-712 slice 6b). The PLACES_SOURCE switch and the frozen
+tripplanner place tables it chose between are gone (AA-712 X4).
 
 Read routes (tiles, destinations) are CDN-cacheable with a fixed TTL;
 /search sends no-store. Never calls Bedrock except for the search
@@ -41,7 +41,7 @@ from backend.browse import search as search_mod
 from backend.browse import shapes as shapes_mod
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import TileError
-from backend.shared import observability, places_source
+from backend.shared import observability
 
 _TILE_RE = re.compile(r"^/browse/tiles/([^/]+)$")
 _DEST_RE = re.compile(r"^/browse/destinations/([^/]+)$")
@@ -71,8 +71,6 @@ _NO_STORE_HEADERS = {
 
 
 def _resp(status: int, body: dict, headers: dict) -> dict:
-    # AA-712 slice 6b: which place store served the read (legacy | cis), for the flip checks.
-    headers = {**headers, "x-places-source": places_source.current()}
     return {"statusCode": status, "headers": headers, "body": json.dumps(body)}
 
 
@@ -148,8 +146,7 @@ async def route(
             return _resp(400, {"error": "tour_id (uuid) or source_id required"}, _NO_STORE_HEADERS)
         async with pool.acquire() as conn:
             current = await routes_mod.resolve_tour_id(conn, tid or None, sid or None)
-            # AA-812 hotfix: the tour_id the link carried may be the one the Tour Graph knows.
-            proposal = await routes_mod.tour_route(conn, current, (tid or None,)) if current else None
+            proposal = await routes_mod.tour_route(conn, current) if current else None
             fallback = await routes_mod.tour_fallback(conn, current) if current and proposal is None else None
         if proposal is None:
             # The planner pre-fills country + days and shows the tour's day list from `tour`.

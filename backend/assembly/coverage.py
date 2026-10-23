@@ -5,7 +5,7 @@ by **transfers** between tours no longer than JUNCTION_KM (the Tour Graph's junc
 AA-673). The chain is what an advisor can actually sell as a Trip Case.
 
 For the pins in trip order, each pin can be served by any (tour, day) whose components visit
-its destination (itinerary_components). A small dynamic programme picks one option per pin,
+its destination (catalog.v_tour_component). A small dynamic programme picks one option per pin,
 minimising, in order:
   1. gaps: a hop between tours longer than JUNCTION_KM (the trip is not coverable there);
   2. transfers: changes of tour (fewer tours are easier to book);
@@ -21,28 +21,17 @@ from typing import Any, Optional
 
 from backend.assembly import events as events_mod
 from backend.assembly.sequencing import _haversine  # noqa: PLC2701
-from backend.shared import places_source
 
 JUNCTION_KM = 150.0
 
+# Catalog views (AA-847 slice 6c; the only source since AA-712 X4): tour keys are catalog source_ids, no AA tenant.
 OPTIONS_SQL = """
-    SELECT DISTINCT destination_id::text AS destination_id, source_tour_id, source_day_index
-    FROM tripplanner.itinerary_components
-    WHERE destination_id = ANY($1::uuid[])
-"""
-
-TOUR_NAMES_SQL = """
-    SELECT tour_id::text AS tour_id, aa_name FROM gold_aa_internal.published_tours
-    WHERE tour_id::text = ANY($1::text[])
-"""
-# AA-847 slice 6c (PLACES_SOURCE=cis): tour keys are catalog source_ids; the views need no AA tenant.
-OPTIONS_SQL_CIS = """
     SELECT DISTINCT destination_id::text AS destination_id, source_id AS source_tour_id,
            day_index AS source_day_index
     FROM catalog.v_tour_component
     WHERE destination_id = ANY($1::uuid[])
 """
-TOUR_NAMES_SQL_CIS = """
+TOUR_NAMES_SQL = """
     SELECT source_id AS tour_id, title AS aa_name FROM catalog.v_tour
     WHERE source_id = ANY($1::text[])
 """
@@ -129,7 +118,7 @@ async def coverage(conn: Any, trip_id: str) -> dict:
     pins = [by_id[i] for i in order if i in by_id]
     dests = sorted({str(p["destination_id"]) for p in pins if p.get("destination_id")})
     options: dict[str, set] = {}
-    for r in await conn.fetch(places_source.pick(OPTIONS_SQL, OPTIONS_SQL_CIS), dests):
+    for r in await conn.fetch(OPTIONS_SQL, dests):
         options.setdefault(r["destination_id"], set()).add((r["source_tour_id"], int(r["source_day_index"])))
     result = solve(pins, options)
     # PR-11 point 3: days the traveller added are customizations on top of the legs.
@@ -139,11 +128,7 @@ async def coverage(conn: Any, trip_id: str) -> dict:
     result["total_days"] += len(custom)
     tour_ids = sorted({leg["tour_id"] for leg in result["legs"]})
     if tour_ids:
-        if places_source.is_cis():
-            rows = await conn.fetch(TOUR_NAMES_SQL_CIS, tour_ids)
-        else:
-            from backend.shared.catalog_rls import fetch_catalog  # tenant-scoped (RLS)
-            rows = await fetch_catalog(conn, TOUR_NAMES_SQL, tour_ids)
+        rows = await conn.fetch(TOUR_NAMES_SQL, tour_ids)
         names = {r["tour_id"]: r["aa_name"] for r in rows}
         for leg in result["legs"]:
             leg["tour_name"] = names.get(leg["tour_id"])

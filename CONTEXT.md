@@ -30,8 +30,8 @@ AA-CIS-App. What it shares with the rest of the ecosystem is a small set of AWS-
 - **Product surface**: consumer-facing (B2C). The visitor is a traveler planning a trip, not an
   AA admin or a marketplace tenant. This is the opposite audience from AA-CIS-App (admin +
   tenant content pipeline).
-- **Position**: a leaf product. It reads shared reference data (`shared.destinations`) that the
-  CIS side owns, and it calls Bedrock for AI assembly. Nothing in the CIS content pipeline
+- **Position**: a leaf product. It reads CIS content only through the `catalog.*` views (tours, places,
+  tour graph) that the CIS side owns, and it calls Bedrock for AI assembly. Nothing in the CIS content pipeline
   depends on TripPlanner — the arrow points one way (TripPlanner → shared/Bedrock), never back.
 - **Ownership split**: this repo owns its application code and its own schema (`tripplanner.*`).
   AWS resources it needs (Lambda plumbing, OIDC deploy role, cross-account Bedrock trust) are
@@ -56,10 +56,10 @@ Two Python 3.12 Lambda functions
       │
       ▼
 Postgres (the shared RDS in acc2)
-  ├─ tripplanner.*        (owned here — itinerary_components, customers, sessions,
-  │                        trip_events, trip_drafts; pgvector)
-  ├─ shared.destinations  (shared reference data, geocoded lat/lng)
-  └─ read-only: acp_contract.v_active_tour_atoms, gold_aa_internal.published_tours (CIS-owned)
+  ├─ tripplanner.*        (owned here — customers, sessions, trip_events, trip_drafts, outbox,
+  │                        narration_cache, llm_spend_daily, component_id_map)
+  ├─ shared.llm_*         (CIS Model Gateway: read config, write llm_call_log)
+  └─ read-only: catalog.* views (CIS-owned: tours, places, tour graph, embeddings)
       │
       ▼
 Amazon Bedrock  — Cohere Embed v4: acc2 first, then acc3/acc1 via the satellite role (AA-862);
@@ -236,7 +236,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   the trip's last stop (absolute km, ramp 150-1500 km) in `backend/assembly/suggestions.py`;
   with no anchor stop it falls back to taste order only. Since AA-674 (step 2) the candidates are
   **route-constrained**: what real tours do next from the trip's last stop. That means the
-  components of the days after any `tour_stop` within 150 km of it (same place, or a transfer to
+  components of the days after any tour stop (`catalog.v_tour_stop`) within 150 km of it (same place, or a transfer to
   another tour), up to that tour's next stop elsewhere. The response carries `mode`
   (`route` | `taste`) and each suggestion a `tour_count`. When no tour passes near the last stop,
   it falls back to taste within the trip's countries.
@@ -261,8 +261,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   in `shared.schema_versions` with the `tp-NNN` key (from tp-007, which also backfills tp-001..006
   for objects that exist) and is applied through AA-CIS-Infra **DB Migrate** from an identical copy
   in `db/migrations/tripplanner/`.
-  `shared.destinations` is **read-shared** reference data owned by the CIS side — treat it as
-  read-only from here; do not migrate or mutate it from this repo.
+  CIS content (places included) is read only through the `catalog.*` views; never migrate or
+  mutate another owner's schema from this repo.
 - DB roles (X1, AA-852): **from tp-013 (applied in the X1 S8 train; until that apply the RDS master
   `aa_cis_admin` still owns everything)** the schema and every object in it are owned by the NOLOGIN role
   **`tp_owner`** (created by the Infra role bootstrap `rl-001`), not by the RDS master. The Lambdas log in
@@ -291,38 +291,36 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   not on its allowlist; the schema reference section *Personal and confidential data tags (DM-6.1)* (AA-CIS-Infra
   `db/gen_schema_reference.py`, the authority) is the column inventory of the RoPA (AA-Ecosys `docs/legal/register.md`).
 - **Only CIS writes content** (root ADR 0002, 01/10/2026). This repo writes only `tripplanner.*`
-  user state (sessions, drafts, customers, trip events) and `shared.llm_call_log`. The DB role
-  `tripplanner` has no INSERT/UPDATE on `shared.destinations` any more (CIS migration 201).
+  user state (sessions, drafts, customers, trip events) and `shared.llm_call_log`.
   **The place pipeline (itinerary places, geocoding, tour graph) is CIS's** (root ADR 0007,
   AA-712: CIS job kinds `place_extract` / `place_geocode` / `place_graph`, schema `geo`). Since
-  slice 6a this repo has **no place writers**: the extraction modules and scripts were removed,
-  and the guard test `backend/tests/test_extraction_ops.py` fails if any module under `backend/`
-  writes `shared.destinations` or the tripplanner place tables (`itinerary_components`, `tour_day`,
-  `tour_stop`, `tour_graph_*`, `tour_leg`, `tour_junction`). Those tables are **frozen** (no longer
-  refreshed). Since slice 6b the **browse** readers (tiles, countries, by-country, destination detail,
-  search, routes, tour-route) read either them (`PLACES_SOURCE=legacy`, the default) or the CIS catalog
-  views of CIS migration 228 (`PLACES_SOURCE=cis`: `catalog.v_tour_component`, `v_tour_stop`,
-  `v_tour_leg`, `v_tour_junction`, `v_destination`, contract `catalog.graph.v1`; keyed by catalog
-  `source_id`, live tours only, no AA tenant needed; `backend/shared/places_source.py`). Every browse
-  response carries `x-places-source`. Since slice 6c (AA-847) the **assembly** readers follow the same
-  flag: `events._current_components` / `current_itinerary`, suggestions (taste, route candidates over
+  slice 6a this repo has **no place writers**; since **AA-712 X4** it has **no reader of anything of CIS but
+  the catalog views** (plus the Model Gateway tables): the `PLACES_SOURCE=legacy|cis` switch and every legacy
+  reader of the frozen tripplanner place tables (`itinerary_components`, `tour_day`, `tour_stop`, `tour_graph_*`,
+  `tour_leg`, `tour_junction`), `shared.destinations`, `gold_aa_internal.published_tours` (and its AA-tenant GUC)
+  are gone, tp-018 drops the frozen tables and CIS 270 revokes the `tripplanner` grants on the CIS objects they
+  used. The guard `backend/tests/test_extraction_ops.py` fails if a backend SQL string names any schema-qualified
+  object outside `catalog.*`, the Model Gateway tables (`shared.llm_role_config`, `llm_model_catalog`,
+  `llm_call_log`) and the live `tripplanner` tables (sessions, customers, trip_events, trip_drafts, outbox,
+  narration_cache, llm_spend_daily, component_id_map), or writes place data.
+  The **browse** readers (tiles, countries, by-country, destination detail, search, routes, tour-route, shapes)
+  read the CIS catalog views of CIS migration 228 and later (`catalog.v_tour_component`, `v_tour_stop`,
+  `v_tour_leg`, `v_tour_junction`, `v_destination`, contract `catalog.graph.v1.2`; keyed by catalog
+  `source_id`, live tours only, no AA tenant needed). The **assembly** readers (AA-847 slice 6c) too:
+  `events._current_components` / `current_itinerary`, suggestions (taste, route candidates over
   `catalog.v_graph_node` / `v_tour_stop` / `v_tour_component`, the fallback top-k), coverage (options + tour names
   from `catalog.v_tour`), activities, apply-route, add-day and the narration day texts (`catalog.v_tour.itinerary_text`).
-  Browse search and the suggestion fallback rank through `backend/shared/vector_topk.py` with `source=CIS`: the
-  HNSW top-k scans `catalog.v_component_embedding` (CIS 253, not a security_barrier view, `tripplanner` only;
-  `hnsw.iterative_scan` on pgvector ≥ 0.8; the same rows as `v_tour_component` — live tours on usable places, never
-  a suspect or merged one — so the cis path checks nothing after the scan), the exact fallback
-  `catalog.v_tour_component`. **Component ids across
-  the flip**: the views serve stable uuid5 component ids, the frozen table its own ids; `tripplanner.component_id_map`
-  (tp-017; filled once, right before the flip, by AA-CIS-Infra `db/scripts/aa847_component_id_map_fill.py`) maps an
-  old id to its catalog id, and every assembly reader resolves the ids it is given through
-  `backend/shared/component_ids.py` first (events of drafts from before the flip, and ids from browse answers a
-  browser cached for up to 30 minutes). The hand-off legs use the narration's day check (`master_content.guarded_days`,
-  TP #86): a tour day whose AA text does not name the stop moves to the nearest day that does. **Flag state:**
-  `PLACES_SOURCE=legacy` on both Lambdas until the AA-847 flip window (coverage gate 0, id-map fill, Terraform
-  `cis` on both Lambdas together, CDN invalidation); rollback = `legacy`. `tripplanner` reads no
-  `silver_aa_internal.raw_tours` / `acp_contract.tour_atoms` any more (guard in `backend/tests/test_extraction_ops.py`;
-  CIS 254 revokes those grants after the flip).
+  Browse search and the suggestion fallback rank through `backend/shared/vector_topk.py` (`source=CIS`, the
+  default): the HNSW top-k scans `catalog.v_component_embedding` (CIS 253, not a security_barrier view,
+  `tripplanner` only; `hnsw.iterative_scan` on pgvector ≥ 0.8; the same rows as `v_tour_component` — live tours on
+  usable places, never a suspect or merged one — so nothing is checked after the scan), the exact fallback
+  `catalog.v_tour_component`. **Component ids across the flip** (22/10/2026, AA-847): the views serve stable uuid5
+  component ids; drafts from before the flip hold ids of the dropped `itinerary_components`.
+  `tripplanner.component_id_map` (tp-017; filled once, right before the flip, by AA-CIS-Infra
+  `db/scripts/aa847_component_id_map_fill.py`) maps an old id to its catalog id and stays after tp-018; every
+  assembly reader resolves the ids it is given through `backend/shared/component_ids.py` first. The hand-off legs
+  use the narration's day check (`master_content.guarded_days`, TP #86): a tour day whose AA text does not name the
+  stop moves to the nearest day that does. There is no rollback to the frozen tables after tp-018.
 - **Map attribution and precision (ADR 0007, AA-847)**: wherever a Geoapify-located point is shown (planner map,
   static maps on tour / country pages, the destination popup) the page shows "Powered by Geoapify" (link) and
   "© OpenStreetMap contributors" (`components/GeocodeAttribution.tsx`, `lib/types.ts GEOCODE_ATTRIBUTION`). A place
@@ -340,11 +338,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   line glyph and "A → B · ≈ n km". Static maps: `path` overlays (≤ 3 lines, ≤ 60 vertices, `lib/staticMap.ts`).
   Kill switch `NEXT_PUBLIC_MAP_LINES_PROVISIONAL` (⚠️ underscore name, set by hand) draws every line provisional.
 - Photos (AA-708, 01/10/2026): AA marketing photos are synced and matched by CIS (`photo_sync`,
-  `shared.place_photo`). This repo reads them only through `shared.v_destination_photos` /
-  `shared.v_tour_photos` and `shared.destinations.cover_image_url` (set by CIS from the photo
-  matched to a place on the tour's own itinerary). Image URL = CIS public API base + view `path`
-  + `?size=large|small`. Cover matching for a country runs after this repo re-extracts its tours'
-  places (`itinerary_components` / `tour_stop`) — see `docs/ecosystem-architecture.md` §4.5.
+  `shared.place_photo`). This repo reads them only through the catalog views (`catalog.v_tour_photo`,
+  `v_destination_photo`, `v_destination.cover_image_url`, set by CIS from the photo matched to a place on the
+  tour's own itinerary). Image URL = CIS public API base + view `path` + `?size=large|small`. Cover matching runs
+  in CIS after its place build (`geo.*`) — see `docs/ecosystem-architecture.md` §4.5.
 
 ### AI (Bedrock)
 
@@ -375,7 +372,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
     STS timeouts of 3 s connect / 5 s read, at most 2 attempts. Each search prints one `{"evt":"search_embed","outcome":hit|miss|fallback,...}` line
     with the container's cache counters (never the query text);
   - `tp_extract` / `tp_component_embed`: the former offline extraction pipeline; no caller since
-    AA-712 slice 6a (built-in routes kept until the frozen tables are dropped).
+    AA-712 slice 6a (the frozen tables it filled are dropped by tp-018; the built-in routes can go next).
 
   An admin can change a stage's model on the CIS admin Settings page (TripPlanner group) without
   a TripPlanner deploy; the Lambdas pick the change up within 60 s. Shadow config on a tp_* stage
@@ -411,29 +408,15 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `-acc1`, CIS migration 240) take over on an acc2 throttle (acc2 has 20 rpm, acc3 2,000 rpm). Each
   container caches one no-retry satellite embed client per account (one AssumeRole until 5 minutes
   before the creds expire), AA-862.
-- **`tour_day` (AA-675, migration 003)**: one row per (published tour, itinerary day): start,
-  end and **overnight place** (a `shared.destinations` row), plus other places. Built from
-  `published_tours.aa_itineraries` by the former TripPlanner extraction (rules + one `tp_extract`
-  call per tour), which CIS has ported (`services/places/`); the table is **frozen** since AA-712
-  slice 6a. It is the base of the Tour Graph (AA-673).
-- **Extraction checks (assembly Lambda, direct `lambda invoke` only, not reachable over HTTP)**:
-  `{"extraction": {"op": "list" | "orphans" | "neighbours"}}` (`backend/extraction/lambda_entry.py`,
-  `checks.py`) are read-only: `list` = active tours and whether tour_day is stale, `orphans` = rows
-  of tours no longer active, `neighbours` = the Tour Graph sample query. The former writer ops
-  `tour_days`, `components`, `relink`, `tour_graph`, `prune` answer `status` 410
-  "unknown extraction op" (moved to CIS) before opening a DB connection.
-- **Tour Graph (AA-673, migration 004)**: read model, frozen since AA-712 slice 6a (it was rebuilt
-  in full from `tour_day` by the former op `"tour_graph"`). `tour_stop` = where each (tour, day) is (overnight destination, else the
-  day's main component destination); `tour_graph_node` = destinations with tours, activities,
-  intensity, seasons; `tour_graph_edge` = A→B steps of real tours, weighted by tour count;
-  `tour_leg` = every multi-day span of one tour (the sellable unit, with countries and
-  activities); `tour_junction` = destination pairs ≤ 150 km (tunable, both directions,
-  `cross_border` flagged) where legs of different tours chain; `tour_graph_build` = params + stats
-  per rebuild. Op `"neighbours"` is the sample "where next, still coverable by tours" query.
-  Route-constrained suggestions and multi-tour composition read it (AA-674).
-- `itinerary_components` was built by the former offline extraction pipeline from CIS published
-  tours and atoms. It is frozen since AA-712 slice 6a; CIS builds the replacement
-  (`catalog.v_tour_component` over `geo.*`) and the readers switch to it in slices 6b/7.
+- **Former place tables (AA-675 `tour_day`, AA-673 Tour Graph `tour_stop` / `tour_graph_*` / `tour_leg` /
+  `tour_junction`, `itinerary_components`)**: built by this repo's former offline extraction pilot, frozen since
+  AA-712 slice 6a, unread since AA-712 X4 and **dropped by tp-018** (after a DRY RUN). CIS builds and serves their
+  replacement (`geo.*` behind `catalog.v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`,
+  `v_tour_component`).
+- **Extraction ops (assembly Lambda, direct invoke only, not reachable over HTTP)**:
+  `{"extraction": {"op": …}}` (`backend/extraction/lambda_entry.py`) answers every former op (`tour_days`,
+  `components`, `relink`, `tour_graph`, `prune`, and since X4 the checks `list`, `orphans`, `neighbours`) with
+  `status` 410 "moved to CIS", anything else 400, before opening a DB connection.
 - The trust and role wiring that make this call possible live in **AA-CIS-Infra**, not here.
 
 ## Logs, request ids and errors (AA-871)
@@ -505,8 +488,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 | Other side | This repo reads | This repo writes | Granted by |
 |---|---|---|---|
 | AA-CIS-App (catalog, AA-812) | `catalog.v_tour`, `v_tour_day`, `v_tour_place`, `v_tour_photo`, `v_destination`, `v_destination_photo` (contract `catalog.tour.v1`); photo URLs = `CIS_PUBLIC_API_BASE` + path | — | CIS migration 225 |
-| AA-CIS-App (places / tour graph, AA-712) | with `PLACES_SOURCE=cis`: `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`, `v_destination` (+ `located_by`, `precision`; 256: shape kind / status / length / bbox / `shape_lo`), `v_component_embedding` (HNSW top-k, AA-847), `v_destination_shape` (line geometry by id, slice 6d), `v_destination_redirect` (merged destination id → keeper: `/browse/destinations/{id}` answers 301, AA-847 Problem 2) — contract `catalog.graph.v1.2` / `catalog.tour.v1.2` | — | CIS migrations 228, 253 (`v_component_embedding`), 256 (`v_destination_shape`): SELECT to `tripplanner` only; 257 (`v_destination_redirect`) |
-| AA-CIS-App (content) | `gold_aa_internal.published_tours` (tenant RLS, AA tenant set per transaction), `acp_contract.v_active_tour_atoms` (place/activity columns), `shared.destinations`, `shared.v_destination_photos` / `v_tour_photos` | — | CIS migrations 180 / 216, 201 |
+| AA-CIS-App (places / tour graph, AA-712) | `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`, `v_destination` (+ `located_by`, `precision`; 256: shape kind / status / length / bbox / `shape_lo`), `v_component_embedding` (HNSW top-k, AA-847), `v_destination_shape` (line geometry by id, slice 6d), `v_destination_redirect` (merged destination id → keeper: `/browse/destinations/{id}` answers 301, AA-847 Problem 2) — contract `catalog.graph.v1.2` / `catalog.tour.v1.2` | — | CIS migrations 228, 253 (`v_component_embedding`), 256 (`v_destination_shape`): SELECT to `tripplanner` only; 257 (`v_destination_redirect`) |
 | AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
 | AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 / v1.2 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.2.json` (payload `version` 1.2 since AA-830: each leg also carries the catalog tour key `source_system` + `source_id`, resolved against `catalog.v_tour` at send time, both null when unresolvable; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
 | AA-CIS-App (admin overview, AA-858) | — | — (it **reads** `tripplanner.v_ops_traffic_daily`: per UTC day `planner_session_started`, `trip_started`, `trip_edited`, `inquiry_sent`, aggregates only, last 400 days; contract `ops.overview.v1`, metric names append-only) | migration tp-015 grants role `cis_app` (the CIS runtime from X1 S18; until then the CIS runtime `aa_cis_admin` reads it through its `tp_owner` membership) USAGE on schema `tripplanner` + SELECT on the view only |
@@ -519,8 +501,9 @@ Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
 - It does not run the content pipeline (Atom/Segment/Route/Slate/Piece/publish) — that is
   AA-CIS-App's domain entirely.
 - It does not own the `shared` schema (CIS does). It created `shared.destinations` (migrations
-  002 / 005), but since ADR 0002 / CIS migration 201 the table is CIS-owned and read-only from here;
-  the only `shared` table it writes is `shared.llm_call_log`.
+  002 / 005), but since ADR 0002 / CIS migration 201 the table is CIS-owned, and since AA-712 X4 (CIS 270) this
+  repo cannot read it either (it reads `catalog.v_destination`); the only `shared` tables it touches are the
+  Model Gateway's (`llm_call_log` written, config read).
 - It does not provision its own AWS resources or OIDC roles — those live in AA-CIS-Infra.
 - **Agents must not merge to the production branch directly.** Ship via PR and let the human
   merge (matches this repo's stated policy and the ecosystem program rules). This repo has no
@@ -528,8 +511,7 @@ Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
 
 ## Known gaps (deferred)
 
-Place tables frozen until the readers switch to the CIS views (AA-712 slices 6b/7; new tours do
-not reach the map until then); CloudFront in front of
+CloudFront in front of
 browse; Mapbox token URL restriction; more countries in the gateway table.
 
 ## Related documents

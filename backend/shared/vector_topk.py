@@ -28,7 +28,7 @@ and the top-k passes would usually come up short anyway and only add round trips
 each short pass can walk up to ``hnsw.max_scan_tuples`` index tuples before giving up).
 
 Callers pass two WHERE fragments over the alias ``c`` (query vector = ``$1``):
-  * ``scan_where`` — conditions on ``itinerary_components`` columns only (they stay inside the
+  * ``scan_where`` — conditions on the component columns only (they stay inside the
     index-ordered scan; use ``c.destination_id = ANY(ARRAY(SELECT ...))`` for destination
     attributes: an InitPlan array, not a join);
   * ``keep_where`` — ``AND ...`` conditions that read other tables (EXISTS ...) and may use only
@@ -37,14 +37,15 @@ Callers pass two WHERE fragments over the alias ``c`` (query vector = ``$1``):
 Run ``ranked_destinations`` inside a transaction: ``hnsw.ef_search`` is set with
 ``set_config(..., true)`` (transaction-local), never leaking to other queries on a pooled connection.
 
-AA-847 (AA-712 slice 6c, ADR 0007 Consequences): the same ranking over the CIS catalog (``source=CIS``). The scan
+AA-847 (AA-712 slice 6c, ADR 0007 Consequences): the ranking reads the CIS catalog (``source=CIS``, the default and,
+since AA-712 X4 dropped the frozen ``tripplanner.itinerary_components`` described above, the only source in
+production; ``Source`` stays so the Postgres tests can rank plain stand-in tables). The scan
 reads ``catalog.v_component_embedding`` (CIS 253: the components ``v_tour_component`` shows — live tours, usable
 places, never a suspect or merged one — NOT a security_barrier view, so ``ORDER BY embedding <=> q LIMIT k`` is
 served by the HNSW index on ``geo.tour_place``; callers need no ``keep_where`` on this path); the exact fallback and
 the component count read ``catalog.v_tour_component``; destinations come from ``catalog.v_destination``. Each is
 read through a subquery that renames its columns to the alias ``c`` the callers use (``c.id``,
-``c.source_tour_id``, ``c.destination_id``, ``c.activity`` …), so ``scan_where`` / ``keep_where`` are the same
-fragments on both paths except for the destination lookups (``Source.destinations`` / ``Source.dest_id``).
+``c.source_tour_id``, ``c.destination_id``, ``c.activity`` …); destinations are keyed by ``Source.dest_id``.
 """
 from __future__ import annotations
 
@@ -80,12 +81,6 @@ class Source:
     dest_id: str       # the destination key column of ``destinations``
 
 
-LEGACY = Source(
-    scan="tripplanner.itinerary_components",
-    exact="tripplanner.itinerary_components",
-    destinations="shared.destinations",
-    dest_id="id",
-)
 _CIS_COLS = ("component_id AS id, source_id AS source_tour_id, day_index AS source_day_index, destination_id, "
              "activity, intensity_level, season_months, embedding")
 CIS = Source(
@@ -129,7 +124,7 @@ async def iterative_scan_supported(conn: _Conn) -> bool:
 
 
 def topk_sql(scan_where: str, keep_where: str, dest_cols: Sequence[str], k_param: int,
-             limit: int, source: Source = LEGACY) -> str:
+             limit: int, source: Source = CIS) -> str:
     """Top-k components by distance (index-servable), filtered, grouped to destinations.
     ``k_param`` is the placeholder number bound to k."""
     cols, _ = _dest_select("od", dest_cols, source)
@@ -159,7 +154,7 @@ def topk_sql(scan_where: str, keep_where: str, dest_cols: Sequence[str], k_param
 
 
 def exact_sql(scan_where: str, keep_where: str, dest_cols: Sequence[str], limit: int,
-              source: Source = LEGACY) -> str:
+              source: Source = CIS) -> str:
     """The pre-AA-712 aggregate over every matching component. Fallback only."""
     cols, group = _dest_select("d", dest_cols, source)
     key = f"d.{source.dest_id}"
@@ -185,7 +180,7 @@ async def ranked_destinations(
     limit: int,
     passes: Optional[Sequence[int]] = None,
     exact_first: bool = False,
-    source: Source = LEGACY,
+    source: Source = CIS,
 ) -> tuple[list, str]:
     """Return (rows, mode) — rows best-first with ``dest_cols`` + component_count + best_distance;
     mode is ``topk:<k>`` or ``exact``. Run inside a transaction. ``exact_first`` skips the top-k

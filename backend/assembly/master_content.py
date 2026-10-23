@@ -1,8 +1,9 @@
 """Master itinerary content lookup.
 
-AA already has editorial, day-by-day itinerary prose on
-`gold_aa_internal.published_tours.aa_itineraries` (one block of text per
-tour, structured as "Day N — <title>: <prose>"). We prefer that authored
+AA already has editorial, day-by-day itinerary prose (CIS
+`gold_aa_internal.published_tours.aa_itineraries`, read through the catalog view
+`catalog.v_tour.itinerary_text`: one block of text per tour, structured as
+"Day N — <title>: <prose>"). We prefer that authored
 text for a trip's day-by-day narration over asking the LLM to rewrite atom
 fragments — it is AA's real voice and costs no Bedrock call.
 
@@ -18,7 +19,7 @@ tours reach a human), so it is AI-assisted text: the frontend labels it "AA itin
 AI-assisted" and the API reports it as ai_generated.
 
 NOTE ON STEERING: tech.md forbids *re-parsing aa_itineraries to synthesise
-atoms during extraction* (that pipeline must use acp_contract.tour_atoms).
+atoms during extraction* (the place pipeline is CIS's since AA-712).
 This is a different use: reading the same authored prose at narrate-time to
 show it back to the traveller. It does not feed extraction or grounding.
 """
@@ -28,13 +29,9 @@ import re
 import unicodedata
 from typing import Any, Optional, Protocol
 
-
-from backend import config
-from backend.shared import places_source
-
-# AA-847 slice 6c (PLACES_SOURCE=cis): component tour keys are catalog source_ids; catalog.v_tour carries the same
-# aa_itineraries text as itinerary_text (live tours only, no AA tenant needed).
-CIS_TEXTS_SQL = """
+# AA-847 slice 6c: component tour keys are catalog source_ids; catalog.v_tour carries the same aa_itineraries text as
+# itinerary_text (live tours only, no AA tenant needed). The only source since AA-712 X4.
+TEXTS_SQL = """
     SELECT source_id AS tour_id, itinerary_text AS aa_itineraries
     FROM catalog.v_tour
     WHERE source_id = ANY($1::text[]) AND itinerary_text IS NOT NULL
@@ -89,28 +86,7 @@ async def load_for_tours(
     ids = sorted(t for t in {str(t) for t in tour_ids if t} if t)
     if not ids:
         return {}
-    if places_source.is_cis():
-        return _parsed(await conn.fetch(CIS_TEXTS_SQL, ids))
-    sql = """
-        SELECT tour_id::text AS tour_id, aa_itineraries
-        FROM gold_aa_internal.published_tours
-        WHERE tour_id::text = ANY($1::text[])
-          AND aa_itineraries IS NOT NULL
-    """
-    # published_tours enforces tenant RLS. Set the AA tenant for the scope of
-    # this read only (SET LOCAL, inside a transaction, so it never leaks to
-    # other queries on a pooled connection). Without it RLS returns no rows
-    # and the caller falls back to the LLM.
-    tenant = config.MASTER_CONTENT_TENANT_ID
-    if tenant:
-        async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)", tenant
-            )
-            rows = await conn.fetch(sql, ids)
-    else:
-        rows = await conn.fetch(sql, ids)
-    return _parsed(rows)
+    return _parsed(await conn.fetch(TEXTS_SQL, ids))
 
 
 def _parsed(rows) -> dict[tuple[str, int], str]:

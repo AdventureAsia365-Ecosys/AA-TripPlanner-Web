@@ -1,4 +1,4 @@
-"""AA-847 slice 6d (owner decision S246, D1) — line places (rivers, roads, trails) on the cis places source:
+"""AA-847 slice 6d (owner decision S246, D1) — line places (rivers, roads, trails) from the CIS catalog views:
 tiles select by bbox and carry no geometry, /browse/shapes serves it by id, the tour answer (catalog.tour v1.2)
 carries the day stretch and the line's shape_lo, assembly components carry the stretch. Offline, no DB."""
 from __future__ import annotations
@@ -9,7 +9,6 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from backend import config
 from backend.assembly import events
 from backend.browse import catalog as cat
 from backend.browse import handler as h
@@ -25,11 +24,6 @@ LINE = {"type": "LineString", "coordinates": [[100.41, 20.27], [100.75, 20.05], 
 SCHEMA = json.loads((Path(__file__).parent / "contracts" / "catalog.tour.v1.2.json").read_text())
 
 
-@pytest.fixture
-def cis(monkeypatch):
-    monkeypatch.setattr(config, "PLACES_SOURCE", "cis")
-
-
 class _Pool:
     def __init__(self, rows=()):
         self.rows, self.sql = list(rows), []
@@ -41,7 +35,7 @@ class _Pool:
 
 # ── tiles ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-def test_cis_tile_selects_by_bbox_intersection_without_geometry(cis):
+def test_tile_selects_by_bbox_intersection_without_geometry():
     sql, params = tiles.build_tile_query(19, 100, BrowseFilters(), 1)
     assert "d.max_lat >= $1 AND d.min_lat < $2" in sql and "d.max_lng >= $3 AND d.min_lng < $4" in sql
     assert "shape_kind" in sql and "shape_mid" not in sql and "shape_lo" not in sql   # no geometry in tiles
@@ -59,7 +53,7 @@ def test_geo_fields_of_a_line_and_a_point():
     assert tiles.geo_fields(point) == {"located_by": "geoapify", "precision": "point"}
 
 
-async def test_tile_answer_carries_line_fields(cis):
+async def test_tile_answer_carries_line_fields():
     rows = [{"id": MEKONG, "name": "Mekong River", "lat": 20.0, "lng": 100.8, "located_by": "geoapify",
              "precision": "line", "shape_kind": "line", "shape_status": "approximate", "length_km": 88.0,
              "min_lat": 19.89, "min_lng": 100.41, "max_lat": 20.27, "max_lng": 101.13, "component_count": 3}]
@@ -80,7 +74,7 @@ def test_parse_ids(ids, err):
             shapes_mod.parse_ids(ids)
 
 
-async def test_shapes_route_cis_reads_the_view_and_is_cacheable(cis):
+async def test_shapes_route_reads_the_view_and_is_cacheable():
     pool = _Pool([{"destination_id": MEKONG, "shape_status": "ok", "shape": json.dumps(LINE)}])
     resp = await h.route("GET", "/browse/shapes", {"ids": f"{MEKONG},{MEKONG.upper()}", "level": "mid"}, pool=pool)
     body = json.loads(resp["body"])
@@ -90,11 +84,10 @@ async def test_shapes_route_cis_reads_the_view_and_is_cacheable(cis):
     assert "catalog.v_destination_shape" in sql and "shape_mid" in sql and args == ([MEKONG],)
 
 
-async def test_shapes_route_errors_and_legacy(monkeypatch):
-    monkeypatch.setattr(config, "PLACES_SOURCE", "legacy")
+async def test_shapes_route_errors():
     pool = _Pool()
     resp = await h.route("GET", "/browse/shapes", {"ids": MEKONG}, pool=pool)
-    assert json.loads(resp["body"]) == {"level": "lo", "shapes": []} and pool.sql == []
+    assert json.loads(resp["body"]) == {"level": "lo", "shapes": []} and len(pool.sql) == 1   # no row: no shape
     resp = await h.route("GET", "/browse/shapes", {"ids": MEKONG, "level": "hi"}, pool=pool)
     assert resp["statusCode"] == 400 and resp["headers"]["cache-control"] == "no-store"
 
@@ -143,4 +136,4 @@ def test_component_segment_fields_are_json_ready():
                                 "segment_from_destination_id": uuid.UUID(HX), "segment_to_destination_id": None,
                                 "segment_km": 30.0})
     assert c["segment"] == LINE and c["segment_from_destination_id"] == HX and c["segment_to_destination_id"] is None
-    assert "segment" in events.COMPONENTS_SQL_CIS and "segment" not in events.COMPONENTS_SQL
+    assert "c.segment, c.segment_basis" in events.COMPONENTS_SQL

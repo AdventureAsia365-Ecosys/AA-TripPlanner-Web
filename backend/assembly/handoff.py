@@ -68,7 +68,7 @@ def leg_chain(itinerary: list[dict]) -> list[dict]:
     """Group consecutive itinerary days that come from the same AA tour into legs.
 
     Each leg: {position, source_tour_id, day_from, day_to} where day_from / day_to are the tour's
-    own day indexes (tour_day.day_index). Days with no source tour (none today) are skipped.
+    own day indexes (catalog day_index). Days with no source tour (none today) are skipped.
     """
     legs: list[dict] = []
     for entry in sorted(itinerary, key=lambda e: e["day"]):

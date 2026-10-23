@@ -16,7 +16,7 @@ class _Conn:
     async def fetch(self, sql, *args):
         if "SELECT c.embedding, d.country" in sql:
             return [{"embedding": "[1.0,0.0]", "country": "Bhutan"}, {"embedding": "[0.0,1.0]", "country": "Bhutan"}]
-        if "tripplanner.tour_stop" in sql:
+        if "catalog.v_tour_stop" in sql:
             self.calls.append(("route", args))
             return self.route_rows
         # AA-712: index-served top-k passes, then the exact aggregate when they come up short

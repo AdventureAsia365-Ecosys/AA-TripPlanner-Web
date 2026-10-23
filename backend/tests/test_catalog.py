@@ -369,9 +369,8 @@ async def test_tour_route_graph_match_is_labelled():
 
 
 async def test_tour_route_graph_under_older_tour_id():
-    # AA-812 D2: the Tour Graph was extracted under the tour's previous tour_id; the catalog (and the
-    # source_id) now resolve to the re-uploaded one. The link's tour_id still finds the graph route,
-    # relabelled to the current id.
+    # AA-812 D2: the link carries the tour's previous tour_id; the source_id resolves the re-uploaded one, and the
+    # graph (keyed by source_id) answers under the current id.
     t = fx.TOURS[1]
     status, body, _ = await _get("/browse/tour-route", {"tour_id": fx.MEKONG_OLD_ID, "source_id": t["source_id"]})
     assert status == 200
@@ -383,8 +382,8 @@ async def test_tour_route_graph_under_older_tour_id():
 
 
 async def test_tour_route_from_catalog_places_when_not_in_graph(monkeypatch):
-    # AA-812 D2: Sri Lanka is not in the Tour Graph at all, but its places (catalog.v_tour_place ->
-    # shared.destinations) have planner experiences from another tour: the route is built from them.
+    # AA-812 D2: Sri Lanka is not in the Tour Graph at all, but its places (catalog.v_tour_place) have planner
+    # experiences from another tour: the route is built from them.
     t = fx.TOURS[2]
     monkeypatch.setitem(t, "duration_days", 3)  # 2 pinned days of 3 clears the half-of-days bar
     status, body, _ = await _get("/browse/tour-route", {"tour_id": t["tour_id"], "source_id": t["source_id"]})
@@ -414,7 +413,7 @@ async def test_tour_route_places_needs_half_of_the_days(monkeypatch):
 async def test_tour_route_places_prefers_the_tours_own_components(monkeypatch):
     t = fx.TOURS[2]
     monkeypatch.setitem(t, "duration_days", 3)  # 2 pinned days of 3 clears the half-of-days bar
-    own = {"id": "c3000000-0000-4000-8000-000000000001", "source_tour_id": t["tour_id"],
+    own = {"id": "c3000000-0000-4000-8000-000000000001", "source_tour_id": t["source_id"],
            "source_day_index": 1, "destination_id": fx.KANDY, "embedding": True}
     pool = fx.FakeCatalogPool(stops=[], components=fx.PLANNER_COMPONENTS + [own])
     status, body, _ = await _get("/browse/tour-route", {"tour_id": t["tour_id"]}, pool=pool)

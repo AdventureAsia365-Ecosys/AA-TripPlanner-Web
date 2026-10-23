@@ -2,9 +2,9 @@
 
 The same RDS instance is shared with AA-CIS-App. This module only ever
 connects; the SQL it writes is confined to tripplanner.* user state and
-shared.llm_call_log. shared.destinations, the frozen tripplanner place
-tables and the CIS catalog / gold / acp_contract sources are read-only
-(the place pipeline moved to CIS, AA-712 / ADR 0007).
+shared.llm_call_log. CIS content is read only through the catalog.* views
+(ADR 0001; the place pipeline moved to CIS, AA-712 / ADR 0007, and the frozen
+tripplanner place tables were dropped in AA-712 X4).
 """
 from __future__ import annotations
 

@@ -10,7 +10,12 @@ from backend.browse.filters import BrowseFilters
 from backend.shared import vector_topk as vt
 
 SCAN = "c.embedding IS NOT NULL AND c.activity = $2"
-KEEP = search_mod.ACTIVE_TOUR_SQL
+# A check that reads another relation, applied to the k rows after the scan (the production callers need none since
+# AA-712 X4: the catalog views hold only live tours; the mechanism stays generic).
+KEEP = "AND EXISTS (SELECT 1 FROM live_tours lt WHERE lt.key = c.source_tour_id)"
+# A plain-table source (the shape the module was written for), so the SQL shape is checked without the CIS
+# subqueries; vector_topk.CIS is the production source.
+PLAIN = vt.Source(scan="components", exact="components", destinations="places", dest_id="id")
 
 
 def _flat(sql: str) -> str:
@@ -18,26 +23,35 @@ def _flat(sql: str) -> str:
 
 
 def test_topk_sql_scans_components_alone_ordered_by_distance_with_a_limit():
-    sql = _flat(vt.topk_sql(SCAN, KEEP, ("id", "name"), k_param=3, limit=60))
+    sql = _flat(vt.topk_sql(SCAN, KEEP, ("id", "name"), k_param=3, limit=60, source=PLAIN))
     inner = re.search(r"WITH scan AS MATERIALIZED \((.*?)\), best AS", sql).group(1).strip()
-    # the index-servable shape: one table, its own filters, ORDER BY <expr> LIMIT k, no aggregate
-    assert "FROM tripplanner.itinerary_components c WHERE c.embedding IS NOT NULL AND c.activity = $2" in inner
+    # the index-servable shape: one relation, its own filters, ORDER BY <expr> LIMIT k, no aggregate
+    assert "FROM components c WHERE c.embedding IS NOT NULL AND c.activity = $2" in inner
     assert inner.endswith("ORDER BY c.embedding <=> $1::vector LIMIT $3")
     assert "JOIN" not in inner and "EXISTS" not in inner and "MIN(" not in inner
-    # the active-tour check and the grouping run on the k rows only
+    # the keep check and the grouping run on the k rows only
     best = re.search(r"best AS \((.*?)\) SELECT", sql).group(1).strip()
-    assert "FROM scan c WHERE TRUE AND EXISTS" in best and "pt.master_status = 'active'" in best
+    assert "FROM scan c WHERE TRUE AND EXISTS (SELECT 1 FROM live_tours lt" in best
     assert "MIN(c.distance) AS best_distance" in best and "GROUP BY c.destination_id" in best
     assert sql.endswith("ORDER BY b.best_distance ASC, od.id LIMIT 60")
     # component_count still counts every matching component of the destination
     assert "WHERE c.destination_id = od.id AND c.embedding IS NOT NULL AND c.activity = $2 AND EXISTS" in sql
 
 
-def test_search_where_keeps_active_tour_filter_and_has_no_join_in_the_scan():
+def test_the_default_source_is_the_catalog():
+    sql = _flat(vt.topk_sql(SCAN, "", ("id", "name"), k_param=3, limit=60))
+    assert "FROM catalog.v_component_embedding) c WHERE c.embedding IS NOT NULL" in sql
+    assert "JOIN catalog.v_destination od ON od.destination_id = b.destination_id" in sql
+    assert "od.destination_id AS id" in sql and "tripplanner." not in sql
+    exact = _flat(vt.exact_sql(SCAN, "", ("id",), 6))
+    assert "FROM catalog.v_tour_component) c JOIN catalog.v_destination d ON d.destination_id" in exact
+
+
+def test_search_where_has_no_join_and_no_check_after_the_scan():
     scan, keep, params = search_mod.search_where(BrowseFilters(activity="trekking", country="Laos"))
-    assert "pt.master_status = 'active'" in keep and "pt.deleted_at IS NULL" in keep
+    assert keep == ""
     assert _flat(scan) == ("c.embedding IS NOT NULL AND c.activity = $2 AND c.destination_id = "
-                           "ANY(ARRAY(SELECT dc.id FROM shared.destinations dc WHERE dc.country = $3))")
+                           "ANY(ARRAY(SELECT dc.destination_id FROM catalog.v_destination dc WHERE dc.country = $3))")
     assert params == ["trekking", "Laos"]
 
 
@@ -157,20 +171,14 @@ class _Txn:
         return False
 
 
-async def test_country_filtered_search_runs_exactly_one_ranking_query(monkeypatch):
-    async def no_tenant(_conn):
-        return None
-    monkeypatch.setattr(search_mod, "set_catalog_tenant", no_tenant)
+async def test_country_filtered_search_runs_exactly_one_ranking_query():
     pool = _Pool([2])
     out = await search_mod.search("x", BrowseFilters(country="Bhutan"), pool=pool, embedder=lambda _q: [0.1, 0.2])
     assert len(out["destinations"]) == 2
     assert [c[0] for c in pool.calls] == ["exact"]  # no top-k pass, no ef_search setting
 
 
-async def test_unfiltered_search_starts_with_the_index_pass(monkeypatch):
-    async def no_tenant(_conn):
-        return None
-    monkeypatch.setattr(search_mod, "set_catalog_tenant", no_tenant)
+async def test_unfiltered_search_starts_with_the_index_pass():
     pool = _Pool([60])
     await search_mod.search("x", BrowseFilters(), pool=pool, embedder=lambda _q: [0.1, 0.2])
     assert [c[0] for c in pool.calls] == ["set", "topk"]

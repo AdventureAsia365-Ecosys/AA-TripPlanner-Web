@@ -1,6 +1,6 @@
 """Destination-detail query for the Map/Browse Lambda (Lambda A).
 
-Lists every itinerary_component at a destination (name, activity,
+Lists every catalog component at a destination (name, activity,
 duration, description, thumbnail). Cacheable behind CloudFront.
 
 `in_trip_day` is left null here — whether a component is already in the
@@ -21,7 +21,6 @@ import uuid
 from typing import Any, Protocol
 
 from backend.browse.tiles import LINE_COLS, geo_fields
-from backend.shared import places_source
 
 log = logging.getLogger(__name__)
 
@@ -31,24 +30,16 @@ class _Pool(Protocol):
     async def fetch(self, query: str, *args: Any) -> Any: ...
 
 
-# AA-712 slice 6b: PLACES_SOURCE=cis reads the CIS catalog views (228). Component ids are the views'
-# stable component_id (uuid5), not tripplanner.itinerary_components ids.
-DEST_SQL = "SELECT id, name, country, cover_image_url FROM shared.destinations WHERE id = $1"
-DEST_SQL_CIS = f"""
+# AA-712 slice 6b: the CIS catalog views (228), the only source since AA-712 X4. Component ids are the views'
+# stable component_id (uuid5).
+DEST_SQL = f"""
     SELECT destination_id AS id, name, country, cover_image_url, located_by, precision, {", ".join(LINE_COLS)}
     FROM catalog.v_destination WHERE destination_id = $1::uuid
 """
-REDIRECT_SQL_CIS = """
+REDIRECT_SQL = """
     SELECT keeper_id FROM catalog.v_destination_redirect WHERE destination_id = $1::uuid
 """
 COMPONENTS_SQL = """
-    SELECT id, name, activity, intensity_level, duration_hint,
-           text_extract
-    FROM tripplanner.itinerary_components
-    WHERE destination_id = $1
-    ORDER BY name
-"""
-COMPONENTS_SQL_CIS = """
     SELECT component_id AS id, name, activity, intensity_level, duration_hint, text_extract
     FROM catalog.v_tour_component
     WHERE destination_id = $1::uuid
@@ -57,10 +48,10 @@ COMPONENTS_SQL_CIS = """
 
 
 async def destination_detail(destination_id: str, *, pool: _Pool) -> dict | None:
-    dest = await pool.fetchrow(places_source.pick(DEST_SQL, DEST_SQL_CIS), destination_id)
+    dest = await pool.fetchrow(DEST_SQL, destination_id)
     if dest is None:
         return None
-    rows = await pool.fetch(places_source.pick(COMPONENTS_SQL, COMPONENTS_SQL_CIS), destination_id)
+    rows = await pool.fetch(COMPONENTS_SQL, destination_id)
     return {
         "id": str(dest["id"]),
         "name": dest["name"],
@@ -84,15 +75,13 @@ async def destination_detail(destination_id: str, *, pool: _Pool) -> dict | None
 
 
 async def destination_redirect(destination_id: str, *, pool: _Pool) -> str | None:
-    """The keeper of a merged destination (PLACES_SOURCE=cis only), else None. A malformed id is never looked up."""
-    if not places_source.is_cis():
-        return None
+    """The keeper of a merged destination, else None. A malformed id is never looked up."""
     try:
         uuid.UUID(str(destination_id))
     except ValueError:
         return None
     try:
-        row = await pool.fetchrow(REDIRECT_SQL_CIS, destination_id)
+        row = await pool.fetchrow(REDIRECT_SQL, destination_id)
     except Exception as e:  # noqa: BLE001 — e.g. the view before CIS 257: a 404 stays a 404, never a 500
         log.warning("destination_redirect_unavailable: %s", type(e).__name__)
         return None
