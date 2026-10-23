@@ -101,16 +101,16 @@ export default function FilterChips() {
 
   return (
     <div className="pointer-events-none absolute left-4 right-4 top-4 z-10 flex justify-start">
-      <div className="pointer-events-auto w-full max-w-2xl rounded-2xl border border-aa-line bg-white/95 shadow-aa backdrop-blur">
+      <div className="pointer-events-auto w-full max-w-2xl rounded-2xl border border-k-line bg-k-card shadow-aa backdrop-blur">
         {/* Search + toggle row */}
         <div className="flex items-center gap-2 px-3 py-2.5">
-          <span className="flex h-9 flex-1 items-center gap-2 rounded-xl border border-aa-line bg-aa-sand px-3">
+          <span className="flex h-9 flex-1 items-center gap-2 rounded-xl border border-k-line bg-k-neutral-bg px-3">
             {searching ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" className="animate-spin text-aa-gold">
+              <svg width="16" height="16" viewBox="0 0 24 24" className="animate-spin text-k-accent-deep">
                 <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" fill="none" strokeDasharray="42" strokeLinecap="round" />
               </svg>
             ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-aa-muted">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-k-muted">
                 <path
                   d="M21 21l-4.3-4.3M11 19a8 8 0 100-16 8 8 0 000 16z"
                   stroke="currentColor"
@@ -124,13 +124,13 @@ export default function FilterChips() {
               placeholder="Search experiences — e.g. sunrise trek, street food, temples"
               value={text}
               onChange={(e) => setText(e.target.value)}
-              className="aa-focus w-full bg-transparent text-sm text-aa-ink placeholder:text-aa-muted focus:outline-none"
+              className="aa-focus w-full bg-transparent text-sm text-k-ink placeholder:text-k-muted focus:outline-none"
             />
             {text && (
               <button
                 onClick={() => setText("")}
                 aria-label="Clear search"
-                className="aa-focus rounded p-0.5 text-aa-muted hover:text-aa-ink"
+                className="aa-focus rounded p-0.5 text-k-muted hover:text-k-ink"
               >
                 ✕
               </button>
@@ -139,11 +139,11 @@ export default function FilterChips() {
           <button
             onClick={() => setOpen((o) => !o)}
             aria-expanded={open}
-            className="aa-focus flex h-9 items-center gap-1.5 rounded-xl border border-aa-line px-3 text-sm font-medium text-aa-ink hover:bg-aa-sand"
+            className="aa-focus flex h-9 items-center gap-1.5 rounded-xl border border-k-line px-3 text-sm font-medium text-k-ink hover:bg-k-neutral-bg"
           >
             Filters
             {activeCount > 0 && (
-              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-aa-gold px-1 text-[11px] font-semibold text-white">
+              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-k-accent px-1 text-[11px] font-semibold text-k-on-accent">
                 {activeCount}
               </span>
             )}
@@ -152,7 +152,7 @@ export default function FilterChips() {
 
         {/* Search result banner */}
         {resultCount !== null && (
-          <div className="flex items-center justify-between border-t border-aa-line bg-aa-gold-soft px-3 py-1.5 text-xs text-aa-gold-dark">
+          <div className="flex items-center justify-between border-t border-k-line bg-k-accent-tint px-3 py-1.5 text-xs text-k-accent-deep">
             <span>
               {resultCount === 0
                 ? "No matches — try different words or clear a filter."
@@ -168,13 +168,13 @@ export default function FilterChips() {
         )}
 
         {open && (
-          <div className="aa-animate-in border-t border-aa-line px-3 py-3">
+          <div className="aa-animate-in border-t border-k-line px-3 py-3">
             {/* STEP 1 — Country (primary filter). Country first, then activity. */}
             <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-aa-ink text-[11px] font-bold text-white">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-k-ink text-[11px] font-bold text-k-bg">
                 1
               </span>
-              <span className="text-xs font-semibold text-aa-ink">Country</span>
+              <span className="text-xs font-semibold text-k-ink">Country</span>
               <div ref={countryBoxRef} className="relative min-w-[12rem] flex-1">
                 <button
                   type="button"
@@ -184,12 +184,12 @@ export default function FilterChips() {
                     setCountryOpen((o) => !o);
                     setPreviewCountry(null);
                   }}
-                  className="aa-focus flex w-full items-center justify-between rounded-lg border border-aa-line bg-white px-2.5 py-1.5 text-xs text-aa-ink"
+                  className="aa-focus flex w-full items-center justify-between rounded-lg border border-k-line bg-k-card px-2.5 py-1.5 text-xs text-k-ink"
                 >
-                  <span className={filters.country ? "" : "text-aa-muted"}>
+                  <span className={filters.country ? "" : "text-k-muted"}>
                     {filters.country ?? "All countries"}
                   </span>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-aa-muted">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-k-muted">
                     <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </button>
@@ -199,7 +199,7 @@ export default function FilterChips() {
                     role="listbox"
                     aria-label="Country"
                     onMouseLeave={() => setPreviewCountry(null)}
-                    className="aa-animate-in absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-auto rounded-lg border border-aa-line bg-white py-1 shadow-aa"
+                    className="aa-animate-in absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-auto rounded-lg border border-k-line bg-k-card py-1 shadow-aa"
                   >
                     <button
                       type="button"
@@ -211,13 +211,13 @@ export default function FilterChips() {
                         setCountryOpen(false);
                         setPreviewCountry(null);
                       }}
-                      className="block w-full px-3 py-1.5 text-left text-xs text-aa-ink hover:bg-aa-sand"
+                      className="block w-full px-3 py-1.5 text-left text-xs text-k-ink hover:bg-k-neutral-bg"
                     >
                       All countries
                     </button>
                     {grouped.map((g) => (
                       <div key={g.region}>
-                        <div className="px-3 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-aa-muted">
+                        <div className="px-3 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-k-muted">
                           {g.region}
                         </div>
                         {g.items.map((c) => {
@@ -234,12 +234,12 @@ export default function FilterChips() {
                                 setCountryOpen(false);
                                 setPreviewCountry(null);
                               }}
-                              className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-xs hover:bg-aa-sand ${
-                                selected ? "font-semibold text-aa-gold-dark" : "text-aa-ink"
+                              className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-xs hover:bg-k-neutral-bg ${
+                                selected ? "font-semibold text-k-accent-deep" : "text-k-ink"
                               }`}
                             >
                               <span>{c.country}</span>
-                              <span className="text-aa-muted">{c.component_count}</span>
+                              <span className="text-k-muted">{c.component_count}</span>
                             </button>
                           );
                         })}
@@ -254,7 +254,7 @@ export default function FilterChips() {
                     setFilters({ ...filters, country: undefined });
                     setPreviewCountry(null);
                   }}
-                  className="aa-focus rounded-lg px-2 py-1 text-xs font-medium text-aa-muted hover:text-aa-ink"
+                  className="aa-focus rounded-lg px-2 py-1 text-xs font-medium text-k-muted hover:text-k-ink"
                 >
                   Clear
                 </button>
@@ -267,15 +267,15 @@ export default function FilterChips() {
                 <span
                   className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold ${
                     activityStepEnabled
-                      ? "bg-aa-ink text-white"
-                      : "bg-aa-line text-aa-muted"
+                      ? "bg-k-ink text-k-bg"
+                      : "bg-k-line text-k-muted"
                   }`}
                 >
                   2
                 </span>
-                <span className="text-xs font-semibold text-aa-ink">Activity</span>
+                <span className="text-xs font-semibold text-k-ink">Activity</span>
                 {!activityStepEnabled && (
-                  <span className="text-[11px] text-aa-muted">
+                  <span className="text-[11px] text-k-muted">
                     (optional — or pick a country first)
                   </span>
                 )}
@@ -290,8 +290,8 @@ export default function FilterChips() {
                       aria-pressed={active}
                       className={`aa-focus flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium capitalize transition ${
                         active
-                          ? "border-aa-gold bg-aa-gold text-white shadow-aa-sm"
-                          : "border-aa-line bg-white text-aa-ink hover:border-aa-gold/60 hover:bg-aa-gold-soft"
+                          ? "border-k-accent bg-k-accent text-k-on-accent shadow-aa-sm"
+                          : "border-k-line bg-k-card text-k-ink hover:border-k-accent-border hover:bg-k-accent-tint"
                       }`}
                     >
                       <ActivityIcon activity={a} size={14} />
@@ -310,7 +310,7 @@ export default function FilterChips() {
                 onChange={(e) =>
                   setFilters({ ...filters, intensity_level: e.target.value || undefined })
                 }
-                className="aa-focus rounded-lg border border-aa-line bg-white px-2.5 py-1.5 text-xs capitalize text-aa-ink"
+                className="aa-focus rounded-lg border border-k-line bg-k-card px-2.5 py-1.5 text-xs capitalize text-k-ink"
               >
                 <option value="">Any intensity</option>
                 {INTENSITIES.map((i) => (
@@ -329,7 +329,7 @@ export default function FilterChips() {
                     season: e.target.value ? Number(e.target.value) : undefined,
                   })
                 }
-                className="aa-focus rounded-lg border border-aa-line bg-white px-2.5 py-1.5 text-xs text-aa-ink"
+                className="aa-focus rounded-lg border border-k-line bg-k-card px-2.5 py-1.5 text-xs text-k-ink"
               >
                 <option value="">Any month</option>
                 {MONTHS.map((m, i) => (
@@ -342,7 +342,7 @@ export default function FilterChips() {
               {activeCount > 0 && (
                 <button
                   onClick={() => setFilters({})}
-                  className="aa-focus ml-auto rounded-lg px-2.5 py-1.5 text-xs font-medium text-aa-muted hover:text-aa-ink"
+                  className="aa-focus ml-auto rounded-lg px-2.5 py-1.5 text-xs font-medium text-k-muted hover:text-k-ink"
                 >
                   Clear all
                 </button>

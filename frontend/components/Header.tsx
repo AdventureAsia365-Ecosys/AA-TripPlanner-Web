@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import AiLabel, { AI_BRAND_SHORT, AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
+import { ThemeToggle } from "@/ui/ThemeToggle";
 
 // Top brand bar — Adventure Asia wordmark + tagline. Kept slim so the map
 // dominates the viewport (map-first product).
 export default function Header() {
   return (
     <header
-      className="z-30 flex items-center justify-between border-b border-aa-line bg-white px-5"
+      className="z-30 flex items-center justify-between border-b border-k-line bg-k-card px-5"
       style={{ height: "56px", flexShrink: 0 }}
     >
       <div className="flex items-center gap-3">
@@ -25,19 +26,21 @@ export default function Header() {
             AA-819: a button with its explanation (touch + keyboard), naming only what is AI. */}
         <AiLabel label={AI_SITE_LABEL} shortLabel={AI_BRAND_SHORT} explanation={AI_SITE_EXPLANATION} variant="outline" />
         <div className="hidden leading-tight sm:block">
-          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-aa-gold">
+          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-k-accent-deep">
             Trip Planner
           </span>
-          <p className="hidden text-[11px] text-aa-muted md:block">
+          <p className="hidden text-[11px] text-k-muted md:block">
             Discreet executive adventures, crafted day by day
           </p>
         </div>
       </div>
 
       <nav className="flex items-center gap-2 text-sm">
-        <span className="hidden text-aa-muted md:inline">
+        <span className="hidden text-k-muted md:inline">
           Pin experiences · build your trip · hand off to an advisor
         </span>
+        {/* AA-837: the planner follows the site theme too, so it carries the same toggle. */}
+        <ThemeToggle />
       </nav>
     </header>
   );

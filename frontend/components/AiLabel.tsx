@@ -17,19 +17,17 @@ import { useEffect, useId, useRef, useState } from "react";
 
 export type AiLabelTone = "planner" | "kit";
 
-// The planner keeps its light-only aa-* palette; kit pages (home, tour, destination) use the
-// theme-aware k-* tokens (AA-812).
+// Both tones use the theme-aware k-* tokens (AA-812 kit pages; the planner since AA-837). They
+// differ only in the focus ring: the planner's `aa-focus` ring, the kit's outline.
+const COLORS = {
+  solid: "border border-transparent bg-k-accent-tint text-k-accent-deep hover:border-k-accent-border",
+  outline: "border border-k-accent-border bg-k-card text-k-accent-deep hover:bg-k-accent-tint",
+  panel: "border-k-line bg-k-card text-k-body",
+};
 const STYLE: Record<AiLabelTone, { solid: string; outline: string; panel: string; focus: string }> = {
-  planner: {
-    solid: "border border-transparent bg-aa-gold-soft text-aa-gold-dark hover:border-aa-gold/40",
-    outline: "border border-aa-gold/40 bg-white text-aa-gold-dark hover:bg-aa-gold-soft",
-    panel: "border-aa-line bg-white text-aa-ink-soft",
-    focus: "aa-focus",
-  },
+  planner: { ...COLORS, focus: "aa-focus" },
   kit: {
-    solid: "border border-transparent bg-k-accent-tint text-k-accent-deep hover:border-k-accent-border",
-    outline: "border border-k-accent-border bg-k-card text-k-accent-deep hover:bg-k-accent-tint",
-    panel: "border-k-line bg-k-card text-k-body",
+    ...COLORS,
     focus: "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-k-accent",
   },
 };

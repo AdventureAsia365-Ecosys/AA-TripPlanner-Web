@@ -55,10 +55,3 @@ export function setThemeChoice(choice: ThemeChoice): void {
 export function useThemeChoice(): ThemeChoice {
   return useSyncExternalStore(subscribe, readChoice, () => "system" as ThemeChoice);
 }
-
-// The light-only map planner pins <html data-theme="light"> while it is mounted (the stored
-// choice is untouched) and gives the resolved choice back when the visitor leaves it.
-export function pinLightTheme(): () => void {
-  document.documentElement.setAttribute("data-theme", "light");
-  return () => document.documentElement.setAttribute("data-theme", resolve(readChoice()));
-}

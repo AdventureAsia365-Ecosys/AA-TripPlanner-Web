@@ -69,7 +69,7 @@ export default function GuestResetNotice() {
   if (!notice) return null;
   return (
     <div className="pointer-events-none fixed inset-x-3 top-16 z-50" role="status">
-      <div className="mx-auto max-w-md rounded-xl border border-aa-line bg-white px-3 py-2.5 text-xs text-aa-ink shadow-aa">
+      <div className="mx-auto max-w-md rounded-xl border border-k-line bg-k-card px-3 py-2.5 text-xs text-k-ink shadow-aa">
         {notice.text}
       </div>
     </div>

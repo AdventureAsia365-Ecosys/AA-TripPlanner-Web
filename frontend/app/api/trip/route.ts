@@ -7,7 +7,7 @@ import {
   mapMintedDenial,
 } from "@/lib/guestToken";
 import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
-import { parseTripBody, tripHeaders as lambdaHeaders, tripReadPath } from "@/lib/tripProxy";
+import { parseTripBody, tripHeaders as lambdaHeaders, tripReadAnswer, tripReadPath } from "@/lib/tripProxy";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
 // Maps a single { op } POST body onto the Lambda's REST verbs/paths.
@@ -55,7 +55,8 @@ export async function GET(req: NextRequest) {
   }
   // AA-909: a read without the owner's token is a 404 from the Lambda (a fresh trip with no draft
   // too); the client treats it as an empty trip. No cookies_required mapping on reads: a 404 never
-  // resets the client's ids, so there is nothing to protect.
+  // resets the client's ids, so there is nothing to protect. AA-837: the itinerary read's 404 goes
+  // to the browser as a 200 empty trip (tripReadAnswer), so a first visit logs no console error.
   const started = Date.now();
   const upstream = await fetch(`${TRIP_API_URL}${read.path}`, {
     method: "GET",
@@ -65,8 +66,9 @@ export async function GET(req: NextRequest) {
   const resource = req.nextUrl.searchParams.get("resource");
   const op = resource && READ_RESOURCES.has(resource) ? resource : "itinerary"; // never echo free text
   logUpstream(`read:${op}`, upstream.status, started, requestId);
-  return new NextResponse(text, {
-    status: upstream.status,
+  const answer = tripReadAnswer(op, upstream.status, text);
+  return new NextResponse(answer.body, {
+    status: answer.status,
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store",

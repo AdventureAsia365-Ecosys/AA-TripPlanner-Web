@@ -19,8 +19,10 @@
    back to the CIS kit under AA-655 so the family stays one palette. Dark values already pass.
 
    Theme: <html data-theme="light|dark"> set before paint by the restore script in
-   app/layout.tsx (localStorage key `tp_theme`; absent = follow the OS). The map planner
-   (/plan) keeps its own light-only Tailwind `aa.*` hex palette for now.
+   app/layout.tsx (localStorage key `tp_theme`; absent = follow the OS). Every page uses these
+   tokens (Tailwind `k-*`), the map planner (/plan) included since AA-837, which retired its
+   light-only `aa.*` hex palette. lib/contrast.test.ts checks the planner's text pairs in both
+   themes: change a value here and `npm test` tells you if a pair drops under 4.5:1.
    ────────────────────────────────────────────────────────────────────────── */
 
 :root,

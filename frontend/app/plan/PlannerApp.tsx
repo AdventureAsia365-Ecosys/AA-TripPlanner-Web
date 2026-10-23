@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Header from "@/components/Header";
 import MapView from "@/components/MapView";
 import FilterChips from "@/components/FilterChips";
@@ -9,7 +9,6 @@ import TourListPane from "@/components/TourListPane";
 import PlanPrefill from "@/components/PlanPrefill";
 import GuestResetNotice from "@/components/GuestResetNotice";
 import { TripProvider, useTrip, type PlanIntent } from "@/lib/useTrip";
-import { pinLightTheme } from "@/ui/theme";
 import { Icon } from "@/ui/Icon";
 
 // Below this width we stack map/trip and toggle between them, so neither
@@ -24,14 +23,14 @@ function PaneToggle({ pane, setPane }: { pane: "map" | "list"; setPane: (p: "map
       onClick={() => setPane(p)}
       aria-pressed={pane === p}
       className={`aa-focus px-3.5 py-1.5 text-xs font-semibold transition ${
-        pane === p ? "bg-aa-ink text-white" : "text-aa-ink hover:bg-aa-gold-soft"
+        pane === p ? "bg-k-ink text-k-bg" : "text-k-ink hover:bg-k-accent-tint"
       }`}
     >
       {label}
     </button>
   );
   return (
-    <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 overflow-hidden rounded-full border border-aa-line bg-white shadow-aa">
+    <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 overflow-hidden rounded-full border border-k-line bg-k-card shadow-aa">
       {btn("map", "Map")}
       {btn("list", "List of tours")}
     </div>
@@ -76,7 +75,7 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
             {mapArea}
           </section>
           <aside
-            className="border-l border-aa-line bg-aa-offwhite"
+            className="border-l border-k-line bg-k-bg"
             style={{ height: "100%", width: "25rem", flexShrink: 0, overflowY: "auto" }}
           >
             <TripPanel />
@@ -102,7 +101,7 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
           {mapArea}
         </section>
         <aside
-          className="bg-aa-offwhite"
+          className="bg-k-bg"
           style={{
             position: "absolute",
             inset: 0,
@@ -115,13 +114,13 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
       </main>
 
       {/* Bottom toggle */}
-      <nav className="flex border-t border-aa-line bg-white">
+      <nav className="flex border-t border-k-line bg-k-card">
         <button
           onClick={() => setMobileView("map")}
           className={`aa-focus flex-1 py-3 text-sm font-semibold transition ${
             mobileView === "map"
-              ? "bg-aa-gold-soft text-aa-gold-dark"
-              : "text-aa-muted"
+              ? "bg-k-accent-tint text-k-accent-deep"
+              : "text-k-muted"
           }`}
         >
           <Icon name="map" className="mr-1 inline h-4 w-4 align-[-3px]" />
@@ -131,14 +130,14 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
           onClick={() => setMobileView("trip")}
           className={`aa-focus relative flex-1 py-3 text-sm font-semibold transition ${
             mobileView === "trip"
-              ? "bg-aa-gold-soft text-aa-gold-dark"
-              : "text-aa-muted"
+              ? "bg-k-accent-tint text-k-accent-deep"
+              : "text-k-muted"
           }`}
         >
           <Icon name="route" className="mr-1 inline h-4 w-4 align-[-3px]" />
           Your trip
           {itinerary.length > 0 && (
-            <span className="ml-1.5 rounded-full bg-aa-ink px-1.5 py-0.5 text-[10px] font-bold text-white">
+            <span className="ml-1.5 rounded-full bg-k-ink px-1.5 py-0.5 text-[10px] font-bold text-k-bg">
               {new Set(itinerary.map((d) => d.day)).size}
             </span>
           )}
@@ -149,9 +148,9 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
 }
 
 export default function PlannerApp({ intent }: { intent: PlanIntent }) {
-  // The planner is light-only: in a dark theme, browser-styled controls (country select, days
-  // input) would turn dark on its light surfaces and become unreadable (AA-812 review).
-  useLayoutEffect(() => pinLightTheme(), []);
+  // AA-837: the planner follows the site theme (ui/tokens.css). Its surfaces and form controls use
+  // the k-* tokens, so browser-styled controls (country select, days input) stay readable in dark.
+  // The Mapbox basemap stays the light outdoors style in both themes (map imagery, not UI text).
   return (
     <TripProvider initialIntent={intent}>
       <Layout initialMobileView={intent.ask ? "trip" : "map"} />

@@ -11,6 +11,7 @@ import TourCard from "@/components/site/TourCard";
 import JsonLd from "@/components/site/JsonLd";
 import { getCountries, getTours, siteUrl } from "@/lib/catalog";
 import { EmptyState, ErrorState, Icon, Photo } from "@/ui";
+import { formatDayRange } from "@/lib/text";
 
 // Route segment config must be a literal (Next 15 reads it statically and fails the build on an
 // imported constant). Keep it equal to CATALOG_REVALIDATE_S (lib/segmentConfig.test.ts checks).
@@ -136,7 +137,7 @@ export default async function HomePage() {
                         <p className="font-display text-[18px] font-semibold text-white">{c.country}</p>
                         <p className="text-[12px] text-white/85">
                           {c.tour_count} tour{c.tour_count > 1 ? "s" : ""}
-                          {c.min_days && c.max_days ? ` · ${c.min_days === c.max_days ? c.min_days : `${c.min_days}–${c.max_days}`} days` : ""}
+                          {c.min_days && c.max_days ? ` · ${formatDayRange(c.min_days, c.max_days, "–")}` : ""}
                         </p>
                       </div>
                     </Link>

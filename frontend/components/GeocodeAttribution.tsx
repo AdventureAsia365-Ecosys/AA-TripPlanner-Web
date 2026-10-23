@@ -5,7 +5,7 @@ import { GEOCODE_ATTRIBUTION } from "@/lib/types";
 export default function GeocodeAttribution({ className = "" }: { className?: string }) {
   const { geoapify, osm } = GEOCODE_ATTRIBUTION;
   return (
-    <p className={`rounded bg-white/85 px-1.5 py-0.5 text-[10px] leading-tight text-aa-muted ${className}`}>
+    <p className={`rounded bg-k-card px-1.5 py-0.5 text-[10px] leading-tight text-k-muted ${className}`}>
       <a href={geoapify.href} target="_blank" rel="noopener noreferrer" className="underline">
         {geoapify.label}
       </a>

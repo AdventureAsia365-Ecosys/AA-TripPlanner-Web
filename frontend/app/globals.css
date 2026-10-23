@@ -9,17 +9,18 @@ body {
   height: 100%;
 }
 
+/* AA-837: theme-aware (ui/tokens.css), the map planner included. */
 body {
   font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-  background-color: #f8f6f2; /* aa.offwhite */
-  color: #1f2933; /* aa.ink */
+  background-color: var(--aa-bg);
+  color: var(--aa-ink);
   -webkit-font-smoothing: antialiased;
 }
 
 /* Consistent gold focus ring for interactive elements (aa-focus). */
 .aa-focus:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #db9628;
+  box-shadow: 0 0 0 2px var(--aa-card), 0 0 0 4px var(--aa-accent);
   border-radius: 0.5rem;
 }
 

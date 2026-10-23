@@ -6,6 +6,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Icon, buttonClass } from "@/ui";
+import { formatDays } from "@/lib/text";
 
 const DAY_PRESETS = [5, 7, 10, 14];
 
@@ -91,7 +92,7 @@ export default function HomeSearch({ countries }: { countries: CountryChoice[] }
                 : "border-k-line text-k-body hover:border-k-accent-border"
             }`}
           >
-            {d} days
+            {formatDays(d)}
           </button>
         ))}
       </div>

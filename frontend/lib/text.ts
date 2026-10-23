@@ -17,8 +17,19 @@ export function clip(text: string | null | undefined, max = 160): string {
   return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), max - 20))}…`;
 }
 
+// AA-837 (D12): every day-count label goes through these two, so a one-day tour reads "1 day",
+// never "1 days".
+export function formatDays(n: number): string {
+  return `${n} ${n === 1 ? "day" : "days"}`;
+}
+
+// A min–max length ("3 to 5 days", "3–5 days"); a single length when both ends are equal ("1 day").
+export function formatDayRange(min: number, max: number, sep = " to "): string {
+  return min === max ? formatDays(min) : `${min}${sep}${max} days`;
+}
+
 export function daysText(n: number | null | undefined, raw?: string | null): string | null {
-  if (n) return `${n} day${n > 1 ? "s" : ""}`;
+  if (n) return formatDays(n);
   return raw || null;
 }
 

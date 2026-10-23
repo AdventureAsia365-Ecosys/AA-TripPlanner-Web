@@ -38,9 +38,9 @@ export default function StopActivities({ destinationId }: { destinationId: strin
     };
   }, [tripId, destinationId, pinnedKey]);
 
-  if (items === null) return <p className="mt-2 text-[11px] text-aa-muted">Loading activities…</p>;
+  if (items === null) return <p className="mt-2 text-[11px] text-k-muted">Loading activities…</p>;
   if (items.length === 0) {
-    return <p className="mt-2 text-[11px] text-aa-muted">No other AA activities here.</p>;
+    return <p className="mt-2 text-[11px] text-k-muted">No other AA activities here.</p>;
   }
 
   const toggle = async (a: StopActivity) => {
@@ -57,18 +57,18 @@ export default function StopActivities({ destinationId }: { destinationId: strin
       <ul className="mt-2 space-y-1" aria-label="Activities at this stop">
         {items.map((a) => (
           <li key={`${a.name}-${a.activity}`}>
-            <label className="flex cursor-pointer items-start gap-2 text-[11px] text-aa-ink-soft">
+            <label className="flex cursor-pointer items-start gap-2 text-[11px] text-k-body">
               <input
                 type="checkbox"
                 checked={a.selected}
                 disabled={busy !== null}
                 onChange={() => toggle(a)}
-                className="mt-0.5 accent-[#B87A1A]"
+                className="mt-0.5 accent-[var(--aa-accent-deep)]"
               />
               <span>
-                <span className="font-medium text-aa-ink">{LABEL[a.activity] ?? a.activity}</span>
+                <span className="font-medium text-k-ink">{LABEL[a.activity] ?? a.activity}</span>
                 {a.text_extract && <span> — {a.text_extract.slice(0, 90)}</span>}
-                <span className="text-aa-muted"> · on {a.tour_count} AA tour{a.tour_count > 1 ? "s" : ""}</span>
+                <span className="text-k-muted"> · on {a.tour_count} AA tour{a.tour_count > 1 ? "s" : ""}</span>
               </span>
             </label>
           </li>
