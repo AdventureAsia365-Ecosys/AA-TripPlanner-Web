@@ -11,7 +11,8 @@ raises when it is missing), then:
     owner of schema ``tripplanner`` read before the file (XD8), i.e. the login role ``aa_cis_admin`` until tp-013
     transfers the schema, then ``SET ROLE tp_owner``. The CIS 243 grants are applied right before tp-013, as on Dev;
   * pass 2: every file again, each as the role it ran as in pass 1, except ``NOT_RERUNNABLE`` (tp-001, which predates
-    the registry convention and which DB Migrate never re-runs: tp-007 registered it). Pass 2 must change nothing:
+    the registry convention and which DB Migrate never re-runs: tp-007 registered it) and ``SUPERSEDED_BY_DROP``
+    (files about objects a later file dropped; DB Migrate never re-runs them either). Pass 2 must change nothing:
     the catalog of schemas ``tripplanner`` and ``shared``, the row count of every table there and every
     ``shared.schema_versions`` row (``applied_at`` included) are compared before and after.
 
@@ -38,6 +39,18 @@ asyncpg = pytest.importorskip("asyncpg")
 NOT_RERUNNABLE = {
     "001": "pre-convention (plain CREATE TABLE); registered by tp-007's backfill, so DB Migrate apply never "
            "re-runs it; making it idempotent means editing an applied file and its AA-CIS-Infra byte copy",
+}
+
+# Files pass 2 does not re-run because a LATER file dropped what they create or alter, with the reason. Unlike
+# NOT_RERUNNABLE they may be after the registry convention, but each reason must name the dropping file, and each
+# must still fail (or be a no-op only because the dropping file runs again) when re-run on the final state
+# (test_superseded_by_drop_is_reviewed_and_still_needed). DB Migrate never re-runs a registered file.
+SUPERSEDED_BY_DROP = {
+    "003": "creates tripplanner.tour_day, which tp-018 dropped (AA-712 X4); a re-run would bring the table back",
+    "004": "creates the Tour Graph tables (tour_stop, tour_graph_*, tour_leg, tour_junction), which tp-018 dropped",
+    "013": "transfers ownership of tripplanner.itinerary_components / tour_*, which tp-018 dropped (tp-001, the only "
+           "file creating itinerary_components, is NOT_RERUNNABLE); its own re-run as the master is covered by "
+           "test_tp013_pg.py::test_rerun_as_the_master_is_a_no_op",
 }
 
 # Everything a re-run could change in the two schemas the files touch. One text line per fact; set equality.
@@ -175,7 +188,7 @@ def replay(pg_dsn):  # noqa: F811
             registered_1 = await _registered(admin)
             before = await _snapshot(admin)
             for number, path in _files():                                   # pass 2
-                if f"{number:03d}" in NOT_RERUNNABLE:
+                if f"{number:03d}" in NOT_RERUNNABLE or f"{number:03d}" in SUPERSEDED_BY_DROP:
                     continue
                 try:
                     await _apply(admin, path, roles[number], vector)
@@ -201,8 +214,21 @@ def replay(pg_dsn):  # noqa: F811
                             AND has_sequence_privilege('tripplanner', c.oid, 'SELECT') END AS seq
                   FROM pg_class c
                  WHERE c.relnamespace = 'tripplanner'::regnamespace AND c.relkind IN ('r', 'p', 'S')""")
+            # Last, because it changes the database (the files carry their own BEGIN / COMMIT, so no rollback):
+            # each superseded file must still fail, or change the final state, when re-run.
+            superseded = {}
+            for number, path in _files():
+                if f"{number:03d}" in SUPERSEDED_BY_DROP:
+                    state = await _snapshot(admin)
+                    try:
+                        await _apply(admin, path, roles[number], vector)
+                        changed = await _snapshot(admin) != state
+                        superseded[f"{number:03d}"] = "changes the final state" if changed else "no-op"
+                    except asyncpg.PostgresError as e:
+                        superseded[f"{number:03d}"] = type(e).__name__
             return {"roles": roles, "registered_1": registered_1, "registered_2": registered_2, "before": before,
                     "after": after, "pass2_errors": pass2_errors, "rerun_exempt": rerun_exempt,
+                    "superseded": superseded,
                     "grants": [dict(r) for r in grants]}
         finally:
             await admin.close()
@@ -236,6 +262,15 @@ def test_not_rerunnable_is_frozen_and_still_needed(replay):
     assert set(replay["rerun_exempt"]) == set(NOT_RERUNNABLE) and not stale, \
         f"{sorted(stale)} re-ran without an error: drop them from NOT_RERUNNABLE so pass 2 covers them"
     assert replay["rerun_exempt"] == {"001": "DuplicateTableError"}
+
+
+def test_superseded_by_drop_is_reviewed_and_still_needed(replay):
+    for number, reason in SUPERSEDED_BY_DROP.items():
+        dropper = [f"tp-{n:03d}" for n, _ in _files() if f"tp-{n:03d}" in reason and n > int(number)]
+        assert dropper, f"{number}: the reason must name the later file that dropped its objects"
+    stale = {k: v for k, v in replay["superseded"].items() if v == "no-op"}
+    assert set(replay["superseded"]) == set(SUPERSEDED_BY_DROP) and not stale, \
+        f"{sorted(stale)} re-ran as a no-op on the final state: drop them from SUPERSEDED_BY_DROP"
 
 
 def test_runner_role_rule_matches_the_lint(replay):
