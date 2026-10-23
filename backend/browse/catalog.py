@@ -163,6 +163,24 @@ SITEMAP_SQL = f"""
 """
 
 
+# AA-986 L6 (root ADR 0015 decision 5, Q5): the CIS tombstone (catalog.v_tour_retired, CIS 274, contract
+# catalog.tour.v1.3), one row per catalog key whose latest lifecycle event is retired, paused or superseded. A tour
+# page whose source-id suffix names a `retired` key answers 410; a paused one stays 404 (temporary, ADR 0015 decision
+# 5 table). A superseded version needs nothing here: its slug suffix is the stable source_id, so TOUR_BY_SLUG_SQL
+# already finds the current version and the page moves to its slug (permanent redirect).
+TOMBSTONE_BY_SUFFIX_SQL = """
+    SELECT r.source_id, r.state, r.reason
+    FROM catalog.v_tour_retired r
+    WHERE r.source_system = 'cis' AND left(replace(r.source_id, '-', ''), 8) = $1
+"""
+RETIRED_KEYS_SQL = """
+    SELECT r.source_id FROM catalog.v_tour_retired r
+    WHERE r.source_system = 'cis' AND r.state = 'retired'
+"""
+SERVED_SLUGS_SQL = """
+    SELECT t.slug FROM catalog.v_tour t
+"""
+
 # --- small value helpers ----------------------------------------------------------------------
 
 def photo_url(path: Optional[str], size: str = "large") -> Optional[str]:
@@ -538,6 +556,45 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
         await fill_fallback_covers([out], pool=pool)
     return out
 
+
+
+def _suffix(source_id: str) -> str:
+    """The slug's source-id suffix of a catalog key (same rule as catalog.v_tour.slug, CIS 253)."""
+    return (source_id or "").replace("-", "")[:8].lower()
+
+
+async def _tombstone(pool: Any, sql: str, *args: Any) -> Optional[list]:
+    """Rows of a tombstone read, or None when it cannot be read (CIS 274 not applied yet, grant missing): the
+    caller then answers as before L6 (404), never 500."""
+    try:
+        return list(await pool.fetch(sql, *args))
+    except Exception as exc:  # noqa: BLE001 — degrade to the pre-L6 answer
+        print(json.dumps({"evt": "tour_tombstone_unreadable", "error": type(exc).__name__}))
+        return None
+
+
+async def tour_gone(slug: str, *, pool: Any) -> Optional[dict]:
+    """For a slug the catalog does not serve: {"state": "retired" | "paused", "reason"} when its source-id suffix
+    names a key in the tombstone (retired wins when two keys share the suffix), else None (never served, unknown, or
+    the tombstone cannot be read)."""
+    slug = (slug or "").strip().lower()
+    if not re.fullmatch(r".*-[0-9a-f]{8}", slug):
+        return None
+    rows = await _tombstone(pool, TOMBSTONE_BY_SUFFIX_SQL, slug.rsplit("-", 1)[-1])
+    if not rows:
+        return None
+    best = next((r for r in rows if r["state"] == "retired"), rows[0])
+    return {"state": "retired" if best["state"] == "retired" else "paused", "reason": best["reason"]}
+
+
+async def retired_suffixes(*, pool: Any) -> dict:
+    """Slug suffixes of the retired tours, for the frontend proxy's 410 (frontend/lib/goneTours.ts). A suffix that
+    a served tour also has is left out, so a live page is never answered 410."""
+    rows = await _tombstone(pool, RETIRED_KEYS_SQL)
+    if rows is None:
+        return {"suffixes": [], "tombstone": "unavailable"}
+    served = {(r["slug"] or "")[-8:] for r in await pool.fetch(SERVED_SLUGS_SQL)}
+    return {"suffixes": sorted({_suffix(r["source_id"]) for r in rows} - served), "tombstone": "ok"}
 
 async def list_countries(*, pool: Any) -> dict:
     rows = await pool.fetch(COUNTRIES_SQL)

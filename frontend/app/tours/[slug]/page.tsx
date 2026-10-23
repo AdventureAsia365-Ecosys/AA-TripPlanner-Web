@@ -157,7 +157,9 @@ export default async function TourPage({ params }: Props) {
   if (lower !== slug) permanentRedirect(`/tours/${lower}`);
   const res = await getTour(slug);
   if (!res.ok) {
-    if (res.status === 404) notFound();
+    // AA-986 L6: a retired tour is answered 410 by proxy.ts; until its 30-min list catches up, a 410 from the
+    // browse Lambda shows the not-found page (404) rather than an error.
+    if (res.status === 404 || res.status === 410) notFound();
     throw new Error(`tour read failed (${res.status})`);
   }
   const t = res.data;

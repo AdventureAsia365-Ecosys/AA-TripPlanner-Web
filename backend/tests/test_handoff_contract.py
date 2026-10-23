@@ -1,7 +1,7 @@
-"""AA-805 / AA-830: the inquiry.submitted payload must keep matching the ecosystem contract.
+"""AA-805 / AA-830 / AA-986 L6: the inquiry.submitted payload must keep matching the ecosystem contract.
 
-backend/tests/contracts/inquiry.submitted.v1.2.json is a vendored copy of AA-Ecosys
-docs/contracts/inquiry.submitted.v1.2.json (the root repo is the source of truth; v1.1 is kept for
+backend/tests/contracts/inquiry.submitted.v1.3.json is a vendored copy of AA-Ecosys
+docs/contracts/inquiry.submitted.v1.3.json (the root repo is the source of truth; v1.1 and v1.2 are kept for
 history). When the contract changes there, copy it here; this test then fails if build_payload
 drifts from it.
 """
@@ -15,7 +15,7 @@ import pytest
 from backend.assembly import handoff
 
 SCHEMA = json.loads(
-    (Path(__file__).parent / "contracts" / "inquiry.submitted.v1.2.json").read_text()
+    (Path(__file__).parent / "contracts" / "inquiry.submitted.v1.3.json").read_text()
 )
 
 TOUR = "11111111-1111-1111-1111-111111111111"        # a version tour_id
@@ -34,20 +34,20 @@ def _itinerary():
     return days
 
 
-def _payload(customer=None, tour_keys=None):
+def _payload(customer=None, tour_keys=None, unavailable=None):
     return handoff.build_payload(
         trip_id="22222222-2222-2222-2222-222222222222", handoff_id=7, customer=customer,
         itinerary=_itinerary(), custom_days=[], tour_keys=tour_keys,
-        submitted_at=datetime(2026, 10, 14, tzinfo=timezone.utc))
+        submitted_at=datetime(2026, 10, 14, tzinfo=timezone.utc), unavailable=unavailable)
 
 
 KEYS = {TOUR: ("cis", SOURCE), TOUR_B: ("cis", TOUR_B)}
 
 
-def test_payload_version_is_1_2():
-    assert handoff.SCHEMA_VERSION == 1.2
-    assert _payload()["version"] == 1.2
-    assert SCHEMA["properties"]["version"]["enum"] == [1.2]
+def test_payload_version_is_1_3():
+    assert handoff.SCHEMA_VERSION == 1.3
+    assert _payload()["version"] == 1.3
+    assert SCHEMA["properties"]["version"]["enum"] == [1.3]
 
 
 def test_payload_has_every_required_top_level_field():
@@ -56,7 +56,7 @@ def test_payload_has_every_required_top_level_field():
 
 @pytest.mark.parametrize("tour_keys", [KEYS, None, {TOUR: ("cis", SOURCE)}],
                          ids=["resolved", "unresolved", "partly"])
-def test_payload_validates_against_the_v1_2_schema(tour_keys):
+def test_payload_validates_against_the_v1_3_schema(tour_keys):
     jsonschema.validate(_payload(tour_keys=tour_keys), SCHEMA)
 
 
@@ -64,9 +64,9 @@ def test_legs_carry_the_catalog_key_and_keep_source_tour_id():
     legs = _payload(tour_keys=KEYS)["itinerary"]["legs"]
     assert legs == [
         {"position": 1, "source_tour_id": TOUR, "source_system": "cis", "source_id": SOURCE,
-         "day_from": 1, "day_to": 2},
+         "day_from": 1, "day_to": 2, "available": True, "reason": None, "reason_detail": None},
         {"position": 2, "source_tour_id": TOUR_B, "source_system": "cis", "source_id": TOUR_B,
-         "day_from": 1, "day_to": 1},
+         "day_from": 1, "day_to": 1, "available": True, "reason": None, "reason_detail": None},
     ]
 
 
@@ -106,3 +106,50 @@ async def test_resolve_without_keys_reads_nothing():
 async def test_unreadable_catalog_leaves_keys_empty():
     conn = _Rows(error=RuntimeError("permission denied for view v_tour"))
     assert await handoff.resolve_tour_keys(conn, [TOUR]) == {}
+
+
+# --- AA-986 L6: stops whose tour AA no longer serves still go, flagged ---------------------------------------------
+
+GONE = "66666666-6666-6666-6666-666666666666"         # a retired catalog key (in the tombstone)
+
+
+def _unavailable():
+    """Shape of events.unavailable_stops(): two days of a retired tour, a stop with no snapshot (saved before L6)."""
+    return [
+        {"component_id": "g1", "day": 2, "name": "Old stop 1", "source_tour_id": GONE, "source_day_index": 3,
+         "destination_id": None, "destination_name": "Hue", "lat": 16.4, "lng": 107.6, "source_system": "cis",
+         "source_id": GONE, "available": False, "reason": "retired", "reason_detail": "source_deleted"},
+        {"component_id": "g2", "day": 3, "name": "Old stop 2", "source_tour_id": GONE, "source_day_index": 4,
+         "destination_id": None, "destination_name": "Hue", "lat": 16.4, "lng": 107.6, "source_system": "cis",
+         "source_id": GONE, "available": False, "reason": "retired", "reason_detail": "source_deleted"},
+        {"component_id": "g3", "day": None, "name": None, "source_tour_id": None, "source_day_index": None,
+         "destination_id": None, "destination_name": None, "lat": None, "lng": None, "source_system": None,
+         "source_id": None, "available": False, "reason": "not_served", "reason_detail": None},
+    ]
+
+
+def test_unavailable_stops_validate_and_follow_the_served_ones():
+    p = _payload(tour_keys=KEYS, unavailable=_unavailable())
+    jsonschema.validate(p, SCHEMA)
+    legs, days = p["itinerary"]["legs"], p["itinerary"]["days"]
+    assert [(leg["position"], leg["available"]) for leg in legs] == [(1, True), (2, True), (3, False)]
+    gone = legs[2]
+    assert gone == {"position": 3, "source_tour_id": GONE, "source_system": "cis", "source_id": GONE,
+                    "day_from": 3, "day_to": 4, "available": False, "reason": "retired",
+                    "reason_detail": "source_deleted"}
+    assert [d["component_id"] for d in days] == ["c1", "c2", "c3", "g1", "g2", "g3"]
+    assert [d["available"] for d in days] == [True, True, True, False, False, False]
+    # a stop with no known day goes after the last served day; a stop with no tour key has no leg
+    assert days[-1]["day"] == 4 and days[-1]["reason"] == "not_served"
+
+
+def test_schema_refuses_an_unavailable_leg_without_reason_and_an_available_one_with_reason():
+    p = _payload(tour_keys=KEYS, unavailable=_unavailable())
+    bad = json.loads(json.dumps(p))
+    bad["itinerary"]["legs"][2]["reason"] = None
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, SCHEMA)
+    bad = json.loads(json.dumps(p))
+    bad["itinerary"]["days"][0]["reason"] = "retired"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, SCHEMA)

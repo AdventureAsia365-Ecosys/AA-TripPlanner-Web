@@ -71,6 +71,25 @@ export interface ItineraryDay extends SegmentFields {
   // AA-847: as DestinationPin (cis places source only).
   located_by?: LocatedBy | null;
   precision?: GeoPrecision | null;
+  // AA-986 L6: GET /trip marks every served stop available (mutation answers leave it out).
+  available?: true;
+  reason?: null;
+}
+
+// AA-986 L6 (ADR 0015 decision 5): why a saved stop is no longer served (backend/assembly/availability.py).
+export type UnavailableReason = "retired" | "paused" | "stop_removed" | "not_served";
+
+// A saved stop whose tour AA no longer serves. It is not on the map and not in the day list (those are the served
+// stops); the trip panel lists it greyed, with a reason, until the traveller removes it or AA serves it again.
+export interface UnavailableStop {
+  component_id: string;
+  day: number | null;
+  name: string | null;
+  source_tour_id: string | null;
+  destination_name: string | null;
+  available: false;
+  reason: UnavailableReason;
+  reason_detail: string | null;
 }
 
 /** AA-847 (ADR 0007, Geoapify Free plan + ODbL): shown wherever a Geoapify-located point is on screen. */

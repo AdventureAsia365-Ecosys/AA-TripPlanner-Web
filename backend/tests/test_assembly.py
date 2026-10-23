@@ -978,7 +978,7 @@ async def test_send_writes_one_inquiry_outbox_row_with_consent(monkeypatch):
     assert row["idempotency_key"] == f"{T1}:{first['handoff_id']}"
     p = row["payload"]
     assert p["contract"] == "inquiry.submitted" and p["trip_id"] == T1
-    assert p["version"] == 1.2                     # AA-830: contract v1.2 (number, enum [1.2])
+    assert p["version"] == 1.3                     # AA-986 L6: contract v1.3 (number, enum [1.3])
     assert p["customer"]["email"] == "jo@x.com" and p["customer"]["consent"] is True
     assert [d["component_id"] for d in p["itinerary"]["days"]] == ["c1"]
 

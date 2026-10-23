@@ -130,6 +130,16 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   pins that tour's whole route through the existing apply-route flow (`&ask=1` opens the trip).
 - `/tours/[slug]` and `/destinations/[country]`: Server Components with ISR (30 min, the browse
   CDN TTL), JSON-LD (`TouristTrip`, `TouristDestination`), `sitemap.xml`, `robots.txt`.
+- **Tours AA no longer serves (AA-986 L6, root ADR 0015 decision 5 / Q5).** Lists, countries, the sitemap and every
+  planner read already hide them (they read `catalog.v_tour` / `v_tour_component`, live tours only). A tour page of a
+  **retired** key answers **410 Gone** (a plain noindex page): Next has no "gone" for a page, so `frontend/proxy.ts`
+  (matcher `/tours/:slug`, no cookie ever set there) checks the slug's source-id suffix against an in-memory list of
+  retired suffixes (`lib/goneTours.ts`, `GET /browse/catalog/retired`, refreshed every 30 min per instance; a failed
+  refresh keeps the last list). The browse Lambda reads the CIS tombstone `catalog.v_tour_retired` (CIS 274) and
+  answers `/browse/catalog/tours/{slug}` 410 for a retired key too (the page shows 404 until the proxy list catches
+  up). A **paused** key stays **404** (temporary). A **superseded** version needs nothing: the slug suffix is the
+  stable `source_id`, so the old slug finds the current version and the page permanent-redirects (308) to its slug.
+  A tombstone that cannot be read (before CIS 274, grant missing) degrades to the pre-L6 404.
 - `/privacy` and `/terms` (AA-886): **draft** legal pages (static, `noindex`, not in the sitemap) built on
   `components/site/LegalPage.tsx`, which always shows a "Draft — pending legal review" banner. Paths and
   the draft label live in `lib/legal.ts`; the site footer and the contact form in `TripPanel` (the only
@@ -230,6 +240,18 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - A trip is stored as an **append-only event stream** rather than a single mutable row. Each user
   action (add destination, reorder day, remove stop) is an event; the current trip state is the
   fold over its events. This gives a natural history/undo and makes concurrent edits reconcilable.
+- **Saved stops AA no longer serves (AA-986 L6, root ADR 0015 decision 5).** The trip's components are read from
+  `catalog.v_tour_component` (live tours only), so a pinned component of a retired or paused tour is not found. It is
+  **not** dropped: it stays in the event fold, `GET /trip/{id}` lists it in `unavailable_stops` (`available: false`,
+  `reason` = `retired` | `paused` | `stop_removed` (tour served, stop gone) | `not_served`, `reason_detail` = the CIS
+  lifecycle reason) and marks each served stop `available: true`; the map, legs, coverage, suggestions and narration
+  keep using the served stops only. Reasons come from `catalog.v_tour` + the tombstone `catalog.v_tour_retired`
+  (`backend/assembly/availability.py`, each read in a savepoint; unreadable → `not_served`, one
+  `tour_availability_unreadable` log line). To name such a stop after it left the catalog, the `trip_drafts`
+  projection stores per stop its name, tour key, tour day, place and point, and carries an unavailable stop over
+  (`available: false`) on every rewrite. The planner shows a banner and the stops greyed with a Remove button
+  (`TripPanel`, `lib/availability.ts`); a restored tour comes back as a normal stop. The hand-off still goes, with
+  the flag (contract `inquiry.submitted` v1.3).
 - **Taste vector**: a per-traveler preference signal built from their interactions, combined with
   **geographic** proximity to drive suggestions ("you liked X, and Y is nearby and similar").
   Since AA-590 (PR #46) "suggest next place" re-ranks by 0.6 taste (pgvector) + 0.4 distance to
@@ -505,9 +527,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 | Other side | This repo reads | This repo writes | Granted by |
 |---|---|---|---|
 | AA-CIS-App (catalog, AA-812) | `catalog.v_tour`, `v_tour_day`, `v_tour_place`, `v_tour_photo`, `v_destination`, `v_destination_photo` (contract `catalog.tour.v1`); photo URLs = `CIS_PUBLIC_API_BASE` + path | — | CIS migration 225 |
+| AA-CIS-App (tour liveness, AA-986) | `catalog.v_tour_retired` (tombstone: `source_system`, `source_id`, `state`, `reason`; contract `catalog.tour.v1.3`) for the saved-trip reasons and the tour page 410 | — | CIS migration 274 (until applied every read degrades to the pre-L6 answer) |
 | AA-CIS-App (places / tour graph, AA-712) | `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`, `v_destination` (+ `located_by`, `precision`; 256: shape kind / status / length / bbox / `shape_lo`), `v_component_embedding` (HNSW top-k, AA-847), `v_destination_shape` (line geometry by id, slice 6d), `v_destination_redirect` (merged destination id → keeper: `/browse/destinations/{id}` answers 301, AA-847 Problem 2) — contract `catalog.graph.v1.2` / `catalog.tour.v1.2` | — | CIS migrations 228, 253 (`v_component_embedding`), 256 (`v_destination_shape`): SELECT to `tripplanner` only; 257 (`v_destination_redirect`) |
 | AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
-| AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 / v1.2 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.2.json` (payload `version` 1.2 since AA-830: each leg also carries the catalog tour key `source_system` + `source_id`, resolved against `catalog.v_tour` at send time, both null when unresolvable; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
+| AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 / v1.2 / v1.3 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.3.json` (payload `version` 1.3 since AA-986 L6: every leg and day adds `available`, `reason`, `reason_detail`, and stops whose tour AA no longer serves follow the served ones with `available: false`; 1.2 since AA-830: each leg also carries the catalog tour key `source_system` + `source_id`, resolved against `catalog.v_tour` at send time — or, for a stop that left, from the tombstone — both null when unresolvable; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
 | AA-CIS-App (admin overview, AA-858) | — | — (it **reads** `tripplanner.v_ops_traffic_daily`: per UTC day `planner_session_started`, `trip_started`, `trip_edited`, `inquiry_sent`, aggregates only, last 400 days; contract `ops.overview.v1`, metric names append-only) | migration tp-015 grants role `cis_app` (the CIS runtime from X1 S18; until then the CIS runtime `aa_cis_admin` reads it through its `tp_owner` membership) USAGE on schema `tripplanner` + SELECT on the view only |
 | AA-CIS-Infra | — | — | owns the Lambdas, API Gateway, OIDC deploy role, secrets and the DB Migrate workflow that applies `migrations/` |
 

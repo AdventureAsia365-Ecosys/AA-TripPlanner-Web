@@ -78,6 +78,15 @@ async def _current_components(conn: _Conn, trip_id: str) -> list[dict]:
     """Reconstruct the current component set for a trip by folding its
     event log (add/remove), then hydrate lat/lng from the components +
     destinations tables. Canonical read comes from trip_events."""
+    return (await _components_and_missing(conn, trip_id))[0]
+
+
+async def _components_and_missing(conn: _Conn, trip_id: str) -> tuple[list[dict], list[str]]:
+    """(served components in add order, ids still in the trip that the catalog no longer serves).
+
+    AA-986 L6: catalog.v_tour_component serves live tours only, so a pinned component whose tour CIS retired or
+    paused is not found. It stays in the trip (the traveller removes it, or it comes back when CIS restores the
+    tour) and is listed by unavailable_stops() instead of vanishing without a word."""
     rows = await conn.fetch(
         "SELECT event_type, payload FROM tripplanner.trip_events "
         "WHERE trip_id = $1 ORDER BY id ASC",
@@ -101,11 +110,11 @@ async def _current_components(conn: _Conn, trip_id: str) -> list[dict]:
         elif cid in present:
             present.remove(cid)
     if not present:
-        return []
+        return [], []
     comp_rows = await conn.fetch(COMPONENTS_SQL, present)
     by_id = {str(r["id"]): _segment_fields(dict(r)) for r in comp_rows}
     # preserve add order for stable fallback
-    return [by_id[cid] for cid in present if cid in by_id]
+    return [by_id[cid] for cid in present if cid in by_id], [cid for cid in present if cid not in by_id]
 
 
 def _segment_fields(c: dict) -> dict:
@@ -171,9 +180,15 @@ async def current_itinerary(conn: _Conn, trip_id: str) -> list[dict]:
     same projection rules as append_event (deterministic sequence, unless a
     still-valid manual reorder pins the order), but writes nothing.
 
-    Returns [{day, component_id, name, text_extract, activity, ...}].
+    Returns [{day, component_id, name, text_extract, activity, ...}]: served stops only (AA-986 L6: the stops
+    the catalog no longer serves are in unavailable_stops()).
     """
-    components = await _current_components(conn, trip_id)
+    return (await current_itinerary_and_missing(conn, trip_id))[0]
+
+
+async def current_itinerary_and_missing(conn: _Conn, trip_id: str) -> tuple[list[dict], list[str]]:
+    """current_itinerary() plus the ids of the trip's stops the catalog no longer serves (one event fold)."""
+    components, missing = await _components_and_missing(conn, trip_id)
     explicit = await _latest_explicit_order(conn, trip_id)
     itinerary = _project_itinerary(components, explicit)
     return [
@@ -196,7 +211,66 @@ async def current_itinerary(conn: _Conn, trip_id: str) -> list[dict]:
             **{k: e.get(k) for k in SEGMENT_KEYS},
         }
         for e in itinerary
-    ]
+    ], missing
+
+
+# AA-986 L6: the trip_drafts projection keeps, per stop, what is needed to name a stop once the catalog stops
+# serving it (the catalog then no longer returns its row): name, tour key, tour day, place and point.
+_SNAPSHOT_KEYS = ("name", "source_tour_id", "source_day_index", "destination_id", "destination_name", "lat", "lng")
+PROJECTION_SQL = "SELECT itinerary FROM tripplanner.trip_drafts WHERE id = $1"
+
+
+async def _previous_projection(conn: _Conn, trip_id: str) -> dict[str, dict]:
+    """{component_id: entry} of the stored projection ({} when there is none or it is not a list)."""
+    row = await conn.fetchrow(PROJECTION_SQL, trip_id)
+    raw = row["itinerary"] if row is not None else None
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    if not isinstance(raw, list):
+        return {}
+    return {str(e["component_id"]): e for e in raw if isinstance(e, dict) and e.get("component_id")}
+
+
+def _carried(missing: list[str], previous: dict[str, dict]) -> list[dict]:
+    """Projection entries of the stops the catalog no longer serves, carried over from the stored projection so
+    they keep their name and tour key across later edits (available: false)."""
+    out = []
+    for cid in missing:
+        prev = previous.get(cid) or {}
+        out.append({"day": prev.get("day"), "component_id": cid, "rationale": prev.get("rationale"),
+                    **{k: prev.get(k) for k in _SNAPSHOT_KEYS}, "available": False})
+    return out
+
+
+async def unavailable_stops(conn: _Conn, trip_id: str, missing: Optional[list[str]] = None) -> list[dict]:
+    """AA-986 L6: the trip's stops the catalog no longer serves, each with available: false and a reason
+    (availability.py). `missing` = the ids from current_itinerary_and_missing (folded again when omitted).
+
+    Each: {component_id, day, name, source_tour_id, source_day_index, destination_name, lat, lng, source_system,
+    source_id, available, reason, reason_detail}. source_system / source_id name the catalog key when the
+    catalog knows it (served, or in the tombstone), else null. Order: the trip's add order."""
+    from backend.assembly import availability  # local: availability has no dependency back on events
+
+    if missing is None:
+        missing = (await _components_and_missing(conn, trip_id))[1]
+    if not missing:
+        return []
+    previous = await _previous_projection(conn, trip_id)
+    stops = _carried(missing, previous)
+    reasons = await availability.tour_reasons(conn, [s.get("source_tour_id") for s in stops])
+    out = []
+    for s in stops:
+        key = s.get("source_tour_id")
+        reason, detail = availability.stop_reason(key, reasons)
+        r = (reasons.get(str(key)) if key else None) or {}
+        known = bool(r.get("served") or r.get("tombstone"))
+        out.append({
+            "component_id": s["component_id"], "day": s.get("day"),
+            **{k: s.get(k) for k in _SNAPSHOT_KEYS},
+            "source_system": "cis" if known else None, "source_id": str(key) if known else None,
+            "available": False, "reason": reason, "reason_detail": detail,
+        })
+    return out
 
 
 async def append_event(
@@ -226,11 +300,15 @@ async def append_event(
             json.dumps(payload),
         )
 
-        components = await _current_components(conn, trip_id)
+        components, missing = await _components_and_missing(conn, trip_id)
         explicit = await _latest_explicit_order(conn, trip_id)
         itinerary = _project_itinerary(components, explicit)
 
         status = "sent" if event_type == "sent" else "draft"
+        # AA-986 L6: served stops carry their snapshot (name, tour key, day, point); a stop the catalog no longer
+        # serves is carried over from the previous projection with available: false, so GET /trip can still
+        # name it after later edits.
+        carried = _carried(missing, await _previous_projection(conn, trip_id)) if missing else []
         itinerary_json = json.dumps(
             [
                 {
@@ -238,9 +316,13 @@ async def append_event(
                     "component_id": e["component_id"],
                     "name": e.get("name"),
                     "rationale": e.get("rationale"),
+                    **{k: e.get(k) for k in _SNAPSHOT_KEYS if k != "name"},
+                    "available": True,
                 }
                 for e in itinerary
             ]
+            + carried,
+            default=str,
         )
         await conn.execute(
             """

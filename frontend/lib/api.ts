@@ -11,6 +11,7 @@ import type {
   RouteProposal,
   ShapeStatus,
   StopActivity,
+  UnavailableStop,
 } from "./types";
 import type { TourList, TourSort } from "./catalogTypes";
 import { readTourRoute, type TourRouteResult } from "./tourRoute";
@@ -123,6 +124,8 @@ interface TripResponse {
   itinerary: ItineraryDay[];
   status?: string;
   custom_days?: CustomDay[];
+  // AA-986 L6: saved stops whose tour AA no longer serves (absent from older Lambdas).
+  unavailable_stops?: UnavailableStop[];
 }
 
 export async function fetchTrip(tripId: string): Promise<TripResponse | null> {

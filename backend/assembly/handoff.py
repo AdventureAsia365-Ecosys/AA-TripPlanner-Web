@@ -4,7 +4,8 @@ send-to-advisor calls write_inquiry() inside its own transaction, right after th
 so the outbox row and the hand-off commit or roll back together. AA-Booking reads
 tripplanner.v_inquiry_outbox and keeps its own inbox keyed by idempotency_key; it never writes here.
 
-Contract: AA-Ecosys docs/contracts/inquiry.submitted.v1.2.json (payload version 1.2, AA-830). Narration is not part of v1:
+Contract: AA-Ecosys docs/contracts/inquiry.submitted.v1.3.json (payload version 1.3: AA-986 L6; 1.2: AA-830). Narration
+is not part of v1:
 it is not persisted server-side (the frontend asks for it on demand), and a client-sent copy would be
 untrusted text.
 
@@ -13,6 +14,11 @@ tours and a version tour_id (changes on re-upload) for others. Every leg therefo
 key `source_system` + `source_id`, resolved at send time against catalog.v_tour (accepting either key kind).
 A key the catalog does not know (tour left the catalog) or an unreadable catalog leaves both null: the
 hand-off is never refused over it, and AA-Booking reports the leg as unmatched.
+
+Availability (AA-986 L6, root ADR 0015 decision 5, v1.3): every leg and every day says `available` with a `reason`
+(availability.py). Stops whose tour AA no longer serves (retired, paused, or a stop the tour dropped) are not in the
+served itinerary any more; they are still handed off, after the served days and legs, with available: false, so
+AA-Booking staff see why such a leg cannot be matched. The hand-off is never refused over it.
 
 Day guard (AA-847, TP #86): a component row's tour day can be wrong (AA-819). The legs use the same check as the
 narration (master_content.guarded_days): a day whose AA text does not name the stop moves to the nearest day of
@@ -38,10 +44,10 @@ from backend.assembly.registration import normalise_contact
 log = logging.getLogger(__name__)
 
 EVENT = "inquiry.submitted"
-# Payload `version` (major.minor). AA-Ecosys docs/contracts/inquiry.submitted.v1.2.json declares it
-# as the NUMBER 1.2; v1.2 is additive over v1.1 (per-leg source_system + source_id, AA-830), v1.1 over
-# v1 (customer.verified, nullable customer_id, AA-805).
-SCHEMA_VERSION = 1.2
+# Payload `version` (major.minor). AA-Ecosys docs/contracts/inquiry.submitted.v1.3.json declares it
+# as the NUMBER 1.3; v1.3 is additive over v1.2 (per-leg and per-day available + reason, AA-986 L6), v1.2 over
+# v1.1 (per-leg source_system + source_id, AA-830), v1.1 over v1 (customer.verified, nullable customer_id, AA-805).
+SCHEMA_VERSION = 1.3
 # tripplanner.outbox.schema_version is an INT column: it carries the major only.
 SCHEMA_MAJOR = 1
 
@@ -142,6 +148,46 @@ def with_tour_keys(legs: list[dict], tour_keys: dict[str, TourKey]) -> list[dict
     return out
 
 
+def _availability(available: bool, reason: Optional[str] = None, detail: Optional[str] = None) -> dict:
+    return {"available": available, "reason": reason, "reason_detail": detail}
+
+
+def unavailable_parts(unavailable: list[dict], after_day: int, first_position: int) -> tuple[list[dict], list[dict]]:
+    """(legs, days) of the stops AA no longer serves (events.unavailable_stops), placed after the served ones.
+
+    A stop keeps its last known trip day when it has one, else it goes after the last served day. Its legs are
+    grouped like the served ones (same tour, same or next tour day) and numbered from `first_position`; a stop
+    with no known tour key or tour day has a day entry but no leg."""
+    entries = []
+    for s in unavailable:
+        day = s.get("day") if isinstance(s.get("day"), int) and s.get("day") >= 1 else after_day + 1
+        entries.append({**s, "day": day})
+    keys = {str(s["source_tour_id"]): s for s in entries if s.get("source_tour_id")}
+    legs = []
+    for i, leg in enumerate(leg_chain(entries)):
+        s = keys[leg["source_tour_id"]]
+        legs.append({"position": first_position + i, "source_tour_id": leg["source_tour_id"],
+                     "source_system": s.get("source_system"), "source_id": s.get("source_id"),
+                     "day_from": leg["day_from"], "day_to": leg["day_to"],
+                     **_availability(False, s.get("reason") or "not_served", s.get("reason_detail"))})
+    days = [_day(e) | _availability(False, e.get("reason") or "not_served", e.get("reason_detail"))
+            for e in sorted(entries, key=lambda e: e["day"])]
+    return legs, days
+
+
+def _day(e: dict) -> dict:
+    return {
+        "day": e["day"],
+        "component_id": str(e["component_id"]),
+        "name": e.get("name"),
+        "source_tour_id": str(e["source_tour_id"]) if e.get("source_tour_id") else None,
+        "source_day_index": e.get("source_day_index"),
+        "destination_id": str(e["destination_id"]) if e.get("destination_id") else None,
+        "lat": e.get("lat"),
+        "lng": e.get("lng"),
+    }
+
+
 def build_payload(
     *,
     trip_id: str,
@@ -152,12 +198,21 @@ def build_payload(
     tour_keys: Optional[dict[str, TourKey]] = None,
     submitted_at: Optional[datetime] = None,
     day_texts: Optional[dict[tuple[str, int], str]] = None,
+    unavailable: Optional[list[dict]] = None,
 ) -> dict:
-    """The v1.2 payload. `tour_keys` (resolve_tour_keys) maps source_tour_id to the catalog key; a leg
+    """The v1.3 payload. `tour_keys` (resolve_tour_keys) maps source_tour_id to the catalog key; a leg
     whose key is missing carries source_system / source_id null. `day_texts` (AA's day texts of the tours,
-    master_content.load_for_tours) turn on the day guard of the legs (AA-847)."""
+    master_content.load_for_tours) turn on the day guard of the legs (AA-847). `unavailable`
+    (events.unavailable_stops, AA-986 L6) are the stops AA no longer serves, sent after the served ones with
+    available: false."""
     legs_from = master_content.guarded_days(itinerary, day_texts) if day_texts else itinerary
     submitted_at = submitted_at or datetime.now(timezone.utc)
+    legs = [leg | _availability(True) for leg in with_tour_keys(leg_chain(legs_from), tour_keys or {})]
+    days = [_day(e) | _availability(True) for e in sorted(itinerary, key=lambda e: e["day"])]
+    if unavailable:
+        last_day = max((e["day"] for e in itinerary), default=0)
+        more_legs, more_days = unavailable_parts(unavailable, last_day, len(legs) + 1)
+        legs, days = legs + more_legs, days + more_days
     return {
         "contract": EVENT,
         "version": SCHEMA_VERSION,
@@ -168,20 +223,8 @@ def build_payload(
         "submitted_at": submitted_at.isoformat(),
         "customer": customer,
         "itinerary": {
-            "legs": with_tour_keys(leg_chain(legs_from), tour_keys or {}),
-            "days": [
-                {
-                    "day": e["day"],
-                    "component_id": str(e["component_id"]),
-                    "name": e.get("name"),
-                    "source_tour_id": str(e["source_tour_id"]) if e.get("source_tour_id") else None,
-                    "source_day_index": e.get("source_day_index"),
-                    "destination_id": str(e["destination_id"]) if e.get("destination_id") else None,
-                    "lat": e.get("lat"),
-                    "lng": e.get("lng"),
-                }
-                for e in sorted(itinerary, key=lambda e: e["day"])
-            ],
+            "legs": legs,
+            "days": days,
             "custom_days": [
                 {"day_id": d["day_id"], "kind": d["kind"],
                  "after_component_id": d.get("after_component_id"), "note": d.get("note")}
@@ -240,11 +283,13 @@ async def write_inquiry(
     itinerary: list[dict],
     custom_days: list[dict],
     submitted: Optional[dict] = None,
+    unavailable: Optional[list[dict]] = None,
 ) -> str:
     """Append the inquiry.submitted row. Caller holds the transaction. Returns the idempotency key.
 
     `submitted` (submitted_contact) is used when the session has no customer of its own — i.e. the
     contact in this request matched an existing customer and was deliberately not linked.
+    `unavailable` (events.unavailable_stops) are the trip's stops AA no longer serves (AA-986 L6).
 
     ON CONFLICT DO NOTHING: the same hand-off can never produce two rows."""
     customer = await load_customer(conn, session_id)
@@ -254,7 +299,7 @@ async def write_inquiry(
     day_texts = await load_day_texts(conn, [e.get("source_tour_id") for e in itinerary])
     payload = build_payload(trip_id=trip_id, handoff_id=handoff_id, customer=customer,
                             itinerary=itinerary, custom_days=custom_days, tour_keys=tour_keys,
-                            day_texts=day_texts)
+                            day_texts=day_texts, unavailable=unavailable)
     key = payload["idempotency_key"]
     await conn.execute(
         "INSERT INTO tripplanner.outbox (event, schema_version, idempotency_key, aggregate_id, payload) "
