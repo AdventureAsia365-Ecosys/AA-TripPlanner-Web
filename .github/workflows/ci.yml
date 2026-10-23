@@ -56,7 +56,8 @@ jobs:
   # AA-879: the security job, same shape as AA-Booking's "Security Audit" (the resource-ID check stays in
   # "Backend (pytest)", which is already required). pip-audit FAILS on any known vulnerability in the Lambda
   # requirements. The gitleaks scan that ran here moved to .github/workflows/secret-scan.yml (AA-981 follow-up):
-  # check "gitleaks" on every PR with the base branch's rules, "gitleaks full history" nightly and on push to main.
+  # check "gitleaks" on every PR with the base branch's rules, "gitleaks full history" (secret-scan-history.yml)
+  # nightly and on push to main.
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest

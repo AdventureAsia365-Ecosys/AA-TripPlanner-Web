@@ -469,11 +469,14 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - **CI checks**: required "Backend (pytest)", "Frontend (lint + build)", "Migrations (lint, PG 15
   replay)"; plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan
   (AA-981 follow-up): `secret-scan.yml`, check "gitleaks" on every PR (lines the PR adds, rules and baseline from
-  the base branch) and "gitleaks full history" nightly / on push to `main` (branches, tags, pull request heads);
+  the base branch) and "gitleaks full history" (`secret-scan-history.yml`) nightly / on push to `main` (branches, tags, pull
+  request heads);
   rules in `.gitleaks.toml` (same as the root repo), reviewed findings pinned in `.gitleaksignore`; a PR that
-  changes either file or `secret-scan.yml`, or adds an inline `gitleaks:allow`, needs the label
+  changes either file, either secret scan workflow, `.github/CODEOWNERS` or any `.gitattributes`, or adds an inline
+  `gitleaks:allow`, needs the label
   `secret-scan-baseline-reviewed` after the last push (any later push, reopen or label change removes it). Merge
-  commits are scanned too (remerge diff). False positives: prefer a narrow allowlist in `.gitleaks.toml`; a
+  commits (remerge diff), renames and type changes are scanned too, every file as text. A red result means the
+  value is public: rotate it, even if it was force-pushed away. False positives: prefer a narrow allowlist in `.gitleaks.toml`; a
   commit fingerprint does not survive the squash merge (header of `.gitleaksignore`).
 - **Security headers on previews (AA-879)**: `vercel-deploy.yml` step "Check the preview security headers"
   (`.github/scripts/check_security_headers.sh`, GET `/` through `vercel curl`). It needs the aa-tripplanner
