@@ -28,3 +28,8 @@
 # Synthetic test value: a made-up string with the shape of a BFF guest token (AA-827 unit tests).
 7150c0044a127522f8d927c487cf8d1a37694e29:backend/tests/test_assembly.py:generic-api-key:197
 c6a118b004e86511e6060507718b81158f9c6fae:backend/tests/test_assembly.py:generic-api-key:197
+
+# AA-981 canary (test/aa981-canary, closed unmerged): a FAKE random value committed on purpose to prove the
+# scan goes red. Its PR head stays fetchable, so it is pinned by commit.
+82ed2e1fe5893b60b27694a1b3b1bc0dcfa153c9:canary/aa981-canary.tfvars:credential-key-literal:2
+82ed2e1fe5893b60b27694a1b3b1bc0dcfa153c9:canary/aa981-canary.tfvars:terraform-plaintext-secret:2
