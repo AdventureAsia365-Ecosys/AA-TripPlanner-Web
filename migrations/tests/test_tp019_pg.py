@@ -183,7 +183,8 @@ def test_runtime_upsert_and_claim_shape(db):
         try:
             async with su.transaction():
                 await su.execute("SET LOCAL ROLE tripplanner")
-                upsert = ("INSERT INTO tripplanner.traveller_accounts (iss, sub, last_sign_in_at) VALUES ($1, $2, now()) "
+                upsert = ("INSERT INTO tripplanner.traveller_accounts (iss, sub, last_sign_in_at) "
+                          "VALUES ($1, $2, now()) "
                           "ON CONFLICT (iss, sub) DO UPDATE SET last_sign_in_at = EXCLUDED.last_sign_in_at "
                           "RETURNING id")
                 a1 = await su.fetchval(upsert, ISS, sub_a)
