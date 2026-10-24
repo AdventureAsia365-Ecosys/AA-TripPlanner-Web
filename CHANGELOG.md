@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.6.0...v0.7.0) (2026-10-23)
+
+
+### Features
+
+* purge TripPlanner caches on a signed CIS tour lifecycle notice ([#143](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/143)) ([d14805f](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/d14805fb2f230ddc4989b2892ebcf89102720316))
+
 ## [0.6.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.5.0...v0.6.0) (2026-10-23)
 
 
