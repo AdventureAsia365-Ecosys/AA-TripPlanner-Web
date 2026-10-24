@@ -96,6 +96,9 @@ API_KEY_RETRY_AFTER_SECONDS = 10
 # mutating call; the session row stores only sha256(token) (migration tp-011). session_id is an
 # identifier, never a credential. See assembly/guest_session.py.
 GUEST_TOKEN_HEADER = "x-tripplanner-guest"
+# AA-908: the signed-in traveller's Cognito EXTERNAL access token ("Bearer <jwt>"), forwarded by the BFF from its
+# sealed session cookie. Verified in assembly/account.py; never logged or stored.
+ACCESS_TOKEN_HEADER = "x-tripplanner-access"
 # Until this instant a request without a token (old BFF / old bundle) is still accepted for a
 # session that has no hash yet, and a legacy session is bound to the first token it sees. After
 # it, a session_id alone gets 401. CLOSED: set to an instant already past (S239). Dev has no real

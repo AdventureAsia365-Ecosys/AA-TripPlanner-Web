@@ -50,7 +50,7 @@ def test_no_backend_module_writes_place_data():
 _QUALIFIED = re.compile(r"\b(shared|gold_aa_internal|silver_aa_internal|acp_\w+|geo|tripplanner|catalog|booking|public)"
                         r"\.(\w+)\b", re.IGNORECASE)
 _ALLOWED_TRIPPLANNER = {"sessions", "customers", "trip_events", "trip_drafts", "outbox", "narration_cache",
-                        "llm_spend_daily", "component_id_map"}
+                        "llm_spend_daily", "component_id_map", "traveller_accounts"}   # tp-019, AA-908
 _ALLOWED_SHARED = {"llm_role_config", "llm_model_catalog", "llm_call_log"}   # CIS 173, the model gateway
 
 

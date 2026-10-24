@@ -4,8 +4,8 @@ send-to-advisor calls write_inquiry() inside its own transaction, right after th
 so the outbox row and the hand-off commit or roll back together. AA-Booking reads
 tripplanner.v_inquiry_outbox and keeps its own inbox keyed by idempotency_key; it never writes here.
 
-Contract: AA-Ecosys docs/contracts/inquiry.submitted.v1.3.json (payload version 1.3: AA-986 L6; 1.2: AA-830). Narration
-is not part of v1:
+Contract: AA-Ecosys docs/contracts/inquiry.submitted.v1.4.json (payload version 1.4: AA-908; 1.3: AA-986 L6;
+1.2: AA-830). Narration is not part of v1:
 it is not persisted server-side (the frontend asks for it on demand), and a client-sent copy would be
 untrusted text.
 
@@ -30,6 +30,12 @@ own identity and verification. Every customer object therefore carries `verified
 submitted phone/email matched someone else's stored customer, the session is not linked to it
 (registration.py) and the payload carries the submitted contact with `customer_id: null` — never the
 stored identity of another person. Contract delta (verified, nullable customer_id) goes into v1.1.
+
+Signed-in traveller (AA-908, v1.4, root ADR 0006 Phase 4): when the send carries a valid EXTERNAL access token
+(account.py), the customer is signed_in_contact(): the email is the token's (never a typed one), `verified` is the
+token's email_verified, and `identity` = {iss, sub}. A guest send is unchanged (verified false, identity null): a typed
+contact still proves nothing. The token itself never goes into the payload. AA-Booking accepts 1.4 (bk-024, Booking
+#90) and links the identity to one customer; it never merges an unverified lead automatically.
 """
 from __future__ import annotations
 
@@ -44,10 +50,11 @@ from backend.assembly.registration import normalise_contact
 log = logging.getLogger(__name__)
 
 EVENT = "inquiry.submitted"
-# Payload `version` (major.minor). AA-Ecosys docs/contracts/inquiry.submitted.v1.3.json declares it
-# as the NUMBER 1.3; v1.3 is additive over v1.2 (per-leg and per-day available + reason, AA-986 L6), v1.2 over
-# v1.1 (per-leg source_system + source_id, AA-830), v1.1 over v1 (customer.verified, nullable customer_id, AA-805).
-SCHEMA_VERSION = 1.3
+# Payload `version` (major.minor). AA-Ecosys docs/contracts/inquiry.submitted.v1.4.json declares it
+# as the NUMBER 1.4; v1.4 is additive over v1.3 (customer.identity, AA-908), v1.3 over v1.2 (per-leg and per-day
+# available + reason, AA-986 L6), v1.2 over v1.1 (per-leg source_system + source_id, AA-830), v1.1 over v1
+# (customer.verified, nullable customer_id, AA-805).
+SCHEMA_VERSION = 1.4
 # tripplanner.outbox.schema_version is an INT column: it carries the major only.
 SCHEMA_MAJOR = 1
 
@@ -200,7 +207,7 @@ def build_payload(
     day_texts: Optional[dict[tuple[str, int], str]] = None,
     unavailable: Optional[list[dict]] = None,
 ) -> dict:
-    """The v1.3 payload. `tour_keys` (resolve_tour_keys) maps source_tour_id to the catalog key; a leg
+    """The v1.4 payload. `tour_keys` (resolve_tour_keys) maps source_tour_id to the catalog key; a leg
     whose key is missing carries source_system / source_id null. `day_texts` (AA's day texts of the tours,
     master_content.load_for_tours) turn on the day guard of the legs (AA-847). `unavailable`
     (events.unavailable_stops, AA-986 L6) are the stops AA no longer serves, sent after the served ones with
@@ -253,6 +260,7 @@ async def load_customer(conn: _Conn, session_id: str) -> Optional[dict]:
         "consent": bool(row["contact_consent"]),
         "consent_at": at.isoformat() if hasattr(at, "isoformat") else at,
         "verified": False,
+        "identity": None,
     }
 
 
@@ -271,6 +279,29 @@ def submitted_contact(
         "consent": bool(consent),
         "consent_at": at,
         "verified": False,
+        "identity": None,
+    }
+
+
+def signed_in_contact(
+    principal: Any, *, name: str, phone: Optional[str], consent: bool,
+    submitted_at: Optional[datetime] = None,
+) -> dict:
+    """AA-908 (v1.4): the customer of a signed-in send. `principal` is the verified access token
+    (identity_verifier.Principal of the EXTERNAL tripplanner client). The email is the token's, lower-cased
+    (the pre token trigger already normalises it); `verified` is the token's email_verified and is true only
+    with an email; `identity` is the token's (iss, sub). Name, phone and consent are what the traveller gave."""
+    phone, email = normalise_contact(phone, principal.email)
+    at = (submitted_at or datetime.now(timezone.utc)).isoformat() if consent else None
+    return {
+        "customer_id": None,
+        "name": (name or "").strip(),
+        "phone": phone,
+        "email": email,
+        "consent": bool(consent),
+        "consent_at": at,
+        "verified": bool(principal.email_verified is True and email),
+        "identity": {"iss": principal.iss, "sub": principal.sub},
     }
 
 
@@ -284,15 +315,17 @@ async def write_inquiry(
     custom_days: list[dict],
     submitted: Optional[dict] = None,
     unavailable: Optional[list[dict]] = None,
+    traveller: Optional[dict] = None,
 ) -> str:
     """Append the inquiry.submitted row. Caller holds the transaction. Returns the idempotency key.
 
     `submitted` (submitted_contact) is used when the session has no customer of its own — i.e. the
     contact in this request matched an existing customer and was deliberately not linked.
     `unavailable` (events.unavailable_stops) are the trip's stops AA no longer serves (AA-986 L6).
+    `traveller` (signed_in_contact, AA-908) is the customer of a signed-in send and wins over both.
 
     ON CONFLICT DO NOTHING: the same hand-off can never produce two rows."""
-    customer = await load_customer(conn, session_id)
+    customer = traveller if traveller is not None else await load_customer(conn, session_id)
     if customer is None and submitted is not None:
         customer = submitted
     tour_keys = await resolve_tour_keys(conn, [e.get("source_tour_id") for e in itinerary])

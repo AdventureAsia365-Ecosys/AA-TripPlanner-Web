@@ -59,7 +59,8 @@ def unknown_route_404():
 
 
 def test_the_reads_are_the_four_gets_of_the_assembly_lambda():
-    gets = {name for verb, _rx, name in handler._ROUTE_NAMES if verb == "GET"}  # noqa: SLF001
+    gets = {name for verb, _rx, name in handler._ROUTE_NAMES  # noqa: SLF001
+            if verb == "GET" and not name.startswith("me_")}  # AA-908: GET /me/trips is no trip read
     assert gets == set(READS)
     for name, suffix in READS.items():
         assert handler._route_name("GET", f"/trip/{T1}{suffix}") == name  # noqa: SLF001

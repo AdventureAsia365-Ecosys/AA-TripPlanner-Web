@@ -248,15 +248,43 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   frontend treats a failed read as an empty trip (a fresh trip has no draft and also reads 404). The
   `/api/trip` BFF sends the itinerary read's 404 to the browser as a 200 empty trip
   (`tripReadAnswer`, AA-837: no red console error on a first visit); the other reads pass through.
-  Outcomes in the `guest_auth` line: `read_ok`, `no_token`, `no_owner`, `bad_token`, `token_mismatch`.
+  Outcomes in the `guest_auth` line: `read_ok`, `no_token`, `no_owner`, `bad_token`, `token_mismatch`, and since
+  AA-908 `account_read_ok` (reads) / `account_ok` (mutations) for a signed-in owner on another device.
 
 - **Traveller accounts (AA-908, tp-019; root ADR 0006 Phase 4).** `tripplanner.traveller_accounts` holds one row per
   signed-in traveller, keyed by the Cognito EXTERNAL identity `(iss, sub)` of the verified access token (UNIQUE,
   tagged `pii:online_id`), with no email column: the email is read from the token whenever it is needed.
   `sessions.account_id` (nullable FK, ON DELETE SET NULL, partial index `sessions_account_idx`) links a guest session to the account that
   claimed it at sign-in. The claim sets it only where it is NULL, so a session owned by an account is never moved.
-  The runtime role may SELECT / INSERT / UPDATE accounts, never DELETE. The sign-in, claim, My Trips and the
-  account-aware guards come with AA-908 S4/S5; until then nothing reads these objects.
+  The runtime role may SELECT / INSERT / UPDATE accounts, never DELETE.
+- **Signed-in traveller (AA-908 S4, `backend/assembly/account.py`).** The BFF forwards the traveller's Cognito EXTERNAL
+  access token in `x-tripplanner-access` (`Bearer <jwt>`, from its sealed session cookie; S5). The assembly Lambda
+  verifies it with `backend/shared/identity_verifier.py`, a **byte copy** of AA-CIS-App `api/core/identity_verifier.py`
+  (root ADR 0006 §8 rule 9; `tests/test_identity_verifier.py` is the CIS suite plus a sha256 pin of the copy: change
+  it only by copying the CIS file and updating the pin). Accepted: the EXTERNAL issuer x the public `tripplanner`
+  client only, access tokens only (`backend/shared/identity_config.py`: public code constants, env
+  `TP_TRAVELLER_ISSUER` / `TP_TRAVELLER_CLIENT_ID` override; no Lambda env needed). The JWKS is fetched through the
+  NAT on the first signed-in request of a container and kept (a failed refresh keeps the last good key set).
+  - `POST /me/claim` (at sign-in): upserts the account (`last_sign_in_at`) and links every session of the request's
+    guest token that no account owns yet. `GET /me/trips` (My Trips): the account's trips, newest first (trip and
+    session ids, status `draft` / `sent`, stop count, days, first stop names, dates). Both answer 401
+    `{"error":"sign_in_required"}` without a valid token, 503 `auth_unavailable` when no key set could ever be loaded.
+  - **The claim takes every unowned guest trip of this browser, by design.** On a shared browser that includes trips a
+    previous anonymous visitor built: they appear in the new account's My Trips and can be sent under its verified
+    email. The guest cookie is the only proof of a guest trip, so there is nothing finer to check. The answer carries
+    the count (`claimed`); the privacy page tells travellers to sign out on a shared computer, and sign-out clears the
+    guest cookie (S5).
+  - Guards: when the guest token does not prove the session, `_guard` lets through the account that owns it
+    (`account_ok`: My Trips opened on another device), and `_read_guard` the account that owns the trip's session
+    (`account_read_ok`). A signed-in mutation that the guest token does prove links its session to the account (a trip
+    started after sign-in). An owned session is never moved to another account. Without a valid access token (none,
+    bad, expired, another client, an ID token) every answer is exactly the guest one (401 / 403 / the unknown-route
+    404).
+  - Hand-off: a signed-in send carries `customer.email` = the token's email, `verified` = the token's
+    `email_verified`, `identity` = `{iss, sub}` (contract v1.4); no `tripplanner.customers` row is written or matched.
+    A guest send is unchanged (`verified: false`, `identity: null`).
+  - Log lines: `guest_auth` outcomes, `traveller_auth` (`invalid` / `unavailable`) and `traveller_account` (route,
+    outcome, counts); never iss, sub, email or a token.
 
 ### Data model — event-sourced trips
 
@@ -348,7 +376,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   used. The guard `backend/tests/test_extraction_ops.py` fails if a backend SQL string names any schema-qualified
   object outside `catalog.*`, the Model Gateway tables (`shared.llm_role_config`, `llm_model_catalog`,
   `llm_call_log`) and the live `tripplanner` tables (sessions, customers, trip_events, trip_drafts, outbox,
-  narration_cache, llm_spend_daily, component_id_map), or writes place data.
+  narration_cache, llm_spend_daily, component_id_map, traveller_accounts), or writes place data.
   The **browse** readers (tiles, countries, by-country, destination detail, search, routes, tour-route, shapes)
   read the CIS catalog views of CIS migration 228 and later (`catalog.v_tour_component`, `v_tour_stop`,
   `v_tour_leg`, `v_tour_junction`, `v_destination`, contract `catalog.graph.v1.2`; keyed by catalog
@@ -553,7 +581,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 | AA-CIS-App (tour liveness, AA-986) | `catalog.v_tour_retired` (tombstone: `source_system`, `source_id`, `state`, `reason`; contract `catalog.tour.v1.3`) for the saved-trip reasons and the tour page 410 | — | CIS migration 274 (until applied every read degrades to the pre-L6 answer) |
 | AA-CIS-App (places / tour graph, AA-712) | `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`, `v_destination` (+ `located_by`, `precision`; 256: shape kind / status / length / bbox / `shape_lo`), `v_component_embedding` (HNSW top-k, AA-847), `v_destination_shape` (line geometry by id, slice 6d), `v_destination_redirect` (merged destination id → keeper: `/browse/destinations/{id}` answers 301, AA-847 Problem 2) — contract `catalog.graph.v1.2` / `catalog.tour.v1.2` | — | CIS migrations 228, 253 (`v_component_embedding`), 256 (`v_destination_shape`): SELECT to `tripplanner` only; 257 (`v_destination_redirect`) |
 | AA-CIS-App (Model Gateway) | `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (`quality_signal.app = "tripplanner"`) | CIS 173 |
-| AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 / v1.1 / v1.2 / v1.3 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.3.json` (payload `version` 1.3 since AA-986 L6: every leg and day adds `available`, `reason`, `reason_detail`, and stops whose tour AA no longer serves follow the served ones with `available: false`; 1.2 since AA-830: each leg also carries the catalog tour key `source_system` + `source_id`, resolved against `catalog.v_tour` at send time — or, for a stop that left, from the tombstone — both null when unresolvable; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
+| AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 … v1.4 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.4.json` (payload `version` 1.4 since AA-908: `customer.identity` = `{iss, sub}` of a signed-in traveller, else null, and `verified` true only with it; AA-Booking accepts 1.4 since bk-024 / Booking #90 and links the identity to one customer; 1.3 since AA-986 L6: every leg and day adds `available`, `reason`, `reason_detail`, and stops whose tour AA no longer serves follow the served ones with `available: false`; 1.2 since AA-830: each leg also carries the catalog tour key `source_system` + `source_id`, resolved against `catalog.v_tour` at send time — or, for a stop that left, from the tombstone — both null when unresolvable; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
 | AA-CIS-App (admin overview, AA-858) | — | — (it **reads** `tripplanner.v_ops_traffic_daily`: per UTC day `planner_session_started`, `trip_started`, `trip_edited`, `inquiry_sent`, aggregates only, last 400 days; contract `ops.overview.v1`, metric names append-only) | migration tp-015 grants role `cis_app` (the CIS runtime from X1 S18; until then the CIS runtime `aa_cis_admin` reads it through its `tp_owner` membership) USAGE on schema `tripplanner` + SELECT on the view only |
 | AA-CIS-Infra | — | — | owns the Lambdas, API Gateway, OIDC deploy role, secrets and the DB Migrate workflow that applies `migrations/` |
 

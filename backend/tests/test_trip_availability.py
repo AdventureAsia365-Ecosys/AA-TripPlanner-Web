@@ -22,7 +22,7 @@ PAUSED = "src-paused"      # Master inactive
 LIVE = "src-live"          # still served
 
 SCHEMA = json.loads(
-    (__import__("pathlib").Path(__file__).parent / "contracts" / "inquiry.submitted.v1.3.json").read_text())
+    (__import__("pathlib").Path(__file__).parent / "contracts" / "inquiry.submitted.v1.4.json").read_text())
 
 
 def _norm(q: str) -> str:

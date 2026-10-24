@@ -1,7 +1,7 @@
-"""AA-805 / AA-830 / AA-986 L6: the inquiry.submitted payload must keep matching the ecosystem contract.
+"""AA-805 / AA-830 / AA-986 L6 / AA-908: the inquiry.submitted payload must keep matching the ecosystem contract.
 
-backend/tests/contracts/inquiry.submitted.v1.3.json is a vendored copy of AA-Ecosys
-docs/contracts/inquiry.submitted.v1.3.json (the root repo is the source of truth; v1.1 and v1.2 are kept for
+backend/tests/contracts/inquiry.submitted.v1.4.json is a vendored copy of AA-Ecosys
+docs/contracts/inquiry.submitted.v1.4.json (the root repo is the source of truth; v1.1 to v1.3 are kept for
 history). When the contract changes there, copy it here; this test then fails if build_payload
 drifts from it.
 """
@@ -15,7 +15,7 @@ import pytest
 from backend.assembly import handoff
 
 SCHEMA = json.loads(
-    (Path(__file__).parent / "contracts" / "inquiry.submitted.v1.3.json").read_text()
+    (Path(__file__).parent / "contracts" / "inquiry.submitted.v1.4.json").read_text()
 )
 
 TOUR = "11111111-1111-1111-1111-111111111111"        # a version tour_id
@@ -44,10 +44,10 @@ def _payload(customer=None, tour_keys=None, unavailable=None):
 KEYS = {TOUR: ("cis", SOURCE), TOUR_B: ("cis", TOUR_B)}
 
 
-def test_payload_version_is_1_3():
-    assert handoff.SCHEMA_VERSION == 1.3
-    assert _payload()["version"] == 1.3
-    assert SCHEMA["properties"]["version"]["enum"] == [1.3]
+def test_payload_version_is_1_4():
+    assert handoff.SCHEMA_VERSION == 1.4
+    assert _payload()["version"] == 1.4
+    assert SCHEMA["properties"]["version"]["enum"] == [1.4]
 
 
 def test_payload_has_every_required_top_level_field():
@@ -56,7 +56,7 @@ def test_payload_has_every_required_top_level_field():
 
 @pytest.mark.parametrize("tour_keys", [KEYS, None, {TOUR: ("cis", SOURCE)}],
                          ids=["resolved", "unresolved", "partly"])
-def test_payload_validates_against_the_v1_3_schema(tour_keys):
+def test_payload_validates_against_the_v1_4_schema(tour_keys):
     jsonschema.validate(_payload(tour_keys=tour_keys), SCHEMA)
 
 
@@ -151,5 +151,54 @@ def test_schema_refuses_an_unavailable_leg_without_reason_and_an_available_one_w
         jsonschema.validate(bad, SCHEMA)
     bad = json.loads(json.dumps(p))
     bad["itinerary"]["days"][0]["reason"] = "retired"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, SCHEMA)
+
+
+# --- AA-908: v1.4 customer.identity --------------------------------------------------------------------------------
+
+ISS = "https://cognito-idp.us-west-1.amazonaws.com/us-west-1_TESTPOOLX"
+SUB = "7c1d2e3f-0000-4000-8000-000000000908"
+
+
+def _principal(email="Traveller@Example.com", email_verified=True):
+    from backend.shared.identity_verifier import Principal
+    return Principal(iss=ISS, sub=SUB, client_id="tpclient", groups=(), email=email,
+                     email_verified=email_verified, username=SUB)
+
+
+def test_signed_in_send_carries_the_token_email_and_identity_and_validates():
+    customer = handoff.signed_in_contact(_principal(), name=" Jo ", phone=" +84 1 ", consent=True,
+                                         submitted_at=datetime(2026, 10, 25, tzinfo=timezone.utc))
+    assert customer == {"customer_id": None, "name": "Jo", "phone": "+84 1", "email": "traveller@example.com",
+                        "consent": True, "consent_at": "2026-10-25T00:00:00+00:00", "verified": True,
+                        "identity": {"iss": ISS, "sub": SUB}}
+    jsonschema.validate(_payload(customer=customer, tour_keys=KEYS), SCHEMA)
+
+
+@pytest.mark.parametrize("email, flag", [("a@b.co", False), ("a@b.co", None), (None, True)],
+                         ids=["unverified", "no_flag", "no_email"])
+def test_signed_in_send_is_verified_only_with_a_verified_email(email, flag):
+    customer = handoff.signed_in_contact(_principal(email=email, email_verified=flag), name="Jo", phone=None,
+                                         consent=False)
+    assert customer["verified"] is False and customer["identity"] == {"iss": ISS, "sub": SUB}
+    assert customer["consent_at"] is None
+    jsonschema.validate(_payload(customer=customer), SCHEMA)
+
+
+def test_guest_send_is_unverified_with_a_null_identity():
+    customer = handoff.submitted_contact(name="Jo", phone=None, email="Jo@X.com", consent=True)
+    assert customer["verified"] is False and customer["identity"] is None
+    jsonschema.validate(_payload(customer=customer), SCHEMA)
+
+
+def test_schema_refuses_verified_without_identity_and_any_token_field():
+    customer = handoff.signed_in_contact(_principal(), name="Jo", phone=None, consent=False)
+    bad = json.loads(json.dumps(_payload(customer=customer)))
+    bad["customer"]["identity"] = None
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, SCHEMA)
+    bad = json.loads(json.dumps(_payload(customer=customer)))
+    bad["customer"]["access_token"] = "x"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(bad, SCHEMA)
