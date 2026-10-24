@@ -9,15 +9,21 @@ import { REQUEST_ID_HEADER } from "./requestId.ts";
 // trip reads both need it: the Lambda answers 404 to a read without the owner's token. The token is
 // never logged or echoed.
 // AA-871: and the request id (lib/requestId.ts), which the Lambda binds to its log lines.
+// AA-908: and, only when the traveller is signed in, the Cognito access token (lib/authSession.ts), which lets the
+// account that owns a trip open it from any browser and links the trips it edits. Never logged or echoed.
+export const ACCESS_TOKEN_HEADER = "x-tripplanner-access"; // backend config.ACCESS_TOKEN_HEADER
+
 export function tripHeaders(
   apiKey: string,
   guestToken?: string | null,
   requestId?: string | null,
+  accessToken?: string | null,
 ): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
   if (apiKey) h["x-tripplanner-key"] = apiKey;
   if (guestToken) h[GUEST_TOKEN_HEADER] = guestToken;
   if (requestId) h[REQUEST_ID_HEADER] = requestId;
+  if (accessToken) h[ACCESS_TOKEN_HEADER] = `Bearer ${accessToken}`;
   return h;
 }
 

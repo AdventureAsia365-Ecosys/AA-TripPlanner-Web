@@ -13,6 +13,7 @@ import { parseNarration } from "@/lib/narration";
 import { LEGAL_LINKS } from "@/lib/legal";
 import { formatDays } from "@/lib/text";
 import { reasonText, stopLabel, unavailableBanner } from "@/lib/availability";
+import { useAccount } from "@/lib/useAccount";
 
 const DAY_KIND_LABEL: Record<string, string> = {
   extra_night: "Extra night",
@@ -102,6 +103,10 @@ export default function TripPanel() {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [showReg, setShowReg] = useState(false);
   const [reg, setReg] = useState({ name: "", phone: "", email: "", consent: false });
+  // AA-908: a signed-in traveller's email comes from the account (verified by the code), never typed. The
+  // assembly Lambda reads it from the access token; the field below only shows it.
+  const account = useAccount();
+  const accountEmail = account.signedIn ? account.email : null;
   const [sentMsg, setSentMsg] = useState<string | null>(null);
   // Per-leg travel estimates between consecutive stops, keyed by the component the leg leaves from. AA-847 slice
   // 6d: a river / road / trail day is a "feature" leg along the line between its two stops (lib/lines.ts planTrip).
@@ -201,7 +206,7 @@ export default function TripPanel() {
 
   const handleSend = async (withCustomer: boolean) => {
     setSentMsg(null);
-    const res = await send(withCustomer ? reg : undefined);
+    const res = await send(withCustomer ? { ...reg, email: accountEmail ?? reg.email } : undefined);
     if (res.ok) {
       setShowReg(false);
       setSentMsg("Sent to an advisor. They'll be in touch shortly.");
@@ -680,12 +685,27 @@ export default function TripPanel() {
                   onChange={(e) => setReg({ ...reg, phone: e.target.value })}
                   className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted"
                 />
-                <input
-                  placeholder="Email"
-                  value={reg.email}
-                  onChange={(e) => setReg({ ...reg, email: e.target.value })}
-                  className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted"
-                />
+                {accountEmail ? (
+                  <div>
+                    <input
+                      aria-label="Email"
+                      value={accountEmail}
+                      readOnly
+                      data-testid="account-email"
+                      className="w-full cursor-not-allowed rounded-lg border border-k-line bg-k-bg px-3 py-2 text-sm text-k-muted"
+                    />
+                    <p className="mt-1 text-[11px] text-k-muted">
+                      Your signed-in email. Your advisor sees it as confirmed.
+                    </p>
+                  </div>
+                ) : (
+                  <input
+                    placeholder="Email"
+                    value={reg.email}
+                    onChange={(e) => setReg({ ...reg, email: e.target.value })}
+                    className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted"
+                  />
+                )}
                 {/* AA-676: explicit contact consent travels with the hand-off to AA-Booking. */}
                 <label className="flex items-start gap-2 text-xs text-k-muted">
                   <input
@@ -716,7 +736,7 @@ export default function TripPanel() {
                 </p>
                 <button
                   onClick={() => handleSend(true)}
-                  disabled={!reg.name || (!reg.phone && !reg.email) || !reg.consent}
+                  disabled={!reg.name || (!reg.phone && !reg.email && !accountEmail) || !reg.consent}
                   className="aa-focus w-full rounded-xl bg-k-accent px-3 py-2.5 text-sm font-semibold text-k-on-accent shadow-aa-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Register &amp; send

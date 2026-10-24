@@ -8,6 +8,9 @@ import {
 } from "@/lib/guestToken";
 import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
 import { parseTripBody, tripHeaders as lambdaHeaders, tripReadAnswer, tripReadPath } from "@/lib/tripProxy";
+import { refresh } from "@/lib/cognito";
+import { currentAccess, type Access } from "@/lib/authSession";
+import { authEnv, callContext } from "@/lib/authRequest";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
 // Maps a single { op } POST body onto the Lambda's REST verbs/paths.
@@ -19,8 +22,21 @@ const TRIPPLANNER_API_KEY = process.env.TRIPPLANNER_API_KEY ?? "";
 // Lambda, which checks it against the stored sha256 (reads: of the session that owns the trip, else
 // 404). The token is never logged or echoed.
 // AA-871: plus the request id, which the Lambda binds to its log lines and echoes back.
-function tripHeaders(guestToken: string | null, requestId: string): Record<string, string> {
-  return lambdaHeaders(TRIPPLANNER_API_KEY, guestToken, requestId);
+// AA-908: plus the signed-in traveller's access token (refreshed when about to expire), so the account that owns a
+// trip can open and edit it from any browser, and a signed-in edit links its session to the account.
+function tripHeaders(guestToken: string | null, requestId: string, accessToken: string | null): Record<string, string> {
+  return lambdaHeaders(TRIPPLANNER_API_KEY, guestToken, requestId, accessToken);
+}
+
+async function travellerAccess(req: NextRequest): Promise<Access> {
+  const env = authEnv(process.env);
+  return currentAccess(env.sessionSecret, req.cookies, (rt) => refresh(rt, callContext(env, req.headers)));
+}
+
+// A refreshed (or cleared) session rides on this no-store answer.
+function withCookies(res: NextResponse, access: Access): NextResponse {
+  for (const c of access.setCookies) res.headers.append("set-cookie", c);
+  return res;
 }
 
 const READ_RESOURCES = new Set(["suggestions", "coverage", "activities"]);
@@ -57,17 +73,18 @@ export async function GET(req: NextRequest) {
   // too); the client treats it as an empty trip. No cookies_required mapping on reads: a 404 never
   // resets the client's ids, so there is nothing to protect. AA-837: the itinerary read's 404 goes
   // to the browser as a 200 empty trip (tripReadAnswer), so a first visit logs no console error.
+  const access = await travellerAccess(req);
   const started = Date.now();
   const upstream = await fetch(`${TRIP_API_URL}${read.path}`, {
     method: "GET",
-    headers: tripHeaders(requestGuestToken(req).token, requestId),
+    headers: tripHeaders(requestGuestToken(req).token, requestId, access.accessToken),
   });
   const text = await upstream.text();
   const resource = req.nextUrl.searchParams.get("resource");
   const op = resource && READ_RESOURCES.has(resource) ? resource : "itinerary"; // never echo free text
   logUpstream(`read:${op}`, upstream.status, started, requestId);
   const answer = tripReadAnswer(op, upstream.status, text);
-  return new NextResponse(answer.body, {
+  return withCookies(new NextResponse(answer.body, {
     status: answer.status,
     headers: {
       "content-type": "application/json",
@@ -75,7 +92,7 @@ export async function GET(req: NextRequest) {
       vary: "Cookie",
       [REQUEST_ID_HEADER]: requestId,
     },
-  });
+  }), access);
 }
 
 export async function POST(req: NextRequest) {
@@ -146,17 +163,18 @@ export async function POST(req: NextRequest) {
 
   const guest = requestGuestToken(req);
   const requestId = requestIdFor(req.headers);
+  const access = await travellerAccess(req);
   const started = Date.now();
   const upstream = await fetch(`${TRIP_API_URL}${path}`, {
     method,
-    headers: tripHeaders(guest.token, requestId),
+    headers: tripHeaders(guest.token, requestId, access.accessToken),
     body: JSON.stringify(payload),
   });
   const text = await upstream.text();
   logUpstream(String(b.op), upstream.status, started, requestId);
   // A refused token that was minted on this request -> 401 cookies_required (see mapMintedDenial).
   const mapped = mapMintedDenial(upstream.status, text, guest.minted);
-  return new NextResponse(mapped ? mapped.body : text, {
+  return withCookies(new NextResponse(mapped ? mapped.body : text, {
     status: mapped ? mapped.status : upstream.status,
     headers: {
       "content-type": "application/json",
@@ -164,5 +182,5 @@ export async function POST(req: NextRequest) {
       vary: "Cookie",
       [REQUEST_ID_HEADER]: requestId,
     },
-  });
+  }), access);
 }

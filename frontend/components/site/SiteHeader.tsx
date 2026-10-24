@@ -4,6 +4,7 @@ import Link from "next/link";
 import AiLabel, { AI_BRAND_SHORT, AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
 import { ThemeToggle } from "@/ui/ThemeToggle";
 import { buttonClass } from "@/ui";
+import AccountLink from "@/components/AccountLink";
 
 export default function SiteHeader() {
   return (
@@ -23,6 +24,8 @@ export default function SiteHeader() {
           <Link href="/#tours" className="hidden px-2 text-[13px] font-medium text-k-body hover:text-k-accent-deep sm:inline">
             Tours
           </Link>
+          {/* AA-908: Sign in / My trips, fetched by the browser (this header is on CDN-cached pages). */}
+          <AccountLink />
           <ThemeToggle />
           <Link href="/plan" className={buttonClass("primary", "sm")}>
             Plan a trip
