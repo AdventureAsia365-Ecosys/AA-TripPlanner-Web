@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.7.0...v0.8.0) (2026-10-24)
+
+
+### Features
+
+* migration tp-019 (traveller accounts and sessions.account_id) ([#145](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/145)) ([ce4bd3b](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/ce4bd3b7a3e3c51344d548ad5c365d1790436164))
+
 ## [0.7.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.6.0...v0.7.0) (2026-10-23)
 
 
