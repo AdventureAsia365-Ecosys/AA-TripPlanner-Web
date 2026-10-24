@@ -54,8 +54,9 @@ export default function PrivacyPage() {
             <strong>Your account, only if you sign in.</strong> Your email address, which you prove with a code we email
             you (there is no password), is kept by our sign-in service (Amazon Cognito). The planner itself stores only a
             random account identifier and the time you last signed in, and links the trips you plan to it so you can
-            open them on any device. When you send a trip while signed in, the advisor receives your signed-in email,
-            marked as confirmed.
+            open them on any device. When you sign in, the trips planned in this browser before you signed in (and not
+            yet in another account) are added to your account, so on a shared computer, sign out when you are done. When
+            you send a trip while signed in, the advisor receives your signed-in email, marked as confirmed.
           </li>
           <li>
             <strong>Technical data.</strong> Our hosting providers process your IP address, browser type and the pages

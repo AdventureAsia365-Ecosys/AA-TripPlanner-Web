@@ -10,13 +10,15 @@
 //
 // The access token lives 60 minutes. When fewer than REFRESH_MARGIN_S remain, currentAccess() refreshes it
 // (GetTokensFromRefreshToken; rotation is on, so a new refresh token replaces the old one) and returns the new
-// cookies for the caller's response. A refresh Cognito refuses ends the session (the cookies are cleared).
+// cookies for the caller's response. Only a refresh Cognito refuses as not authorised (revoked or expired) ends the
+// session and clears the cookies. Any other failure (a WAF block, throttling, a Cognito 5xx, the network) keeps
+// them, so the next request tries again: a short outage never signs a traveller out.
 // Never put these Set-Cookie headers on a CDN-cached response: only the no-store /api/auth/*, /api/me and
 // /api/trip routes set them.
 
 import { isSecureCookieEnv } from "./guestToken.ts";
 import { open, seal, nowSeconds } from "./seal.ts";
-import type { Mode, Pending, Tokens } from "./cognito.ts";
+import { CognitoError, type Mode, type Pending, type Tokens } from "./cognito.ts";
 
 export const REFRESH_MARGIN_S = 60;
 // The tripplanner client's refresh-token lifetime (AA-CIS-Infra identity.tf: 720 hours). A rotated refresh token
@@ -39,6 +41,7 @@ interface SigninCookie {
   email: string;
   mode: Mode;
   session: string | null;
+  at?: number;
   exp: number;
 }
 
@@ -111,7 +114,12 @@ export interface CookieSource {
 export function readPending(secret: string, cookies: CookieSource, now: number = nowSeconds()): Pending | null {
   const v = open<SigninCookie>(secret, "signin", cookies.get(cookieName("signin"))?.value, now);
   if (!v || typeof v.email !== "string" || (v.mode !== "signup" && v.mode !== "signin")) return null;
-  return { email: v.email, mode: v.mode, session: typeof v.session === "string" ? v.session : null };
+  return {
+    email: v.email,
+    mode: v.mode,
+    session: typeof v.session === "string" ? v.session : null,
+    ...(typeof v.at === "number" ? { at: v.at } : {}),
+  };
 }
 
 export function readSession(secret: string, cookies: CookieSource, now: number = nowSeconds()): AuthCookie | null {
@@ -160,8 +168,15 @@ export async function currentAccess(
       emailVerified: claims.ev,
       setCookies: sessionCookies(secret, tokens, stored, now),
     };
-  } catch {
-    // Revoked, expired or refused: signed out. (A Cognito outage also lands here: the traveller signs in again.)
-    return { ...SIGNED_OUT, setCookies: clearSessionCookies() };
+  } catch (e) {
+    if (e instanceof CognitoError && e.type === "NotAuthorizedException") {
+      // Revoked or expired refresh token: signed out for good.
+      return { ...SIGNED_OUT, setCookies: clearSessionCookies() };
+    }
+    // Anything else is transient: keep the cookies. The access token is used while it is still valid.
+    if (session && session.aexp > now) {
+      return { accessToken: session.at, email: session.email, emailVerified: session.ev, setCookies: [] };
+    }
+    return SIGNED_OUT;
   }
 }

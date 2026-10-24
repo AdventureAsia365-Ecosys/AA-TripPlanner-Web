@@ -13,7 +13,7 @@ import {
   readSession,
   sessionCookies,
 } from "./authSession.ts";
-import type { Tokens } from "./cognito.ts";
+import { CognitoError, type Tokens } from "./cognito.ts";
 
 const SECRET = "k".repeat(40);
 const NOW = 1_800_000_000;
@@ -97,7 +97,7 @@ test("a refresh without rotation keeps the stored refresh token and its expiry",
 test("a refused refresh signs out and clears both cookies", async () => {
   const cookies = jar(sessionCookies(SECRET, TOKENS, null, NOW, false));
   const a = await currentAccess(SECRET, cookies, async () => {
-    throw new Error("NotAuthorizedException");
+    throw new CognitoError("NotAuthorizedException", 400);
   }, NOW + 4000);
   assert.equal(a.accessToken, null);
   assert.deepEqual(a.setCookies.map((c) => c.split("=")[0]), ["tp_auth", "tp_refresh"]);
@@ -124,4 +124,35 @@ test("access claims are read without trusting them for anything but display", ()
   assert.deepEqual(accessClaims(jwt({ exp: 5, email: "a@b.co", email_verified: true })),
     { exp: 5, email: "a@b.co", ev: true });
   assert.deepEqual(accessClaims("garbage"), { exp: 0, email: null, ev: false });
+});
+
+// Review round (S250): only a NotAuthorized refresh ends the session.
+for (const [label, err] of [
+  ["a WAF block (try_later)", new CognitoError("", 403)],
+  ["throttling", new CognitoError("TooManyRequestsException", 400)],
+  ["a Cognito 500", new CognitoError("InternalErrorException", 500)],
+  ["a network error", new TypeError("fetch failed")],
+] as Array<[string, unknown]>) {
+  test(`${label} during refresh keeps the cookies so the next request retries`, async () => {
+    const cookies = jar(sessionCookies(SECRET, TOKENS, null, NOW, false));
+    const fail = async () => {
+      throw err;
+    };
+    // Still inside the access token's lifetime: the current token is used.
+    const near = await currentAccess(SECRET, cookies, fail, NOW + 3600 - 10);
+    assert.equal(near.accessToken, TOKENS.accessToken);
+    assert.deepEqual(near.setCookies, []);
+    // Past it: signed out for this request only, nothing cleared.
+    const past = await currentAccess(SECRET, cookies, fail, NOW + 4000);
+    assert.equal(past.accessToken, null);
+    assert.deepEqual(past.setCookies, []);
+    assert.ok(readRefresh(SECRET, cookies, NOW + 4000));
+  });
+}
+
+test("the pending step keeps the time its code was requested", () => {
+  const cookies = jar([pendingCookie(SECRET, { email: "t@example.com", mode: "signup", session: null, at: NOW },
+    NOW, false)]);
+  assert.deepEqual(readPending(SECRET, cookies, NOW + 1),
+    { email: "t@example.com", mode: "signup", session: null, at: NOW });
 });

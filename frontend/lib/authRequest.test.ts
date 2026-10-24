@@ -9,11 +9,14 @@ test("sign-in is off without a session secret of at least 32 characters", () => 
   assert.equal(authEnv({ TP_SESSION_SECRET: "short" }).sessionSecret, "");
   assert.equal(authEnv({ TP_SESSION_SECRET: "x".repeat(32), TP_COGNITO_BFF_KEY: " k " }).sessionSecret, "x".repeat(32));
   assert.equal(authEnv({ TP_COGNITO_BFF_KEY: " k " }).bffKey, "k");
+  assert.equal(authEnv({ TP_COGNITO_SIGNUP_PROOF_KEY: " p " }).signupProofKey, "p");
+  assert.equal(authEnv({}).signupProofKey, "");
 });
 
 test("the call context carries the BFF key and the traveller address", () => {
-  const ctx = callContext({ sessionSecret: "s", bffKey: "k" }, { get: (n) => (n === "x-forwarded-for" ? "192.0.2.9" : null) });
-  assert.deepEqual([ctx.bffKey, ctx.travellerIp], ["k", "192.0.2.9"]);
+  const ctx = callContext({ sessionSecret: "s", bffKey: "k", signupProofKey: "p" },
+    { get: (n) => (n === "x-forwarded-for" ? "192.0.2.9" : null) });
+  assert.deepEqual([ctx.bffKey, ctx.signupProofKey, ctx.travellerIp], ["k", "p", "192.0.2.9"]);
 });
 
 test("next paths stay on this site", () => {

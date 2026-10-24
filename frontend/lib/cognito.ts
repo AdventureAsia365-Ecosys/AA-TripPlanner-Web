@@ -3,21 +3,35 @@
 // runs it with a fake fetch.
 //
 // Flow (one email code, never a password):
-//   start(email):  SignUp (no password) -> a sign-up code is mailed;
+//   start(email):  SignUp (no password, signed with the BFF's sign-up proof, below) -> a sign-up code is mailed;
 //                  the address already has a user -> InitiateAuth USER_AUTH, PREFERRED_CHALLENGE=EMAIL_OTP -> a
 //                  sign-in code is mailed; that user never confirmed -> ResendConfirmationCode.
 //                  The answer to the browser is the same in every case (no account enumeration).
 //   verify(code):  sign-up  -> ConfirmSignUp, then InitiateAuth USER_AUTH with the session ConfirmSignUp returns
-//                              (tokens with no second code); no session -> a sign-in code is mailed instead;
-//                  sign-in  -> RespondToAuthChallenge EMAIL_OTP.
+//                              (tokens with no second code); no session -> a sign-in code is mailed instead.
+//                              A sign-up Session lives 3 minutes (auth_session_validity) while the code lives
+//                              longer: when ConfirmSignUp refuses the stale Session, it is retried without one;
+//                  sign-in  -> RespondToAuthChallenge EMAIL_OTP. Refused as not authorised while the 3-minute
+//                              session cannot have expired yet: the address may be an abandoned sign-up that got a
+//                              simulated challenge (prevent_user_existence_errors), so a new sign-up code is
+//                              requested (ResendConfirmationCode). Both fallbacks wait for the live E2E to confirm
+//                              the real Cognito answers (docs/implementation-notes/AA-908.md).
 //   refresh:       GetTokensFromRefreshToken (refresh-token rotation is on for this client, so the answer can carry a
 //                  new refresh token, which replaces the old one).
 //   sign-out:      RevokeToken (the refresh token and the access tokens issued from it).
 //
 // The client is public (no secret). The BFF marks its calls for the Cognito web ACL (AA-CIS-Infra identity.tf, rule
 // BffRatePerTravellerIp): `x-aa-traveller-bff` = TP_COGNITO_BFF_KEY and `X-AA-Traveller-IP` = the traveller's own
-// address, so the per-IP sign-in limits count each traveller, not the shared Vercel egress address. Never log an
-// email, a code, a session or a token.
+// address, so the per-IP sign-in limits count each traveller, not the shared Vercel egress address. Both headers go
+// together or not at all: a keyed call without a traveller address would escape every per-person limit.
+//
+// Sign-up proof: the EXTERNAL pre sign-up trigger accepts a native SignUp only from this BFF (AA-CIS-Infra
+// lambda_src/identity_triggers/external.py). Otherwise anyone could pre-register a traveller's address with a
+// password through the public API and inherit the account once the traveller confirms it. SignUp therefore carries
+// ValidationData bff_ts (unix seconds) and bff_proof = hex HMAC-SHA256(TP_COGNITO_SIGNUP_PROOF_KEY,
+// "<email>\n<bff_ts>"); the trigger accepts it for 5 minutes. Never log an email, a code, a session or a token.
+
+import { createHmac } from "node:crypto";
 
 export const COGNITO_REGION = "us-west-1";
 export const COGNITO_ENDPOINT = `https://cognito-idp.${COGNITO_REGION}.amazonaws.com/`;
@@ -58,10 +72,25 @@ export class CognitoError extends Error {
 
 export interface CallContext {
   bffKey: string;
+  signupProofKey?: string; // "" / absent: SignUp goes without a proof and the trigger refuses new addresses
   travellerIp: string | null;
   fetchImpl?: typeof fetch;
   clientId?: string;
+  now?: () => number; // unix seconds (tests)
 }
+
+// Matches AA-CIS-Infra external.py signup_proof() (shared test vector in cognito.test.ts).
+export function signUpProof(key: string, email: string, ts: string): string {
+  return createHmac("sha256", key).update(`${email}\n${ts}`).digest("hex");
+}
+
+function nowS(ctx: CallContext): number {
+  return ctx.now ? ctx.now() : Math.floor(Date.now() / 1000);
+}
+
+// How long a sign-in challenge Session lives (AA-CIS-Infra identity.tf auth_session_validity = 3 minutes), with a
+// margin for clock and network.
+export const AUTH_SESSION_S = 170;
 
 export function errorCode(e: unknown): ErrorCode {
   if (!(e instanceof CognitoError)) return "unavailable";
@@ -115,8 +144,10 @@ async function call(action: string, body: Record<string, unknown>, ctx: CallCont
     "content-type": "application/x-amz-json-1.1",
     "x-amz-target": `AWSCognitoIdentityProviderService.${action}`,
   };
-  if (ctx.bffKey) headers[BFF_KEY_HEADER] = ctx.bffKey;
-  if (ctx.travellerIp) headers[TRAVELLER_IP_HEADER] = ctx.travellerIp;
+  if (ctx.bffKey && ctx.travellerIp) {
+    headers[BFF_KEY_HEADER] = ctx.bffKey;
+    headers[TRAVELLER_IP_HEADER] = ctx.travellerIp;
+  }
   const res = await (ctx.fetchImpl ?? fetch)(COGNITO_ENDPOINT, {
     method: "POST",
     headers,
@@ -171,6 +202,7 @@ export interface Pending {
   email: string;
   mode: Mode;
   session: string | null;
+  at?: number; // unix seconds when the code was requested (absent in a pending step sealed before this field)
 }
 
 // Step 1: mail a code to `email` (already normalised). Returns what step 2 needs (kept sealed in a cookie).
@@ -179,19 +211,32 @@ export async function start(email: string, ctx: CallContext): Promise<Pending> {
   try {
     // Username = the email (the pool's username attribute); no password, no attributes (the client writes only
     // `name`, and the trigger refuses email_verified).
-    const data = await call("SignUp", { ClientId: clientId, Username: email }, ctx);
-    return { email, mode: "signup", session: data?.Session ? String(data.Session) : null };
+    const body: Record<string, unknown> = { ClientId: clientId, Username: email };
+    if (ctx.signupProofKey) {
+      const ts = String(nowS(ctx));
+      body.ValidationData = [
+        { Name: "bff_ts", Value: ts },
+        { Name: "bff_proof", Value: signUpProof(ctx.signupProofKey, email, ts) },
+      ];
+    }
+    const data = await call("SignUp", body, ctx);
+    return { email, mode: "signup", session: data?.Session ? String(data.Session) : null, at: nowS(ctx) };
   } catch (e) {
     if (!(e instanceof CognitoError) || e.type !== "UsernameExistsException") throw e;
   }
   try {
-    return { email, mode: "signin", session: await requestSignInCode(email, ctx) };
+    return { email, mode: "signin", session: await requestSignInCode(email, ctx), at: nowS(ctx) };
   } catch (e) {
     if (!(e instanceof CognitoError) || e.type !== "UserNotConfirmedException") throw e;
   }
-  // An earlier sign-up that never entered its code: mail a new sign-up code.
+  // An earlier sign-up that never entered its code: mail a new sign-up code. Such a user can only have been created
+  // by this BFF (the pre sign-up trigger requires its proof), so it has no password.
   await call("ResendConfirmationCode", { ClientId: clientId, Username: email }, ctx);
-  return { email, mode: "signup", session: null };
+  return { email, mode: "signup", session: null, at: nowS(ctx) };
+}
+
+function isType(e: unknown, ...types: string[]): boolean {
+  return e instanceof CognitoError && types.includes(e.type);
 }
 
 export type VerifyResult = { tokens: Tokens } | { next: Pending };
@@ -201,20 +246,42 @@ export type VerifyResult = { tokens: Tokens } | { next: Pending };
 export async function verify(pending: Pending, code: string, ctx: CallContext): Promise<VerifyResult> {
   const clientId = ctx.clientId ?? TRAVELLER_CLIENT_ID;
   if (pending.mode === "signin") {
-    const data = await call("RespondToAuthChallenge", {
-      ChallengeName: "EMAIL_OTP",
-      ClientId: clientId,
-      Session: pending.session,
-      ChallengeResponses: { USERNAME: pending.email, EMAIL_OTP_CODE: code },
-    }, ctx);
+    let data;
+    try {
+      data = await call("RespondToAuthChallenge", {
+        ChallengeName: "EMAIL_OTP",
+        ClientId: clientId,
+        Session: pending.session,
+        ChallengeResponses: { USERNAME: pending.email, EMAIL_OTP_CODE: code },
+      }, ctx);
+    } catch (e) {
+      // Not authorised although the session is still young: likely a simulated challenge for an abandoned sign-up.
+      const young = typeof pending.at === "number" && nowS(ctx) - pending.at < AUTH_SESSION_S;
+      if (!isType(e, "NotAuthorizedException") || !young) throw e;
+      try {
+        await call("ResendConfirmationCode", { ClientId: clientId, Username: pending.email }, ctx);
+      } catch {
+        throw e;
+      }
+      return { next: { email: pending.email, mode: "signup", session: null, at: nowS(ctx) } };
+    }
     return { tokens: tokens(data) };
   }
-  const confirmed = await call("ConfirmSignUp", {
+  const confirm = (session: string | null) => call("ConfirmSignUp", {
     ClientId: clientId,
     Username: pending.email,
     ConfirmationCode: code,
-    ...(pending.session ? { Session: pending.session } : {}),
+    ...(session ? { Session: session } : {}),
   }, ctx);
+  let confirmed;
+  try {
+    confirmed = await confirm(pending.session);
+  } catch (e) {
+    // A Session older than 3 minutes may be refused while the code itself is still good: retry without it (the
+    // traveller then gets a sign-in code below).
+    if (!pending.session || !isType(e, "NotAuthorizedException", "ExpiredCodeException")) throw e;
+    confirmed = await confirm(null);
+  }
   if (confirmed?.Session) {
     const data = await call("InitiateAuth", {
       AuthFlow: "USER_AUTH",
@@ -224,7 +291,9 @@ export async function verify(pending: Pending, code: string, ctx: CallContext): 
     }, ctx);
     if (data?.AuthenticationResult) return { tokens: tokens(data) };
   }
-  return { next: { email: pending.email, mode: "signin", session: await requestSignInCode(pending.email, ctx) } };
+  return {
+    next: { email: pending.email, mode: "signin", session: await requestSignInCode(pending.email, ctx), at: nowS(ctx) },
+  };
 }
 
 export async function refresh(refreshToken: string, ctx: CallContext): Promise<Tokens> {

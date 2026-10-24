@@ -10,7 +10,8 @@ import { tripHeaders } from "@/lib/tripProxy";
 // AA-908 — POST /api/auth/verify {code}: check the email code of the pending step (__Host-tp_signin). On success the
 // tokens go into the sealed session cookies, and the assembly Lambda's POST /me/claim links this browser's guest
 // trips (the guest cookie) to the account. A sign-up confirmed without a sign-in session answers
-// {step: "code", resent: true}: a sign-in code has been mailed.
+// {step: "code", resent: true, mode: "signin"}: a sign-in code has been mailed. A sign-in refused for what looks like
+// an abandoned sign-up answers {step: "code", resent: true, mode: "signup"}: a new sign-up code has been mailed.
 export const dynamic = "force-dynamic";
 
 const TRIP_API_URL = process.env.TRIP_API_URL ?? "";
@@ -43,8 +44,10 @@ export async function POST(req: NextRequest) {
     return authJson({ error: err }, status, requestId, err === "code_invalid" ? [] : [clearCookie("signin")]);
   }
   if ("next" in result) {
-    console.log(authLogLine("verify", "signin_code_sent", requestId));
-    return authJson({ step: "code", resent: true }, 200, requestId, [pendingCookie(env.sessionSecret, result.next)]);
+    console.log(authLogLine("verify", result.next.mode === "signup" ? "signup_code_resent" : "signin_code_sent",
+      requestId));
+    return authJson({ step: "code", resent: true, mode: result.next.mode }, 200, requestId,
+      [pendingCookie(env.sessionSecret, result.next)]);
   }
 
   const cookies = [...sessionCookies(env.sessionSecret, result.tokens), clearCookie("signin")];

@@ -65,7 +65,9 @@ export default function SignInForm({ next }: { next: string }) {
     setBusy(false);
     if (status === 200 && data.resent === true) {
       setCode("");
-      setNotice("Your email is confirmed. We sent one more code to sign you in.");
+      setNotice(data.mode === "signup"
+        ? "We sent you a new code. Enter it to finish creating your account."
+        : "Your email is confirmed. We sent one more code to sign you in.");
       return;
     }
     if (data.error === "code_expired") setStep("email");

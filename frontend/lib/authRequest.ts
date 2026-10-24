@@ -4,13 +4,15 @@
 import { travellerIp, type CallContext, type HeaderSource } from "./cognito.ts";
 
 // TP_SESSION_SECRET seals the session cookies (lib/seal.ts); TP_COGNITO_BFF_KEY marks the BFF's Cognito calls for
-// the web ACL (AA-CIS-Infra secret tripplanner/<env>/cognito-bff-key). Both are Vercel env values (Production and
-// Preview), set by pipe, never typed into a file.
+// the web ACL (AA-CIS-Infra secret tripplanner/<env>/cognito-bff-key); TP_COGNITO_SIGNUP_PROOF_KEY signs each SignUp
+// for the pre sign-up trigger (secret tripplanner/<env>/cognito-signup-proof-key). All are Vercel env values
+// (Production and Preview), set by pipe, never typed into a file.
 export const MIN_SECRET_CHARS = 32;
 
 export interface AuthEnv {
   sessionSecret: string; // "" = sign-in is not configured here (the routes answer 503 sign_in_unavailable)
   bffKey: string;
+  signupProofKey: string; // "" = new addresses cannot sign up (existing travellers still sign in)
 }
 
 export function authEnv(env: Record<string, string | undefined>): AuthEnv {
@@ -18,11 +20,12 @@ export function authEnv(env: Record<string, string | undefined>): AuthEnv {
   return {
     sessionSecret: secret.length >= MIN_SECRET_CHARS ? secret : "",
     bffKey: (env.TP_COGNITO_BFF_KEY ?? "").trim(),
+    signupProofKey: (env.TP_COGNITO_SIGNUP_PROOF_KEY ?? "").trim(),
   };
 }
 
 export function callContext(env: AuthEnv, headers: HeaderSource, fetchImpl?: typeof fetch): CallContext {
-  return { bffKey: env.bffKey, travellerIp: travellerIp(headers), fetchImpl };
+  return { bffKey: env.bffKey, signupProofKey: env.signupProofKey, travellerIp: travellerIp(headers), fetchImpl };
 }
 
 // One JSON line per auth step (Vercel logs): the step and its outcome only, never an email, code or token.
