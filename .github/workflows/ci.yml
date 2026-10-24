@@ -130,7 +130,7 @@ jobs:
           if grep -qE "[0-9]+ (skipped|xfailed|xpassed|deselected)" /tmp/migrations.txt; then
             echo "::error::migration tests were skipped, xfailed, xpassed or deselected"; exit 1
           fi
-          for module in test_migration_lint test_tp013_pg test_tp015_pg test_tp016_pg test_tp017_pg test_tp018_pg test_replay_twice_pg; do
+          for module in test_migration_lint test_tp013_pg test_tp015_pg test_tp016_pg test_tp017_pg test_tp018_pg test_tp019_pg test_replay_twice_pg; do
             if ! grep -qE "^migrations/tests/${module}\.py::[^ ]+ PASSED" /tmp/migrations.txt; then
               echo "::error::${module}.py reported no PASSED test"; exit 1
             fi
