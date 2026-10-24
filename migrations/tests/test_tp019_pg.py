@@ -6,9 +6,10 @@ tp-001…012 replayed as files, the CIS 243 grants, tp-013 as the master, tp-014
 then tp-019 the same way.
 
 Checks: the table is tp_owner's with the expected columns, the UNIQUE (iss, sub) and the DM-6.1 tags; the
-sessions.account_id FK and its partial index; the runtime role tripplanner may SELECT / INSERT / UPDATE accounts
-(no DELETE / TRUNCATE, no DDL) and may set sessions.account_id; the claim shape (set only where NULL) never moves a
-session owned by another account; registration once and a re-run as tp_owner being a no-op.
+sessions.account_id FK (ON DELETE SET NULL, DM-7) and its partial index; the runtime role tripplanner may SELECT /
+INSERT / UPDATE accounts (no DELETE / TRUNCATE, no DDL) and may set sessions.account_id; the claim shape (set only
+where NULL) never moves a session owned by another account; erasing an account unlinks its sessions; registration
+once and a re-run as tp_owner being a no-op.
 """
 from __future__ import annotations
 
@@ -154,7 +155,7 @@ def test_sessions_account_id_is_a_nullable_fk_with_a_partial_index(db):
 
     col, fk, idx = run(check())
     assert [c[:3] for c in col] == [("account_id", "uuid", False)]
-    assert fk == "FOREIGN KEY (account_id) REFERENCES tripplanner.traveller_accounts(id)"
+    assert fk == "FOREIGN KEY (account_id) REFERENCES tripplanner.traveller_accounts(id) ON DELETE SET NULL"
     assert idx.endswith("USING btree (account_id) WHERE (account_id IS NOT NULL)")
 
 
@@ -222,6 +223,31 @@ def test_runtime_upsert_and_claim_shape(db):
     assert a1 == a2 and a1 != b
     assert claimed == "UPDATE 1" and again == "UPDATE 0"
     assert owners == {guest: a1, owned: b}
+
+
+def test_erasing_an_account_unlinks_its_sessions(db):
+    """DM-7: the reviewed erasure step deletes the account row (as tp_owner, never the runtime role); the account's
+    sessions stay as guest sessions (account_id set to NULL) instead of blocking the DELETE."""
+    sid = uuid.uuid4()
+
+    async def check():
+        su = await asyncpg.connect(db["su_dsn"])
+        try:
+            async with su.transaction():
+                await su.execute("SET LOCAL ROLE tp_owner")
+                acc = await su.fetchval("INSERT INTO tripplanner.traveller_accounts (iss, sub) VALUES ($1, $2) "
+                                        "RETURNING id", ISS, str(uuid.uuid4()))
+                await su.execute("INSERT INTO tripplanner.sessions (id, guest_token_hash, account_id) "
+                                 "VALUES ($1, $2, $3)", sid, secrets.token_bytes(32), acc)
+                deleted = await su.execute("DELETE FROM tripplanner.traveller_accounts WHERE id = $1", acc)
+                left = await su.fetch("SELECT account_id FROM tripplanner.sessions WHERE id = $1", sid)
+                raise _Rollback((deleted, [r["account_id"] for r in left]))
+        except _Rollback as r:
+            return r.value
+        finally:
+            await su.close()
+
+    assert run(check()) == ("DELETE 1", [None])
 
 
 def test_checks_refuse_a_non_https_issuer_and_an_empty_sub(db):

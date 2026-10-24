@@ -253,7 +253,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - **Traveller accounts (AA-908, tp-019; root ADR 0006 Phase 4).** `tripplanner.traveller_accounts` holds one row per
   signed-in traveller, keyed by the Cognito EXTERNAL identity `(iss, sub)` of the verified access token (UNIQUE,
   tagged `pii:online_id`), with no email column: the email is read from the token whenever it is needed.
-  `sessions.account_id` (nullable FK, partial index `sessions_account_idx`) links a guest session to the account that
+  `sessions.account_id` (nullable FK, ON DELETE SET NULL, partial index `sessions_account_idx`) links a guest session to the account that
   claimed it at sign-in. The claim sets it only where it is NULL, so a session owned by an account is never moved.
   The runtime role may SELECT / INSERT / UPDATE accounts, never DELETE. The sign-in, claim, My Trips and the
   account-aware guards come with AA-908 S4/S5; until then nothing reads these objects.
