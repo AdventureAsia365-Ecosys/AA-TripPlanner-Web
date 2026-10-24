@@ -302,6 +302,9 @@ def test_registered_keys_match_the_files_after_pass_2(replay):
 RUNTIME_DML_EXCEPTIONS = {
     # tp-017 (AA-847): the id-map is filled once (INSERT, as tripplanner) and read by assembly; never edited.
     "component_id_map": {"sel", "ins"},
+    # tp-019 (AA-908): accounts are upserted at sign-in (INSERT ... ON CONFLICT DO UPDATE last_sign_in_at); erasing
+    # one is a reviewed erasure step, not a runtime path.
+    "traveller_accounts": {"sel", "ins", "upd"},
 }
 
 

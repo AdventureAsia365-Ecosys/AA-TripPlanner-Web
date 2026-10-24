@@ -250,6 +250,14 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   (`tripReadAnswer`, AA-837: no red console error on a first visit); the other reads pass through.
   Outcomes in the `guest_auth` line: `read_ok`, `no_token`, `no_owner`, `bad_token`, `token_mismatch`.
 
+- **Traveller accounts (AA-908, tp-019; root ADR 0006 Phase 4).** `tripplanner.traveller_accounts` holds one row per
+  signed-in traveller, keyed by the Cognito EXTERNAL identity `(iss, sub)` of the verified access token (UNIQUE,
+  tagged `pii:online_id`), with no email column: the email is read from the token whenever it is needed.
+  `sessions.account_id` (nullable FK, partial index `sessions_account_idx`) links a guest session to the account that
+  claimed it at sign-in. The claim sets it only where it is NULL, so a session owned by an account is never moved.
+  The runtime role may SELECT / INSERT / UPDATE accounts, never DELETE. The sign-in, claim, My Trips and the
+  account-aware guards come with AA-908 S4/S5; until then nothing reads these objects.
+
 ### Data model — event-sourced trips
 
 - A trip is stored as an **append-only event stream** rather than a single mutable row. Each user
@@ -312,7 +320,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   enforces this: `migrations/tests/migration_lint.py` (TripPlanner rules), the AA-CIS-Infra
   `db/run_migration.py --inspect` lint at a pinned commit (`test_infra_runner.py`) and a replay of
   tp-001…013 on PostgreSQL 15 + pgvector (`test_tp013_pg.py`; `test_tp015_pg.py` continues it with tp-014/015 as
-  `tp_owner`, `test_tp016_pg.py` with tp-016, `test_tp017_pg.py` / `test_tp018_pg.py` with tp-017 / tp-018). `test_replay_twice_pg.py` (AA-849) applies every file twice: the second run must not error and
+  `tp_owner`, `test_tp016_pg.py` with tp-016, `test_tp017_pg.py` / `test_tp018_pg.py` / `test_tp019_pg.py` with tp-017 / tp-018 / tp-019). `test_replay_twice_pg.py` (AA-849) applies every file twice: the second run must not error and
   must change nothing, and the registered `tp-NNN` keys must equal the files, so **every new file must be
   safe to run again** (a file whose objects a later file dropped — tp-003, tp-004, tp-013 after the tp-018 drop — is
   listed in `SUPERSEDED_BY_DROP` with the dropping file, and must still fail or change the state when re-run) (`IF NOT EXISTS`, `CREATE OR REPLACE`, `ON CONFLICT (version) DO NOTHING`, no
