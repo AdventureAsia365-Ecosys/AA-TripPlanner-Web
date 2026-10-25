@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.7.0...v0.8.0) (2026-10-25)
+
+
+### Features
+
+* migration tp-019 (traveller accounts and sessions.account_id) ([#145](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/145)) ([ce4bd3b](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/ce4bd3b7a3e3c51344d548ad5c365d1790436164))
+* traveller access token, guest-trip claim, My Trips API and v1.4 hand-off in the assembly Lambda ([#147](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/147)) ([90ea21f](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/90ea21f746e23af16b48abecac49d8304ddbdf9b))
+* traveller sign-in by email code through the BFF, session cookies and My Trips page ([#148](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/148)) ([49738c6](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/49738c6fd8bef69ae77525b7bac79c4aad40f2e8))
+
 ## [0.7.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.6.0...v0.7.0) (2026-10-23)
 
 
