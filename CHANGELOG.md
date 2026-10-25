@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.8.1...v0.8.2) (2026-10-25)
+
+
+### Bug Fixes
+
+* linear slug suffix check (CodeQL ReDoS) and zod 4.6.7 under @vercel/cli-config ([#152](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/152)) ([f024a39](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/f024a3963cf4564d1f007e04199d0e06b88a3a40))
+
 ## [0.8.1](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.8.0...v0.8.1) (2026-10-25)
 
 
