@@ -38,6 +38,41 @@ def test_slugify_matches_catalog_slug_rule():
     assert cat.slugify(None) == ""
 
 
+@pytest.mark.parametrize("slug, suffix", [
+    ("hanoi-and-ha-long-vietnam-3f0c2a8e", "3f0c2a8e"),
+    ("-3f0c2a8e", "3f0c2a8e"),            # empty title part still carries a suffix
+    ("a--3f0c2a8e", "3f0c2a8e"),
+    ("3f0c2a8e", ""),                     # no '-' before it
+    ("tour-3f0c2a8", ""),                 # 7 hex
+    ("tour-3f0c2a8e9", ""),               # 9 hex
+    ("tour-3f0c2a8g", ""),                # not hex
+    ("tour-3f0c2a8e-", ""),               # trailing '-'
+    ("tour-3F0C2A8E", ""),                # callers lowercase first
+    ("", ""),
+])
+def test_source_id_suffix(slug, suffix):
+    assert cat.source_id_suffix(slug) == suffix
+
+
+def test_source_id_suffix_agrees_with_the_old_regex_on_route_slugs():
+    """Same answers as the replaced `.*-[0-9a-f]{8}` fullmatch over the route's [a-z0-9-] alphabet."""
+    import itertools
+    import re
+    old = re.compile(r".*-[0-9a-f]{8}")
+    tails = ["3f0c2a8e", "3f0c2a8", "3f0c2a8e9", "3f0c2a8z", "", "abcdef12"]
+    heads = ["", "-", "a", "a-", "a-b", "tour-name", "x--"]
+    for head, sep, tail in itertools.product(heads, ["", "-"], tails):
+        s = head + sep + tail
+        want = s.rsplit("-", 1)[-1] if old.fullmatch(s) else ""
+        assert cat.source_id_suffix(s) == want, s
+
+
+def test_source_id_suffix_is_linear_on_long_adversarial_input():
+    # CodeQL py/polynomial-redos input shapes; a bounded split + fixed-length match returns at once.
+    for s in ("a" * 1_000_000, "-" * 1_000_000, "-aaaaaaa" * 125_000, "a-" * 500_000):
+        assert cat.source_id_suffix(s) == ""
+
+
 @pytest.mark.parametrize("text,months", [
     ("October to April", {10, 11, 12, 1, 2, 3, 4}),
     ("Nov - Mar", {11, 12, 1, 2, 3}),
