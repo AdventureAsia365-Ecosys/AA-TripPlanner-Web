@@ -51,6 +51,14 @@ export default function PrivacyPage() {
             you agreed.
           </li>
           <li>
+            <strong>Your account, only if you sign in.</strong> Your email address, which you prove with a code we email
+            you (there is no password), is kept by our sign-in service (Amazon Cognito). The planner itself stores only a
+            random account identifier and the time you last signed in, and links the trips you plan to it so you can
+            open them on any device. When you sign in, the trips planned in this browser before you signed in (and not
+            yet in another account) are added to your account, so on a shared computer, sign out when you are done. When
+            you send a trip while signed in, the advisor receives your signed-in email, marked as confirmed.
+          </li>
+          <li>
             <strong>Technical data.</strong> Our hosting providers process your IP address, browser type and the pages
             you request in order to deliver the site and keep it secure.
           </li>
@@ -64,6 +72,11 @@ export default function PrivacyPage() {
             <strong>Guest cookie</strong> (set on the planner page only): a random token that proves a saved trip is
             yours. It cannot be read by scripts on the page, and it lasts up to 400 days, renewed each time you use the
             planner. We store only a one-way hash of it.
+          </li>
+          <li>
+            <strong>Sign-in cookies</strong> (only if you sign in): your encrypted sign-in session, so you stay signed in
+            for up to 30 days, and, for 10 minutes while you enter the emailed code, the step you are on. Scripts on the
+            page cannot read them. Signing out removes them, together with the guest cookie of that browser.
           </li>
           <li>
             <strong>Browser storage:</strong> the random ids of your current trip, so a reload restores it, and your
@@ -105,8 +118,8 @@ export default function PrivacyPage() {
             trips you send and keeps the customer record. Advisors are notified of a new inquiry by email.
           </li>
           <li>
-            <strong>Amazon Web Services</strong> — hosting, database, the AI models above (Amazon Bedrock) and the
-            notification emails (Amazon SES).
+            <strong>Amazon Web Services</strong> — hosting, database, the AI models above (Amazon Bedrock), sign-in
+            (Amazon Cognito) and the emails: advisor notifications and sign-in codes (Amazon SES).
           </li>
           <li>
             <strong>Vercel</strong> — hosts and delivers this website.
@@ -131,7 +144,8 @@ export default function PrivacyPage() {
           Retention periods are being set and are [to be confirmed]. The current plan: the copy of your contact details
           inside the message that sends your trip to the booking system is removed after 90 days, and the customer record
           in the booking system is kept while your enquiry or booking is active and then for a period [to be confirmed].
-          Trips that were never sent [retention to be confirmed].
+          Trips that were never sent [retention to be confirmed]. A sign-in account is kept while it is in use and is
+          erased with its link to your trips on request [period to be confirmed].
         </p>
       </LegalSection>
 

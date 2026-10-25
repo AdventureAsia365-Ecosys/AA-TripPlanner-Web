@@ -3,6 +3,7 @@
 import Link from "next/link";
 import AiLabel, { AI_BRAND_SHORT, AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
 import { ThemeToggle } from "@/ui/ThemeToggle";
+import AccountLink from "@/components/AccountLink";
 
 // Top brand bar — Adventure Asia wordmark + tagline. Kept slim so the map
 // dominates the viewport (map-first product).
@@ -39,6 +40,8 @@ export default function Header() {
         <span className="hidden text-k-muted md:inline">
           Pin experiences · build your trip · hand off to an advisor
         </span>
+        {/* AA-908: Sign in / My trips (signing in keeps this trip in My Trips). */}
+        <AccountLink />
         {/* AA-837: the planner follows the site theme too, so it carries the same toggle. */}
         <ThemeToggle />
       </nav>

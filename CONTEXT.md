@@ -155,6 +155,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   up). A **paused** key stays **404** (temporary). A **superseded** version needs nothing: the slug suffix is the
   stable `source_id`, so the old slug finds the current version and the page permanent-redirects (308) to its slug.
   A tombstone that cannot be read (before CIS 274, grant missing) degrades to the pre-L6 404.
+- `/sign-in` and `/trips` (AA-908): traveller sign-in by email code and My Trips (see "Traveller sign-in in the BFF").
 - `/privacy` and `/terms` (AA-886): **draft** legal pages (static, `noindex`, not in the sitemap) built on
   `components/site/LegalPage.tsx`, which always shows a "Draft — pending legal review" banner. Paths and
   the draft label live in `lib/legal.ts`; the site footer and the contact form in `TripPanel` (the only
@@ -285,6 +286,50 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
     A guest send is unchanged (`verified: false`, `identity: null`).
   - Log lines: `guest_auth` outcomes, `traveller_auth` (`invalid` / `unavailable`) and `traveller_account` (route,
     outcome, counts); never iss, sub, email or a token.
+- **Traveller sign-in in the BFF (AA-908 S5; root ADR 0006 decisions 1 and 4: email code only, no password).**
+  Option (b): the BFF drives Cognito's public API itself (`lib/cognito.ts`), there is no managed-login redirect.
+  `POST /api/auth/start {email}` calls `SignUp` without a password (a new address), else `InitiateAuth` `USER_AUTH`
+  with `PREFERRED_CHALLENGE=EMAIL_OTP` (an existing one), else `ResendConfirmationCode` (a sign-up never confirmed);
+  the browser gets the same answer in every case.
+  - **Only this BFF may create a traveller (sign-up proof).** `SignUp` carries `ValidationData` `bff_ts` + `bff_proof`
+    = hex HMAC-SHA256(Vercel env `TP_COGNITO_SIGNUP_PROOF_KEY`, `"<email>\n<bff_ts>"`); the Infra pre sign-up trigger
+    refuses a native sign-up without a valid proof less than 5 minutes old. Otherwise anyone could pre-register a
+    traveller's address with a password through the public API and inherit the account once the traveller confirmed
+    it with our code (review round, S250). So every UNCONFIRMED traveller was created here, without a password.
+  - Two fallbacks for Cognito answers the unit tests cannot pin (confirm in the live E2E): a sign-up `Session` older
+    than 3 minutes refused by `ConfirmSignUp` is retried without it (then a sign-in code is mailed), and a sign-in
+    code refused as not authorised while its 3-minute session is still young requests a new sign-up code (an
+    abandoned sign-up may get a simulated challenge under `prevent_user_existence_errors`). `POST /api/auth/verify {code}` confirms (`ConfirmSignUp`, then
+  `InitiateAuth` with its session) or answers the challenge (`RespondToAuthChallenge`), stores the tokens and calls
+  the Lambda's `POST /me/claim` with the guest cookie (best effort). `POST /api/auth/sign-out` revokes the refresh
+  token (`RevokeToken`), clears the session cookies **and the guest cookie** (the next person on this browser must
+  not open the account's trips), and the client forgets its trip ids. `GET /api/auth/status` (always 200) feeds the
+  header link and the send form; `GET /api/me` (401 `sign_in_required` when signed out) returns the email and the
+  Lambda's `/me/trips`.
+  - Cookies (`lib/authSession.ts`, sealed with AES-256-GCM by `lib/seal.ts`, a copy of AA-Partner's with its own
+    purposes and salt; key = Vercel env `TP_SESSION_SECRET`): `__Host-tp_auth` (access token, its expiry, email),
+    `__Host-tp_refresh` (refresh token; its own cookie because a Cognito refresh token is about 1.8 kB) and
+    `__Host-tp_signin` (the pending code step, 10 minutes). HttpOnly, Secure, SameSite=Lax, Path=/. When fewer than
+    60 s of the access token remain, the BFF refreshes it (`GetTokensFromRefreshToken`; rotation is on, a rotated
+    refresh token replaces the old one, the 60 s grace covers two parallel refreshes). Only a refresh refused as
+    `NotAuthorizedException` (revoked or expired) signs out; a WAF block, throttling, a Cognito 5xx or a network error
+    keeps the cookies (the still-valid access token is used, else that one request is signed out) so the next
+    request retries.
+    Only the no-store routes `/api/auth/*`, `/api/me` and `/api/trip` set them, never a CDN-cached page.
+  - `/api/trip` forwards the access token (`x-tripplanner-access`) when signed in, so My Trips opens a trip on any
+    browser and signed-in edits link their session.
+  - WAF: every Cognito call carries `x-aa-traveller-bff` = Vercel env `TP_COGNITO_BFF_KEY` (AA-CIS-Infra secret
+    `tripplanner/<env>/cognito-bff-key`) and `X-AA-Traveller-IP` = the first `x-forwarded-for` address, so the Cognito
+    web ACL counts each traveller, not the shared Vercel egress address (Infra rule `BffRatePerTravellerIp`). The two
+    go together: without a valid traveller address neither is sent, and the call is counted per egress IP.
+  - Sign-in claims every unowned guest trip of this browser (§Traveller accounts); the privacy page tells travellers
+    to sign out on a shared computer.
+  - Without `TP_SESSION_SECRET` (32+ characters) sign-in answers 503 `sign_in_unavailable` and the header shows no
+    link: the planner works as a guest. Per-PR previews can sign in only when the env values are set for Preview (new addresses also need `TP_COGNITO_SIGNUP_PROOF_KEY`).
+  - Pages: `/sign-in` (two-step email -> code form, `?next=` same-site path, default `/trips`) and `/trips` (My
+    Trips: status Draft / Sent to an advisor, stops, days, "Open" writes the ids to localStorage and opens `/plan`),
+    both noindex. The header link (`components/AccountLink.tsx`, "Sign in" / "My trips") is fetched by the browser,
+    because the kit pages are CDN-cached. The send form shows the signed-in email read-only.
 
 ### Data model — event-sourced trips
 

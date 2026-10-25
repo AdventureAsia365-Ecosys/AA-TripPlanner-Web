@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GUEST_TOKEN_HEADER } from "./guestToken.ts";
-import { EMPTY_TRIP_BODY, parseTripBody, tripHeaders, tripReadAnswer, tripReadPath } from "./tripProxy.ts";
+import { ACCESS_TOKEN_HEADER, EMPTY_TRIP_BODY, parseTripBody, tripHeaders, tripReadAnswer, tripReadPath } from "./tripProxy.ts";
 
 const TRIP = "00000000-0000-4000-8000-0000000000b1";
 const DEST = "00000000-0000-4000-8000-0000000000d1";
@@ -26,6 +26,15 @@ test("no token, no guest header (the Lambda then answers a read with 404)", () =
     assert.equal(GUEST_TOKEN_HEADER in tripHeaders("key-1", t), false);
   }
   assert.equal("x-tripplanner-key" in tripHeaders("", TOKEN), false);
+});
+
+test("AA-908: the access token is forwarded only when the traveller is signed in", () => {
+  assert.equal(ACCESS_TOKEN_HEADER, "x-tripplanner-access");
+  assert.equal(tripHeaders("key-1", TOKEN, "r1", "a.b.c")[ACCESS_TOKEN_HEADER], "Bearer a.b.c");
+  for (const t of [null, undefined, ""]) {
+    assert.equal(ACCESS_TOKEN_HEADER in tripHeaders("key-1", TOKEN, "r1", t), false);
+  }
+  assert.equal(ACCESS_TOKEN_HEADER in tripHeaders("key-1", TOKEN), false);
 });
 
 test("each read maps to its assembly Lambda path", () => {
