@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { authEnv, authLogLine, callContext, safeNext } from "./authRequest.ts";
-import { tripFacts, tripStatusLabel, tripTitle, updatedLabel, type MyTrip } from "./myTrips.ts";
+import { meOutcome, tripFacts, tripStatusLabel, tripTitle, updatedLabel, type MyTrip } from "./myTrips.ts";
 
 test("sign-in is off without a session secret of at least 32 characters", () => {
   assert.equal(authEnv({}).sessionSecret, "");
@@ -46,4 +46,10 @@ test("My Trips labels", () => {
   assert.equal(tripFacts({ ...TRIP, days: 1, stops: 1, unavailable_stops: 0 }), "1 day · 1 stop");
   assert.equal(updatedLabel(TRIP.updated_at), "Updated 25 Oct 2026");
   assert.equal(updatedLabel(null), "");
+});
+
+test("My Trips: only 401 is the sign-in prompt; every other failure is the error state with sign-out", () => {
+  assert.equal(meOutcome(200), "ok");
+  assert.equal(meOutcome(401), "signed_out");
+  for (const s of [0, 400, 403, 404, 429, 500, 502, 503]) assert.equal(meOutcome(s), "error");
 });

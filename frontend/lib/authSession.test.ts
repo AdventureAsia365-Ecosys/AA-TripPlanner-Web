@@ -12,6 +12,7 @@ import {
   readRefresh,
   readSession,
   sessionCookies,
+  settleSignUpTokens,
 } from "./authSession.ts";
 import { CognitoError, type Tokens } from "./cognito.ts";
 
@@ -155,4 +156,67 @@ test("the pending step keeps the time its code was requested", () => {
     NOW, false)]);
   assert.deepEqual(readPending(SECRET, cookies, NOW + 1),
     { email: "t@example.com", mode: "signup", session: null, at: NOW });
+});
+
+// S251 follow-up: the first session after a sign-up must carry the email_verified Cognito stores.
+const UNVERIFIED: Tokens = {
+  accessToken: jwt({ exp: NOW + 3600, email: "t@example.com", email_verified: "false" }),
+  refreshToken: "refresh-signup",
+  expiresIn: 3600,
+};
+
+test("a sign-up token that already says verified is kept without a refresh", async () => {
+  let calls = 0;
+  const out = await settleSignUpTokens(TOKENS, async () => {
+    calls += 1;
+    return TOKENS;
+  });
+  assert.equal(calls, 0);
+  assert.equal(out.refreshed, false);
+  assert.equal(out.tokens, TOKENS);
+});
+
+test("an unverified sign-up token is re-minted once with the refresh token just issued", async () => {
+  const seen: string[] = [];
+  const fresh: Tokens = { accessToken: jwt({ exp: NOW + 3600, email: "t@example.com", email_verified: "true" }),
+    refreshToken: "refresh-rotated", expiresIn: 3600 };
+  const out = await settleSignUpTokens(UNVERIFIED, async (rt) => {
+    seen.push(rt);
+    return fresh;
+  });
+  assert.deepEqual(seen, ["refresh-signup"]);
+  assert.equal(out.refreshed, true);
+  assert.equal(out.tokens.refreshToken, "refresh-rotated");
+  assert.equal(accessClaims(out.tokens.accessToken).ev, true);
+  // The cookies of that first session then say verified.
+  const cookies = jar(sessionCookies(SECRET, out.tokens, null, NOW, false));
+  assert.equal(readSession(SECRET, cookies, NOW)?.ev, true);
+});
+
+test("a re-mint without rotation keeps the sign-up refresh token", async () => {
+  const out = await settleSignUpTokens(UNVERIFIED, async () => ({
+    accessToken: jwt({ exp: NOW + 3600, email_verified: true }), refreshToken: null, expiresIn: 3600 }));
+  assert.equal(out.tokens.refreshToken, "refresh-signup");
+  assert.equal(accessClaims(out.tokens.accessToken).ev, true);
+});
+
+test("a failed re-mint keeps the sign-in tokens (best effort, the hourly refresh corrects it)", async () => {
+  for (const err of [new CognitoError("NotAuthorizedException", 400), new TypeError("fetch failed")]) {
+    const out = await settleSignUpTokens(UNVERIFIED, async () => {
+      throw err;
+    });
+    assert.equal(out.refreshed, false);
+    assert.equal(out.tokens, UNVERIFIED);
+  }
+});
+
+test("a sign-up answer without a refresh token is not re-minted", async () => {
+  let calls = 0;
+  const noRefresh: Tokens = { ...UNVERIFIED, refreshToken: null };
+  const out = await settleSignUpTokens(noRefresh, async () => {
+    calls += 1;
+    return TOKENS;
+  });
+  assert.equal(calls, 0);
+  assert.equal(out.tokens, noRefresh);
 });

@@ -38,3 +38,15 @@ export function updatedLabel(iso: string | null): string {
   if (Number.isNaN(d.getTime())) return "";
   return `Updated ${d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })}`;
 }
+
+// What My Trips shows for a GET /api/me answer. 401 = signed out (sign-in prompt). Any other failure (502 upstream,
+// 503 sign-in not configured, a network error = status 0) is "error": the traveller may still hold a session, so the
+// error state offers both "Try again" and "Sign out" (S251 follow-up of the S250 live run, which found no way to sign
+// out while the list failed to load).
+export type MeOutcome = "ok" | "signed_out" | "error";
+
+export function meOutcome(status: number): MeOutcome {
+  if (status === 401) return "signed_out";
+  if (status >= 200 && status < 300) return "ok";
+  return "error";
+}

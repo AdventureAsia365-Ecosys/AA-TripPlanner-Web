@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server";
 import { guestCookieName, isGuestToken, isSameOrigin } from "@/lib/guestToken";
 import { requestIdFor, upstreamLogLine } from "@/lib/requestId";
-import { errorCode, verify } from "@/lib/cognito";
-import { clearCookie, pendingCookie, readPending, sessionCookies } from "@/lib/authSession";
+import { errorCode, refresh, verify } from "@/lib/cognito";
+import { clearCookie, pendingCookie, readPending, sessionCookies, settleSignUpTokens } from "@/lib/authSession";
 import { authEnv, authLogLine, callContext } from "@/lib/authRequest";
 import { authJson } from "@/lib/authResponse";
 import { tripHeaders } from "@/lib/tripProxy";
@@ -50,7 +50,14 @@ export async function POST(req: NextRequest) {
       [pendingCookie(env.sessionSecret, result.next)]);
   }
 
-  const cookies = [...sessionCookies(env.sessionSecret, result.tokens), clearCookie("signin")];
+  // A sign-up's first token may predate the confirmed email (lib/authSession.ts settleSignUpTokens).
+  let signedIn = result.tokens;
+  if (pending.mode === "signup") {
+    const settled = await settleSignUpTokens(result.tokens, (rt) => refresh(rt, callContext(env, req.headers)));
+    if (settled.refreshed) console.log(authLogLine("verify", "signup_token_refreshed", requestId));
+    signedIn = settled.tokens;
+  }
+  const cookies = [...sessionCookies(env.sessionSecret, signedIn), clearCookie("signin")];
   console.log(authLogLine("verify", pending.mode === "signup" ? "signed_up" : "signed_in", requestId));
 
   // Link this browser's guest trips. Best effort: a failed claim never fails the sign-in (the next signed-in edit
@@ -63,7 +70,7 @@ export async function POST(req: NextRequest) {
       const upstream = await fetch(`${TRIP_API_URL}/me/claim`, {
         method: "POST",
         headers: tripHeaders(TRIPPLANNER_API_KEY, isGuestToken(guest) ? guest : null, requestId,
-          result.tokens.accessToken),
+          signedIn.accessToken),
         body: "{}",
       });
       console.log(upstreamLogLine({ route: "trip", op: "me_claim", status: upstream.status,
