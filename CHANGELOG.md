@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.8.0...v0.8.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* sign-out in the My Trips error state and email_verified in the first session after sign-up ([#149](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/149)) ([9443a34](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/9443a3435a87f452d8ad1f6d7e612f60f6708bd1))
+
 ## [0.8.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.7.0...v0.8.0) (2026-10-25)
 
 
