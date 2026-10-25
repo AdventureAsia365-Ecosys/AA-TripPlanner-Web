@@ -2,11 +2,11 @@
 // AA-908 — My Trips: the signed-in traveller's trips (GET /api/me). "Open" puts the trip's ids into this browser's
 // localStorage (lib/guestIds.ts) and opens the planner; the assembly Lambda lets the owning account read and edit it
 // from any browser (the guest cookie of this browser is not needed).
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, ButtonLink, EmptyState, ErrorState } from "@/ui";
 import { STORAGE_KEY } from "@/lib/guestIds";
 import { signOut } from "@/lib/useAccount";
-import { tripFacts, tripStatusLabel, tripTitle, updatedLabel, type MyTrip } from "@/lib/myTrips";
+import { meOutcome, tripFacts, tripStatusLabel, tripTitle, updatedLabel, type MyTrip } from "@/lib/myTrips";
 
 type State =
   | { kind: "loading" }
@@ -25,14 +25,19 @@ function openTrip(t: MyTrip) {
 
 export default function MyTrips() {
   const [state, setState] = useState<State>({ kind: "loading" });
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => {
+    setState({ kind: "loading" });
+    setAttempt((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     let live = true;
     fetch("/api/me", { cache: "no-store" })
       .then(async (r) => {
         if (!live) return;
-        if (r.status === 401) return setState({ kind: "signed_out" });
-        if (!r.ok) return setState({ kind: "error" });
+        const outcome = meOutcome(r.status);
+        if (outcome !== "ok") return setState({ kind: outcome });
         const b = await r.json();
         if (live) setState({ kind: "ok", email: b?.email ?? null, trips: Array.isArray(b?.trips) ? b.trips : [] });
       })
@@ -40,7 +45,7 @@ export default function MyTrips() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [attempt]);
 
   if (state.kind === "loading") {
     return <p className="text-sm text-k-muted" role="status">Loading your trips…</p>;
@@ -56,7 +61,16 @@ export default function MyTrips() {
     );
   }
   if (state.kind === "error") {
-    return <ErrorState>We could not load your trips. Please reload the page.</ErrorState>;
+    // The traveller may still be signed in (the list failed, not the session): keep a way out (S251).
+    return (
+      <ErrorState title="We could not load your trips">
+        Please try again in a moment. You can also sign out of this browser.
+        <div className="mt-4 flex flex-wrap justify-center gap-2" data-testid="my-trips-error-actions">
+          <Button variant="primary" size="sm" onClick={retry}>Try again</Button>
+          <Button variant="ghost" size="sm" onClick={() => signOut("/")} data-testid="sign-out">Sign out</Button>
+        </div>
+      </ErrorState>
+    );
   }
 
   return (

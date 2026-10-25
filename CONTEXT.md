@@ -301,11 +301,13 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
     code refused as not authorised while its 3-minute session is still young requests a new sign-up code (an
     abandoned sign-up may get a simulated challenge under `prevent_user_existence_errors`). `POST /api/auth/verify {code}` confirms (`ConfirmSignUp`, then
   `InitiateAuth` with its session) or answers the challenge (`RespondToAuthChallenge`), stores the tokens and calls
-  the Lambda's `POST /me/claim` with the guest cookie (best effort). `POST /api/auth/sign-out` revokes the refresh
+  the Lambda's `POST /me/claim` with the guest cookie (best effort). After a sign-up, a first token that does not
+  say `email_verified` is re-minted once with its refresh token (the auto sign-in can carry the attributes from
+  before the confirmation; S251). `POST /api/auth/sign-out` revokes the refresh
   token (`RevokeToken`), clears the session cookies **and the guest cookie** (the next person on this browser must
   not open the account's trips), and the client forgets its trip ids. `GET /api/auth/status` (always 200) feeds the
   header link and the send form; `GET /api/me` (401 `sign_in_required` when signed out) returns the email and the
-  Lambda's `/me/trips`.
+  Lambda's `/me/trips`. My Trips shows the sign-in prompt only on 401; any other failure shows Try again and Sign out.
   - Cookies (`lib/authSession.ts`, sealed with AES-256-GCM by `lib/seal.ts`, a copy of AA-Partner's with its own
     purposes and salt; key = Vercel env `TP_SESSION_SECRET`): `__Host-tp_auth` (access token, its expiry, email),
     `__Host-tp_refresh` (refresh token; its own cookie because a Cognito refresh token is about 1.8 kB) and

@@ -132,6 +132,27 @@ export function readRefresh(secret: string, cookies: CookieSource, now: number =
   return v && typeof v.rt === "string" ? v : null;
 }
 
+// The first session after a sign-up (S251 follow-up of the S250 live run). The auto sign-in right after
+// ConfirmSignUp (InitiateAuth USER_AUTH with the confirm Session) can be minted from the user's attributes as they
+// were before the code confirmed the email: the S250 run saw email_verified false in that first session while Cognito
+// held true, and every later sign-in showed true. The BFF never asserts verification itself: when the new token
+// says "not verified" it asks Cognito for a new one with the refresh token it just received (GetTokensFromRefreshToken,
+// so the EXTERNAL pre-token trigger reads the stored attributes again). Best effort: any failure keeps the tokens of
+// the sign-in, and the normal hourly refresh then corrects the claim, as before.
+export async function settleSignUpTokens(
+  tokens: Tokens,
+  doRefresh: (refreshToken: string) => Promise<Tokens>,
+): Promise<{ tokens: Tokens; refreshed: boolean }> {
+  if (!tokens.refreshToken || accessClaims(tokens.accessToken).ev) return { tokens, refreshed: false };
+  try {
+    const fresh = await doRefresh(tokens.refreshToken);
+    // Rotation is on: the new refresh token replaces the one just issued; without one the first stays valid.
+    return { tokens: { ...fresh, refreshToken: fresh.refreshToken ?? tokens.refreshToken }, refreshed: true };
+  } catch {
+    return { tokens, refreshed: false };
+  }
+}
+
 export interface Access {
   accessToken: string | null; // null = signed out
   email: string | null;
