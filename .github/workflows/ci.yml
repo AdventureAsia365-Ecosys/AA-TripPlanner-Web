@@ -138,8 +138,8 @@ jobs:
 
       # AA-712 X4: after the reader removal the catalog-view SQL is TripPlanner's only read path, and the
       # tests that run that SQL against a real Postgres (browse/search/suggestions on catalog.v_*, the
-      # route-suggestion property, the pgvector top-k search) need --pg-dsn, so "Backend (pytest)" (offline)
-      # skips them. They run here on the same PostgreSQL 15 + pgvector cluster; nothing may be skipped and
+      # route-suggestion property, the pgvector top-k search; AA-908: the traveller-account SQL) need --pg-dsn,
+      # so "Backend (pytest)" (offline) skips them. They run here on the same PostgreSQL 15 + pgvector cluster; nothing may be skipped and
       # each module must report PASSED lines.
       - name: Catalog-view SQL on PostgreSQL 15 + pgvector (backend integration tests)
         working-directory: backend
@@ -149,13 +149,14 @@ jobs:
           set -o pipefail
           pip install -r requirements.txt
           pytest tests/test_places_source_pg.py tests/test_route_property_pg.py tests/test_vector_topk_pg.py \
+            tests/test_account_pg.py \
             -v --tb=short -rs -p no:cacheprovider \
             --pg-dsn postgresql://postgres@127.0.0.1:5433/postgres \
             | tee /tmp/backend-pg.txt
           if grep -qE "[0-9]+ (skipped|xfailed|xpassed|deselected)" /tmp/backend-pg.txt; then
             echo "::error::backend PG tests were skipped, xfailed, xpassed or deselected"; exit 1
           fi
-          for module in test_places_source_pg test_route_property_pg test_vector_topk_pg; do
+          for module in test_places_source_pg test_route_property_pg test_vector_topk_pg test_account_pg; do
             if ! grep -qE "^tests/${module}\.py::[^ ]+ PASSED" /tmp/backend-pg.txt; then
               echo "::error::${module}.py reported no PASSED test"; exit 1
             fi

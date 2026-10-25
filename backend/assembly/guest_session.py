@@ -45,6 +45,9 @@ TOKEN_MISMATCH = "token_mismatch"      # token does not match the session's hash
 TOKENLESS_BOUND = "tokenless_bound"    # no token for a session that already has a hash (downgrade)
 # Emitted by the handler's owner check -> 403.
 FORBIDDEN_OWNER = "forbidden_owner"
+# AA-908: the guest token did not prove the session, but the caller's verified access token belongs to the
+# account that owns it (handler._guard; account.py). Lets the request through.
+ACCOUNT_OK = "account_ok"
 
 DENIED = frozenset({REJECTED_GRACE, BAD_TOKEN, TOKEN_MISMATCH, TOKENLESS_BOUND})
 
@@ -54,6 +57,7 @@ READ_OK = "read_ok"                    # token matches the hash of the session t
 NO_TOKEN = "no_token"                  # read without a token
 NO_OWNER = "no_owner"                  # no such trip, no draft yet, or the owner session has no hash
 # BAD_TOKEN and TOKEN_MISMATCH are reused for reads.
+ACCOUNT_READ_OK = "account_read_ok"    # AA-908: the caller's account owns the trip's session (handler._read_guard)
 
 # The trip's owner is the session that created its draft (trip_drafts.session_id, never changed).
 _SELECT_OWNER_HASH = (

@@ -978,7 +978,7 @@ async def test_send_writes_one_inquiry_outbox_row_with_consent(monkeypatch):
     assert row["idempotency_key"] == f"{T1}:{first['handoff_id']}"
     p = row["payload"]
     assert p["contract"] == "inquiry.submitted" and p["trip_id"] == T1
-    assert p["version"] == 1.3                     # AA-986 L6: contract v1.3 (number, enum [1.3])
+    assert p["version"] == 1.4                     # AA-908: contract v1.4 (number, enum [1.4])
     assert p["customer"]["email"] == "jo@x.com" and p["customer"]["consent"] is True
     assert [d["component_id"] for d in p["itinerary"]["days"]] == ["c1"]
 
@@ -1041,7 +1041,7 @@ async def test_send_with_someone_elses_email_hands_off_only_the_submitted_contac
     assert conn.sessions[S1]["customer_id"] is None               # not linked to the victim
     c = conn.outbox[0]["payload"]["customer"]
     assert c == {"customer_id": None, "name": "Mallory", "phone": None, "email": "jo@x.com",
-                 "consent": False, "consent_at": None, "verified": False}
+                 "consent": False, "consent_at": None, "verified": False, "identity": None}
     assert conn.customers[0]["name"] == "Victim" and len(conn.customers) == 1
 
 
