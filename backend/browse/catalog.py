@@ -40,6 +40,14 @@ def slugify(text: Optional[str]) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
 
 
+def source_id_suffix(slug: str) -> str:
+    """The slug's source-id suffix: the part after the last '-' when it is 8 lowercase hex chars, else "".
+    Split first, then match a fixed-length pattern: no backtracking regex over the request path
+    (CodeQL py/polynomial-redos; same approach as tour_gone)."""
+    _, sep, tail = slug.rpartition("-")
+    return tail if sep and re.fullmatch(r"[0-9a-f]{8}", tail) else ""
+
+
 # SQL twin of slugify() for the country column, so `sri-lanka` and `Sri Lanka` both match.
 _COUNTRY_SLUG_SQL = "trim(BOTH '-' FROM regexp_replace(lower(t.country), '[^a-z0-9]+', '-', 'g'))"
 
@@ -482,8 +490,7 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
     suffix (a title change moves the slug; `slug` in the answer is the current one, so the page
     can redirect). None when the tour is not in the catalog."""
     slug = (slug or "").strip().lower()
-    suffix = slug.rsplit("-", 1)[-1] if re.fullmatch(r".*-[0-9a-f]{8}", slug) else ""
-    t = await pool.fetchrow(TOUR_BY_SLUG_SQL, slug, suffix)
+    t = await pool.fetchrow(TOUR_BY_SLUG_SQL, slug, source_id_suffix(slug))
     if t is None:
         return None
     tour_id = t["tour_id"]
