@@ -1,15 +1,17 @@
 """AA-712 integration — the top-k search returns what the full-scan aggregate returns.
 
 Runs only with ``pytest --pg-dsn postgresql://postgres@127.0.0.1:55432/postgres`` against a
-throwaway LOCAL Postgres that has the pgvector extension available. It creates its own database
-(``tp_aa712_<random>``), builds stand-in tables with the real index (HNSW cosine) and the catalog views the
-readers query (``catalog.v_component_embedding`` / ``v_tour_component`` / ``v_destination``: plain views over the
-stand-in, live components only, like CIS 253), loads clustered fixture vectors, and drops the database at the end.
+throwaway LOCAL Postgres that has the pgvector extension available. It builds a template database
+(``tp_aa712_tpl_<random>``, once per module) with stand-in tables with the real index (HNSW cosine), the catalog
+views the readers query (``catalog.v_component_embedding`` / ``v_tour_component`` / ``v_destination``: plain views
+over the stand-in, live components only, like CIS 253) and clustered fixture vectors; each test gets its own copy
+(``tp_aa712_<random>``, CREATE DATABASE ... TEMPLATE). Every database is dropped at the end.
 Non-local hosts are refused so it can never touch RDS. (Until AA-712 X4 the stand-in was the frozen
 tripplanner.itinerary_components with a published_tours liveness join.)
 """
 from __future__ import annotations
 
+import asyncio
 import random
 from datetime import datetime, timezone
 import uuid
@@ -114,20 +116,59 @@ def pg_dsn(request):
     return dsn
 
 
+def _db_dsn(pg_dsn: str, name: str) -> str:
+    return urlunparse(urlparse(pg_dsn)._replace(path=f"/{name}"))
+
+
+@pytest.fixture(scope="module")
+def template_db(pg_dsn):
+    """AA-993 (TP-1): the schema and fixtures are built once per module in a template database
+    (``tp_aa712_tpl_<random>``); each test copies it with CREATE DATABASE ... TEMPLATE. Every connection to the
+    template is closed before the first copy (Postgres refuses to copy a database with open sessions). Sync, with
+    asyncio.run, so it does not depend on a module-scoped event loop."""
+    name = f"tp_aa712_tpl_{uuid.uuid4().hex[:8]}"
+
+    async def build() -> dict:
+        admin = await asyncpg.connect(pg_dsn)
+        try:
+            await admin.execute(f'CREATE DATABASE "{name}"')
+        finally:
+            await admin.close()
+        conn = await asyncpg.connect(_db_dsn(pg_dsn, name))
+        try:
+            await conn.execute(SCHEMA)
+            return await _load(conn)  # ends with ANALYZE; the copies inherit the statistics
+        finally:
+            await conn.close()
+
+    async def drop() -> None:
+        admin = await asyncpg.connect(pg_dsn)
+        try:
+            await admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        finally:
+            await admin.close()
+
+    try:
+        ctx = asyncio.run(build())
+        yield name, ctx
+    finally:
+        asyncio.run(drop())
+
+
 @pytest.fixture
-async def db(pg_dsn):
-    """A fresh database with fixtures; dropped afterwards."""
+async def db(pg_dsn, template_db):
+    """A fresh copy of the module's template database; dropped afterwards."""
+    template, ctx = template_db
     name = f"tp_aa712_{uuid.uuid4().hex[:8]}"
     admin = await asyncpg.connect(pg_dsn)
-    await admin.execute(f'CREATE DATABASE "{name}"')
-    parts = urlparse(pg_dsn)
-    conn = await asyncpg.connect(urlunparse(parts._replace(path=f"/{name}")))
+    await admin.execute(f'CREATE DATABASE "{name}" TEMPLATE "{template}"')
+    conn = None
     try:
-        await conn.execute(SCHEMA)
-        ctx = await _load(conn)
+        conn = await asyncpg.connect(_db_dsn(pg_dsn, name))
         yield conn, ctx
     finally:
-        await conn.close()
+        if conn is not None:
+            await conn.close()
         await admin.execute(f'DROP DATABASE "{name}"')
         await admin.close()
 
