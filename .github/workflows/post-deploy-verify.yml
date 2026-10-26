@@ -1,0 +1,145 @@
+name: Post-deploy verify
+# AA-993 V4 (ADR 0016 D3) — checks that what runs is the commit that was just deployed. Red/green only; the table goes
+# to the job summary. Script: .github/scripts/post_deploy_verify.sh <app>; rows: .github/verify/<app>.rows.
+#   web      the production host https://aa-tripplanner.vercel.app: GET /api/health -> 200 with git_sha = the
+#            expected commit and version = the release-please manifest of that commit (retried while the Vercel
+#            alias propagates). Called by vercel-deploy.yml after a production deploy. No AWS, no secret.
+#   lambdas  both Lambdas Active with LastUpdateStatus Successful and CodeSha256 = the artifact the deploy uploaded
+#            from the expected commit (S3 metadata git-sha / app-version / code-sha256), then the read-only browse +
+#            assembly rows through the production BFF. Called by deploy-lambdas.yml after `deploy`.
+#
+# Also dispatchable from main: verify what runs now, or prove that a stale expected_sha goes red. A dispatch never
+# touches the deploy concurrency groups (vercel-deploy-*, deploy-lambdas).
+#
+# The `lambdas` job assumes the OIDC role aa-tripplanner-dev-app-deploy (secret AWS_DEPLOY_ROLE_ARN; callers pass
+# `secrets: inherit`). That role trusts only the subject `...:ref:refs/heads/main` with no environment, so this job
+# has no `environment:` and a dispatch from another branch is denied (red). It uses only what the role already
+# grants: lambda:GetFunctionConfiguration and s3:GetObject (HeadObject) on the artifacts bucket.
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: "web or lambdas"
+        required: true
+        type: string
+      expected_sha:
+        description: "The commit that was deployed (full 40-character SHA)."
+        required: true
+        type: string
+      from_deploy:
+        description: "Set by the deploy workflows: use a concurrency group of this run only (see the jobs)."
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "What to verify"
+        required: true
+        type: choice
+        options: [web, lambdas]
+        default: web
+      expected_sha:
+        description: "Full 40-character SHA expected live: for web, the commit of the last production frontend deploy; for lambdas, the commit of the last Deploy Lambdas run (not necessarily main HEAD)."
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  # Runs for app=web, and for any value that is not `lambdas`: an unknown app then fails in the script (no rows
+  # file) instead of skipping both jobs, which GitHub would show green.
+  web:
+    name: Post-deploy verify (web)
+    if: inputs.app != 'lambdas'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    # Dispatched runs share `post-deploy-verify-tripplanner-web` and queue there (one running, one pending: a newer
+    # dispatch cancels the older pending one). The call from a deploy gets a group of its own run: GitHub cancels the
+    # older PENDING job of a group when another one queues, so a shared group would let a dispatch cancel a deploy's
+    # verify (and turn that run red). Production deploys are already one at a time (their own group).
+    concurrency:
+      group: ${{ inputs.from_deploy && format('post-deploy-verify-tripplanner-web-deploy-{0}-{1}', github.run_id, github.run_attempt) || 'post-deploy-verify-tripplanner-web' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The expected version comes from the expected commit itself, not from the checked-out tree: a dispatch on
+      # main for an older SHA compares against what that SHA shipped.
+      - name: Read what the expected commit ships
+        id: expect
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: bash .github/scripts/expected_release.sh
+
+      - name: Verify production
+        env:
+          APP: ${{ inputs.app }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EXPECTED_VERSION: ${{ steps.expect.outputs.version }}
+          BASE: https://aa-tripplanner.vercel.app
+          # 9 tries, 10 s apart (~1.5 min): `vercel deploy --prod` has just moved the alias.
+          VERIFY_TRIES: "9"
+        run: bash .github/scripts/post_deploy_verify.sh "$APP"
+
+  lambdas:
+    name: Post-deploy verify (lambdas)
+    if: inputs.app == 'lambdas'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write # assume the OIDC deploy role (read-only use here)
+      contents: read
+    concurrency:
+      group: ${{ inputs.from_deploy && format('post-deploy-verify-tripplanner-lambdas-deploy-{0}-{1}', github.run_id, github.run_attempt) || 'post-deploy-verify-tripplanner-lambdas' }}
+      cancel-in-progress: false
+    env:
+      AWS_REGION: us-west-1
+      ARTIFACTS_BUCKET_STEM: aa-tripplanner-dev-lambda-artifacts
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read what the expected commit ships
+        id: expect
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: bash .github/scripts/expected_release.sh
+
+      - name: Check AWS_DEPLOY_ROLE_ARN
+        env:
+          HAS_ROLE: ${{ secrets.AWS_DEPLOY_ROLE_ARN != '' }}
+        run: |
+          if [ "${HAS_ROLE}" != "true" ]; then
+            echo "::error::Secret AWS_DEPLOY_ROLE_ARN is not set (or not passed with secrets: inherit): nothing can be verified."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      # Same bucket as deploy-lambdas.yml; the account ID is masked and the bucket name is never printed.
+      - name: Resolve the artifacts bucket
+        env:
+          BUCKET_OVERRIDE: ${{ vars.LAMBDA_ARTIFACTS_BUCKET }}
+        run: |
+          set -euo pipefail
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::${account}"
+          echo "ARTIFACTS_BUCKET=${BUCKET_OVERRIDE:-${ARTIFACTS_BUCKET_STEM}-${account}}" >> "$GITHUB_ENV"
+
+      - name: Verify the Lambdas
+        env:
+          APP: ${{ inputs.app }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EXPECTED_VERSION: ${{ steps.expect.outputs.version }}
+          BASE: https://aa-tripplanner.vercel.app
+        run: bash .github/scripts/post_deploy_verify.sh "$APP"

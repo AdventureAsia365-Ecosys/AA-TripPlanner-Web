@@ -1,0 +1,14 @@
+# AA-993 V4 (ADR 0016 D3) — rows of the TripPlanner web (Vercel production) post-deploy verify, read by
+# .github/scripts/post_deploy_verify.sh web. BASE = the public production host (no deployment protection there).
+#
+# One row per line: name|kind|target|expected|jq assertion
+#   kind public: target "GET <path>", expected = HTTP code, assertion = jq on the body that must be true (empty =
+#   only the HTTP code). Variables: $sha (the deployed commit, vercel-deploy.yml steps.plan.outputs.sha) and
+#   $version (.release-please-manifest.json of that commit). {cb} = a fresh cache-buster per try.
+# A row fails after VERIFY_TRIES tries (the web verify uses more, for the Vercel alias to propagate). A PR that adds
+# or changes a route worth guarding adds a row here.
+#
+# /api/health (AA-891) answers what vercel-deploy.yml passed to THIS deployment (`--env GIT_SHA / APP_VERSION`), so a
+# match proves the production host serves the deployment of this run.
+
+health|public|GET /api/health?_cb={cb}|200|.status == "ok" and .service == "aa-tripplanner-web" and .git_sha == $sha and .version == $version

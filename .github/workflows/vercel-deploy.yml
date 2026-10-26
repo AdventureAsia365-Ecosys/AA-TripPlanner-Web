@@ -19,6 +19,13 @@ name: Vercel Deploy
 # production that stopped updating. Fork PRs and Dependabot runs (AA-903) get no secrets and are
 # skipped by the job `if:` instead.
 # The org / project ids are not secrets.
+#
+# AA-993 V4 (ADR 0016 D3): after a PRODUCTION deploy the `verify` job calls post-deploy-verify.yml (app web, also
+# dispatchable with expected_sha): GET https://aa-tripplanner.vercel.app/api/health must answer 200 with git_sha =
+# steps.plan.outputs.sha and version = the release-please manifest of that commit, retried while the alias propagates.
+# The `result` job ("Vercel deploy result") is the run's verdict: on the production path (push, or a dispatch with
+# target=production) it is red unless `deploy` and `verify` both succeeded (skipped included). Previews keep their
+# behaviour: no verify, a failed preview deploy is red, a skipped one (fork / Dependabot PR) stays green.
 
 on:
   pull_request:
@@ -276,3 +283,52 @@ jobs:
             gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$BODY" >/dev/null
             echo "Created a new comment"
           fi
+
+  # AA-993 V4 — production only. Runs when `deploy` succeeded with target production; `result` turns a skipped or
+  # failed verify on the production path red. The called workflow's `lambdas` job asks for id-token: write, and GitHub
+  # checks a called workflow's job permissions against this caller even for a job its `if:` skips, so the ceiling
+  # here includes it; the `web` job that actually runs has contents: read only (no OIDC token, no secret).
+  verify:
+    name: Post-deploy verify
+    needs: deploy
+    if: needs.deploy.outputs.target == 'production'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/post-deploy-verify.yml
+    with:
+      app: web
+      expected_sha: ${{ needs.deploy.outputs.sha }}
+      from_deploy: true
+
+  # AA-993 — the run's verdict. GitHub shows a skipped job grey, not red, so without this a production push whose
+  # deploy or verify did not run could look like nothing to check.
+  result:
+    name: Vercel deploy result
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [deploy, verify]
+    steps:
+      - name: Production deployed and verified; preview deployed or skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          set -uo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          DEPLOY=$(echo "$NEEDS" | jq -r '.deploy.result // "missing"')
+          VERIFY=$(echo "$NEEDS" | jq -r '.verify.result // "missing"')
+          if [ "$EVENT" = "push" ] || { [ "$EVENT" = "workflow_dispatch" ] && [ "$INPUT_TARGET" = "production" ]; }; then
+            if [ "$DEPLOY" != "success" ] || [ "$VERIFY" != "success" ]; then
+              echo "::error::Production ($EVENT) is not deployed and verified: deploy=$DEPLOY, verify=$VERIFY"
+              exit 1
+            fi
+            echo "Production ($EVENT): deployed and verified."
+            exit 0
+          fi
+          # Preview: unchanged behaviour (a fork / Dependabot PR skips the deploy on purpose).
+          case "$DEPLOY" in
+            success | skipped) echo "Preview ($EVENT): deploy=$DEPLOY." ;;
+            *) echo "::error::Preview ($EVENT) deploy=$DEPLOY"; exit 1 ;;
+          esac
