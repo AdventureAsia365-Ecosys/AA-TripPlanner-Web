@@ -245,15 +245,33 @@ async def resolve_tour_id(conn: Any, tour_id: Optional[str], source_id: Optional
 
 
 def _proposal(tour_id: str, title: Optional[str], stops_rows: list[dict],
-              comps: dict[tuple, list[dict]], match: str) -> dict:
-    first = min(r["day_index"] for r in stops_rows)
-    last = max(r["day_index"] for r in stops_rows)
+              comps: dict[tuple, list[dict]], match: str, span: Optional[tuple[int, int]] = None,
+              tour_days: Optional[int] = None) -> dict:
+    """One tour as one proposal over `span` (default: its first to last stop day).
+
+    AA-990 F2: `tour_days` is the tour's own length (TOUR_DAYS_COUNT_SQL), `pinned_days` the days that carry a
+    component to pin; both are additive keys (the planner ignores them, the coverage rule and the audit read them)."""
+    first, last = span or (min(r["day_index"] for r in stops_rows), max(r["day_index"] for r in stops_rows))
     p = {"segments": [(tour_id, first, last)]}
+    days = day_by_day(p, {tour_id: stops_rows}, comps)
     return {"total_days": last - first + 1, "transfers": 0, "transfer_km": 0.0, "whole_tour": True,
             "match": match,
             "segments": [{"tour_id": tour_id, "tour_name": title, "day_from": first, "day_to": last,
                           "days": last - first + 1}],
-            "days": day_by_day(p, {tour_id: stops_rows}, comps)}
+            "days": days,
+            "tour_days": tour_days or last - first + 1,
+            "pinned_days": sum(1 for d in days if d["component_id"])}
+
+
+def _graph_span(stops_rows: list[dict], tour_days: int) -> tuple[int, int]:
+    """AA-990 F2: a Tour Graph route covers every tour day, 1..N. A stop-less arrival or departure day has no stop
+    in the graph (stop = the overnight destination, else the day's main place), so sizing the route from the first
+    to the last stop day cut those days off. Leading days before the first stop come out without a place, trailing
+    days carry the last stop (day_by_day, as any stop-less day inside the tour); none of them is pinned unless the
+    graph has a component on that day."""
+    first = min(r["day_index"] for r in stops_rows)
+    last = max(r["day_index"] for r in stops_rows)
+    return min(1, first), max(tour_days, last)
 
 
 async def _graph_route(conn: Any, key: str, tour_id: str) -> Optional[tuple[list[dict], dict]]:
@@ -271,7 +289,8 @@ async def _graph_route(conn: Any, key: str, tour_id: str) -> Optional[tuple[list
     return stops_rows, comps
 
 
-async def _places_route(conn: Any, tour_id: str, keys: list[str]) -> Optional[tuple[list[dict], dict]]:
+async def _places_route(conn: Any, tour_id: str, keys: list[str],
+                        tour_days: Optional[int] = None) -> Optional[tuple[list[dict], dict]]:
     """Stops from the catalog's places per day; each day pinned to a planner experience at its
     place. None when no place of the tour has a planner experience."""
     places = [dict(r) for r in await conn.fetch(TOUR_ROUTE_PLACES_SQL, tour_id)]
@@ -304,20 +323,26 @@ async def _places_route(conn: Any, tour_id: str, keys: list[str]) -> Optional[tu
             comps[(tour_id, day)] = [{"destination_id": stop["destination_id"], "component_id": pick}]
     # S236 (Nghiệp): only offer a places-built route when it pins at least half of the tour's days;
     # a thinner one (e.g. 2 of 10) misrepresents the tour, so the planner shows the day list instead.
-    total_days = await conn.fetchval(TOUR_DAYS_COUNT_SQL, tour_id) or len(by_day)
+    if tour_days is None:
+        tour_days = await conn.fetchval(TOUR_DAYS_COUNT_SQL, tour_id)
+    total_days = tour_days or len(by_day)
     if len(comps) < PLACES_MIN_DAY_SHARE * total_days:
         return None
     return stops_rows, comps
 
 
 async def tour_route(conn: Any, tour_id: str) -> Optional[dict]:
-    """The tour's first to last day as one proposal, or None when the planner has nothing for it.
+    """The tour's days as one proposal, or None when the planner has nothing for it.
 
-    1. the Tour Graph under the tour's catalog source_id (it survives re-uploads) — match "tour_graph";
+    1. the Tour Graph under the tour's catalog source_id (it survives re-uploads) — match "tour_graph", over every
+       tour day 1..N (AA-990 F2);
     2. else the tour's catalog places mapped onto planner experiences at those places — match
-       "places"."""
+       "places".
+    Both follow the S236 rule: a route must pin at least PLACES_MIN_DAY_SHARE of its days. A graph route under the
+    share gives way to the places route when that one pins more days; else None (the planner shows the day list)."""
     source_id = await conn.fetchval(SOURCE_BY_TOUR_SQL, tour_id)
     keys = [source_id] if source_id else []
+    tour_days = await conn.fetchval(TOUR_DAYS_COUNT_SQL, tour_id) or 0
 
     def _with_source(p: dict) -> dict:
         # segments / days carry the catalog source_id next to the current tour_id, as in proposals()
@@ -326,16 +351,26 @@ async def tour_route(conn: Any, tour_id: str) -> Optional[dict]:
                 row["source_id"] = source_id
         return p
 
-    title = None
+    async def _titled(p: dict) -> dict:
+        p["segments"][0]["tour_name"] = await conn.fetchval(TOUR_TITLE_SQL, tour_id)
+        return _with_source(p)
+
+    graph = None
     for key in keys:
         found = await _graph_route(conn, key, tour_id)
         if found:
-            title = await conn.fetchval(TOUR_TITLE_SQL, tour_id)
-            return _with_source(_proposal(tour_id, title, found[0], found[1], "tour_graph"))
-    found = await _places_route(conn, tour_id, keys)
+            graph = _proposal(tour_id, None, found[0], found[1], "tour_graph",
+                              span=_graph_span(found[0], tour_days), tour_days=tour_days)
+            break
+    # AA-990 F2: the S236 share rule applies to the graph too (it used to accept any graph with one pin anywhere,
+    # e.g. a 4-day tour whose only stop day had no component got a route that pinned nothing).
+    if graph and graph["pinned_days"] >= PLACES_MIN_DAY_SHARE * graph["total_days"]:
+        return await _titled(graph)
+    found = await _places_route(conn, tour_id, keys, tour_days=tour_days)
     if found:
-        title = await conn.fetchval(TOUR_TITLE_SQL, tour_id)
-        return _with_source(_proposal(tour_id, title, found[0], found[1], "places"))
+        places = _proposal(tour_id, None, found[0], found[1], "places", tour_days=tour_days)
+        if graph is None or places["pinned_days"] > graph["pinned_days"]:
+            return await _titled(places)
     return None
 
 

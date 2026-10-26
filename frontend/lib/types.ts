@@ -307,6 +307,9 @@ export interface RouteProposal {
   // AA-812 (tour-route only): "tour_graph" = the tour's own extracted route; "places" = built from
   // the tour's catalog places, each day pinned to a planner experience at that place.
   match?: "tour_graph" | "places";
+  // AA-990 F2 (tour-route only, informational): the tour's length and how many route days carry a pin.
+  tour_days?: number;
+  pinned_days?: number;
   segments: RouteSegment[];
   days: RouteDay[];
 }

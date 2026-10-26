@@ -173,7 +173,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   country page, sitemap), reading **only** the CIS catalog views (`catalog.v_*`, ADR 0001), and
   `/browse/tour-route` (one tour's whole route for "Customise this trip": the Tour Graph under the
   current or the linked tour_id, else built from the tour's catalog places onto planner experiences
-  at those places, `match` = `tour_graph` | `places`; a 404 carries the tour's title and day list —
+  at those places, `match` = `tour_graph` | `places`; a Tour Graph route spans every tour day 1..N and either
+  route must pin at least half of its days (`tour_days` / `pinned_days` in the proposal, AA-990 F2), else the graph
+  gives way to a places route that pins more, else a 404 that carries the tour's title and day list —
   the `/api/browse` BFF hands that 404 to the browser as a 200 `{ "match": "none", "tour": … }`,
   `frontend/lib/tourRoute.ts`, AA-837, so an expected "no planner route" logs no console error).
   Map tiles (`/browse/tiles/{lat}_{lng}[_{size}]`) are fixed-grid cells of 1–90 degrees; the map

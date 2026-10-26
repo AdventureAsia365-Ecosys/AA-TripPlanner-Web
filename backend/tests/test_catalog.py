@@ -403,10 +403,11 @@ async def test_tour_route_graph_match_is_labelled():
     assert status == 200 and body["proposal"]["match"] == "tour_graph"
 
 
-async def test_tour_route_graph_under_older_tour_id():
+async def test_tour_route_graph_under_older_tour_id(monkeypatch):
     # AA-812 D2: the link carries the tour's previous tour_id; the source_id resolves the re-uploaded one, and the
     # graph (keyed by source_id) answers under the current id.
     t = fx.TOURS[1]
+    monkeypatch.setitem(t, "duration_days", 1)  # its graph has one day; 1 pinned of 9 is under the half (AA-990 F2)
     status, body, _ = await _get("/browse/tour-route", {"tour_id": fx.MEKONG_OLD_ID, "source_id": t["source_id"]})
     assert status == 200
     p = body["proposal"]
@@ -414,6 +415,97 @@ async def test_tour_route_graph_under_older_tour_id():
     assert p["segments"][0]["tour_id"] == t["tour_id"] and p["segments"][0]["tour_name"] == t["title"]
     assert [d["component_id"] for d in p["days"]] == ["c1000000-0000-4000-8000-000000000001"]
     assert all(d["tour_id"] == t["tour_id"] for d in p["days"])
+
+
+# AA-990 F2: a Tour Graph route covers every tour day (1..N), and follows the S236 half-pinned rule.
+
+T0 = fx.TOURS[0]
+T0_STOPS = [s for s in fx.STOPS if s["tour_id"] == T0["source_id"]]
+T0_COMPS = [c for c in fx.PLANNER_COMPONENTS if c["source_tour_id"] == T0["source_id"]]
+
+
+def _shifted(rows: list[dict], key: str, by: int) -> list[dict]:
+    return [dict(r, **{key: r[key] + by}) for r in rows]
+
+
+async def test_tour_route_full_graph_route_is_unchanged():
+    # Every day has a stop and a component: same days as before, plus the two additive keys.
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": T0["tour_id"]})
+    p = body["proposal"]
+    assert status == 200 and p["match"] == "tour_graph" and p["whole_tour"]
+    assert p["total_days"] == 4 and p["tour_days"] == 4 and p["pinned_days"] == 4
+    assert [(s["day_from"], s["day_to"], s["days"]) for s in p["segments"]] == [(1, 4, 4)]
+    assert [(d["day"], d["tour_day"], d["name"], d["component_id"][-1]) for d in p["days"]] == [
+        (1, 1, "Hanoi", "1"), (2, 2, "Ha Long Bay", "2"), (3, 3, "Ha Long Bay", "3"), (4, 4, "Hanoi", "4")]
+
+
+async def test_tour_route_graph_keeps_a_departure_day_without_a_stop():
+    # Day 4 (departure) has no stop in the graph: it used to be cut off (route 3 of 4 days). It now carries the
+    # last stop, unpinned, as any stop-less day inside a tour does.
+    pool = fx.FakeCatalogPool(stops=T0_STOPS[:3], components=T0_COMPS[:3])
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": T0["tour_id"]}, pool=pool)
+    p = body["proposal"]
+    assert status == 200 and p["match"] == "tour_graph"
+    assert p["total_days"] == 4 and p["segments"][0]["day_to"] == 4 and p["segments"][0]["days"] == 4
+    assert p["tour_days"] == 4 and p["pinned_days"] == 3
+    last = p["days"][-1]
+    assert (last["day"], last["tour_day"], last["component_id"]) == (4, 4, None)
+    assert (last["name"], last["lat"]) == ("Ha Long Bay", fx.DESTS[fx.HALONG][2])
+
+
+async def test_tour_route_graph_keeps_arrival_and_departure_days(monkeypatch):
+    # A 6-day tour whose graph has stops on days 2-5 only: days 1 and 6 are in the route, unpinned. The arrival
+    # day has no place yet (no coordinates are made up); the departure day carries the last stop.
+    monkeypatch.setitem(T0, "duration_days", 6)
+    pool = fx.FakeCatalogPool(stops=_shifted(T0_STOPS, "day_index", 1),
+                              components=_shifted(T0_COMPS, "source_day_index", 1))
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": T0["tour_id"]}, pool=pool)
+    p = body["proposal"]
+    assert status == 200 and p["match"] == "tour_graph"
+    assert p["total_days"] == 6 and (p["segments"][0]["day_from"], p["segments"][0]["day_to"]) == (1, 6)
+    assert p["tour_days"] == 6 and p["pinned_days"] == 4
+    assert [d["tour_day"] for d in p["days"]] == [1, 2, 3, 4, 5, 6]
+    first, last = p["days"][0], p["days"][-1]
+    assert first["component_id"] is None and not {"name", "lat", "lng", "destination_id"} & first.keys()
+    assert first["source_id"] == T0["source_id"]
+    assert last["component_id"] is None and last["name"] == "Hanoi"
+    assert [d["component_id"] is not None for d in p["days"]] == [False, True, True, True, True, False]
+
+
+async def test_tour_route_graph_under_half_pinned_falls_back_to_the_day_list():
+    # A graph that pins 1 of 4 days (its only component is at a place the tour does not visit, so the places
+    # route has nothing either) is not offered: 404 with the day list. It used to be accepted on any one pin.
+    stray = {"id": "c9000000-0000-4000-8000-000000000001", "source_tour_id": T0["source_id"],
+             "source_day_index": 4, "destination_id": fx.CANTHO, "embedding": True}
+    pool = fx.FakeCatalogPool(stops=T0_STOPS, components=[stray])
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": T0["tour_id"]}, pool=pool)
+    assert status == 404 and body["tour"]["title"] == T0["title"]
+
+
+async def test_tour_route_graph_at_exactly_half_is_offered():
+    pool = fx.FakeCatalogPool(stops=T0_STOPS, components=T0_COMPS[:2])
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": T0["tour_id"]}, pool=pool)
+    p = body["proposal"]
+    assert status == 200 and p["match"] == "tour_graph" and p["pinned_days"] == 2 and p["total_days"] == 4
+
+
+async def test_tour_route_graph_under_half_gives_way_to_a_places_route_that_pins_more():
+    # Graph: one pin (day 4, Hanoi) of 4 days. Places: Hanoi on days 1 and 4 -> 2 of 4 pinned, the share is met
+    # and it pins more, so the places route is offered.
+    pool = fx.FakeCatalogPool(stops=T0_STOPS, components=[T0_COMPS[3]])
+    status, body, _ = await _get("/browse/tour-route", {"tour_id": T0["tour_id"]}, pool=pool)
+    p = body["proposal"]
+    assert status == 200 and p["match"] == "places"
+    assert p["pinned_days"] == 2 and p["tour_days"] == 4
+    assert p["segments"][0]["tour_name"] == T0["title"]
+    assert [d["component_id"] is not None for d in p["days"]] == [True, False, False, True]
+
+
+def test_graph_span_covers_one_to_n():
+    stops = [{"day_index": d} for d in (2, 3)]
+    assert routes_mod._graph_span(stops, 5) == (1, 5)  # noqa: SLF001
+    assert routes_mod._graph_span(stops, 0) == (1, 3)  # unknown length: up to the last stop  # noqa: SLF001
+    assert routes_mod._graph_span([{"day_index": d} for d in (1, 2, 3, 4)], 4) == (1, 4)  # noqa: SLF001
 
 
 async def test_tour_route_from_catalog_places_when_not_in_graph(monkeypatch):
