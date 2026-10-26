@@ -43,6 +43,7 @@ CIS_SQL = {
     "vector_topk.exact(CIS)": vector_topk.exact_sql("c.embedding IS NOT NULL", "", ("id", "name"), 6,
                                                     vector_topk.CIS),
     "component_ids.MAP_SQL": component_ids.MAP_SQL,
+    "component_ids.REDIRECT_SQL": component_ids.REDIRECT_SQL,
 }
 
 
