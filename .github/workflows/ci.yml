@@ -36,7 +36,7 @@ jobs:
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
           cache: "pip"
@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
 
@@ -96,7 +96,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
 
