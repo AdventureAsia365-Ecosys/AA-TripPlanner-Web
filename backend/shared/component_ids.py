@@ -14,12 +14,17 @@ pin can sit at the start of a chain that crosses both sources. ``id_map`` follow
 (TripPlanner's own rows), else the CIS redirect; at most REDIRECT_HOPS hops; a cycle stops at the last id before it
 repeats.
 
+Degrades safely: the redirect read runs in its own savepoint (the hand-off holds a transaction) and an error (view
+missing before CIS 285 is applied or after its rollback, a grant drift) logs one ``{"evt":
+"component_redirect_unreadable"}`` line and resolves that call through the id map only, as before AA-990.
+
 The one rule every assembly reader follows: resolve the component ids it was given through this module before it
 reads or compares them. An id neither source knows is kept as it is (it is a catalog id already, or an old id
 with no catalog match, which then simply finds no component).
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable, Optional, Protocol
 
 MAP_SQL = """
@@ -40,28 +45,51 @@ class _Conn(Protocol):
     async def fetch(self, query: str, *args: Any) -> Any: ...
 
 
-async def _next_hop(conn: _Conn, frontier: list[str]) -> dict[str, str]:
-    """{id: next id} for the frontier: the id map wins over the CIS redirect of the same id."""
+async def _redirect_rows(conn: _Conn, frontier: list[str]) -> Optional[list]:
+    """Rows of the CIS redirect view, or None when it cannot be read. Inside a savepoint when the connection has
+    transactions, so a failed read never aborts the caller's transaction (as availability._read)."""
+    try:
+        if hasattr(conn, "transaction"):
+            async with conn.transaction():
+                return list(await conn.fetch(REDIRECT_SQL, frontier))
+        return list(await conn.fetch(REDIRECT_SQL, frontier))
+    except Exception as exc:  # noqa: BLE001 — a saved trip and a hand-off never fail over the catalog
+        print(json.dumps({"evt": "component_redirect_unreadable", "view": "catalog.v_component_redirect",
+                          "error": type(exc).__name__}))
+        return None
+
+
+async def _next_hop(conn: _Conn, frontier: list[str], state: dict) -> dict[str, str]:
+    """{id: next id} for the frontier: the id map wins over the CIS redirect of the same id. ``state["redirects"]``
+    turns False after the first unreadable redirect read: the rest of the call uses the id map only."""
     want = set(frontier)
-    hop = {r["old_id"]: r["new_id"] for r in await conn.fetch(REDIRECT_SQL, frontier) if r["old_id"] in want}
+    hop: dict[str, str] = {}
+    if state["redirects"]:
+        rows = await _redirect_rows(conn, frontier)
+        if rows is None:
+            state["redirects"] = False
+        else:
+            hop = {r["old_id"]: r["new_id"] for r in rows if r["old_id"] in want}
     hop.update({r["old_id"]: r["new_id"] for r in await conn.fetch(MAP_SQL, frontier) if r["old_id"] in want})
     return {k: v for k, v in hop.items() if v and v != k}
 
 
 async def id_map(conn: _Conn, ids: Iterable[Optional[str]]) -> dict[str, str]:
     """{old id: current id} for the given ids that the id map or the CIS redirects move (chains followed, at most
-    REDIRECT_HOPS hops, cycle-safe). Two queries per hop; ids no source knows end after the first."""
+    REDIRECT_HOPS hops, cycle-safe). Two queries per hop; ids no source knows end after the first. An unreadable
+    redirect view degrades the call to the id map alone (one log line), never an error."""
     wanted = sorted({str(i) for i in ids if i})
     if not wanted:
         return {}
     current = {w: w for w in wanted}          # raw id → where its chain is now
     seen = {w: {w} for w in wanted}
     open_ = set(wanted)
+    state = {"redirects": True}
     for _ in range(REDIRECT_HOPS):
         frontier = sorted({current[w] for w in open_})
         if not frontier:
             break
-        hop = await _next_hop(conn, frontier)
+        hop = await _next_hop(conn, frontier, state)
         still = set()
         for w in open_:
             nxt = hop.get(current[w])

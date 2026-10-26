@@ -83,3 +83,56 @@ async def test_trip_fold_serves_a_pin_whose_id_two_rebuilds_dropped():
     conn.events = [{"event_type": "add_component", "payload": json.dumps({"component_id": A})}]
     served, unavailable = await events._components_and_missing(conn, "trip")  # noqa: SLF001
     assert [c["id"] for c in served] == [C] and unavailable == []
+
+
+class _BrokenRedirectConn(_ChainConn):
+    """The CIS view is missing / unreadable (before 285, after its rollback, a grant drift); records savepoints."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.savepoints = 0
+
+    def transaction(self):
+        outer = self
+
+        class _Tx:
+            async def __aenter__(self_inner):
+                outer.savepoints += 1
+                return self_inner
+
+            async def __aexit__(self_inner, *exc):
+                return False
+        return _Tx()
+
+    async def fetch(self, query, *args):
+        if query == component_ids.REDIRECT_SQL:
+            self.calls.append(("redirect", list(args[0])))
+            raise RuntimeError('relation "catalog.v_component_redirect" does not exist')
+        return await super().fetch(query, *args)
+
+
+async def test_an_unreadable_redirect_view_falls_back_to_the_id_map(capsys):
+    conn = _BrokenRedirectConn(id_map={A: B, B: C})
+    assert await component_ids.id_map(conn, [A, D]) == {A: C}
+    # read once inside a savepoint, then the rest of the call is id-map only; one log line, no error
+    assert [k for k, _ in conn.calls] == ["redirect", "map", "map", "map"] and conn.savepoints == 1
+    logged = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    assert logged == [{"evt": "component_redirect_unreadable", "view": "catalog.v_component_redirect",
+                       "error": "RuntimeError"}]
+
+
+async def test_custom_days_follow_the_stop_they_were_added_after():
+    # add_component A, add_day(after A); two rebuilds later A → B → C: the extra night sits after C, the served stop
+    conn = _ChainConn(redirects={A: B, B: C})
+    conn.events = [{"event_type": "add_day", "payload": json.dumps(
+                        {"day_id": "d1", "kind": "extra_night", "after_component_id": A})},
+                   {"event_type": "add_day", "payload": {"day_id": "d2", "kind": "free_day"}}]
+    days = await events.current_custom_days(conn, "trip")
+    assert [(d["day_id"], d["after_component_id"]) for d in days] == [("d1", C), ("d2", None)]
+    conn.events = [{"event_type": "add_component", "payload": json.dumps({"component_id": A})}]
+    conn.components = [{"id": C, "name": "Hoi An Ancient Town", "activity": "cultural_heritage",
+                        "duration_hint": "full_day", "text_extract": "x", "source_tour_id": G, "source_day_index": 2,
+                        "destination_id": F, "destination_name": "Hoi An", "lat": 15.88, "lng": 108.33,
+                        "located_by": "geoapify", "precision": "point"}]
+    served, _ = await events._components_and_missing(conn, "trip")  # noqa: SLF001
+    assert [c["id"] for c in served] == [days[0]["after_component_id"]]

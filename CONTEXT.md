@@ -443,7 +443,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   rebuild drops** (AA-990, CIS 285): CIS writes a redirect for every component id a place rebuild could not keep
   (`catalog.v_component_redirect`, component → the component of the same place); `component_ids.id_map` follows the
   chain across both sources (the id map first at each hop, then the CIS redirect; ≤ 5 hops, cycle-safe), so a saved
-  pin survives later rewrites. The map stays insert-only (tp-017); the one-time AA-CIS-Infra
+  pin survives later rewrites; an unreadable view (before 285, after its rollback) degrades to the id map alone with
+  one `component_redirect_unreadable` log line. Added days resolve their `after_component_id` the same way. The map
+  stays insert-only (tp-017); the one-time AA-CIS-Infra
   `aa990_component_id_backfill.py` only INSERTs (pins dropped before CIS 285). The hand-off legs
   use the narration's day check (`master_content.guarded_days`, TP #86): a tour day whose AA text does not name the
   stop moves to the nearest day that does. There is no rollback to the frozen tables after tp-018.
