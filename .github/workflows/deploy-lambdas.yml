@@ -150,6 +150,7 @@ jobs:
   result:
     name: Deploy Lambdas result
     runs-on: ubuntu-latest
+    permissions: {}
     if: always()
     needs: [ci, deploy, verify]
     steps:

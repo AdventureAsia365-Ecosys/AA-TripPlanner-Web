@@ -40,7 +40,7 @@ on:
         options: [web, lambdas]
         default: web
       expected_sha:
-        description: "The commit production should be running (full 40-character SHA)."
+        description: "Full 40-character SHA expected live: for web, the commit of the last production frontend deploy; for lambdas, the commit of the last Deploy Lambdas run (not necessarily main HEAD)."
         required: true
         type: string
 permissions:
