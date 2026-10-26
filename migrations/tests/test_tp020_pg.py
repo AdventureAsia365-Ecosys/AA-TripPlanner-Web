@@ -7,7 +7,7 @@ then tp-020 the same way.
 
 Checks: the exact column lists (the contract), owner and registration; the totals count rows written as the runtime
 role, the pin view exposes only catalog component ids (no trip, session or payload text) and the id-map view only
-the map's id pairs;
+the map's id pairs, and a non-UUID component_id (free text a traveller sent) is counted as invalid, never shown;
 cis_app reads the three views and nothing else (every base table 42501, no CREATE); the runtime role reads but cannot
 write the views; the guard refuses a runner other than tp_owner; a re-run as tp_owner is a no-op.
 """
@@ -41,8 +41,8 @@ TOTALS = "tripplanner.v_ops_data_totals"
 PINS = "tripplanner.v_ops_pin_components"
 IDMAP = "tripplanner.v_ops_component_id_map"
 VIEWS = (TOTALS, PINS, IDMAP)
-METRICS = ("sessions", "trip_drafts", "trip_drafts_sent", "trips_with_events", "pin_events", "component_id_map_rows",
-           "customers", "traveller_accounts", "outbox_rows", "narration_cache_rows")
+METRICS = ("sessions", "trip_drafts", "trip_drafts_sent", "trips_with_events", "pin_events", "pin_events_invalid_id",
+           "component_id_map_rows", "customers", "traveller_accounts", "outbox_rows", "narration_cache_rows")
 BASE_TABLES = ("tripplanner.sessions", "tripplanner.trip_drafts", "tripplanner.trip_events",
                "tripplanner.component_id_map", "tripplanner.customers", "tripplanner.traveller_accounts",
                "tripplanner.outbox", "tripplanner.narration_cache")
@@ -168,6 +168,10 @@ def test_totals_and_pins_count_rows_written_by_the_runtime(db):
                     (t2, s2, "add_component", {"component_id": str(old)}),
                     (t2, s2, "add_component", {"component_id": str(plain)}),
                     (t2, s2, "add_component", {"no_component": True}),  # no id: not a pin
+                    # traveller-supplied, not a catalog key: counted as invalid, never exposed
+                    (t2, s2, "add_component", {"component_id": "call me on +84 90 123 4567, Jane"}),
+                    (t2, s2, "add_component", {"component_id": 12345}),
+                    (t2, s2, "add_component", {"component_id": str(plain) + " extra"}),
                     (t1, s1, "remove_component", {"component_id": str(plain)}),
                     (t2, s2, "sent", {}),
                 )
@@ -188,9 +192,10 @@ def test_totals_and_pins_count_rows_written_by_the_runtime(db):
     assert set(after) == set(METRICS) and len(after) == len(METRICS)
     delta = {k: after[k] - before.get(k, 0) for k in after}
     assert delta == {"sessions": 2, "trip_drafts": 2, "trip_drafts_sent": 1, "trips_with_events": 2,
-                     "pin_events": 5, "component_id_map_rows": 1, "customers": 0, "traveller_accounts": 0,
+                     "pin_events": 8, "pin_events_invalid_id": 3, "component_id_map_rows": 1, "customers": 0, "traveller_accounts": 0,
                      "outbox_rows": 0, "narration_cache_rows": 0}
     assert pins == {str(old): 2, str(plain): 1}
+    assert not any("Jane" in k or "12345" in k or "extra" in k for k in pins)
     assert idmap == {(str(old), str(new))}
 
 
