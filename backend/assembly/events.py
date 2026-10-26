@@ -129,7 +129,7 @@ def _segment_fields(c: dict) -> dict:
 
 async def current_custom_days(conn: _Conn, trip_id: str) -> list[dict]:
     """Fold add_day / remove_day events into the trip's added days, in the order added.
-    Each: {day_id, kind, after_component_id, note}."""
+    Each: {day_id, kind, after_component_id, note}; after_component_id resolved through component_ids (AA-990)."""
     rows = await conn.fetch(
         "SELECT event_type, payload FROM tripplanner.trip_events "
         "WHERE trip_id = $1 AND event_type IN ('add_day', 'remove_day') ORDER BY id ASC",
@@ -146,6 +146,13 @@ async def current_custom_days(conn: _Conn, trip_id: str) -> list[dict]:
                                        "note": payload.get("note"), "customization": True}
         elif r["event_type"] == "remove_day":
             days.pop(payload.get("day_id"), None)
+    # AA-990: after_component_id is the id resolved when the day was added; a later rebuild can move it (chain).
+    # Resolve it like every other component id (one id_map call), so the extra night still sits after its stop and
+    # the hand-off names the served component.
+    mapping = await component_ids.id_map(conn, [d["after_component_id"] for d in days.values()])
+    for d in days.values():
+        if d["after_component_id"]:
+            d["after_component_id"] = mapping.get(str(d["after_component_id"]), d["after_component_id"])
     return list(days.values())
 
 

@@ -78,6 +78,8 @@ CREATE TABLE catalog.v_graph_node (destination_id uuid, name text, country text,
 CREATE TABLE tripplanner.component_id_map (old_id uuid PRIMARY KEY, new_id uuid NOT NULL, matched_by text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE tripplanner.trip_events (id bigserial PRIMARY KEY, trip_id text, event_type text, payload jsonb);
+-- AA-990 (CIS 285): component ids a CIS place rebuild dropped → the component of the same place.
+CREATE TABLE catalog.v_component_redirect (component_id uuid, new_component_id uuid);
 """
 
 D = {k: uuid.UUID(int=i + 1) for i, k in enumerate(("VTE", "VV", "LPB", "PKS", "HAN"))}
@@ -314,6 +316,23 @@ async def test_suggestions_from_a_pre_flip_pin(pool):
     res = await suggest_mod.suggest(pool, "t-sug")
     names = [s["name"] for s in res["suggestions"]]
     assert res["mode"] == "route" and names and "Vientiane" not in names   # next stops of tours through VTE
+
+
+async def test_a_pin_two_rebuilds_dropped_follows_the_id_map_and_the_cis_redirects(pool):
+    """AA-990 (D1): pre-flip id → (tp-017 map) catalog id X; a rebuild dropped X → Y (CIS redirect); the backfill
+    inserted Y → served id (map). The fold serves the component; no stop is listed as unavailable."""
+    from backend.assembly import events as events_mod
+
+    served = await pool.fetchval("SELECT component_id::text FROM catalog.v_tour_component WHERE source_id = $1 "
+                                 "ORDER BY day_index, name LIMIT 1", TOURS[2][0])
+    old, x, y = (str(uuid.uuid4()) for _ in range(3))
+    await pool.execute("INSERT INTO tripplanner.component_id_map (old_id, new_id, matched_by) VALUES "
+                       "($1::uuid, $2::uuid, 'name'), ($3::uuid, $4::uuid, 'name')", old, x, y, served)
+    await pool.execute("INSERT INTO catalog.v_component_redirect VALUES ($1::uuid, $2::uuid)", x, y)
+    await pool.execute("INSERT INTO tripplanner.trip_events (trip_id, event_type, payload) VALUES ('t-990', "
+                       "'add_component', $1::jsonb)", json.dumps({"component_id": old}))
+    comps, missing = await events_mod._components_and_missing(pool, "t-990")  # noqa: SLF001
+    assert [str(c["id"]) for c in comps] == [served] and missing == []
 
 
 # ── AA-847 routes gate: the equality-join CHAIN_SQL returns what the range-join form returned ────────────────
