@@ -61,6 +61,10 @@ CIS_PUBLIC_API_BASE=http://localhost:8011 python -m backend.tests.dev_browse_ser
   (OIDC role `aa-tripplanner-dev-app-deploy`, defined in AA-CIS-Infra; its ARN is the repo secret
   `AWS_DEPLOY_ROLE_ARN`, AA-902) updates both functions' code. The functions, API Gateway, S3 artifacts and secrets themselves are Terraform in
   `AA-CIS-Infra/accounts/aa365/tripplanner.tf`.
+- **Post-deploy verify (AA-993):** both deploy workflows end with `post-deploy-verify.yml` (production
+  `/api/health` on the deployed commit + version; each Lambda's CodeSha256 = the zip of the deployed commit, plus
+  browse/assembly reads). A failed or skipped verify turns the deploy run red (`result` job). Re-run by hand:
+  Actions → "Post-deploy verify" → `app`, `expected_sha` (from `main`).
 - **Releases (AA-891):** release-please keeps a release PR open on `main` (version in
   `.release-please-manifest.json`, notes in `CHANGELOG.md`, tag `vX.Y.Z`); merging it releases and deploys
   nothing. `GET /api/health` on the web app shows `version` and `git_sha`.

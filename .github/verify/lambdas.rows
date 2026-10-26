@@ -1,0 +1,23 @@
+# AA-993 V4 (ADR 0016 D3) — rows of the TripPlanner Lambda post-deploy verify, read by
+# .github/scripts/post_deploy_verify.sh lambdas. They replace the inline smoke of deploy-lambdas.yml (AA-879).
+#
+# One row per line: name|kind|target|expected|jq assertion
+#   kind lambda: target "<function name> <artifact key>", expected = LastUpdateStatus. Red unless the function is
+#     Active, its last update Successful, and its CodeSha256 = the code-sha256 metadata of the artifact in the
+#     artifacts bucket, whose git-sha / app-version metadata = the deployed commit / its manifest version
+#     (deploy-lambdas.yml "Upload artifacts to S3"). The Lambdas have no health endpoint; this is their sha check.
+#   kind public: target "GET <path>" on the production web host (the BFF calls the API Gateway with the edge key;
+#     the API host itself is not written in this public repo), expected = HTTP code, assertion = jq on the body.
+#     {cb} = a fresh cache-buster per try (the Vercel CDN would otherwise answer without touching the Lambda).
+#
+# The assembly reads use the all-zero trip UUID with no guest session. The Lambda answers both with 404
+# {"error": "not found"} (the trip read GETs check the guest token and never leak existence, AA-909):
+#   - coverage: the BFF passes the Lambda's 404 through, so this row pins the Lambda's own contract;
+#   - itinerary: since AA-837 the BFF turns that one 404 into a 200 empty trip (lib/tripProxy.ts tripReadAnswer), so
+#     a first visit to /plan logs no console error. A Lambda 5xx still passes through and fails the row.
+
+lambda-browse|lambda|aa-tripplanner-dev-browse browse.zip|Successful|
+lambda-assembly|lambda|aa-tripplanner-dev-assembly assembly.zip|Successful|
+browse-countries|public|GET /api/browse?resource=countries&_cb={cb}|200|(.countries | length) > 0
+assembly-coverage|public|GET /api/trip?resource=coverage&trip_id=00000000-0000-0000-0000-000000000000|404|.error == "not found"
+assembly-itinerary|public|GET /api/trip?trip_id=00000000-0000-0000-0000-000000000000|200|.itinerary == [] and .custom_days == []

@@ -589,11 +589,20 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `AdventureAsia365-Ecosys*/...` wildcard form; a plain `repo:Ecosys/...` subject fails
   AccessDenied. This is the same OIDC fact that AA-588 corrected in Infra.
 - **Deploy after CI + smoke (AA-879)**: `deploy-lambdas.yml` calls the whole `ci.yml` (reusable via
-  `workflow_call`) as its `ci` job; `deploy` has `needs: ci`. After the update it runs a read-only smoke
-  through the production BFF (`/api/browse?resource=countries` with a cache-buster → 200 + countries;
+  `workflow_call`) as its `ci` job; `deploy` has `needs: ci`. After the update the `verify` job runs the read-only
+  smoke rows through the production BFF (`/api/browse?resource=countries` with a cache-buster → 200 + countries;
   `/api/trip?resource=coverage&trip_id=<all-zero UUID>` → the Lambda's 404 `{"error": "not found"}` passed
   through (AA-909); `/api/trip?trip_id=<all-zero UUID>` → the BFF's 200 empty trip (AA-837)), so a broken
   Lambda turns the run red.
+- **Post-deploy verify (AA-993 V4, root ADR 0016 D3)**: `.github/workflows/post-deploy-verify.yml` (app `web` |
+  `lambdas`; `workflow_call` from the deploy workflows, `workflow_dispatch` with `expected_sha` from `main`), script
+  `.github/scripts/post_deploy_verify.sh`, rows `.github/verify/{web,lambdas}.rows`. Web, after every production
+  deploy: `GET https://aa-tripplanner.vercel.app/api/health` → 200 with `git_sha` = the deployed commit
+  (`steps.plan.outputs.sha`) and `version` = its manifest. Lambdas: each function `Active`, `LastUpdateStatus`
+  `Successful`, `CodeSha256` = the uploaded zip, whose S3 metadata `git-sha` / `app-version` = the deployed commit /
+  version (written by the upload step), plus the smoke rows above. Red/green only, table in the job summary; a
+  `result` job per deploy workflow is red when the deploy or verify did not succeed (Vercel: production path only;
+  previews unchanged). A PR that adds a route or Lambda worth guarding adds a row.
 - **CI checks**: required "Backend (pytest)", "Frontend (lint + build)", "Migrations (lint, PG 15
   replay)"; plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan
   (AA-981 follow-up): `secret-scan.yml`, check "gitleaks" on every PR (lines the PR adds, rules and baseline from
