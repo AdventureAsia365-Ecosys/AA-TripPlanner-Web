@@ -132,3 +132,12 @@ test("static map URL with three dense lines and 25 pins stays under 8,192 charac
   assert.ok(url && url.length < 8192, `length ${url?.length}`);
   assert.ok(url!.includes("path-4+3B82C4-0.85("));
 });
+
+test("a single-pin static map uses center,zoom without padding (Mapbox 422s padding without auto)", () => {
+  const one = staticMapUrl([{ name: "Okinawa", lat: 26.6, lng: 127.98, precision: "point" as const }], { token: "pk.test-token-0123456789" });
+  assert.ok(one && one.includes("/127.98,26.6,8/"), one ?? "null");
+  assert.ok(!one!.includes("padding="));
+  const two = staticMapUrl([{ name: "a", lat: 26.6, lng: 127.98, precision: "point" as const },
+    { name: "b", lat: 26.2, lng: 127.7, precision: "point" as const }], { token: "pk.test-token-0123456789" });
+  assert.ok(two && two.includes("/auto/") && two.includes("?padding=48&access_token="));
+});

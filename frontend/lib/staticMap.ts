@@ -42,8 +42,11 @@ export function staticMapUrl(
   const w = opts.width ?? 800;
   const h = opts.height ?? 480;
   const auto = pins.length === 1 && paths.length === 0 ? `${r6(pins[0].lng)},${r6(pins[0].lat)},8` : "auto";
+  // Mapbox answers 422 to `padding` with a fixed center,zoom (it needs `auto` or a bounding box): S252 parity,
+  // every single-pin map was a broken image.
+  const padding = auto === "auto" ? "padding=48&" : "";
   const build = (ov: string[]) =>
-    `https://api.mapbox.com/styles/v1/mapbox/light-v11/static/${ov.join(",")}/${auto}/${w}x${h}@2x?padding=48&access_token=${encodeURIComponent(token)}`;
+    `https://api.mapbox.com/styles/v1/mapbox/light-v11/static/${ov.join(",")}/${auto}/${w}x${h}@2x?${padding}access_token=${encodeURIComponent(token)}`;
   let url = build(overlays);
   // Never exceed Mapbox's limit: drop the last path overlays first (the pins and the route stay)
   let drop = paths.length;
