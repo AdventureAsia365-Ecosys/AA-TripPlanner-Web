@@ -172,7 +172,9 @@ export default function MyPayments({ trips }: { trips: MyTrip[] }) {
         )}
         {state.kind === "ok" && state.invoices.length === 0 && (
           <EmptyState title="No payment requests yet" icon="calendar">
-            When your trip consultant confirms a trip and sends a payment request, it appears here with its due dates.
+            When your trip consultant confirms a trip you sent while signed in and sends a payment request, it
+            appears here with its due dates. For a trip sent without signing in, your trip consultant sends the
+            payment request by email.
           </EmptyState>
         )}
         {state.kind === "ok" && state.invoices.length > 0 && (

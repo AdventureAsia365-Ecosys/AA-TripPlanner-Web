@@ -15,6 +15,7 @@ import {
   scheduleChip,
   scheduleKindLabel,
   tripDates,
+  upstreamFailure,
 } from "./myPayments.ts";
 
 const INVOICE = {
@@ -127,6 +128,17 @@ test("outcome: 401 is the sign-in prompt, other failures an error", () => {
   assert.equal(paymentsOutcome(401), "signed_out");
   assert.equal(paymentsOutcome(502), "error");
   assert.equal(paymentsOutcome(0), "error");
+});
+
+test("a Booking refusal is an error with Try again, never the sign-in prompt", () => {
+  for (const status of [401, 403]) {
+    const answer = upstreamFailure(status);
+    assert.deepEqual(answer, { status: 502, error: "booking_refused" });
+    assert.equal(paymentsOutcome(answer.status), "error");
+  }
+  assert.deepEqual(upstreamFailure(500), { status: 502, error: "upstream_error" });
+  assert.deepEqual(upstreamFailure(404), { status: 502, error: "upstream_error" });
+  assert.equal(paymentsOutcome(upstreamFailure(0).status), "error");
 });
 
 test("the Booking URL: Dev by default, https only, no path from the env", () => {

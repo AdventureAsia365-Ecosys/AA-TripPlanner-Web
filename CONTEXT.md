@@ -362,9 +362,13 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
     `Authorization: Bearer` to `GET <BOOKING_API_URL>/booking/customer/v1/payments` (default the Dev Booking API
     `https://api-booking.lumiguides.it.com`; env `BOOKING_API_URL` overrides it, https origin only; 8 s timeout); no
     TripPlanner secret goes to Booking. It forwards only the contract's fields (`lib/myPayments.ts` `pickPayments`).
-    401 `sign_in_required` when signed out or when Booking refuses the token (the section then shows "Sign in again";
-    Booking's refusal never clears the session: the Lambda's `/me/trips` judges the session); any other failure 502
-    `upstream_error` (Try again). Log line `bff_upstream` route `booking`, op `my_payments`, status and ms only.
+    401 `sign_in_required` only when there is no session (the section then shows "Sign in again"). Booking refusing
+    the token (401/403) is 502 `booking_refused`: the section renders only after `/api/me` succeeded with the same
+    session, so the refusal is Booking-side (client id, issuer, clock) and never clears the session or claims it ended
+    (no sign-in loop); any other failure 502 `upstream_error`. Both show Try again (`lib/myPayments.ts`
+    `upstreamFailure`). Log line `bff_upstream` route `booking`, op `my_payments`, status and ms only.
+  - A trip sent as a guest (lead customer hand-off) never matches a signed-in identity in Booking, so its payment
+    requests do not show here; the empty state says the consultant sends those by email.
   - Nothing is stored in `tripplanner.*`. `ui/Badge.tsx` gained the `danger` tone (red on red-soft, a pair
     `lib/contrast.test.ts` already checks) for the Overdue chip.
 

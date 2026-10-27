@@ -201,6 +201,15 @@ export function paymentsOutcome(status: number): PaymentsOutcome {
   return "error";
 }
 
+// The BFF's answer when Booking did not answer 2xx. Only the BFF's own "no session" branch is a 401: the section
+// renders only after /api/me succeeded with the same session, so a Booking 401/403 is a Booking-side refusal (client
+// id or issuer mismatch, clock skew), not a signed-out traveller. Mapping it to 401 would show "Your session has
+// ended" and send the traveller round a sign-in loop that gets the same refusal again; 502 shows Try again instead.
+export function upstreamFailure(upstreamStatus: number): { status: 502; error: "booking_refused" | "upstream_error" } {
+  if (upstreamStatus === 401 || upstreamStatus === 403) return { status: 502, error: "booking_refused" };
+  return { status: 502, error: "upstream_error" };
+}
+
 // ── The upstream call (app/api/me/payments) ──────────────────────────────────────────────────────────────────────
 
 // AA-Booking's public API (Dev). Env BOOKING_API_URL overrides it (another environment, a local API); https only,
