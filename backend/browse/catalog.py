@@ -555,7 +555,7 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
              "destination_id": p["destination_id"], "width": p["width"], "height": p["height"],
              "position": p["position"], "url": photo_url(p["path"], "large"),
              "url_small": photo_url(p["path"], "small")}
-            for p in photos
+            for p in _unique_paths(photos)
         ],
     }
     # The hero falls back to a destination photo only when the tour has no photo at all.
@@ -563,6 +563,19 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
         await fill_fallback_covers([out], pool=pool)
     return out
 
+
+
+def _unique_paths(rows: Any) -> list:
+    """Rows in order, each photo ``path`` once (first occurrence wins). AA-995: copies of the same file keep their
+    own photo_id but share the canonical path (CIS migration 290), so a path seen before is the same picture."""
+    seen: set[str] = set()
+    out = []
+    for r in rows:
+        if r["path"] in seen:
+            continue
+        seen.add(r["path"])
+        out.append(r)
+    return out
 
 
 def _suffix(source_id: str) -> str:
@@ -691,11 +704,7 @@ async def destination_page(country: str, *, pool: Any) -> Optional[dict]:
         rank = {d: i for i, d in enumerate(ids)}  # gallery follows the place ranking
         prow = sorted(await pool.fetch(DESTINATION_PHOTOS_SQL, ids),
                       key=lambda r: (r["position"], rank.get(r["destination_id"], 1_000)))
-        seen: set[str] = set()
-        for r in prow:
-            if r["photo_id"] in seen:
-                continue
-            seen.add(r["photo_id"])
+        for r in _unique_paths(prow):  # AA-995: one picture once, even when several places share it
             photos.append({"photo_id": r["photo_id"], "destination_id": r["destination_id"],
                            "place_label": r["place_label"], "width": r["width"], "height": r["height"],
                            "url": photo_url(r["path"], "large"), "url_small": photo_url(r["path"], "small")})
