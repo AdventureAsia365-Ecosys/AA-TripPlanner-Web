@@ -249,7 +249,7 @@ export default async function DestinationRoute({ params }: Props) {
                 <EmptyState title="Places are being mapped">The places on these tours are not on the map yet.</EmptyState>
               </div>
             ) : (
-              <div className="mt-10 grid gap-6 lg:grid-cols-12 lg:items-start lg:gap-8">
+              <div className="mt-10 grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-12 lg:items-start lg:gap-8">
                 {hasMap && (
                   <div className="lg:sticky lg:top-[calc(var(--tp-header-h)+24px)] lg:col-span-7">
                     <StaticMap points={points} lines={lines} title={`Places in ${d.country}`} caption="Numbers match the list of places." />
