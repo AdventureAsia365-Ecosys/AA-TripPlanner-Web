@@ -52,6 +52,12 @@ python -m backend.browse.local_server     # optional local Lambda emulation (see
 CIS_PUBLIC_API_BASE=http://localhost:8011 python -m backend.tests.dev_browse_server
 ```
 
+Pre-push hook (AA-993): `scripts/install-hooks.sh` once per clone. Every `git push` then runs
+`scripts/pre-push.sh`, which runs the CI checks the diff against `origin/main` needs (resource IDs and CI script
+tests always; backend tests of the changed modules; migration lint; `npm run lint`, `typecheck` and `test` when
+`frontend/` changed, never `next build`; docs lint). `AA_PREPUSH=full git push` runs the CI backend command;
+`git push --no-verify` skips the hook once. Details: `docs/implementation-notes/AA-993.md`.
+
 ## Deploy
 
 - **Frontend deploys:** CI-created via `.github/workflows/vercel-deploy.yml` (only when `frontend/**`
