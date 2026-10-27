@@ -49,8 +49,17 @@ export default function RibbonControl({ ribbonId }: { ribbonId: string }) {
     if (!section) return;
     const viewport = section.querySelector<HTMLElement>(".tp-ribbon-viewport");
     // Keyboard focus switches the track to the still row (CSS); bring the focused tile into view.
+    // Only for keyboard focus: a mouse click on a moving tile (e.g. a middle / ctrl click that stays on the
+    // page) also focuses its link, and scrolling the clipped viewport then would make the marquee jump.
     const onFocus = (e: FocusEvent) => {
       const t = e.target as HTMLElement;
+      let keyboard = true;
+      try {
+        keyboard = t.matches(":focus-visible");
+      } catch {
+        /* :focus-visible unsupported: keep the old behaviour */
+      }
+      if (!keyboard) return;
       requestAnimationFrame(() => t.scrollIntoView({ block: "nearest", inline: "nearest" }));
     };
     viewport?.addEventListener("focusin", onFocus);

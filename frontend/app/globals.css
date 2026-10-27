@@ -326,8 +326,15 @@ html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :fo
 html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-list:first-child {
   padding-left: 0;
 }
+/* Longhands only, never the `animation` shorthand: the shorthand also resets animation-play-state to
+   running, and this selector (0,6,1 — the :not(:has(...)) counts 0,2,0) outranks the pause rules below
+   (0,4,1), so the pause button, the off-screen pause and the hover pause would never apply (AA-995 review).
+   Play state lives only in the pause rules; lib/ribbonCss.test.ts guards this. */
 html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-track {
-  animation: tp-marquee calc(var(--tp-ribbon-count) * var(--tp-ribbon-s-per-tile)) linear infinite;
+  animation-name: tp-marquee;
+  animation-duration: calc(var(--tp-ribbon-count) * var(--tp-ribbon-s-per-tile));
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
 }
 html[data-motion="ok"] .tp-ribbon[data-animate]:not([data-paused]):not([data-offscreen]) .tp-ribbon-track {
   will-change: transform;

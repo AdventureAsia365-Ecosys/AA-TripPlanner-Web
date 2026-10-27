@@ -2,8 +2,10 @@
 //   >= 8 unique photos: it moves (only with data-motion="ok", in view, not paused); 4–7: a still swipe row;
 //   < 4: nothing is rendered (lib/photos.ts).
 // Markup: a labelled section; the pause button comes before the track; copy A is the real list (its
-// fill-rule repeats are aria-hidden + inert), copy B is an aria-hidden + inert duplicate, so nothing is
-// announced or focused twice. All behaviour is CSS (app/globals.css .tp-ribbon*), the client island
+// fill-rule repeats are aria-hidden), copy B is an aria-hidden duplicate, and every link in a repeat or in
+// copy B has tabIndex -1, so nothing is announced or tabbed to twice. They are deliberately NOT `inert`:
+// an inert node is skipped by hit-testing, so the duplicate tiles (half of every loop) would ignore clicks
+// and hover while looking exactly like the live ones. All behaviour is CSS (app/globals.css .tp-ribbon*), the client island
 // (RibbonControl) only toggles attributes. Keyboard focus inside the track switches it to the still,
 // scrollable row (:has(:focus-visible)), so a focused tile is never off screen (WCAG 2.4.11).
 // The duration is computed here: --tp-ribbon-count tiles x the per-tile seconds of each breakpoint.
@@ -51,7 +53,7 @@ export default function PhotoRibbon({
       unique.map((it, i) => {
         const hidden = copyIndex > 0 || r > 0;
         return (
-          <li key={`${r}-${i}`} {...(copyIndex === 0 && r > 0 ? { "data-repeat": "", "aria-hidden": true, inert: true } : {})}>
+          <li key={`${r}-${i}`} {...(copyIndex === 0 && r > 0 ? { "data-repeat": "", "aria-hidden": true } : {})}>
             <Tile item={it} hidden={hidden} />
           </li>
         );
@@ -68,7 +70,7 @@ export default function PhotoRibbon({
         <div className="tp-ribbon-track">
           <ul aria-label={label} className="tp-ribbon-list">{copy(0)}</ul>
           {animate && (
-            <ul aria-hidden="true" inert className="tp-ribbon-list tp-ribbon-copy">
+            <ul aria-hidden="true" className="tp-ribbon-list tp-ribbon-copy">
               {copy(1)}
             </ul>
           )}
