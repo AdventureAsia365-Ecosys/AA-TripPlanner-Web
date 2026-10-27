@@ -58,6 +58,8 @@ const STEPS = [
   },
 ];
 
+const RIBBON_TOUR_LIMIT = 40;
+
 // Ribbon content: featured tour covers, then country covers; uniqueRibbonItems dedupes by photo.
 function ribbonItems(tours: TourCardData[], countries: CountrySummary[]): RibbonItem[] {
   return [
@@ -77,9 +79,16 @@ function ribbonItems(tours: TourCardData[], countries: CountrySummary[]): Ribbon
 }
 
 export default async function HomePage() {
-  const [countriesRes, toursRes] = await Promise.all([getCountries(), getTours({ sort: "featured", limit: 9 })]);
+  // The ribbon reads a longer featured list than the row (S253): the catalogue reuses a few covers on many tours, so 9
+  // tours plus the country covers gave 7 unique photos, under the 8 the ribbon needs to move. Both reads are ISR-cached.
+  const [countriesRes, toursRes, ribbonRes] = await Promise.all([
+    getCountries(),
+    getTours({ sort: "featured", limit: 9 }),
+    getTours({ sort: "featured", limit: RIBBON_TOUR_LIMIT }),
+  ]);
   const countries = countriesRes.ok ? countriesRes.data.countries : [];
   const tours = toursRes.ok ? toursRes.data.tours : [];
+  const ribbonTours = ribbonRes.ok ? ribbonRes.data.tours : tours;
   const tourPhoto = firstUseOfCover(tours, (t) => t.cover_url_small ?? t.cover_url);
   const { items: grid, shown: gridPhoto } = gridWithPhotos(countries, (c) => c.cover_url_small ?? c.cover_url);
   const tourTotal = countries.reduce((n, c) => n + c.tour_count, 0);
@@ -265,7 +274,7 @@ export default async function HomePage() {
         <CtaBand />
 
         {/* 10 · Photo ribbon (cream, full-bleed): featured tour covers + country covers, deduped */}
-        <PhotoRibbon id="from-our-trips" title="From our trips" label="Photos from our trips" items={ribbonItems(tours, countries)} />
+        <PhotoRibbon id="from-our-trips" title="From our trips" label="Photos from our trips" items={ribbonItems(ribbonTours, countries)} />
       </main>
 
       <SiteFooter />
