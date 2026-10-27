@@ -1,24 +1,26 @@
 import type { Metadata, Viewport } from "next";
-import { Fahkwang, Inter, Poppins } from "next/font/google";
+import { Poppins, Satisfy } from "next/font/google";
 import "../ui/tokens.css";
 import "./globals.css";
 import { RESTORE_THEME_SCRIPT } from "@/ui/restoreTheme";
 import { siteUrl } from "@/lib/catalog";
 
-// Inter: the map planner (/plan). Poppins + Fahkwang: the brand type of the kit pages, the same
-// fonts as CIS admin/portal and adventure.asia (CIS _brand/tokens.ts).
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
+// AA-995: Poppins for everything + Satisfy for section titles, the two faces adventure.asia uses.
+// Fahkwang is gone (the live brand does not use it); Inter loads only in /plan (app/plan/layout.tsx).
 const poppins = Poppins({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
   variable: "--font-poppins",
   display: "swap",
 });
-const fahkwang = Fahkwang({
+// `optional`: a slow first view keeps the Poppins fallback instead of swapping a large script face
+// on screen (no layout shift); preloaded, so a normal view gets Satisfy.
+const satisfy = Satisfy({
   subsets: ["latin"],
-  weight: ["500", "600"],
-  variable: "--font-fahkwang",
-  display: "swap",
+  weight: "400",
+  variable: "--font-satisfy",
+  display: "optional",
+  preload: true,
 });
 
 export const metadata: Metadata = {
@@ -41,12 +43,12 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    // data-theme is set before paint by the restore script, so the server value may differ.
+    // data-theme and data-motion are set before paint by the restore script, so the server value may differ.
     <html
       lang="en"
       data-theme="light"
       suppressHydrationWarning
-      className={`${inter.variable} ${poppins.variable} ${fahkwang.variable}`}
+      className={`${poppins.variable} ${satisfy.variable}`}
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: RESTORE_THEME_SCRIPT }} />

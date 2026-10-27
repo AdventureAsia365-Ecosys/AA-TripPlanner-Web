@@ -30,7 +30,7 @@ function subscribe(cb: () => void): () => void {
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
   const onMedia = () => {
     if (readChoice() === "system") {
-      document.documentElement.setAttribute("data-theme", resolve("system"));
+      applyTheme(resolve("system"));
       cb();
     }
   };
@@ -41,6 +41,15 @@ function subscribe(cb: () => void): () => void {
   };
 }
 
+// AA-995 (map-first graft): no colour transitions while the theme flips, so cards and buttons do not
+// fade one by one. app/globals.css turns transitions off while html[data-theme-switching] is set.
+function applyTheme(theme: "light" | "dark"): void {
+  const root = document.documentElement;
+  root.setAttribute("data-theme-switching", "");
+  root.setAttribute("data-theme", theme);
+  requestAnimationFrame(() => requestAnimationFrame(() => root.removeAttribute("data-theme-switching")));
+}
+
 export function setThemeChoice(choice: ThemeChoice): void {
   try {
     if (choice === "system") window.localStorage.removeItem(THEME_KEY);
@@ -48,7 +57,7 @@ export function setThemeChoice(choice: ThemeChoice): void {
   } catch {
     /* storage blocked: still apply for this page view */
   }
-  document.documentElement.setAttribute("data-theme", resolve(choice));
+  applyTheme(resolve(choice));
   listeners.forEach((l) => l());
 }
 
