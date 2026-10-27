@@ -17,7 +17,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
   return (
     <div className="aa-site">
       <SiteHeader />
-      <main className="mx-auto max-w-md px-4 py-12">
+      <main id="main" className="mx-auto max-w-md px-4 py-12">
         <SignInForm next={safeNext(next)} />
       </main>
       <SiteFooter />

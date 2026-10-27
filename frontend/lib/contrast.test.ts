@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { contrastRatio, parseHex, readThemeTokens } from "./contrast.ts";
+import { compositeOver, contrastRatio, parseHex, parseRgba, readThemeTokens } from "./contrast.ts";
 
 const css = readFileSync(new URL("../ui/tokens.css", import.meta.url), "utf8");
 const themes = readThemeTokens(css);
@@ -22,6 +22,25 @@ const PAIRS: [string, string][] = [
   ["bg", "ink"], // inverted pills (Map | List, day counter, Explore/Your trip badge)
   ["red", "card"], ["red", "red-soft"], ["red", "bg"],
   ["neutral-fg", "neutral-bg"],
+];
+
+// AA-995 "Golden Hour" customer pages: the sand band and the navy band (header, CTA band, footer,
+// no-photo tiles). Every pair is small text, so 4.5:1, in both themes.
+const SITE_PAIRS: [string, string][] = [
+  ["ink", "tp-surface-sand"], ["body", "tp-surface-sand"], ["muted", "tp-surface-sand"],
+  ["accent-deep", "tp-surface-sand"],
+  ["tp-on-band", "tp-band"], ["tp-on-band-muted", "tp-band"], ["tp-band-accent", "tp-band"],
+  ["ink", "accent-tint"], ["accent-deep", "accent-tint"],
+];
+
+// Text over a photo: the worst case is a pure-white pixel under the scrim. [text, scrim, minimum]:
+// small white text needs 4.5:1; the Satisfy hero kicker is large text (>= 28 px), so 3:1.
+const SCRIM_PAIRS: [string, string, number][] = [
+  ["#FFFFFF", "scrim", 4.5], // duration pill, photo captions, ribbon caption chips
+  ["#FFFFFF", "tp-scrim-text", 4.5], // hero h1 and lede
+  ["tp-band-accent", "tp-scrim-text", 3], // hero kicker in Satisfy (large text)
+  ["tp-on-band", "tp-scrim-head", 4.5], // header links and the AI chip over the hero photo
+  ["#FFFFFF", "tp-scrim-head", 4.5],
 ];
 
 test("contrastRatio matches known WCAG values", () => {
@@ -41,6 +60,35 @@ for (const theme of ["light", "dark"] as const) {
     assert.deepEqual(failures, []);
   });
 }
+
+for (const theme of ["light", "dark"] as const) {
+  test(`every customer-page band pair meets WCAG AA in the ${theme} theme`, () => {
+    const t = themes[theme];
+    const failures = SITE_PAIRS.map(([fg, bg]) => {
+      assert.ok(t[fg] && t[bg], `token missing in ${theme}: ${t[fg] ? bg : fg}`);
+      return { pair: `${fg} on ${bg}`, ratio: Math.round(contrastRatio(t[fg], t[bg]) * 100) / 100 };
+    }).filter((r) => r.ratio < 4.5);
+    assert.deepEqual(failures, []);
+  });
+
+  test(`text on photo scrims is readable over a white pixel in the ${theme} theme`, () => {
+    const t = themes[theme];
+    const failures = SCRIM_PAIRS.map(([fg, scrim, min]) => {
+      assert.ok(t[scrim] && parseRgba(t[scrim]), `scrim missing or not rgba in ${theme}: ${scrim}`);
+      const text = fg.startsWith("#") ? fg : t[fg];
+      const ratio = contrastRatio(text, compositeOver(t[scrim], "#FFFFFF"));
+      return { pair: `${fg} on ${scrim}`, ratio: Math.round(ratio * 100) / 100, min };
+    }).filter((r) => r.ratio < r.min);
+    assert.deepEqual(failures, []);
+  });
+}
+
+test("compositeOver mixes a translucent scrim over a solid pixel", () => {
+  assert.equal(compositeOver("rgba(0, 0, 0, 0.5)", "#FFFFFF"), "#808080");
+  assert.equal(compositeOver("rgba(15, 20, 27, 1)", "#FFFFFF"), "#0f141b");
+  // The spec's original .55 scrim is not AA-safe for white text (judges, S252): about 4.2:1.
+  assert.ok(contrastRatio("#FFFFFF", compositeOver("rgba(15, 20, 27, 0.55)", "#FFFFFF")) < 4.5);
+});
 
 // Raw colours bypass the theme: a light-only hex/Tailwind palette class on the planner breaks
 // dark mode and was the source of the 7 axe violations. Kit pages (components/site, app/*) put

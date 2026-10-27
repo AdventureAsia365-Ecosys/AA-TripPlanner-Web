@@ -178,7 +178,7 @@ export default async function TourPage({ params }: Props) {
       <JsonLd data={tripJsonLd(t, points)} />
       <SiteHeader />
 
-      <main className="mx-auto max-w-6xl px-4 pt-4">
+      <main id="main" className="mx-auto max-w-6xl px-4 pt-4">
         <nav aria-label="Breadcrumb" className="text-[12px] text-k-muted">
           <Link href="/" className="hover:text-k-accent-deep">Home</Link>
           {t.country && (

@@ -19,12 +19,15 @@ export type AiLabelTone = "planner" | "kit";
 
 // Both tones use the theme-aware k-* tokens (AA-812 kit pages; the planner since AA-837). They
 // differ only in the focus ring: the planner's `aa-focus` ring, the kit's outline.
+// AA-995: "band" = the ghost chip on the navy header (and over the hero photo): light text, white hairline.
+// Same label, same explanation popover; only the colour changes (spec R15, AA-805 disclosure stays visible).
 const COLORS = {
   solid: "border border-transparent bg-k-accent-tint text-k-accent-deep hover:border-k-accent-border",
   outline: "border border-k-accent-border bg-k-card text-k-accent-deep hover:bg-k-accent-tint",
+  band: "border border-k-band-line bg-transparent text-k-on-band hover:border-k-band-accent",
   panel: "border-k-line bg-k-card text-k-body",
 };
-const STYLE: Record<AiLabelTone, { solid: string; outline: string; panel: string; focus: string }> = {
+const STYLE: Record<AiLabelTone, { solid: string; outline: string; band: string; panel: string; focus: string }> = {
   planner: { ...COLORS, focus: "aa-focus" },
   kit: {
     ...COLORS,
@@ -56,7 +59,7 @@ interface Props {
   shortLabel?: string;
   explanation: string;
   tone?: AiLabelTone;
-  variant?: "solid" | "outline";
+  variant?: "solid" | "outline" | "band";
   // popover: the explanation floats under the label (headers, toolbars).
   // inline: it opens in the flow below the label (inside clipped or scrolling boxes).
   placement?: "popover" | "inline";

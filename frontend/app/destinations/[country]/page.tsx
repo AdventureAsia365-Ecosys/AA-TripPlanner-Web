@@ -97,7 +97,7 @@ export default async function DestinationRoute({ params }: Props) {
       />
       <SiteHeader />
 
-      <main>
+      <main id="main">
         <section className="relative isolate overflow-hidden bg-k-hero-bg">
           {/* No cover: leave the solid hero-bg under the scrim. The Photo placeholder is a light tint,
               and white text over tint + scrim is only ~4.4:1 (below AA for the 12-15px lines). */}

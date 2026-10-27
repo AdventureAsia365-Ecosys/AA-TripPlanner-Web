@@ -1,28 +1,35 @@
 /* ──────────────────────────────────────────────────────────────────────────
    AA-812 — shared Adventure Asia design tokens for TripPlanner.
+   AA-995 — "Golden Hour" customer pages: type, radius, shadow, space, layout and motion scales,
+   the B2C surfaces (sand band, navy band, photo scrims) and the Satisfy script face.
 
-   Copied from the AA-CIS-App UI kit (apps/AA-CIS-App/frontend/app/globals.css, AA-601 part B,
-   and app/_brand/tokens.ts, AA-605) with the SAME values, so CIS admin/portal, AA-Booking and
-   TripPlanner read as one family. When a value changes there, change it here too (open item:
-   a shared package, AA-655).
+   Colour values were copied from the AA-CIS-App UI kit (apps/AA-CIS-App/frontend/app/globals.css,
+   AA-601 part B, and app/_brand/tokens.ts, AA-605), so CIS admin/portal, AA-Booking and
+   TripPlanner read as one family. When a value changes there, change it here too.
 
-   Only the core palette the kit components use is copied (accent, semantic, neutrals,
-   surfaces); CIS's long tail of legacy page colours is not.
+   Naming (ADR 0016 §3–4, AA-994):
+     --aa-*  generic scales (colour, type, radius, space, shadow, motion). The new non-colour scales
+             are proposed for AA-994 slice 1 ("token chung"); once `ui/core/tokens.css` exists, this
+             block is deleted here and nothing else changes.
+     --tp-*  TripPlanner-only B2C surfaces (sand band, navy band, photo scrims, script face, ribbon).
 
-   Contrast (AA-812 D6, S237): three LIGHT values differ from the CIS kit so every text pair
-   meets WCAG AA (4.5:1) — Lighthouse flagged them on every page:
+   Contrast (AA-812 D6, S237; AA-995): LIGHT values that differ from the CIS kit so every text pair
+   meets WCAG AA (4.5:1):
      --aa-accent-deep  #9E6E16 -> #875D12  (on tint 4.05 -> 5.28, on white 4.47 -> 5.83)
-     --aa-muted        #6B7380 -> #656D7A  (on bg 4.43 -> 4.84, on tint 4.34 -> 4.73)
-     --aa-on-accent    #FFFFFF -> #1A1206  (text on the gold primary 2.49 -> 7.42; the dark
-                                            theme already uses this ink)
-   Same hue, a few % darker; the accent itself (#DB9628, fills and icons) is unchanged. Proposed
-   back to the CIS kit under AA-655 so the family stays one palette. Dark values already pass.
+     --aa-muted        #6B7380 -> #5A6270  (AA-995: #656D7A was 4.48 on the new sand band; #5A6270
+                                            is the CIS AA-760 value, so the drift is gone too)
+     --aa-on-accent    #FFFFFF -> #1A1206  (text on the gold primary 2.49 -> 7.42)
+   White on gold is never allowed: gold buttons keep dark text.
+   Text on a photo sits only where the scrim is at least --tp-scrim-text (alpha .70): white over
+   that scrim on a pure-white pixel is about 6.8:1, while .55 would give only about 4.2:1.
 
-   Theme: <html data-theme="light|dark"> set before paint by the restore script in
-   app/layout.tsx (localStorage key `tp_theme`; absent = follow the OS). Every page uses these
-   tokens (Tailwind `k-*`), the map planner (/plan) included since AA-837, which retired its
-   light-only `aa.*` hex palette. lib/contrast.test.ts checks the planner's text pairs in both
-   themes: change a value here and `npm test` tells you if a pair drops under 4.5:1.
+   Theme: <html data-theme="light|dark"> set before paint by the restore script (ui/restoreTheme.ts;
+   localStorage `tp_theme`; absent = follow the OS). Motion: the same script sets
+   <html data-motion="ok|reduce"> from prefers-reduced-motion; without JS there is no data-motion and
+   every page is static and fully visible.
+   lib/contrast.test.ts checks every text pair in both themes (and the scrims), lib/tokens.test.ts
+   bans raw px / hex / duration classes on the customer pages: change a value here and `npm test`
+   tells you if a pair drops under its WCAG threshold.
    ────────────────────────────────────────────────────────────────────────── */
 
 :root,
@@ -50,7 +57,7 @@
   --aa-ink2:          #2A333E;
   --aa-ink3:          #3A4453;
   --aa-body:          #33363D;
-  --aa-muted:         #656D7A; /* kit #6B7380 */
+  --aa-muted:         #5A6270; /* kit #6B7380; CIS AA-760 value, see Contrast above */
   --aa-muted2:        #9099A6;
   --aa-bg:            #F8F6F2;
   --aa-card:          #FFFFFF;
@@ -59,11 +66,31 @@
 
   --aa-on-accent:     #1A1206; /* kit #FFFFFF */
   --aa-on-solid:      #FFFFFF;
-  /* TripPlanner-only: scrim over hero photos (text on images must stay readable in both themes) */
-  --aa-scrim:         rgba(15, 20, 27, 0.55);
+  /* TripPlanner-only: flat scrim under small white text on photos (pills, captions). AA-995: .55 -> .68
+     so white text passes 4.5:1 even over a white pixel. */
+  --aa-scrim:         rgba(15, 20, 27, 0.68);
   /* TripPlanner-only: solid dark under a text-over-photo hero, so its white text stays readable
      while the photo loads, when it fails, or when there is no photo (AA-812 D6) */
   --aa-hero-bg:       #1F2933;
+
+  /* AA-995 shadows (light geometry). */
+  --aa-shadow-sm:     0 1px 2px rgba(31, 41, 51, 0.06), 0 1px 1px rgba(31, 41, 51, 0.04);
+  --aa-shadow-md:     0 6px 16px -4px rgba(31, 41, 51, 0.10), 0 2px 4px rgba(31, 41, 51, 0.06);
+  --aa-shadow-lg:     0 18px 40px -12px rgba(31, 41, 51, 0.22);
+
+  /* AA-995 B2C surfaces. */
+  --tp-surface-sand:  #F3EDE3; /* alternate band (destinations) */
+  --tp-band:          #1F2933; /* navy CTA band, header (solid), footer */
+  --tp-on-band:       #F8F6F2;
+  --tp-on-band-muted: #C8D6E5;
+  --tp-band-accent:   #E8B865; /* Satisfy titles / numerals on navy, focus ring on navy and photos */
+  --tp-band-line:     rgba(255, 255, 255, 0.28); /* ghost chips and outline buttons on navy */
+  --tp-band-edge:     transparent; /* dark mode only: a hairline so the navy band reads apart from bg */
+  /* Photo scrims (rgb 15 20 27). Header text over a photo sits on --tp-scrim-head; hero text on
+     --tp-scrim-text or darker (the gradient only gets darker below that point). */
+  --tp-scrim-head:    rgba(15, 20, 27, 0.64);
+  --tp-scrim-text:    rgba(15, 20, 27, 0.70);
+  --tp-scrim-deep:    rgba(15, 20, 27, 0.82);
 
   color-scheme: light;
 }
@@ -101,17 +128,109 @@
 
   --aa-on-accent:     #1A1206;
   --aa-on-solid:      #FFFFFF;
-  --aa-scrim:         rgba(5, 8, 12, 0.62);
+  --aa-scrim:         rgba(5, 8, 12, 0.72);
   --aa-hero-bg:       #19212C;
+
+  /* Same geometry, darker; always paired with an --aa-line border on cards. */
+  --aa-shadow-sm:     0 1px 2px rgba(0, 0, 0, 0.45), 0 1px 1px rgba(0, 0, 0, 0.30);
+  --aa-shadow-md:     0 6px 16px -4px rgba(0, 0, 0, 0.45), 0 2px 4px rgba(0, 0, 0, 0.35);
+  --aa-shadow-lg:     0 18px 40px -12px rgba(0, 0, 0, 0.55);
+
+  --tp-surface-sand:  #151C25;
+  --tp-band:          #0A0E13;
+  --tp-on-band:       #EAEEF4;
+  --tp-on-band-muted: #B8C0CC;
+  --tp-band-accent:   #E8A838;
+  --tp-band-line:     rgba(255, 255, 255, 0.22);
+  --tp-band-edge:     #2A3542;
+  --tp-scrim-head:    rgba(5, 8, 12, 0.66);
+  --tp-scrim-text:    rgba(5, 8, 12, 0.74);
+  --tp-scrim-deep:    rgba(5, 8, 12, 0.86);
 
   color-scheme: dark;
 }
 
-/* Brand type (CIS _brand/tokens.ts FONT_DISPLAY / FONT_SANS); the font files come from
-   next/font in app/layout.tsx as --font-fahkwang / --font-poppins. */
+/* ── Type, radius, space, layout, z-index, motion (theme independent) ───────────────────────── */
 :root {
-  --aa-font-display: var(--font-fahkwang), "Poppins", Georgia, serif;
-  --aa-font-sans: var(--font-poppins), system-ui, -apple-system, sans-serif;
+  /* Families. The font files come from next/font in app/layout.tsx (--font-poppins, --font-satisfy).
+     AA-995: Fahkwang is gone (the live brand does not use it, research §1.4; raised to AA-994), so the
+     display family points to the sans until AA-994 decides on one. Inter stays only in /plan
+     (app/plan/layout.tsx). */
+  --aa-font-sans:    var(--font-poppins), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --aa-font-display: var(--aa-font-sans);
+  --tp-font-script:  var(--font-satisfy), var(--font-poppins), cursive;
+
+  /* Fluid scale between 390 and 1440 px (clamp is linear on vw). */
+  --aa-text-display:   clamp(2rem, 1.4rem + 2.6vw, 3.25rem);     /* 32 -> 52, home hero h1 */
+  --aa-text-h1:        clamp(1.75rem, 1.35rem + 1.7vw, 2.5rem);  /* 28 -> 40 */
+  --aa-text-h3:        clamp(1.125rem, 1.08rem + 0.2vw, 1.25rem); /* 18 -> 20, card titles */
+  --aa-text-lead:      1.0625rem;                                 /* 17 */
+  --aa-text-body:      1rem;
+  --aa-text-small:     0.875rem;
+  --aa-text-caption:   0.8125rem;
+  --aa-text-kicker:    0.75rem;
+  --tp-text-script:    clamp(2.25rem, 1.9rem + 1.5vw, 3rem);     /* 36 -> 48, section h2 */
+  --tp-text-script-sm: clamp(1.75rem, 1.45rem + 1.2vw, 2.5rem);  /* 28 -> 40, kicker, ribbon title */
+
+  --aa-radius-sm:   6px;   /* badges, small chips */
+  --aa-radius-md:   12px;  /* inputs, thumbs, ribbon tiles */
+  --aa-radius-lg:   16px;  /* cards, destination tiles */
+  --aa-radius-xl:   24px;  /* hero search card */
+  --aa-radius-pill: 999px;
+
+  --aa-space-1: 4px;  --aa-space-2: 8px;  --aa-space-3: 12px; --aa-space-4: 16px; --aa-space-5: 20px;
+  --aa-space-6: 24px; --aa-space-7: 32px; --aa-space-8: 48px; --aa-space-9: 64px; --aa-space-10: 96px;
+
+  --tp-section-y: clamp(3rem, 2rem + 4vw, 6rem); /* 48 at 390, about 90 at 1440 */
+  --tp-container: 1248px;
+  --tp-gutter:    16px;
+  --tp-header-h:  56px;
+
+  --aa-z-header: 30;
+  --aa-z-sticky-cta: 40;
+  --aa-z-popover: 50;
+
+  /* Motion (spec §1.4). Under data-motion="reduce" every duration collapses to 0.01ms (below). */
+  --aa-dur-instant: 100ms;
+  --aa-dur-fast:    160ms;
+  --aa-dur-base:    240ms;
+  --aa-dur-slow:    420ms;
+  --aa-dur-reveal:  560ms;
+  --aa-ease-std: cubic-bezier(0.4, 0, 0.2, 1);
+  --aa-ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --aa-ease-in:  cubic-bezier(0.4, 0, 1, 1);
+  /* Hero settle (immersive graft, replaces the 16 s Ken Burns): plays once, under 5 s, so WCAG
+     2.2.2 needs no pause control for it. */
+  --tp-settle-dur: 4.8s;
+  /* Ribbon: seconds per tile = (tile + gap) / speed. 166 px at 40 px/s, 248 px at 50 px/s. */
+  --tp-ribbon-tile: 160px;
+  --tp-ribbon-gap: 6px;
+  --tp-ribbon-s-per-tile: 4.15s;
+  --tp-stagger: 60ms;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --tp-gutter: 32px;
+    --tp-ribbon-tile: 240px;
+    --tp-ribbon-gap: 8px;
+    --tp-ribbon-s-per-tile: 4.96s;
+  }
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --tp-header-h: 64px;
+    --aa-text-lead: 1.125rem; /* 18 */
+  }
+}
+
+html[data-motion="reduce"] {
+  --aa-dur-instant: 0.01ms;
+  --aa-dur-fast: 0.01ms;
+  --aa-dur-base: 0.01ms;
+  --aa-dur-slow: 0.01ms;
+  --aa-dur-reveal: 0.01ms;
 }
 
 /* Pages built on the kit: theme-aware surface + brand type. */
@@ -121,9 +240,9 @@
   font-family: var(--aa-font-sans);
   min-height: 100%;
 }
-.aa-site h1,
-.aa-site h2,
-.aa-site .aa-display {
+/* Zero specificity (AA-995): a utility class on a heading (font-script, text-k-band-accent, text-white…)
+   always wins over this default. */
+:where(.aa-site) :where(h1, h2, .aa-display) {
   font-family: var(--aa-font-display);
   color: var(--aa-ink);
   letter-spacing: -0.01em;
@@ -132,4 +251,9 @@
   outline: 2px solid var(--aa-accent);
   outline-offset: 2px;
   border-radius: 6px;
+}
+/* On navy bands and photos the focus ring is the light gold (spec §5). */
+.aa-site .tp-on-dark :focus-visible,
+.aa-site .tp-on-dark:focus-visible {
+  outline-color: var(--tp-band-accent);
 }

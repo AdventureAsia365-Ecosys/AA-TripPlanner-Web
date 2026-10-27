@@ -16,7 +16,7 @@ export default function TripsPage() {
   return (
     <div className="aa-site">
       <SiteHeader />
-      <main className="mx-auto max-w-3xl px-4 py-10">
+      <main id="main" className="mx-auto max-w-3xl px-4 py-10">
         <MyTrips />
       </main>
       <SiteFooter />

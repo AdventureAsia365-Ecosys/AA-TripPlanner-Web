@@ -9,12 +9,16 @@ body {
   height: 100%;
 }
 
-/* AA-837: theme-aware (ui/tokens.css), the map planner included. */
+/* AA-837: theme-aware (ui/tokens.css), the map planner included.
+   AA-995: Poppins by default; the planner wrapper (app/plan/layout.tsx) sets Inter for its own tree. */
 body {
-  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--aa-font-sans);
   background-color: var(--aa-bg);
   color: var(--aa-ink);
   -webkit-font-smoothing: antialiased;
+}
+.tp-planner-font {
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
 }
 
 /* Consistent gold focus ring for interactive elements (aa-focus). */
@@ -43,4 +47,324 @@ body {
 body:has(.aa-site) {
   background-color: var(--aa-bg);
   color: var(--aa-body);
+}
+
+/* ══ AA-995 "Golden Hour" customer pages ═══════════════════════════════════════════════════════
+   Motion rules (spec §2): only transform / opacity (plus colour) animate; every keyframe animation
+   and every hidden "before reveal" state lives under html[data-motion="ok"] (set by the restore
+   script). No JS = no data-motion = static and fully visible. */
+
+/* Theme switch: no colour transitions for the two frames the switch takes (ui/theme.ts). */
+html[data-theme-switching] *,
+html[data-theme-switching] *::before,
+html[data-theme-switching] *::after {
+  transition: none !important;
+}
+
+/* Satisfy has no Vietnamese glyphs: Vietnamese text in a script title falls back to Poppins 600. */
+:lang(vi) .font-script {
+  font-family: var(--aa-font-sans);
+  font-weight: 600;
+}
+
+/* Skip link: visible only on keyboard focus. */
+.tp-skip {
+  position: absolute;
+  left: 8px;
+  top: -64px;
+  z-index: var(--aa-z-popover);
+  padding: 10px 16px;
+  border-radius: var(--aa-radius-pill);
+  background: var(--aa-card);
+  color: var(--aa-ink);
+  font-weight: 600;
+  box-shadow: var(--aa-shadow-lg);
+}
+.tp-skip:focus {
+  top: 8px;
+}
+
+/* ── Header (spec §3.1, M4) ── solid navy by default (no JS, pages without a photo hero). Over a photo
+   hero it is transparent on a dark translucent scrim (--tp-scrim-head: white text >= 5:1 on any photo)
+   until the hero has scrolled away; HeaderScrollState sets data-solid. */
+.tp-header {
+  background-color: var(--tp-band);
+  box-shadow: var(--aa-shadow-sm);
+  border-bottom: 1px solid var(--tp-band-edge);
+  transition: background-color var(--aa-dur-base) var(--aa-ease-std),
+    box-shadow var(--aa-dur-base) var(--aa-ease-std);
+}
+html[data-motion] .tp-header[data-over-hero]:not([data-solid]) {
+  background-color: var(--tp-scrim-head);
+  box-shadow: none;
+  border-bottom-color: transparent;
+}
+/* A soft fade under the translucent header so its edge does not cut the photo. */
+.tp-header[data-over-hero]::after {
+  content: "";
+  position: absolute;
+  inset: 100% 0 auto;
+  height: 72px;
+  pointer-events: none;
+  background: linear-gradient(180deg, var(--tp-scrim-head), transparent);
+  opacity: 0;
+  transition: opacity var(--aa-dur-base) var(--aa-ease-std);
+}
+html[data-motion] .tp-header[data-over-hero]:not([data-solid])::after {
+  opacity: 1;
+}
+
+/* Mobile menu sheet (native <dialog>). */
+.tp-menu::backdrop {
+  background: var(--aa-scrim);
+}
+
+/* ── Home hero (spec §3.2 / §4.1, immersive settle M1) ── */
+.tp-hero {
+  height: min(88svh, 560px);
+  min-height: 480px;
+}
+@media (min-width: 768px) {
+  .tp-hero {
+    height: clamp(560px, 68vh, 680px);
+  }
+}
+/* The text sits on --tp-scrim-text or darker: the block's padding-top is exactly the fade, so the first
+   line of text starts where the gradient reaches --tp-scrim-text and it only darkens below. */
+.tp-hero-scrim {
+  --tp-scrim-fade: 112px;
+  padding-top: var(--tp-scrim-fade);
+  background: linear-gradient(
+    180deg,
+    transparent 0,
+    var(--tp-scrim-text) var(--tp-scrim-fade),
+    var(--tp-scrim-deep) 100%
+  );
+}
+.tp-hero-text {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+/* Tile labels (destination tiles): the text block starts on --tp-scrim-text. */
+.tp-tile-scrim {
+  padding-top: 40px;
+  background: linear-gradient(180deg, transparent 0, var(--tp-scrim-text) 40px, var(--tp-scrim-deep) 100%);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+@keyframes tp-settle {
+  from {
+    transform: scale(1.06);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+/* Plays once, < 5 s (WCAG 2.2.2 needs no pause control), only transform: the image paints at once. */
+html[data-motion="ok"] .tp-hero-img {
+  animation: tp-settle var(--tp-settle-dur) var(--aa-ease-out) both;
+}
+
+/* ── Links with a growing gold underline and a moving arrow (M2) ── */
+.tp-link {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-position: 0 100%;
+  background-repeat: no-repeat;
+  background-size: 100% 1px;
+}
+.tp-link-arrow {
+  display: inline-block;
+}
+html[data-motion="ok"] .tp-link {
+  background-size: 0 1px;
+  transition: background-size var(--aa-dur-base) var(--aa-ease-out),
+    color var(--aa-dur-fast) var(--aa-ease-std);
+}
+html[data-motion="ok"] .tp-link-arrow {
+  transition: transform var(--aa-dur-base) var(--aa-ease-out);
+}
+html[data-motion="ok"] :is(a, .group):is(:hover, :focus-visible) .tp-link,
+html[data-motion="ok"] .tp-link:is(:hover, :focus-visible) {
+  background-size: 100% 1px;
+}
+html[data-motion="ok"] :is(a, .group):is(:hover, :focus-visible) .tp-link-arrow {
+  transform: translateX(4px);
+}
+
+/* ── Card lift (M3): only real pointers; reduced motion keeps the shadow change only ── */
+.tp-lift {
+  transition: box-shadow var(--aa-dur-base) var(--aa-ease-out), border-color var(--aa-dur-fast) var(--aa-ease-std);
+}
+.tp-lift-img {
+  transition: transform var(--aa-dur-slow) var(--aa-ease-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  .tp-lift:hover {
+    box-shadow: var(--aa-shadow-md);
+  }
+  html[data-motion="ok"] .tp-lift {
+    transition: transform var(--aa-dur-base) var(--aa-ease-out), box-shadow var(--aa-dur-base) var(--aa-ease-out),
+      border-color var(--aa-dur-fast) var(--aa-ease-std);
+  }
+  html[data-motion="ok"] .tp-lift:hover {
+    transform: translateY(-4px);
+  }
+  html[data-motion="ok"] .tp-lift:hover .tp-lift-img {
+    transform: scale(1.04);
+  }
+}
+
+/* ── Scroll reveal (M6) ── The server renders data-reveal="" (visible). RevealObserver marks only the
+   elements that are below the fold at first sight as "pending", then "in" when they enter. */
+@keyframes tp-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+html[data-motion="ok"] [data-reveal="pending"]:not([data-reveal-group]),
+html[data-motion="ok"] [data-reveal="pending"][data-reveal-group] > * {
+  opacity: 0;
+  transform: translateY(16px);
+}
+html[data-motion="ok"] [data-reveal="in"]:not([data-reveal-group]),
+html[data-motion="ok"] [data-reveal="in"][data-reveal-group] > * {
+  animation: tp-reveal var(--aa-dur-reveal) var(--aa-ease-out) both;
+}
+/* Stagger 60 ms per child, at most 6 steps (300 ms). */
+html[data-motion="ok"] [data-reveal="in"][data-reveal-group] > :nth-child(2) { animation-delay: calc(var(--tp-stagger) * 1); }
+html[data-motion="ok"] [data-reveal="in"][data-reveal-group] > :nth-child(3) { animation-delay: calc(var(--tp-stagger) * 2); }
+html[data-motion="ok"] [data-reveal="in"][data-reveal-group] > :nth-child(4) { animation-delay: calc(var(--tp-stagger) * 3); }
+html[data-motion="ok"] [data-reveal="in"][data-reveal-group] > :nth-child(5) { animation-delay: calc(var(--tp-stagger) * 4); }
+html[data-motion="ok"] [data-reveal="in"][data-reveal-group] > :nth-child(n + 6) { animation-delay: calc(var(--tp-stagger) * 5); }
+
+/* ── Horizontal snap rows (featured tours): scroll inside their own box, never the page ── */
+.tp-snap-row {
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: var(--tp-gutter);
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  contain: layout paint;
+}
+.tp-snap-row::-webkit-scrollbar {
+  display: none;
+}
+.tp-snap-row > * {
+  scroll-snap-align: start;
+}
+
+.tp-noscrollbar {
+  scrollbar-width: none;
+}
+.tp-noscrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── Photo ribbon (spec §3.6, M9; immersive still mode; map-first fill rule and edge fade) ──
+   Static by default (no JS, reduced motion, 4–7 photos, keyboard focus inside): a swipeable snap row
+   of the unique photos with a visible scrollbar, no copy, no pause button. Animated only under
+   html[data-motion="ok"] on a [data-animate] ribbon: two identical lists translate by -50%. */
+.tp-ribbon-viewport {
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: var(--tp-gutter);
+  overscroll-behavior-x: contain;
+  contain: layout paint;
+}
+.tp-ribbon-track {
+  display: flex;
+  width: max-content;
+}
+.tp-ribbon-list {
+  display: flex;
+  gap: var(--tp-ribbon-gap);
+  /* The gap after the last tile lives in the list, so copy A + copy B = exactly twice one copy and
+     -50% loops without a jump. */
+  padding-right: var(--tp-ribbon-gap);
+  margin: 0;
+  list-style: none;
+}
+.tp-ribbon-list:first-child {
+  padding-left: var(--tp-gutter);
+}
+.tp-ribbon-tile {
+  width: var(--tp-ribbon-tile);
+  height: var(--tp-ribbon-tile);
+  scroll-snap-align: start;
+  flex: none;
+}
+.tp-ribbon-copy,
+.tp-ribbon [data-repeat],
+.tp-ribbon-pause {
+  display: none;
+}
+.tp-ribbon-cap {
+  transition: opacity var(--aa-dur-fast) var(--aa-ease-out);
+}
+@keyframes tp-marquee {
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-pause {
+  display: inline-flex;
+}
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-viewport {
+  overflow: hidden;
+  scroll-snap-type: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 48px, #000 calc(100% - 48px), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 48px, #000 calc(100% - 48px), transparent 100%);
+}
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-copy {
+  display: flex;
+}
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) [data-repeat] {
+  display: block;
+}
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-list:first-child {
+  padding-left: 0;
+}
+/* Longhands only, never the `animation` shorthand: the shorthand also resets animation-play-state to
+   running, and this selector (0,6,1 — the :not(:has(...)) counts 0,2,0) outranks the pause rules below
+   (0,4,1), so the pause button, the off-screen pause and the hover pause would never apply (AA-995 review).
+   Play state lives only in the pause rules; lib/ribbonCss.test.ts guards this. */
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-track {
+  animation-name: tp-marquee;
+  animation-duration: calc(var(--tp-ribbon-count) * var(--tp-ribbon-s-per-tile));
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+html[data-motion="ok"] .tp-ribbon[data-animate]:not([data-paused]):not([data-offscreen]) .tp-ribbon-track {
+  will-change: transform;
+}
+html[data-motion="ok"] .tp-ribbon[data-paused] .tp-ribbon-track,
+html[data-motion="ok"] .tp-ribbon[data-offscreen] .tp-ribbon-track {
+  animation-play-state: paused;
+}
+@media (hover: hover) {
+  html[data-motion="ok"] .tp-ribbon-viewport:hover .tp-ribbon-track {
+    animation-play-state: paused;
+  }
+}
+/* Caption chips: always visible when static; on hover / focus while moving. */
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-cap {
+  opacity: 0;
+}
+html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-tile:is(:hover, :focus-within) .tp-ribbon-cap {
+  opacity: 1;
+}
+
+/* ── Safety net (map-first graft): an OS reduced-motion setting stops every animation even if the
+   gate attribute is stale. ── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

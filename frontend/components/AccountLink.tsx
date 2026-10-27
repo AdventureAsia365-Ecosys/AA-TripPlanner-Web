@@ -4,10 +4,13 @@
 import Link from "next/link";
 import { useAccount } from "@/lib/useAccount";
 
-export default function AccountLink({ className = "" }: { className?: string }) {
+// AA-995: tone "band" = light text on the navy site header.
+export default function AccountLink({ className = "", tone = "default" }: { className?: string; tone?: "default" | "band" }) {
   const account = useAccount();
   if (!account.loaded || !account.available) return null;
-  const cls = `aa-focus px-2 text-[13px] font-medium text-k-body hover:text-k-accent-deep ${className}`;
+  const color =
+    tone === "band" ? "text-small text-k-on-band hover:text-k-band-accent" : "text-[13px] text-k-body hover:text-k-accent-deep";
+  const cls = `aa-focus px-2 font-medium ${color} ${className}`;
   return account.signedIn ? (
     <Link href="/trips" className={cls} data-testid="account-link">
       My trips

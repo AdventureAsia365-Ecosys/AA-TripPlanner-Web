@@ -23,6 +23,14 @@ const PATHS: Record<string, string> = {
   camera: "M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Zm8 9a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z",
   info: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-5v-5m0-3h.01",
   refresh: "M20 11a8 8 0 0 0-14.9-3M4 4v4h4m-4 5a8 8 0 0 0 14.9 3M20 20v-4h-4",
+  // AA-995: header menu, carousel and ribbon controls, travellers stepper.
+  menu: "M4 7h16M4 12h16M4 17h16",
+  "chevron-left": "m15 6-6 6 6 6",
+  "chevron-right": "m9 6 6 6-6 6",
+  pause: "M9 5v14m6-14v14",
+  play: "M8 5v14l11-7L8 5Z",
+  plus: "M12 5v14M5 12h14",
+  minus: "M5 12h14",
 };
 
 export type IconName = keyof typeof PATHS;

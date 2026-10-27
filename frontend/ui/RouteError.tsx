@@ -14,7 +14,7 @@ export default function RouteError({ error, reset }: { error: Error & { digest?:
   return (
     <div className="aa-site">
       <SiteHeader />
-      <main className="mx-auto max-w-xl px-4 py-16">
+      <main id="main" className="mx-auto max-w-xl px-4 py-16">
         <ErrorState title="This page couldn't load right now">Please try again in a moment.</ErrorState>
         <div className="mt-5 flex justify-center gap-2">
           <button type="button" onClick={reset} className={buttonClass("primary")}>Try again</button>
