@@ -156,7 +156,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   and the error page on one navy title band (`components/site/PageIntro.tsx`). The planner keeps its layout and
   Inter; only its header turned navy. **LCP photo of a destination / tour page** is resolved on the server
   (`lib/photoResolve.ts`): the catalog photo URL's 302 `Location` (the image CDN) is read once per ISR render (1.5 s
-  timeout, any failure keeps the catalog URL) and used for that one image, with a `preconnect`; every other photo
+  timeout, any failure keeps the catalog URL) and used for that one image, with a `preconnect`; a presigned
+  (expiring) Location or a redirect cached for less than a day is refused, since the ISR page can be served stale
+  long after a presign expires; every other photo
   keeps the catalog URL. Same browse reads per page as before.
 - **On-demand purge on a CIS tour lifecycle event (AA-987).** CIS posts one HMAC-signed notice per event of
   `catalog.v_tour_lifecycle_outbox` (CIS job `tripplanner_purge`, retried with backoff, swept every 5 min) to

@@ -6,8 +6,9 @@
 // copy B has tabIndex -1, so nothing is announced or tabbed to twice. They are deliberately NOT `inert`:
 // an inert node is skipped by hit-testing, so the duplicate tiles (half of every loop) would ignore clicks
 // and hover while looking exactly like the live ones. All behaviour is CSS (app/globals.css .tp-ribbon*), the client island
-// (RibbonControl) only toggles attributes. Keyboard focus inside the track switches it to the still,
-// scrollable row (:has(:focus-visible)), so a focused tile is never off screen (WCAG 2.4.11).
+// (RibbonControl) only toggles attributes. Keyboard focus on the viewport (link-less ribbons) or inside it
+// switches it to the still, scrollable row (:has(:focus-visible)), so a focused tile is never off screen and
+// arrow keys scroll the row (WCAG 2.4.11).
 // The duration is computed here: --tp-ribbon-count tiles x the per-tile seconds of each breakpoint.
 import Link from "next/link";
 import type { CSSProperties } from "react";

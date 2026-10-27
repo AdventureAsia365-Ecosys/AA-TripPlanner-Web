@@ -5,7 +5,7 @@
 // 1 + 2 mosaic from md; the first photo resolved to its CDN URL on the server) → title block, key facts, activity
 // chips → highlights → day-by-day timeline → where you go → included / not included, next to a sticky "Make it yours"
 // card (lg) or above a sticky bottom bar (below lg) → navy CTA band (long itineraries) → "More from this trip" ribbon
-// (>= 8 photos after the gallery's 3). Same single catalog read as before; "Similar tours" is not built (it would add
+// (>= 8 unique photos after the gallery's 3). Same single catalog read as before; "Similar tours" is not built (it would add
 // a browse read per tour page, spec R11).
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -21,8 +21,9 @@ import SiteHeader from "@/components/site/SiteHeader";
 import StaticMap from "@/components/site/StaticMap";
 import type { MapPoint } from "@/lib/tourMap";
 import { getTour, siteUrl } from "@/lib/catalog";
-import type { TourDetail } from "@/lib/catalogTypes";
+import type { CatalogPhoto, TourDetail } from "@/lib/catalogTypes";
 import { resolveHeroPhoto, type HeroPhoto } from "@/lib/photoResolve";
+import { RIBBON_MIN_ANIMATED, uniqueRibbonItems, type RibbonItem } from "@/lib/photos";
 import { clip, coverAlt, daysText, splitLines, titleCase } from "@/lib/text";
 import { routeLines, routePoints } from "@/lib/tourMap";
 import { Badge, ButtonLink, Icon } from "@/ui";
@@ -107,13 +108,14 @@ function tripJsonLd(t: TourDetail, points: MapPoint[]) {
 }
 
 // How many photos the gallery strip shows below md (the mosaic shows 3 from md); the ribbon takes the photos after the
-// mosaic's 3 when there are at least 8 of them (spec §4.3 row 12).
+// mosaic's 3 when at least 8 unique ones remain (spec §4.3 row 12), so it always moves. Counted on the same deduped
+// list PhotoRibbon renders, so the gallery chip never links to a ribbon that is not there.
 const STRIP_PHOTOS = 7;
 const MOSAIC_PHOTOS = 3;
-const RIBBON_MIN_EXTRA = 8;
 // The navy CTA band only on long pages (spec: > 3 viewports); a server page cannot measure, so long = 5+ days.
 const CTA_BAND_MIN_DAYS = 5;
-const ACTIVITY_CHIPS = 6;
+// Spec §4.3 row 5: up to 5 activity chips, then "+N more".
+const ACTIVITY_CHIPS = 5;
 
 function SectionHeading({ id, children, ai = false }: { id: string; children: string; ai?: boolean }) {
   return (
@@ -127,14 +129,31 @@ function SectionHeading({ id, children, ai = false }: { id: string; children: st
   );
 }
 
-function Gallery({ t, hero, ribbonId }: { t: TourDetail; hero: HeroPhoto | null; ribbonId: string | null }) {
-  const photos = t.photos;
+// The CDN preconnect for the LCP image (React 19 hoists the <link> to <head>, as in PageHero).
+function HeroPreconnect({ hero }: { hero: HeroPhoto | null }) {
+  return hero?.preconnect ? <link rel="preconnect" href={hero.preconnect} /> : null;
+}
+
+// `photos`: the tour photos that have a URL (filtered once in TourPage); `ribbon`: id and photo count of the
+// "More from this trip" ribbon when the page renders one.
+function Gallery({
+  t,
+  photos,
+  hero,
+  ribbon,
+}: {
+  t: TourDetail;
+  photos: CatalogPhoto[];
+  hero: HeroPhoto | null;
+  ribbon: { id: string; count: number } | null;
+}) {
   if (photos.length === 0) {
     // No tour photo: the API may send a destination photo instead (cover_source), captioned so it never reads as a
     // picture of this tour. No photo at all: the designed no-photo tile, never the camera icon.
     const fallback = t.cover_url && t.cover_source !== "tour" && t.cover_place;
     return (
       <div className="mx-auto max-w-page md:px-gutter">
+        <HeroPreconnect hero={hero} />
         <figure className="relative h-[260px] overflow-hidden bg-k-hero-bg md:h-[440px] md:rounded-panel">
           {hero ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -162,6 +181,7 @@ function Gallery({ t, hero, ribbonId }: { t: TourDetail; hero: HeroPhoto | null;
   };
   return (
     <div className="relative mx-auto max-w-page md:px-gutter">
+      <HeroPreconnect hero={hero} />
       {/* Below md: a swipe strip (focusable, so arrow keys scroll it). From md: the mosaic, no scrolling. */}
       <ul
         aria-label="Tour photos"
@@ -181,17 +201,17 @@ function Gallery({ t, hero, ribbonId }: { t: TourDetail; hero: HeroPhoto | null;
                    className="h-full w-full object-cover" />
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={(i === 0 ? p.url : p.url_small) ?? p.url ?? ""} alt={p.place_label || `${t.title} photo ${i + 1}`}
+              <img src={((i === 0 ? p.url : p.url_small) ?? p.url ?? p.url_small) as string} alt={p.place_label || `${t.title} photo ${i + 1}`}
                    width={600} height={450} loading={i === 0 ? "eager" : "lazy"} decoding="async" className="h-full w-full object-cover" />
             )}
           </li>
         ))}
       </ul>
       {photos.length > 1 && (
-        ribbonId ? (
-          <a href={`#${ribbonId}`}
+        ribbon ? (
+          <a href={`#${ribbon.id}`}
              className="absolute bottom-3 left-[calc(var(--tp-gutter)+12px)] inline-flex min-h-8 items-center gap-1.5 rounded-pill bg-k-scrim px-3 text-caption text-white hover:underline md:left-[calc(var(--tp-gutter)+16px)] md:bottom-4">
-            <Icon name="camera" className="h-4 w-4" /> View all {photos.length} photos
+            <Icon name="camera" className="h-4 w-4" /> View {ribbon.count} more photos
           </a>
         ) : (
           <span className="pointer-events-none absolute bottom-3 left-[calc(var(--tp-gutter)+12px)] inline-flex min-h-8 items-center gap-1.5 rounded-pill bg-k-scrim px-3 text-caption text-white md:bottom-4 md:left-[calc(var(--tp-gutter)+16px)]">
@@ -286,10 +306,20 @@ export default async function TourPage({ params }: Props) {
     t.best_time_to_go && { icon: "sun", label: "Best time to go", value: t.best_time_to_go },
     t.group_size && { icon: "users", label: "Group size", value: t.group_size },
   ].filter(Boolean) as { icon: string; label: string; value: string }[];
-  const extraPhotos = t.photos.slice(MOSAIC_PHOTOS);
-  const ribbonId = extraPhotos.length >= RIBBON_MIN_EXTRA ? "more-photos" : null;
+  // Photos without any URL are dropped once here, so the gallery never renders an empty <img src> and the destination
+  // cover fallback (with its "Destination photo" caption) applies only when no tour photo can be shown.
+  const photos = t.photos.filter((p) => p.url || p.url_small);
+  const ribbonItems: RibbonItem[] = uniqueRibbonItems(
+    photos.slice(MOSAIC_PHOTOS).map((p, i) => ({
+      href: null,
+      src: p.url_small ?? p.url,
+      alt: p.place_label || `${t.title} photo ${i + MOSAIC_PHOTOS + 1}`,
+      caption: p.place_label || t.country || t.title,
+    })),
+  );
+  const ribbon = ribbonItems.length >= RIBBON_MIN_ANIMATED ? { id: "more-photos", count: ribbonItems.length } : null;
   // The LCP image: the first tour photo, else the fallback cover, resolved to its CDN URL on the server.
-  const hero = await resolveHeroPhoto(t.photos[0]?.url ?? t.cover_url);
+  const hero = await resolveHeroPhoto(photos[0] ? (photos[0].url ?? photos[0].url_small) : t.cover_url);
 
   return (
     <div className="aa-site pb-[calc(80px+env(safe-area-inset-bottom))] lg:pb-0">
@@ -309,7 +339,7 @@ export default async function TourPage({ params }: Props) {
           )}
         </nav>
 
-        <Gallery t={t} hero={hero} ribbonId={ribbonId} />
+        <Gallery t={t} photos={photos} hero={hero} ribbon={ribbon} />
 
         <div className="mx-auto grid max-w-page gap-10 px-gutter pb-section pt-8 lg:grid-cols-12">
           <article className="min-w-0 lg:col-span-8">
@@ -466,19 +496,7 @@ export default async function TourPage({ params }: Props) {
 
         {t.days.length >= CTA_BAND_MIN_DAYS && <CtaBand id="plan-this-trip" planHref={planHref(t)} askHref={planHref(t, true)} />}
 
-        {ribbonId && (
-          <PhotoRibbon
-            id={ribbonId}
-            title="More from this trip"
-            label={`More photos from ${t.title}`}
-            items={extraPhotos.map((p, i) => ({
-              href: null,
-              src: p.url_small ?? p.url,
-              alt: p.place_label || `${t.title} photo ${i + MOSAIC_PHOTOS + 1}`,
-              caption: p.place_label || t.country || t.title,
-            }))}
-          />
-        )}
+        {ribbon && <PhotoRibbon id={ribbon.id} title="More from this trip" label={`More photos from ${t.title}`} items={ribbonItems} />}
       </main>
 
       {/* Mobile sticky CTA bar (after main in the DOM; the page keeps bottom padding so the footer is not covered). */}

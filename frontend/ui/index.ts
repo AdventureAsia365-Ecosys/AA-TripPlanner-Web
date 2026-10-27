@@ -2,5 +2,4 @@
 export { Badge, type Tone } from "./Badge";
 export { Button, ButtonLink, buttonClass, type ButtonVariant, type ButtonSize } from "./Button";
 export { Icon, type IconName } from "./Icon";
-export { Photo } from "./Photo";
 export { EmptyState, ErrorState } from "./States";

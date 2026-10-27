@@ -13,7 +13,8 @@ import HeaderScrollState from "./HeaderScrollState";
 import MobileMenu from "./MobileMenu";
 
 export const SITE_NAV = [
-  { href: "/#destinations", label: "Destinations" },
+  // The destinations index (same target as the breadcrumbs and the footer); the home keeps its own in-page way in.
+  { href: "/destinations", label: "Destinations" },
   { href: "/#tours", label: "Tours" },
   { href: "/#how-it-works", label: "How it works" },
 ];
