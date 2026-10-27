@@ -24,7 +24,7 @@ export function requestIdFor(headers: HeaderSource): string {
 
 // One JSON line per upstream call (Vercel function logs). Fields are ids and names only.
 export interface UpstreamLine {
-  route: "browse" | "trip";
+  route: "browse" | "trip" | "booking";
   op: string;
   status: number;
   ms: number;
