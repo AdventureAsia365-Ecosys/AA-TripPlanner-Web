@@ -621,3 +621,27 @@ async def test_destination_places_query_takes_tour_ids():
 async def test_tour_route_needs_uuid():
     status, _, _ = await _get("/browse/tour-route", {"tour_id": "x'; drop"})
     assert status == 400
+
+
+async def test_destination_gallery_dedupes_by_path_not_photo_id():
+    """AA-995: copies of one file keep their own photo_id but share the canonical path (CIS 290) — shown once."""
+    shared = fx.DEST_PHOTOS[0]["path"]
+    dup = {**fx.DEST_PHOTOS[1], "photo_id": "a0000000-0000-4000-8000-000000000009", "path": shared,
+           "place_label": "Same file, other folder", "position": 2}
+    pool = fx.FakeCatalogPool(dest_photos=[*fx.DEST_PHOTOS, dup])
+    _, page, _ = await _get("/browse/catalog/destinations/vietnam", pool=pool)
+    paths = [p["url"] for p in page["photos"]]
+    assert len(paths) == len(set(paths)) == 2
+    assert {p["place_label"] for p in page["photos"]} == {"Old Quarter", "Karsts"}
+
+
+async def test_tour_detail_photos_dedupe_by_path(monkeypatch):
+    """AA-995: a tour holding two copies of the same file lists that picture once, first position wins."""
+    tid = fx.TOURS[0]["tour_id"]
+    rows = [p for p in fx.PHOTOS if p["tour_id"] == tid]
+    copy = {**rows[0], "photo_id": f"{tid[:8]}-0000-4000-8000-000000000099", "position": len(rows) + 1}
+    monkeypatch.setattr(fx, "PHOTOS", [*fx.PHOTOS, copy])
+    _, tour, _ = await _get(f"/browse/catalog/tours/{fx.TOURS[0]['slug']}")
+    assert [p["position"] for p in tour["photos"]] == [1, 2, 3]
+    assert [p["photo_id"] for p in tour["photos"]] == [p["photo_id"] for p in rows]
+    jsonschema.validate(_contract_view(tour), SCHEMA)
