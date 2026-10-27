@@ -46,7 +46,8 @@ export function gridWithPhotos<T extends { country: string; tour_count: number }
 }
 
 export interface RibbonItem {
-  href: string;
+  // null = a photo without a page of its own (destination gallery): the tile is not a link.
+  href: string | null;
   src: string | null;
   alt: string;
   caption: string;

@@ -8,7 +8,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { CATALOG_REVALIDATE_S } from "./catalog.ts";
 
-const CATALOG_PAGES = ["app/page.tsx", "app/destinations/[country]/page.tsx", "app/tours/[slug]/page.tsx"];
+const CATALOG_PAGES = [
+  "app/page.tsx",
+  "app/destinations/page.tsx",
+  "app/destinations/[country]/page.tsx",
+  "app/tours/[slug]/page.tsx",
+];
 
 for (const page of CATALOG_PAGES) {
   test(`${page} revalidates with the catalog TTL as a literal`, () => {

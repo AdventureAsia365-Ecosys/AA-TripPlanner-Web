@@ -368,3 +368,40 @@ html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-tile:is(:hover, :focu
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Inner page hero (destination pages, spec §4.2 row 2): 420 / 520 px, grows with long text ── */
+.tp-page-hero {
+  min-height: 420px;
+}
+@media (min-width: 768px) {
+  .tp-page-hero {
+    min-height: 520px;
+  }
+}
+
+/* ── Tour day-by-day timeline (spec §4.3 row 7, M11) ── a dotted gold line through the day circles (left column of
+   each li); the circles' ring in the page colour cuts the line around them. */
+.tp-timeline::before {
+  content: "";
+  position: absolute;
+  left: 17px;
+  top: 28px;
+  bottom: 28px;
+  border-left: 2px dotted var(--aa-accent-border);
+}
+/* Open / close animates the height where ::details-content and interpolate-size exist (Chromium); elsewhere it is
+   instant. Only under data-motion="ok" (reduced motion and no-JS: instant). A browser that does not know
+   ::details-content drops the rule. */
+@supports (interpolate-size: allow-keywords) {
+  html[data-motion="ok"] .tp-day {
+    interpolate-size: allow-keywords;
+  }
+  html[data-motion="ok"] .tp-day::details-content {
+    height: 0;
+    overflow: clip;
+    transition: height var(--aa-dur-base) var(--aa-ease-std), content-visibility var(--aa-dur-base) allow-discrete;
+  }
+  html[data-motion="ok"] .tp-day[open]::details-content {
+    height: auto;
+  }
+}

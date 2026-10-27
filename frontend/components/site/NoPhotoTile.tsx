@@ -8,6 +8,27 @@ const TONES: Record<NoPhotoTone, { box: string; name: string; caption: string; m
   tint: { box: "bg-k-accent-tint", name: "text-k-accent-deep", caption: "text-k-muted", motif: "text-k-accent" },
 };
 
+// The logo's mountain lines as a decorative SVG (no-photo tiles, the no-photo page hero, the status pages). Position,
+// size and colour come from the caller; it is absolutely placed and never takes clicks.
+export function MountainMotif({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 120 60"
+      aria-hidden
+      focusable="false"
+      className={`pointer-events-none absolute opacity-20 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.2}
+      strokeLinejoin="round"
+      strokeLinecap="round"
+    >
+      <path d="M2 58 32 20l14 16 20-30 26 34 12-12 14 30" />
+      <path d="M22 58 42 34l10 10 16-20 20 26" />
+    </svg>
+  );
+}
+
 export function noPhotoTone(index: number): NoPhotoTone {
   return index % 2 === 0 ? "band" : "tint";
 }
@@ -33,20 +54,7 @@ export default function NoPhotoTile({
       {...(decorative ? { "aria-hidden": true } : { role: "img", "aria-label": caption ? `${name}, ${caption}` : name })}
     >
       {/* The logo's mountain lines, 18 % opacity, bottom-right, 60 % of the tile width. */}
-      <svg
-        viewBox="0 0 120 60"
-        aria-hidden
-        focusable="false"
-        className={`pointer-events-none absolute -bottom-1 right-0 w-3/5 opacity-20 ${t.motif}`}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={2.2}
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      >
-        <path d="M2 58 32 20l14 16 20-30 26 34 12-12 14 30" />
-        <path d="M22 58 42 34l10 10 16-20 20 26" />
-      </svg>
+      <MountainMotif className={`-bottom-1 right-0 w-3/5 ${t.motif}`} />
       <p className={`relative font-script text-script-sm ${t.name}`}>{name}</p>
       {caption && <p className={`relative mt-1 text-caption ${t.caption}`}>{caption}</p>}
     </div>

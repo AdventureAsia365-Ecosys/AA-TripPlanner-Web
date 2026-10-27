@@ -13,9 +13,14 @@ export const CTA_REASSURANCES = [
 export default function CtaBand({
   id = "advisor",
   title = "Talk it through with an advisor",
+  planHref = "/plan",
+  askHref = "/plan?ask=1",
 }: {
   id?: string;
   title?: string;
+  // Destination and tour pages open the planner on their own country / tour.
+  planHref?: string;
+  askHref?: string;
 }) {
   return (
     <section aria-labelledby={`${id}-title`} className="tp-on-dark border-y border-k-band-edge bg-k-band py-section text-center">
@@ -34,10 +39,10 @@ export default function CtaBand({
           ))}
         </ul>
         <div className="mx-auto mt-8 flex max-w-md flex-col gap-3 md:max-w-none md:flex-row md:justify-center">
-          <ButtonLink href="/plan" variant="primary" size="lg" className="min-h-12">
+          <ButtonLink href={planHref} variant="primary" size="lg" className="min-h-12">
             Plan my trip
           </ButtonLink>
-          <ButtonLink href="/plan?ask=1" variant="on-dark" size="lg" className="min-h-12" prefetch={false}>
+          <ButtonLink href={askHref} variant="on-dark" size="lg" className="min-h-12" prefetch={false}>
             Ask an advisor
           </ButtonLink>
         </div>

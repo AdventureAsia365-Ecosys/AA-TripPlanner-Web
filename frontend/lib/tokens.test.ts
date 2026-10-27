@@ -2,13 +2,27 @@
 // (Tailwind text-display|h1|h3|lead|body|small|caption|kicker|script, rounded-card…, shadow-e1…,
 // duration-fast…, ease-std…). Raw font sizes, hex colours, raw durations / easings, rgba() shadows and the
 // old rounded-2xl / shadow-aa are not allowed in the files below, so a later edit cannot slide back.
-// Slices 5–6 (destination and tour pages) add their files here when they are rebuilt.
+// S254 (slices 5–6+): the destination, tour, destinations-index, trips, sign-in, legal, not-found and error pages.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const FILES = [
   "app/page.tsx",
+  "app/destinations/page.tsx",
+  "app/destinations/[country]/page.tsx",
+  "app/not-found.tsx",
+  "app/sign-in/page.tsx",
+  "app/tours/[slug]/page.tsx",
+  "app/trips/page.tsx",
+  "components/MyTrips.tsx",
+  "components/SignInForm.tsx",
+  "components/site/LegalPage.tsx",
+  "components/site/PageHero.tsx",
+  "components/site/PageIntro.tsx",
+  "components/site/StaticMap.tsx",
+  "ui/RouteError.tsx",
+  "ui/States.tsx",
   "components/site/CtaBand.tsx",
   "components/site/DestinationTile.tsx",
   "components/site/HeaderScrollState.tsx",
@@ -25,6 +39,7 @@ const FILES = [
   "components/site/TourCard.tsx",
   "components/site/TourCarousel.tsx",
   "components/site/TrustStrip.tsx",
+  "components/site/WaysIn.tsx",
 ];
 
 const BANNED: [string, RegExp][] = [

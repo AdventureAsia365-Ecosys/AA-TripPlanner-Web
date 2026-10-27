@@ -15,17 +15,27 @@ import { ribbonMode, ribbonRepeats, uniqueRibbonItems, type RibbonItem } from "@
 import RibbonControl from "./RibbonControl";
 
 function Tile({ item, hidden }: { item: RibbonItem & { src: string }; hidden: boolean }) {
+  const body = (
+    <>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={item.src} alt={hidden ? "" : item.alt} width={240} height={240} loading="lazy" decoding="async"
+           sizes="(min-width: 768px) 240px, 160px" className="h-full w-full object-cover" />
+      <span className="tp-ribbon-cap absolute bottom-2 left-2 max-w-[calc(100%-16px)] truncate rounded-pill bg-k-scrim px-2.5 py-1 text-caption text-white">
+        {item.caption}
+      </span>
+    </>
+  );
   return (
     <div className="tp-ribbon-tile relative overflow-hidden rounded-tile bg-k-hero-bg">
-      {/* AA-833: no prefetch on photo links. */}
-      <Link href={item.href} prefetch={false} tabIndex={hidden ? -1 : undefined} className="block h-full w-full">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={item.src} alt={hidden ? "" : item.alt} width={240} height={240} loading="lazy" decoding="async"
-             sizes="(min-width: 768px) 240px, 160px" className="h-full w-full object-cover" />
-        <span className="tp-ribbon-cap absolute bottom-2 left-2 max-w-[calc(100%-16px)] truncate rounded-pill bg-k-scrim px-2.5 py-1 text-caption text-white">
-          {item.caption}
-        </span>
-      </Link>
+      {item.href ? (
+        // AA-833: no prefetch on photo links.
+        <Link href={item.href} prefetch={false} tabIndex={hidden ? -1 : undefined} className="block h-full w-full">
+          {body}
+        </Link>
+      ) : (
+        // A photo without a page (destination gallery): not a link, so nothing to tab to.
+        <div className="h-full w-full">{body}</div>
+      )}
     </div>
   );
 }
@@ -47,6 +57,8 @@ export default function PhotoRibbon({
   if (mode === "none") return null;
   const animate = mode === "animated";
   const reps = animate ? ribbonRepeats(unique.length) : 1;
+  // Tiles without a link leave nothing to Tab to, so the scrollable still row itself takes focus (arrow keys scroll it).
+  const linkless = unique.some((it) => !it.href);
   const style = { "--tp-ribbon-count": unique.length * reps } as CSSProperties;
   const copy = (copyIndex: number) =>
     Array.from({ length: reps }, (_, r) =>
@@ -66,7 +78,7 @@ export default function PhotoRibbon({
         <h2 id={`${id}-title`} className="font-script text-script-sm text-k-ink">{title}</h2>
         {animate && <RibbonControl ribbonId={id} />}
       </div>
-      <div className="tp-ribbon-viewport mt-6">
+      <div className="tp-ribbon-viewport mt-6" {...(linkless ? { tabIndex: 0, role: "region", "aria-labelledby": `${id}-title` } : {})}>
         <div className="tp-ribbon-track">
           <ul aria-label={label} className="tp-ribbon-list">{copy(0)}</ul>
           {animate && (
