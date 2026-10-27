@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.8.2...v0.9.0) (2026-10-27)
+
+
+### Features
+
+* Golden Hour home page, tokens and motion gate ([#163](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/163)) ([545514a](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/545514a0498c6328ff92a91a7def23d67af413c7))
+* photo ribbon reads a longer featured list ([#164](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/164)) ([3d0840b](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/3d0840b871146935e82bd71da2cb65cbba030400))
+* saved pins follow CIS component-id redirects across rebuilds ([#154](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/154)) ([5418cd5](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/5418cd53cf2ca508471e3998b488b32f238405e2))
+* tp-020 count-only ops views for the CIS data coverage page ([#156](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/156)) ([2f56adc](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/2f56adc3f868ddd68f52b96ad6cad95a7c47646b))
+
+
+### Bug Fixes
+
+* single-pin static map drops padding so Mapbox stops answering 422 ([#158](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/158)) ([3f6228a](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/3f6228a51631636cb6ca790fd58dd1ebccce9612))
+* tour-graph routes cover every tour day and follow the half-pinned rule ([#161](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/161)) ([f61a748](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/f61a74853ef1454a22f3c119b90ab0d361166a23))
+
 ## [0.8.2](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.8.1...v0.8.2) (2026-10-25)
 
 
