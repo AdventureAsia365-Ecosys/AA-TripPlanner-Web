@@ -311,26 +311,26 @@ html[data-motion="ok"] [data-reveal="in"][data-reveal-group] > :nth-child(n + 6)
 html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-pause {
   display: inline-flex;
 }
-html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-viewport {
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport:focus-visible, .tp-ribbon-viewport :focus-visible)) .tp-ribbon-viewport {
   overflow: hidden;
   scroll-snap-type: none;
   -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 48px, #000 calc(100% - 48px), transparent 100%);
   mask-image: linear-gradient(90deg, transparent 0, #000 48px, #000 calc(100% - 48px), transparent 100%);
 }
-html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-copy {
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport:focus-visible, .tp-ribbon-viewport :focus-visible)) .tp-ribbon-copy {
   display: flex;
 }
-html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) [data-repeat] {
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport:focus-visible, .tp-ribbon-viewport :focus-visible)) [data-repeat] {
   display: block;
 }
-html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-list:first-child {
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport:focus-visible, .tp-ribbon-viewport :focus-visible)) .tp-ribbon-list:first-child {
   padding-left: 0;
 }
 /* Longhands only, never the `animation` shorthand: the shorthand also resets animation-play-state to
    running, and this selector (0,6,1 — the :not(:has(...)) counts 0,2,0) outranks the pause rules below
    (0,4,1), so the pause button, the off-screen pause and the hover pause would never apply (AA-995 review).
    Play state lives only in the pause rules; lib/ribbonCss.test.ts guards this. */
-html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-track {
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport:focus-visible, .tp-ribbon-viewport :focus-visible)) .tp-ribbon-track {
   animation-name: tp-marquee;
   animation-duration: calc(var(--tp-ribbon-count) * var(--tp-ribbon-s-per-tile));
   animation-timing-function: linear;
@@ -349,7 +349,7 @@ html[data-motion="ok"] .tp-ribbon[data-offscreen] .tp-ribbon-track {
   }
 }
 /* Caption chips: always visible when static; on hover / focus while moving. */
-html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-cap {
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport:focus-visible, .tp-ribbon-viewport :focus-visible)) .tp-ribbon-cap {
   opacity: 0;
 }
 html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-tile:is(:hover, :focus-within) .tp-ribbon-cap {
@@ -366,5 +366,42 @@ html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-tile:is(:hover, :focu
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* ── Inner page hero (destination pages, spec §4.2 row 2): 420 / 520 px, grows with long text ── */
+.tp-page-hero {
+  min-height: 420px;
+}
+@media (min-width: 768px) {
+  .tp-page-hero {
+    min-height: 520px;
+  }
+}
+
+/* ── Tour day-by-day timeline (spec §4.3 row 7, M11) ── a dotted gold line through the day circles (left column of
+   each li); the circles' ring in the page colour cuts the line around them. */
+.tp-timeline::before {
+  content: "";
+  position: absolute;
+  left: 17px;
+  top: 28px;
+  bottom: 28px;
+  border-left: 2px dotted var(--aa-accent-border);
+}
+/* Open / close animates the height where ::details-content and interpolate-size exist (Chromium); elsewhere it is
+   instant. Only under data-motion="ok" (reduced motion and no-JS: instant). A browser that does not know
+   ::details-content drops the rule. */
+@supports (interpolate-size: allow-keywords) {
+  html[data-motion="ok"] .tp-day {
+    interpolate-size: allow-keywords;
+  }
+  html[data-motion="ok"] .tp-day::details-content {
+    height: 0;
+    overflow: clip;
+    transition: height var(--aa-dur-base) var(--aa-ease-std), content-visibility var(--aa-dur-base) allow-discrete;
+  }
+  html[data-motion="ok"] .tp-day[open]::details-content {
+    height: auto;
   }
 }

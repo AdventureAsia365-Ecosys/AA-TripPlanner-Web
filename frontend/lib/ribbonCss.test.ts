@@ -12,11 +12,28 @@ import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
+// A selector list split on its top-level commas only (a comma inside :has(...) / :is(...) is part of one selector).
+function splitSelectors(list: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of list) {
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (ch === "," && depth === 0) {
+      out.push(cur);
+      cur = "";
+    } else cur += ch;
+  }
+  out.push(cur);
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
 // Innermost `selector { declarations }` blocks; an @media wrapper is skipped because its body has braces.
 function rules(src: string): { selectors: string[]; body: string }[] {
   const out: { selectors: string[]; body: string }[] = [];
   for (const m of src.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    out.push({ selectors: m[1].split(",").map((s) => s.trim()).filter(Boolean), body: m[2] });
+    out.push({ selectors: splitSelectors(m[1]), body: m[2] });
   }
   return out;
 }
@@ -37,6 +54,19 @@ test("the marquee runs from longhands, and pause, off-screen and hover each set 
   const paused = trackRules.filter((r) => /animation-play-state\s*:\s*paused/.test(r.body)).flatMap((r) => r.selectors);
   for (const want of [/\[data-paused\]/, /\[data-offscreen\]/, /\.tp-ribbon-viewport:hover/]) {
     assert.ok(paused.some((s) => want.test(s)), `no paused rule for ${want}`);
+  }
+});
+
+test("every moving-ribbon rule stops when the viewport itself or anything inside it has keyboard focus", () => {
+  // A link-less ribbon (no tile to Tab to) makes .tp-ribbon-viewport the focus target; a descendant-only
+  // `.tp-ribbon-viewport :focus-visible` never matches it, so the marquee kept moving under overflow: hidden.
+  const moving = rules(css)
+    .flatMap((r) => r.selectors)
+    .filter((s) => /\.tp-ribbon\[data-animate\]:not\(:has\(/.test(s));
+  assert.ok(moving.length >= 6, `expected the still-row switch on the marquee rules, found ${moving.length}`);
+  for (const s of moving) {
+    assert.match(s, /:has\([^)]*\.tp-ribbon-viewport:focus-visible/, `viewport focus not covered: ${s}`);
+    assert.match(s, /:has\([^)]*\.tp-ribbon-viewport :focus-visible/, `focus inside not covered: ${s}`);
   }
 });
 

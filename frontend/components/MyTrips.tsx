@@ -49,7 +49,7 @@ export default function MyTrips() {
   }, [attempt]);
 
   if (state.kind === "loading") {
-    return <p className="text-sm text-k-muted" role="status">Loading your trips…</p>;
+    return <p className="text-small text-k-muted" role="status">Loading your trips…</p>;
   }
   if (state.kind === "signed_out") {
     return (
@@ -76,10 +76,11 @@ export default function MyTrips() {
 
   return (
     <section aria-labelledby="my-trips-title">
+      {/* AA-995: the page's h1 is the title band (app/trips/page.tsx); this is the list's heading. */}
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 id="my-trips-title" className="text-2xl font-semibold text-k-ink">My trips</h1>
-          {state.email && <p className="mt-1 text-[13px] text-k-muted">Signed in as {state.email}</p>}
+        <div className="min-w-0">
+          <h2 id="my-trips-title" className="text-h3 text-k-ink">Saved trips</h2>
+          {state.email && <p className="mt-1 truncate text-small text-k-muted">Signed in as {state.email}</p>}
         </div>
         <div className="flex gap-2">
           <ButtonLink href="/plan" variant="secondary" size="sm">Plan a trip</ButtonLink>
@@ -97,16 +98,16 @@ export default function MyTrips() {
         <ul className="mt-6 space-y-3" data-testid="my-trips">
           {state.trips.map((t) => (
             <li key={t.trip_id}
-              className="flex flex-col gap-3 rounded-2xl border border-k-line bg-k-card p-4 shadow-aa-sm sm:flex-row sm:items-center">
+              className="flex flex-col gap-4 rounded-card border border-k-line bg-k-card p-5 shadow-e1 sm:flex-row sm:items-center">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={t.status === "sent" ? "success" : "neutral"}>{tripStatusLabel(t.status)}</Badge>
-                  <span className="text-[11px] text-k-muted">{updatedLabel(t.updated_at)}</span>
+                  <span className="text-caption font-normal text-k-muted">{updatedLabel(t.updated_at)}</span>
                 </div>
-                <p className="mt-1.5 truncate text-sm font-semibold text-k-ink">{tripTitle(t)}</p>
-                <p className="text-xs text-k-muted">{tripFacts(t)}</p>
+                <p className="mt-2 truncate text-body font-semibold text-k-ink">{tripTitle(t)}</p>
+                <p className="text-small text-k-muted">{tripFacts(t)}</p>
               </div>
-              <Button variant="primary" size="sm" onClick={() => openTrip(t)}>Open</Button>
+              <Button variant="primary" size="md" className="min-h-11 sm:min-w-28" onClick={() => openTrip(t)}>Open</Button>
             </li>
           ))}
         </ul>

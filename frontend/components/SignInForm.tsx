@@ -75,16 +75,17 @@ export default function SignInForm({ next }: { next: string }) {
   };
 
   return (
-    <div className="rounded-2xl border border-k-line bg-k-card p-6 shadow-aa-sm">
-      <h1 className="text-xl font-semibold text-k-ink">Sign in</h1>
-      <p className="mt-1 text-[13px] leading-relaxed text-k-muted">
+    // AA-995: the page's h1 is the title band (app/sign-in/page.tsx); the card carries the form.
+    <div className="rounded-panel border border-k-line bg-k-card p-6 shadow-e3 md:p-8">
+      <h2 className="text-h3 text-k-ink">Sign in or create an account</h2>
+      <p className="mt-2 text-small text-k-muted">
         Keep your trips and open them on any device. We email you a code, so there is no password to remember. New
         here? The same code creates your account.
       </p>
 
       {step === "email" ? (
-        <form onSubmit={sendCode} className="mt-5 space-y-3">
-          <label className="block text-xs font-semibold text-k-ink" htmlFor="signin-email">
+        <form onSubmit={sendCode} className="mt-6 space-y-3">
+          <label className="block text-small font-semibold text-k-ink" htmlFor="signin-email">
             Email
           </label>
           <input
@@ -94,21 +95,21 @@ export default function SignInForm({ next }: { next: string }) {
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted"
+            className="aa-focus min-h-12 w-full rounded-tile border border-k-line bg-k-card px-4 text-body text-k-ink placeholder:text-k-muted"
             placeholder="you@example.com"
           />
-          <Button type="submit" disabled={busy || !email.trim()} className="w-full">
+          <Button type="submit" size="lg" disabled={busy || !email.trim()} className="min-h-12 w-full">
             {busy ? "Sending…" : "Email me a code"}
           </Button>
         </form>
       ) : (
-        <form onSubmit={checkCode} className="mt-5 space-y-3">
+        <form onSubmit={checkCode} className="mt-6 space-y-3">
           {notice && (
-            <p role="status" className="rounded-lg bg-k-accent-tint px-3 py-2 text-xs font-medium text-k-accent-deep">
+            <p role="status" className="rounded-tile bg-k-accent-tint px-4 py-3 text-small font-medium text-k-accent-deep">
               {notice}
             </p>
           )}
-          <label className="block text-xs font-semibold text-k-ink" htmlFor="signin-code">
+          <label className="block text-small font-semibold text-k-ink" htmlFor="signin-code">
             Code
           </label>
           <input
@@ -119,16 +120,16 @@ export default function SignInForm({ next }: { next: string }) {
             required
             value={code}
             onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 8))}
-            className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-center text-lg tracking-[0.3em] text-k-ink"
+            className="aa-focus min-h-12 w-full rounded-tile border border-k-line bg-k-card px-4 text-center text-h3 tracking-[0.3em] text-k-ink"
           />
-          <Button type="submit" disabled={busy || code.length < 6} className="w-full">
+          <Button type="submit" size="lg" disabled={busy || code.length < 6} className="min-h-12 w-full">
             {busy ? "Checking…" : "Sign in"}
           </Button>
-          <div className="flex justify-between text-xs">
-            <button type="button" className="aa-focus text-k-muted hover:text-k-ink" onClick={() => setStep("email")}>
+          <div className="flex justify-between text-small">
+            <button type="button" className="aa-focus min-h-11 text-k-muted hover:text-k-ink" onClick={() => setStep("email")}>
               Use another email
             </button>
-            <button type="button" className="aa-focus font-semibold text-k-accent-deep hover:underline"
+            <button type="button" className="aa-focus min-h-11 font-semibold text-k-accent-deep hover:underline"
               disabled={busy} onClick={() => sendCode()}>
               Send a new code
             </button>
@@ -137,12 +138,12 @@ export default function SignInForm({ next }: { next: string }) {
       )}
 
       {error && (
-        <p role="alert" className="mt-3 rounded-lg bg-k-danger-soft px-3 py-2 text-xs font-medium text-k-danger">
+        <p role="alert" className="mt-3 rounded-tile bg-k-danger-soft px-4 py-3 text-small font-medium text-k-danger">
           {error}
         </p>
       )}
 
-      <p className="mt-5 text-[11px] text-k-muted">
+      <p className="mt-6 border-t border-k-line pt-4 text-caption font-normal text-k-muted">
         How we use your email:{" "}
         {LEGAL_LINKS.map((l, i) => (
           <span key={l.href}>

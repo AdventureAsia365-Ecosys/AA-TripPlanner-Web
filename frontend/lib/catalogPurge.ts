@@ -34,6 +34,7 @@ export const LIFECYCLE_EVENTS = new Set(["retired", "paused", "restored", "super
 // Route patterns (revalidatePath with type "page" revalidates every page of the dynamic route).
 export const PURGE_PATHS: ReadonlyArray<readonly [string, "page" | "layout" | undefined]> = [
   ["/", undefined],
+  ["/destinations", undefined], // AA-995: the destinations index (tour counts per country)
   ["/tours/[slug]", "page"],
   ["/destinations/[country]", "page"],
 ];

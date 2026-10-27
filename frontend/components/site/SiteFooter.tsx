@@ -1,4 +1,5 @@
-// AA-995 (spec §3.9) — navy footer: Satisfy column titles, light links, the TrustStrip on the band.
+// AA-995 (spec §3.9) — navy footer: Satisfy column titles, light links, the TrustStrip on the band. No top margin (each
+// page ends with its own section padding) and a light hairline on top, so a navy CTA band right above it reads apart.
 // Legal links (and every footer link) use prefetch={false}: four RSC prefetches per view were measured
 // on every page (research §2.6) and Vercel challenged them.
 import Link from "next/link";
@@ -6,7 +7,7 @@ import { LEGAL_LINKS } from "@/lib/legal";
 import TrustStrip from "./TrustStrip";
 
 const EXPLORE = [
-  { href: "/#destinations", label: "Destinations" },
+  { href: "/destinations", label: "Destinations" },
   { href: "/#tours", label: "Tours" },
   { href: "/plan", label: "Trip planner" },
 ];
@@ -15,7 +16,7 @@ const link = "inline-flex min-h-8 items-center text-small text-k-on-band-muted t
 
 export default function SiteFooter() {
   return (
-    <footer className="tp-on-dark mt-16 border-t border-k-band-edge bg-k-band text-k-on-band-muted">
+    <footer className="tp-on-dark border-t border-k-band-line bg-k-band text-k-on-band-muted">
       <div className="mx-auto max-w-page px-gutter py-section">
         <TrustStrip tone="band" />
         <div className="mt-10 grid gap-8 sm:grid-cols-3">

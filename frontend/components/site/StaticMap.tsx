@@ -32,10 +32,10 @@ export default function StaticMap({
   const approximate = shown.some((p) => !isExactPin(p));
   const geoapify = needsGeocodeAttribution(shown);
   return (
-    <figure className="overflow-hidden rounded-2xl border border-k-line bg-k-card">
+    <figure className="overflow-hidden rounded-card border border-k-line bg-k-card shadow-e1">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={url} alt={`Map: ${title}`} loading="lazy" className="aspect-[5/3] w-full object-cover" />
-      <figcaption className="px-3 py-2 text-[11px] text-k-muted">
+      <figcaption className="px-4 py-2.5 text-caption font-normal text-k-muted">
         {caption ? `${caption} ` : ""}
         {approximate ? "Grey pins mark an approximate area. " : ""}
         {lines.length > 0 ? "Lines show rivers, roads and trails. " : ""}© Mapbox © OpenStreetMap

@@ -31,6 +31,8 @@ const PATHS: Record<string, string> = {
   play: "M8 5v14l11-7L8 5Z",
   plus: "M12 5v14M5 12h14",
   minus: "M5 12h14",
+  // AA-995: a river / road / trail in a place list (the "〰" glyph is missing from Poppins and many system fonts).
+  wave: "M3 12c2-3 4-3 6 0s4 3 6 0 4-3 6 0",
 };
 
 export type IconName = keyof typeof PATHS;
