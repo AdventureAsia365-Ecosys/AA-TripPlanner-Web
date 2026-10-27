@@ -249,6 +249,13 @@ html[data-motion="ok"] [data-reveal="in"][data-reveal-group] > :nth-child(n + 6)
   scroll-snap-align: start;
 }
 
+.tp-noscrollbar {
+  scrollbar-width: none;
+}
+.tp-noscrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* ── Photo ribbon (spec §3.6, M9; immersive still mode; map-first fill rule and edge fade) ──
    Static by default (no JS, reduced motion, 4–7 photos, keyboard focus inside): a swipeable snap row
    of the unique photos with a visible scrollbar, no copy, no pause button. Animated only under

@@ -58,7 +58,7 @@ export default function LegalPage({
   return (
     <div className="aa-site">
       <SiteHeader />
-      <main className="mx-auto max-w-3xl px-4 pb-6 pt-10">
+      <main id="main" className="mx-auto max-w-3xl px-4 pb-6 pt-10">
         <nav aria-label="Breadcrumb" className="text-[12px] text-k-muted">
           <Link href="/" className="hover:text-k-accent-deep">Home</Link> / {title}
         </nav>

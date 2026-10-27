@@ -6,7 +6,7 @@ export default function NotFound() {
   return (
     <div className="aa-site">
       <SiteHeader />
-      <main className="mx-auto max-w-xl px-4 py-16">
+      <main id="main" className="mx-auto max-w-xl px-4 py-16">
         <EmptyState title="We couldn't find that page">
           The tour or destination may have moved. Start from the home page or plan on the map.
         </EmptyState>

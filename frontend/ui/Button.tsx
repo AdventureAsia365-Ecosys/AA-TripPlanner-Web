@@ -3,7 +3,9 @@
 import Link from "next/link";
 import type { ComponentProps, ReactNode } from "react";
 
-export type ButtonVariant = "primary" | "secondary" | "ghost";
+// AA-995: "on-dark" = the outline button on the navy band and on photos (light text, white hairline that
+// turns gold on hover).
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "on-dark";
 export type ButtonSize = "sm" | "md" | "lg";
 
 export function buttonClass(variant: ButtonVariant = "primary", size: ButtonSize = "md", extra = ""): string {
@@ -18,6 +20,7 @@ export function buttonClass(variant: ButtonVariant = "primary", size: ButtonSize
     primary: "border border-k-accent bg-k-accent text-k-on-accent hover:brightness-95",
     secondary: "border border-k-accent-border bg-transparent text-k-accent-deep hover:bg-k-accent-tint",
     ghost: "border border-k-line bg-transparent text-k-muted hover:border-k-accent-border hover:text-k-ink",
+    "on-dark": "border border-k-band-line bg-transparent text-k-on-band hover:border-k-band-accent hover:text-k-band-accent",
   };
   const caps = variant !== "ghost" && size !== "sm" ? "uppercase tracking-[0.06em]" : "";
   return `${base} ${sizes[size]} ${variants[variant]} ${caps} ${extra}`.trim();
