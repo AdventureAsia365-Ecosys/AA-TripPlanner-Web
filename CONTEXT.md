@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-10-23
+last_reviewed: 2026-10-27
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -105,7 +105,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   fails red if `https://aa-tripplanner.vercel.app/` lacks any of them ("Check the production security headers"
   step in `vercel-deploy.yml`; TripPlanner has no UI smoke workflow, so this is its header smoke).
 
-### Theme and contrast (AA-812, AA-837)
+### Theme and contrast (AA-812, AA-837, AA-995)
 
 - One palette: the `--aa-*` tokens in `frontend/ui/tokens.css` (CIS kit values, three light values
   darkened for WCAG AA), exposed to Tailwind as `k-*` (`bg-k-card`, `text-k-muted`,
@@ -120,12 +120,30 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   ≥ 4.5:1 in both themes and fails on raw palette classes (`aa-*`, `bg-white`, `text-gray-500`,
   `[#hex]`…) in the planner's files. Rendered-page check: axe `color-contrast` on `/plan` in light
   and dark at 1440 and 390 px (AA-837 implementation notes).
+- **Customer pages, "Golden Hour" (AA-995).** `ui/tokens.css` also holds the type, radius, space, shadow and
+  motion scales (`--aa-*`, proposed for AA-994 core) and the B2C surfaces (`--tp-*`: sand band, navy band
+  and its text, photo scrims, script face, ribbon speed), mapped to new Tailwind names only (`text-display|h1|h3|
+  lead|body|small|caption|kicker|script`, `rounded-card|tile|panel|pill`, `shadow-e1..e3`, `duration-fast…`,
+  `ease-std|out|in`, `k-sand`, `k-band`, `k-on-band`…), so the planner's Tailwind defaults are untouched. Fonts:
+  Poppins + Satisfy (section titles only, `display: optional`) in the root layout; Inter only in `/plan`
+  (`app/plan/layout.tsx`); Fahkwang removed. Text on photos sits only on `--tp-scrim-text` (alpha .70) or darker.
+- **Motion gate (AA-995).** The restore script also sets `<html data-motion="ok|reduce">` (prefers-reduced-motion,
+  live, or `localStorage.tp_motion = "reduce"`). Every keyframe animation and every hidden "before reveal" state is
+  scoped under `html[data-motion="ok"]` (`app/globals.css`); no JS = static and fully visible. Only one element moves
+  by itself on a page: the photo ribbon (`components/site/PhotoRibbon.tsx`), with a pause toggle (stored in
+  `tp_motion_paused`), paused off screen and on hover, and a still scroll row on keyboard focus.
+- More guards (`npm test`): `lib/contrast.test.ts` also checks the sand / navy band pairs and every photo scrim
+  (composited over a white pixel); `lib/tokens.test.ts` bans raw px font sizes, hex, raw durations / easings,
+  `rgba()` and `rounded-2xl` / `shadow-aa` in the rebuilt customer files; `lib/restoreTheme.test.ts` runs the
+  inline script; `lib/photos.test.ts` covers the duplicate-cover rule, grid order and the ribbon fill rule.
 - Day counts go through `formatDays` / `formatDayRange` (`lib/text.ts`): "1 day", "3 to 8 days".
 
 ### Pages (AA-812)
 
-- `/` search-first home (destination, days, travellers → `/plan?country=&days=&travellers=`),
-  featured tours, destinations grid, how it works, trust strip.
+- `/` search-first home (destination, days, travellers → `/plan?country=&days=&travellers=`). AA-995 order:
+  photo hero (static curated asset in `public/hero/`, from a CIS catalog photo) under a transparent navy header →
+  search card → ways in → featured tours row (9) → proof line → destinations grid → how it works → navy CTA band
+  → photo ribbon → navy footer (trust strip inside). Still two catalog reads.
 - `/plan` the map planner (moved from `/`), with a Map | List-of-tours toggle; `?tour=<tour_id>`
   pins that tour's whole route through the existing apply-route flow (`&ask=1` opens the trip).
 - `/tours/[slug]` and `/destinations/[country]`: Server Components with ISR (30 min, the browse

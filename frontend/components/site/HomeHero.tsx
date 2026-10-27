@@ -30,9 +30,9 @@ export default function HomeHero({ children }: { children: ReactNode }) {
     <section className="tp-hero relative isolate -mt-header flex flex-col overflow-hidden bg-k-hero-bg">
       {/* React 19 hoists these to <head>. One per crop (media), AVIF only: a browser without AVIF skips
           the preload and fetches the WebP <source> as usual. */}
-      <link rel="preload" as="image" type="image/avif" media={PORTRAIT_MEDIA} imageSrcSet={heroSrcSet("port", port.widths, "avif")}
+      <link rel="preload" as="image" type="image/avif" media={PORTRAIT_MEDIA} href={`/hero/home-port-${port.width}.avif`} imageSrcSet={heroSrcSet("port", port.widths, "avif")}
             imageSizes="100vw" fetchPriority="high" />
-      <link rel="preload" as="image" type="image/avif" media={LANDSCAPE_MEDIA} imageSrcSet={heroSrcSet("land", land.widths, "avif")}
+      <link rel="preload" as="image" type="image/avif" media={LANDSCAPE_MEDIA} href={`/hero/home-land-${land.width}.avif`} imageSrcSet={heroSrcSet("land", land.widths, "avif")}
             imageSizes="100vw" fetchPriority="high" />
       <picture>
         <source type="image/avif" media={PORTRAIT_MEDIA} srcSet={heroSrcSet("port", port.widths, "avif")} sizes="100vw"
