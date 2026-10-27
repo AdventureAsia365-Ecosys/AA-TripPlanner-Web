@@ -349,7 +349,7 @@ html[data-motion="ok"] .tp-ribbon[data-offscreen] .tp-ribbon-track {
   }
 }
 /* Caption chips: always visible when static; on hover / focus while moving. */
-html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-cap {
+html[data-motion="ok"] .tp-ribbon[data-animate]:not(:has(.tp-ribbon-viewport :focus-visible)) .tp-ribbon-cap {
   opacity: 0;
 }
 html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-tile:is(:hover, :focus-within) .tp-ribbon-cap {

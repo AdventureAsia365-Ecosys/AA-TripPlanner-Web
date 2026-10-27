@@ -9,6 +9,7 @@ import {
   RIBBON_FILL_PX,
   RIBBON_STRIDE_PX,
   sortForGrid,
+  gridWithPhotos,
   uniqueRibbonItems,
 } from "./photos.ts";
 
@@ -33,6 +34,18 @@ test("destinations grid: photos first, then most tours, then name", () => {
     { country: "Cambodia", tour_count: 9, cover: null },
   ];
   assert.deepEqual(sortForGrid(rows, (r) => !!r.cover).map((r) => r.country), ["China", "Bhutan", "Cambodia", "Laos"]);
+});
+
+test("destinations grid: a cover reused by a smaller country counts as no photo and goes to the end", () => {
+  const rows = [
+    { country: "Sri Lanka", tour_count: 4, cover: "x" },
+    { country: "Laos", tour_count: 9, cover: null },
+    { country: "Bhutan", tour_count: 8, cover: "x" },
+    { country: "China", tour_count: 7, cover: "c" },
+  ];
+  const g = gridWithPhotos(rows, (r) => r.cover);
+  assert.deepEqual(g.items.map((r) => r.country), ["Bhutan", "China", "Laos", "Sri Lanka"]);
+  assert.deepEqual(g.shown, [true, true, false, false]);
 });
 
 test("ribbon items: no null photo, no duplicate photo, order kept", () => {

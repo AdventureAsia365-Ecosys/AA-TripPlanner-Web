@@ -23,7 +23,7 @@ import TourCard from "@/components/site/TourCard";
 import TourCarousel from "@/components/site/TourCarousel";
 import { getCountries, getTours, siteUrl } from "@/lib/catalog";
 import type { CountrySummary, TourCard as TourCardData } from "@/lib/catalogTypes";
-import { firstUseOfCover, sortForGrid, type RibbonItem } from "@/lib/photos";
+import { firstUseOfCover, gridWithPhotos, type RibbonItem } from "@/lib/photos";
 import { coverAlt } from "@/lib/text";
 import { EmptyState, ErrorState } from "@/ui";
 
@@ -81,8 +81,7 @@ export default async function HomePage() {
   const countries = countriesRes.ok ? countriesRes.data.countries : [];
   const tours = toursRes.ok ? toursRes.data.tours : [];
   const tourPhoto = firstUseOfCover(tours, (t) => t.cover_url_small ?? t.cover_url);
-  const grid = sortForGrid(countries, (c) => !!(c.cover_url_small ?? c.cover_url));
-  const gridPhoto = firstUseOfCover(grid, (c) => c.cover_url_small ?? c.cover_url);
+  const { items: grid, shown: gridPhoto } = gridWithPhotos(countries, (c) => c.cover_url_small ?? c.cover_url);
   const tourTotal = countries.reduce((n, c) => n + c.tour_count, 0);
 
   // No-photo tiles alternate navy / gold tint within each list, counted among the no-photo tiles only.

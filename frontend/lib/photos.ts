@@ -32,6 +32,19 @@ export function sortForGrid<T extends { country: string; tour_count: number }>(
   );
 }
 
+// The destination grid: photo tiles first, no-photo tiles together at the end. "Photo" means the tile really
+// shows one: a cover already used by a bigger country (firstUseOfCover, in tour_count order) counts as none.
+export function gridWithPhotos<T extends { country: string; tour_count: number }>(
+  items: T[],
+  cover: (item: T) => string | null | undefined,
+): { items: T[]; shown: boolean[] } {
+  const ranked = sortForGrid(items, () => true);
+  const firstUse = firstUseOfCover(ranked, cover);
+  const shownOf = new Map(ranked.map((it, i) => [it, firstUse[i]]));
+  const sorted = sortForGrid(ranked, (it) => shownOf.get(it) ?? false);
+  return { items: sorted, shown: sorted.map((it) => shownOf.get(it) ?? false) };
+}
+
 export interface RibbonItem {
   href: string;
   src: string | null;
