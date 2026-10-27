@@ -17,6 +17,10 @@
 #
 # Not run locally (CI only): the PostgreSQL 15 replays and catalog-view SQL tests (unless AA_PREPUSH_PG_DSN is set
 # for the replays), gitleaks, PR title. Never runs `next build` (CI "Frontend (lint + build)" / Build).
+#
+# Errors: `set -uo pipefail` without -e on purpose, so one run reports every failing check instead of stopping at the
+# first. It stays fail-closed: run_step records each non-zero exit, a missing tool or env goes through fail_setup, and
+# the script exits 1 whenever FAILED is non-empty.
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "pre-push: not inside a git repo" >&2; exit 2; }
@@ -33,14 +37,17 @@ classify_file() {
     backend/requirements.txt) groups+=" deps unit_all" ;;
     backend/pytest.ini) groups+=" unit_all" ;;
     backend/__init__.py | backend/tests/__init__.py | backend/tests/conftest.py) groups+=" unit unit_all" ;;
-    backend/*.py) groups+=" unit" ;;
-    # Contract copies and fixtures the backend tests load by file name.
-    backend/tests/*) groups+=" unit" ;;
+    # Modules, plus the contract copies, fixtures and scripts (package_lambdas.sh) the backend tests load by file name.
+    backend/*) groups+=" unit" ;;
+    # Read by backend/tests/test_observability.py (found by the basename grep in select_unit_tests).
+    .release-please-manifest.json) groups+=" unit" ;;
   esac
   case "$f" in
     migrations/*) groups+=" migrations" ;;
     frontend/*.md) ;;
     frontend/*) groups+=" fe" ;;
+    # Read by frontend/lib/health.test.ts, which CI runs with `npm test` on every PR.
+    .release-please-manifest.json | .github/workflows/vercel-deploy.yml) groups+=" fe" ;;
     tools/docs/*) groups+=" docs docs_tools" ;;
     scripts/pre-push.sh | scripts/install-hooks.sh | .githooks/*) groups+=" hook" ;;
     # Marker (not a path): the diff deletes or renames a file, which can break a Markdown link.
@@ -164,7 +171,12 @@ self_test() {
   expect "pytest.ini -> targeted unit + warning" "$BASE_IDS unit-changed" fast backend/pytest.ini
   expect "requirements -> pip-audit + targeted unit + warning" "$BASE_IDS pip-audit unit-changed" fast \
     backend/requirements.txt
-  expect "Lambda packaging script -> nothing extra" "$BASE_IDS" fast backend/package_lambdas.sh
+  expect "Lambda packaging script -> targeted unit (test_observability reads it)" "$BASE_IDS unit-changed" fast \
+    backend/package_lambdas.sh
+  expect "release manifest -> targeted unit + frontend tests (both read it)" "$BASE_IDS unit-changed $FE" fast \
+    .release-please-manifest.json
+  expect "Vercel deploy workflow -> frontend tests (health.test.ts reads it)" "$BASE_IDS $FE" fast \
+    .github/workflows/vercel-deploy.yml
   expect "migration -> migration lint" "$BASE_IDS migration-lint" fast migrations/021_example.sql
   expect "migration test -> migration lint" "$BASE_IDS migration-lint" fast migrations/tests/migration_lint.py
   expect "frontend -> lint + tsc + node tests, never build" "$BASE_IDS $FE" fast frontend/app/page.tsx
@@ -174,7 +186,7 @@ self_test() {
   expect "non-ASCII markdown name" "$BASE_IDS $DOCS" fast "docs/Tài liệu.md"
   expect "docs tools -> their unit tests too" "$BASE_IDS docs-tools-tests $DOCS" fast tools/docs/check_frontmatter.py
   expect "workflow / CI script -> CI script tests (always on)" "$BASE_IDS" fast .github/workflows/ci.yml \
-    .github/scripts/post_deploy_verify.sh .release-please-manifest.json
+    .github/scripts/post_deploy_verify.sh
   expect "hook files -> hook self-test" "$BASE_IDS hook-self-test" fast scripts/pre-push.sh .githooks/pre-push
   expect "delete or rename -> link check" "$BASE_IDS docs-links" fast :deleted-or-renamed
   expect "mixed diff" "$BASE_IDS unit-changed migration-lint $DOCS $FE" fast \
@@ -188,6 +200,15 @@ self_test() {
   n=$((n + 1))
   if [[ "$got" == "backend/tests/conftest.py backend/requirements.txt backend/pytest.ini" ]]; then echo "ok   unit_all warning files"
   else echo "FAIL unit_all warning files"; echo "     got:  $got"; fails=$((fails + 1)); fi
+
+  # Failure records survive a '|' in the display command (docs-links pipes git ls-files into lychee).
+  local rid rdir rshown rci
+  IFS=$SEP read -r rid rdir rshown rci <<<"$(fail_record docs-links . "git ls-files -z '*.md' | xargs -0 -r lychee" \
+    "docs-lint.yml / Internal links (offline)")"
+  n=$((n + 1))
+  if [[ "$rid|$rdir|$rshown|$rci" == "docs-links|.|git ls-files -z '*.md' | xargs -0 -r lychee|docs-lint.yml / Internal links (offline)" ]]
+  then echo "ok   failure record round-trips a command containing '|'"
+  else echo "FAIL failure record round-trip"; echo "     got: [$rid] [$rdir] [$rshown] [$rci]"; fails=$((fails + 1)); fi
 
   # Test selection on a fixture tree (no pytest run).
   local tmp; tmp="$(mktemp -d)"
@@ -274,6 +295,8 @@ with open(sys.argv[1], encoding="utf-8") as fh:
             continue
         if have != want:
             bad.append(f"{name} {have} (CI {want})")
+if sys.version_info[:2] != (3, 12):
+    bad.append(f"python {sys.version_info[0]}.{sys.version_info[1]} (CI 3.12)")
 print("; ".join(bad))
 sys.exit(1 if bad else 0)
 PYEOF
@@ -340,6 +363,10 @@ resolve_docs_python() {
 # ---------------------------------------------------------------------------------------------------------------
 FAILED=()
 WARNED=()
+# FAILED entries: id, dir, display command, CI reference joined by the ASCII unit separator, which no command contains
+# (a '|' does: docs-links pipes git ls-files into lychee).
+SEP=$'\x1f'
+fail_record() { printf '%s' "$1$SEP$2$SEP$3$SEP$4"; }
 LYCHEE_HINT="install lychee v0.24.2 (the version lychee-action v2.9.0 runs in CI): a release binary from https://github.com/lycheeverse/lychee/releases, or cargo install lychee --version 0.24.2"
 
 # run_step <check id> <dir relative to repo root> <ci reference> <display command> -- <argv...>
@@ -355,7 +382,7 @@ run_step() {
     echo "    ok ($(( $(date +%s) - t0 ))s)"
   else
     echo "    FAILED (exit $rc, $(( $(date +%s) - t0 ))s)"
-    FAILED+=("$id|${dir:-.}|$shown|$ci")
+    FAILED+=("$(fail_record "$id" "${dir:-.}" "$shown" "$ci")")
   fi
 }
 
@@ -364,7 +391,7 @@ fail_setup() {
   echo
   echo "==> [$1] cannot run: $3"
   echo "    fix: $4"
-  FAILED+=("$1|.|$4|$2")
+  FAILED+=("$(fail_record "$1" . "$4" "$2")")
 }
 
 run_check() {
@@ -470,6 +497,9 @@ run_check() {
         fi
         return
       fi
+      if ! lychee --version 2>/dev/null | grep -qE "(^| )0\.24\.2\$"; then
+        WARNED+=("$id: $(lychee --version 2>/dev/null | head -n 1) is not the CI version; $LYCHEE_HINT")
+      fi
       # The tracked pages only (what the CI checkout has): a local './**/*.md' would also walk frontend/node_modules
       # and .venv.
       run_step "$id" "" "docs-lint.yml / Internal links (offline)" \
@@ -483,13 +513,20 @@ run_check() {
         fail_setup "$id" "ci.yml / Frontend (lint + build)" "frontend/node_modules missing" "(cd frontend && npm ci)"
         return
       fi
+      # npm test runs node --test --experimental-strip-types, which needs Node >= 22.6.
+      local nv; nv="$(node --version 2>/dev/null)"; nv="${nv#v}"
+      if [[ ! "$nv" =~ ^([0-9]+)\.([0-9]+) ]] || (( BASH_REMATCH[1] < 22 || (BASH_REMATCH[1] == 22 && BASH_REMATCH[2] < 6) )); then
+        fail_setup "$id" "ci.yml / Frontend (lint + build)" "node ${nv:-not found} (npm test needs >= 22.6)" \
+          "CI uses Node 22 (setup-node node-version 22): install Node 22.6 or later"
+        return
+      fi
       case "$id" in
         fe-lint) run_step "$id" frontend "ci.yml / Frontend (lint + build) / Lint" "npm run lint" -- npm run lint --silent ;;
         fe-typecheck) run_step "$id" frontend "ci.yml / Frontend (lint + build) / Type-check" "npm run typecheck" -- \
           npm run typecheck --silent ;;
         fe-test) run_step "$id" frontend "ci.yml / Frontend (lint + build) / Unit tests" "npm test" -- npm test --silent ;;
       esac ;;
-    *) echo "pre-push: unknown check $id" >&2; FAILED+=("$id|.|unknown check|-") ;;
+    *) echo "pre-push: unknown check $id" >&2; FAILED+=("$(fail_record "$id" . "unknown check" -)") ;;
   esac
 }
 
@@ -560,7 +597,7 @@ if [[ ${#FAILED[@]} -eq 0 ]]; then
 fi
 echo "pre-push: ${#FAILED[@]} check(s) FAILED in ${ELAPSED}s ($MODE mode). Re-run the failing command to see it:"
 for f in "${FAILED[@]}"; do
-  IFS='|' read -r id dir shown ci <<<"$f"
+  IFS=$SEP read -r id dir shown ci <<<"$f"
   echo "  - [$id] CI: $ci"
   echo "      (cd $dir && $shown)"
 done
