@@ -261,7 +261,7 @@ export default async function DestinationRoute({ params }: Props) {
                   className={hasMap ? "lg:col-span-5 lg:max-h-[560px] lg:overflow-y-auto lg:pr-1" : "lg:col-span-12"}
                   {...(hasMap ? { tabIndex: 0, role: "region", "aria-label": `Places in ${d.country}, list` } : {})}
                 >
-                  <ol className={`grid gap-2 ${hasMap ? "" : "md:grid-cols-2"}`}>
+                  <ol className={`grid grid-cols-[minmax(0,1fr)] gap-2 ${hasMap ? "" : "md:grid-cols-2"}`}>
                     {firstPlaces.map((p, i) => <PlaceRow key={p.destination_id} p={p} label={placeLabel(p, i)} />)}
                   </ol>
                   {morePlaces.length > 0 && (
@@ -276,7 +276,7 @@ export default async function DestinationRoute({ params }: Props) {
                           Show all {listed.length} places
                           <Icon name="chevron" className="h-4 w-4 transition-transform duration-base ease-std group-open:rotate-180" />
                         </summary>
-                        <ol start={PLACES_FIRST + 1} className="mt-2 grid gap-2">
+                        <ol start={PLACES_FIRST + 1} className="mt-2 grid grid-cols-[minmax(0,1fr)] gap-2">
                           {morePlaces.map((p, i) => (
                             <PlaceRow key={p.destination_id} p={p} label={placeLabel(p, i + PLACES_FIRST)} />
                           ))}
