@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.9.0...v0.10.0) (2026-10-28)
+
+
+### Features
+
+* Golden Hour destination, tour and account pages ([#168](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/168)) ([bb7d259](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/bb7d259b7c893013f07ea771cbfae0caad30bdeb))
+* My Payments section on /trips (Booking customer payments via BFF) ([#167](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/167)) ([23e8b2a](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/23e8b2a4258e7cc339e5e2f7658234bb2ba3e83d))
+* planner Poppins, reduce-motion toggle, content-visibility, expand all days ([#171](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/171)) ([be5cbc4](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/be5cbc417b919df66e0e9e83501e82b0146bfe6b))
+
+
+### Bug Fixes
+
+* dedupe browse photos by path (destination gallery, tour detail) ([#165](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/165)) ([1073dbc](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/1073dbc278b6639fe868144bb6a815dc13965a65))
+* places grid keeps the phone column width on destination pages ([#169](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/169)) ([eae6986](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/eae69868c2a810b92ec73e992e922c1ec40f3bb1))
+* places list keeps the phone column width (truncated names) ([#170](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/170)) ([882f7b5](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/882f7b5d3655d210377227bb68f4f404acce8a4c))
+
 ## [0.9.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.8.2...v0.9.0) (2026-10-27)
 
 
