@@ -16,8 +16,7 @@ sed -i 's/\r$//' backend/.env frontend/.env.local
 TRIPPLANNER_DATABASE_URL=postgresql://<real-user>:<real-pass>@localhost:<tunnel-port>/<dbname>
 BEDROCK_ROLE_NAME=<cross-account role name>
 BEDROCK_REGION=us-west-2
-BEDROCK_ACCT_PRIMARY=<acc3-account-id>   # no default since AA-902 (account map: private AA-Ecosys repo)
-BEDROCK_ACCT_FALLBACK=<acc1-account-id>
+BEDROCK_ACCT_PRIMARY=<acc3-account-id>   # no default since AA-902 (account map: AA-Ecosys root repo); acc3 is the only satellite (AA-998)
 # ADVISOR_NOTIFY_EMAIL is optional (log label only): AA-Booking sends the staff e-mail (AA-811)
 REQUIRE_REGISTRATION_BEFORE_HANDOFF=true
 ```

@@ -19,8 +19,9 @@
   - pgvector is already enabled on this instance (confirmed via STEP 0:
     version 0.8.1) — reuse it, do not add a new vector DB service.
 - LLM: AWS Bedrock, via the same satellite pattern already live for
-  AA-CIS-App/ACPv2 — assume a role on acc3 (primary), fallback to
-  acc1 (account IDs: env `BEDROCK_ACCT_*`, never in this public repo). Sonnet-tier for both
+  AA-CIS-App/ACPv2 — assume a role on acc3, the only LLM satellite (the acc1
+  fallback was retired by AA-998; account ID: env `BEDROCK_ACCT_PRIMARY`, never in this
+  public repo). Sonnet-tier for both
   LLM steps (`compose` and `renarrate` — see design.md). There is no
   Haiku-tier "parse brief" step in this build (no chat intake).
 - Geocoding: Mapbox Geocoding API (already needed for the map itself, no
@@ -84,10 +85,10 @@ started:
   AA-CIS-App repo.
 
 ## Infra that IS reused — via Terraform/IAM, not via code import
-- `AA-CIS-Infra/accounts/acc3-bedrock/` and `accounts/acc1-bedrock/`
-  already define the cross-account trust roles used by AA-CIS-App's ECS
-  task. Both new Lambdas' execution roles need to be added as additional
-  trusted principals on those same roles — a Terraform change applied
+- `AA-CIS-Infra/accounts/acc3-bedrock/` already defines the cross-account
+  trust role used by AA-CIS-App's ECS task (the former `accounts/acc1-bedrock/`
+  root is retired, AA-998). Both new Lambdas' execution roles are
+  trusted principals on that same role — a Terraform change applied
   manually by Nghiep (MFA, workflow_dispatch), never something an agent
   runs automatically.
 - Same RDS instance, new/existing schemas only — no new database
@@ -125,8 +126,8 @@ for the full picture. Deltas from the original plan above:
   when the env is empty (local/tests). A JWT/authorizer + CloudFront are
   still deferred.
 - **Compose model id**: `global.anthropic.claude-sonnet-4-6` (NOT `us.`).
-  The satellite invoker roles (AA3-Bedrock-Invoker / AA-Bedrock-Invoker)
-  only allow the `global.` inference profile; the `us.` id → AccessDenied.
+  The satellite invoker role (AA3-Bedrock-Invoker on acc3)
+  only allows the `global.` inference profile; the `us.` id → AccessDenied.
   Embed stays `us.cohere.embed-v4:0` (direct on acc2, 1536-dim).
 - **Narration**: reachable via `POST /trip/{id}/narrate` (compose |
   renarrate). Uses a BUFFERED `bedrock invoke` (not

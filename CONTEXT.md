@@ -62,8 +62,8 @@ Postgres (the shared RDS in acc2)
   └─ read-only: catalog.* views (CIS-owned: tours, places, tour graph, embeddings)
       │
       ▼
-Amazon Bedrock  — Cohere Embed v4: acc2 first, then acc3/acc1 via the satellite role (AA-862);
-                  Claude via cross-account role (acc3 primary → acc1 fallback)
+Amazon Bedrock  — Cohere Embed v4: acc2 first, then acc3 via the satellite role (AA-862);
+                  Claude via the cross-account role on acc3 (the only LLM satellite, AA-998)
 ```
 
 The journey ends with a **draft trip + customer** sent to an advisor ("Send to advisor" +
@@ -547,8 +547,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   Stages:
   - `tp_compose`: assembly narration (Claude Sonnet 4.6 via the satellite role);
   - `tp_search_embed`: browse free-text search, one Cohere Embed v4 call per distinct query (acc2
-    first; on an acc2 throttle the route falls through to the satellite rows `cohere-embed-v4-acc3`,
-    then `cohere-embed-v4-acc1` once enabled — same model and 1536-d, AA-862).
+    first; on an acc2 throttle the route falls through to the satellite row `cohere-embed-v4-acc3`
+    — same model and 1536-d, AA-862).
     **Search under load (AA-856)**: Cohere Embed V4 on acc2 allows 20 requests per minute (Service
     Quotas), so `llm_gateway.query_embed_cache` keeps query vectors per Lambda container (bounded LRU,
     1024 entries, 6 h TTL; key = stage + base Bedrock model id(s) of the route (geo prefix stripped, so account rows of one
@@ -593,10 +593,14 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   place name, accent-insensitive, generic suffixes such as "Temple" dropped); else the nearest other
   day of the same tour that names it and that no other entry of the itinerary owns or already took;
   else the own day text as it is; only a day with no AA text goes to the LLM.
-- Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 primary → acc1
-  fallback** (the same accounts the CIS side uses; see `docs/ecosystem-architecture.md`).
-  Cohere embeddings run on acc2 first; the route's satellite rows (`cohere-embed-v4-acc3`, later
-  `-acc1`, CIS migration 240) take over on an acc2 throttle (acc2 has 20 rpm, acc3 2,000 rpm). Each
+- Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 only** (the same
+  account the CIS side uses; see `docs/ecosystem-architecture.md`). AA-998 retired the former acc1
+  fallback and accepted the loss of a cross-account fallback: `llm_gateway.SUPPORTED_ACCOUNTS` is
+  `acc3`, `acc2`, so a catalog profile or `account_route` naming any other account is never called;
+  when acc3 fails the route's next model is tried, then the call fails (narration falls back to AA
+  text, search to keyword ranking).
+  Cohere embeddings run on acc2 first; the route's satellite row (`cohere-embed-v4-acc3`, CIS
+  migration 240) takes over on an acc2 throttle (acc2 has 20 rpm, acc3 2,000 rpm). Each
   container caches one no-retry satellite embed client per account (one AssumeRole until 5 minutes
   before the creds expire), AA-862.
 - **Former place tables (AA-675 `tour_day`, AA-673 Tour Graph `tour_stop` / `tour_graph_*` / `tour_leg` /

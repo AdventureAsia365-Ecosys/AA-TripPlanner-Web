@@ -9,13 +9,15 @@ This module reads the first two for a stage, calls Bedrock itself (no dependency
 which is often scaled to zero), and writes the log row. The `tripplanner` DB role has SELECT on
 the two config tables and INSERT on the log (CIS migration 173).
 
-Accounts: acc2 is where the Lambdas run (direct call, used for Cohere embeddings); acc3 and acc1
-are reached through the satellite roles in `bedrock_satellite`. Anthropic models are not
-available on acc2 (channel-program account), so an acc2 attempt for them simply fails over.
+Accounts (SUPPORTED_ACCOUNTS): acc2 is where the Lambdas run (direct call, used for Cohere
+embeddings); acc3 is the only LLM satellite, reached through its role in `bedrock_satellite`.
+AA-998 retired the former acc1 fallback: a catalog profile or `account_route` naming any other
+account is ignored, so an acc3 failure moves on to the route's next model, never to another
+account. Anthropic models are not available on acc2 (channel-program account), so an acc2
+attempt for them simply fails over.
 Embeddings (AA-862): acc2 first, then satellite rows by route. acc2's Cohere Embed v4 quota is
 20 rpm, so the route chains one catalog row per account (`cohere-embed-v4` acc2 ->
-`cohere-embed-v4-acc3` -> `cohere-embed-v4-acc1`), same model and dimension, so vectors stay
-comparable. Satellite embed clients are cached per container (one AssumeRole until 5 minutes
+`cohere-embed-v4-acc3`), same model and dimension, so vectors stay comparable. Satellite embed clients are cached per container (one AssumeRole until 5 minutes
 before the creds expire) and make a single attempt, like the acc2 one.
 
 If the tables cannot be read, BUILTIN_ROUTES keeps the models this app used before AA-685, so a
@@ -101,8 +103,7 @@ class Call:
 
 
 _SONNET = Model("sonnet", "anthropic", "anthropic_native",
-                {"acc3": "global.anthropic.claude-sonnet-4-6",
-                 "acc1": "global.anthropic.claude-sonnet-4-6"}, 3.0, 15.0)
+                {"acc3": "global.anthropic.claude-sonnet-4-6"}, 3.0, 15.0)
 _COHERE = Model("cohere-embed-v4", "cohere", "embed", {"acc2": "us.cohere.embed-v4:0"}, 0.12, 0.0)
 
 BUILTIN_ROUTES = {
@@ -170,28 +171,31 @@ async def load_route(db: Any, stage: str) -> Route:
     return route
 
 
+# AA-998: the only accounts this app calls. A stale catalog profile or `account_route` for any
+# other account (the retired acc1) is never tried.
+SUPPORTED_ACCOUNTS = ("acc3", "acc2")
+
+
 def _accounts(model: Model, preferred: Optional[str]) -> list[str]:
-    order = [a for a in (preferred, "acc3", "acc1", "acc2") if a]
+    order = [a for a in (preferred, *SUPPORTED_ACCOUNTS) if a in SUPPORTED_ACCOUNTS]
     return [a for a in dict.fromkeys(order) if a in model.profiles]
 
 
-def _satellite_target(account: str) -> tuple[str, str, str]:
-    """(account id, invoker role name, ExternalId) of a satellite account.
+def _no_account(model: Model) -> str:
+    return f"{model.key}: no profile on a supported account ({', '.join(SUPPORTED_ACCOUNTS)})"
 
-    The account IDs have no default (AA-902, public repo): an unset one raises here, before any
-    STS call, so the failover loop records a clear error and moves on to the next account."""
-    if account == "acc3":
-        target = (config.BEDROCK_ACCT_PRIMARY, config.BEDROCK_ROLE_NAME_PRIMARY,
-                  config.BEDROCK_EXTERNAL_ID_PRIMARY)
-        env = "BEDROCK_ACCT_PRIMARY"
-    elif account == "acc1":
-        target = (config.BEDROCK_ACCT_FALLBACK, config.BEDROCK_ROLE_NAME_FALLBACK,
-                  config.BEDROCK_EXTERNAL_ID_FALLBACK)
-        env = "BEDROCK_ACCT_FALLBACK"
-    else:
+
+def _satellite_target(account: str) -> tuple[str, str, str]:
+    """(account id, invoker role name, ExternalId) of the satellite account (acc3 only, AA-998).
+
+    The account ID has no default (AA-902, public repo): an unset one raises here, before any
+    STS call, so the failover loop records a clear error and moves on."""
+    if account != "acc3":
         raise BedrockError(f"Unknown account {account!r}")
+    target = (config.BEDROCK_ACCT_PRIMARY, config.BEDROCK_ROLE_NAME_PRIMARY,
+              config.BEDROCK_EXTERNAL_ID_PRIMARY)
     if not target[0]:
-        raise BedrockError(f"{account}: account id not configured ({env} is unset)")
+        raise BedrockError(f"{account}: account id not configured (BEDROCK_ACCT_PRIMARY is unset)")
     return target
 
 
@@ -269,7 +273,10 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
         if not model.enabled or model.api_style == "embed":
             errors.append(f"{model.key}: skipped")
             continue
-        for account in _accounts(model, route.account_route):
+        accounts = _accounts(model, route.account_route)
+        if not accounts:
+            errors.append(_no_account(model))
+        for account in accounts:
             try:
                 text, usage, stop = _text_call(model, account, system, user, max_tokens,
                                                client_factory)
@@ -321,7 +328,7 @@ def _acc2_embed_client() -> Any:
     return _acc2_embed
 
 
-# AA-862: satellite (acc3/acc1) embed clients, one per account per container, with the wall-clock
+# AA-862: satellite (acc3) embed clients, one per account per container, with the wall-clock
 # time (epoch seconds) after which the client is rebuilt. Wall clock, not monotonic, because STS
 # `Expiration` is an absolute time and a frozen Lambda container must not outlive its creds.
 _sat_embed: dict[str, tuple[Any, float]] = {}
@@ -389,7 +396,10 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
         if not model.enabled or model.api_style != "embed" or model.vendor != "cohere":
             errors.append(f"{model.key}: skipped")
             continue
-        for account in _accounts(model, route.account_route):
+        accounts = _accounts(model, route.account_route)
+        if not accounts:
+            errors.append(_no_account(model))
+        for account in accounts:
             try:
                 rt = _embed_runtime(account, client_factory)
                 resp = rt.invoke_model(modelId=model.profiles[account], body=json.dumps(
@@ -419,7 +429,7 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
 # --- Query embedding cache (AA-856) -------------------------------------------------------------
 #
 # Cohere Embed V4 on acc2 allows 20 requests per minute (Service Quotas, S239), so every repeated
-# search query must not call Bedrock again (misses then fall through to acc3/acc1, AA-862). The
+# search query must not call Bedrock again (misses then fall through to acc3, AA-862). The
 # cache lives in the Lambda container (one instance serves one invocation at a time, so no
 # locking): bounded LRU with a TTL. A hit is not a model
 # call: no llm_call_log row, nothing added to the daily spend.
@@ -451,8 +461,8 @@ def embed_cache_key(route: Route, input_type: str, text: str) -> tuple:
     """(stage, base model ids the route can call, input_type, dimension, normalised text).
 
     Keyed on the MODEL (the Bedrock model id behind each row's profiles, geo prefix stripped), not
-    on the route's catalog keys: AA-862 rows `cohere-embed-v4` / `-acc3` / `-acc1` are one model on
-    three accounts, so adding, enabling or disabling an account row must not empty the cache (a
+    on the route's catalog keys: AA-862 rows `cohere-embed-v4` / `-acc3` are one model on
+    two accounts, so adding, enabling or disabling an account row must not empty the cache (a
     cold cache sends every query straight at acc2's 20 rpm). A different model on the admin
     Settings page gives a new key, so a cached vector never crosses models."""
     ids = sorted({_base_model_id(str(p)) for m in route.models for p in (m.profiles or {}).values()})
