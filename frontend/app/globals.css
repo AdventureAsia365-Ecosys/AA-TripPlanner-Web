@@ -354,7 +354,9 @@ html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-tile:is(:hover, :focu
 }
 
 /* ── Safety net (map-first graft): an OS reduced-motion setting stops every animation even if the
-   gate attribute is stale. ── */
+   gate attribute is stale. The same net under the gate itself, so the footer "Reduce motion" toggle (which sets
+   only <html data-motion="reduce">) also stops motion not driven by the tokens (Tailwind `transition`,
+   `animate-spin`…). ── */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -364,6 +366,14 @@ html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-tile:is(:hover, :focu
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+html[data-motion="reduce"] *,
+html[data-motion="reduce"] *::before,
+html[data-motion="reduce"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }
 
 /* ── Inner page hero (destination pages, spec §4.2 row 2): 420 / 520 px, grows with long text ── */

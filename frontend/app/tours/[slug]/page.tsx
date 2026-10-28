@@ -466,7 +466,7 @@ export default async function TourPage({ params }: Props) {
             )}
 
             {(inclusions.length > 0 || exclusions.length > 0) && (
-              <section style={cvSize(360)} className="tp-cv mt-12 grid gap-4 md:grid-cols-2" aria-label="What's included">
+              <section className="mt-12 grid gap-4 md:grid-cols-2" aria-label="What's included">
                 {inclusions.length > 0 && (
                   <div className="rounded-card border border-k-line bg-k-card p-5 shadow-e1">
                     <h2 className="text-h3 text-k-ink">Included</h2>

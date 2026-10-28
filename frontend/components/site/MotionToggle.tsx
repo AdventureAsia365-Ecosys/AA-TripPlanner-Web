@@ -29,8 +29,8 @@ export default function MotionToggle() {
           }`}
         >
           <span
-            className={`absolute top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full transition-[left] duration-fast ease-std ${
-              pressed ? "left-[14px] bg-k-band" : "left-0.5 bg-k-on-band-muted"
+            className={`absolute left-0.5 top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full transition-[transform,background-color] duration-fast ease-std ${
+              pressed ? "translate-x-[12px] bg-k-band" : "translate-x-0 bg-k-on-band-muted"
             }`}
           />
         </span>

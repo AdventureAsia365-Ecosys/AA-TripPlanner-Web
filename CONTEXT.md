@@ -125,13 +125,21 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   and its text, photo scrims, script face, ribbon speed), mapped to new Tailwind names only (`text-display|h1|h3|
   lead|body|small|caption|kicker|script`, `rounded-card|tile|panel|pill`, `shadow-e1..e3`, `duration-fast…`,
   `ease-std|out|in`, `k-sand`, `k-band`, `k-on-band`…), so the planner's Tailwind defaults are untouched. Fonts:
-  Poppins + Satisfy (section titles only, `display: optional`) in the root layout; Inter only in `/plan`
-  (`app/plan/layout.tsx`); Fahkwang removed. Text on photos sits only on `--tp-scrim-text` (alpha .70) or darker.
+  Poppins + Satisfy (section titles only, `display: optional`) in the root layout; the map planner
+  `/plan` included (spec R10); Inter and Fahkwang removed. Text on photos sits only on `--tp-scrim-text` (alpha .70) or darker.
 - **Motion gate (AA-995).** The restore script also sets `<html data-motion="ok|reduce">` (prefers-reduced-motion,
   live, or `localStorage.tp_motion = "reduce"`). Every keyframe animation and every hidden "before reveal" state is
   scoped under `html[data-motion="ok"]` (`app/globals.css`); no JS = static and fully visible. Only one element moves
   by itself on a page: the photo ribbon (`components/site/PhotoRibbon.tsx`), with a pause toggle (stored in
   `tp_motion_paused`), paused off screen and on hover, and a still scroll row on keyboard focus.
+  The footer "Reduce motion" toggle (`components/site/MotionToggle.tsx` + `ui/motion.ts`) writes `tp_motion` and sets
+  `data-motion` at runtime; `html[data-motion="reduce"]` also carries the global animation / transition safety net, and
+  JS motion (the planner map camera in `components/MapView.tsx`, `TourCarousel` smooth scroll) reads the gate at call
+  time.
+- **`.tp-cv` (content-visibility, AA-995).** Below-fold sections only, via the class + `cvSize(px)`
+  (`lib/contentVisibility.ts`); never on an anchor-first section, a section with an AI-label popover, or one whose
+  children draw shadows / overflow to its edge (paint containment clips them). `[data-reveal]` inside a `.tp-cv`
+  section works because `RevealObserver` measures the section, not the skipped child.
 - More guards (`npm test`): `lib/contrast.test.ts` also checks the sand / navy band pairs and every photo scrim
   (composited over a white pixel); `lib/tokens.test.ts` bans raw px font sizes, hex, raw durations / easings,
   `rgba()` and `rounded-2xl` / `shadow-aa` in the rebuilt customer files; `lib/restoreTheme.test.ts` runs the
