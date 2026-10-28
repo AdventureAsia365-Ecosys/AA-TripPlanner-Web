@@ -27,6 +27,8 @@ const FILES = [
   "components/site/DestinationTile.tsx",
   "components/site/HeaderScrollState.tsx",
   "components/site/HomeHero.tsx",
+  "components/site/HomeHeroPicture.tsx",
+  "components/site/LcpImage.tsx",
   "components/site/HomeSearch.tsx",
   "components/site/MobileMenu.tsx",
   "components/site/NoPhotoTile.tsx",

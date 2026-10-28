@@ -2,7 +2,20 @@
 // fallback to the catalog URL whenever the hop cannot be resolved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cacheMaxAge, preconnectOrigin, redirectTarget, resolveHeroPhoto, resolvePhotoUrl, sizedPhotoUrl } from "./photoResolve.ts";
+import { readFileSync } from "node:fs";
+import {
+  PHOTO_CDN_ORIGIN,
+  PHOTO_PROXY_PREFIX,
+  cacheMaxAge,
+  preconnectOrigin,
+  redirectTarget,
+  resolveHeroPhoto,
+  resolvePhotoUrl,
+  resolveRedirect,
+  resolveTilePhoto,
+  sameOriginPhotoUrl,
+  sizedPhotoUrl,
+} from "./photoResolve.ts";
 
 const P = "https://api.example/content/photos/abc";
 const CDN = "https://img.example/vn/file-1600.webp?v=1";
@@ -87,13 +100,23 @@ test("resolvePhotoUrl follows one 302 and falls back to the catalog URL on any f
   assert.equal(await resolvePhotoUrl(null), null);
 });
 
+// CIS today: small and large redirect to the CDN file, medium is not a size yet (422).
+function catalogAnswer(cdn: string, medium: "422" | "redirect" = "422") {
+  return (async (input: string | URL | Request) => {
+    const u = String(input);
+    if (u.includes("size=medium")) {
+      return medium === "422"
+        ? new Response("{}", { status: 422 })
+        : new Response(null, { status: 302, headers: { location: `${cdn}/a-960.webp`, "cache-control": CDN_CC } });
+    }
+    const location = u.includes("size=small") ? `${cdn}/a-600.webp` : `${cdn}/a-1600.webp`;
+    return new Response(null, { status: 302, headers: { location, "cache-control": CDN_CC } });
+  }) as typeof fetch;
+}
+
 test("resolveHeroPhoto builds a 600 w / 1600 w srcset from the two resolved sizes", async () => {
   await withFetch(
-    (async (input: string | URL | Request) => {
-      const small = String(input).includes("size=small");
-      const location = small ? "https://img.example/a-600.webp" : "https://img.example/a-1600.webp";
-      return new Response(null, { status: 302, headers: { location, "cache-control": CDN_CC } });
-    }) as typeof fetch,
+    catalogAnswer("https://img.example"),
     async () => {
       const h = await resolveHeroPhoto(`${P}?size=large`);
       assert.deepEqual(h, {
@@ -104,4 +127,58 @@ test("resolveHeroPhoto builds a 600 w / 1600 w srcset from the two resolved size
     },
   );
   assert.equal(await resolveHeroPhoto(null), null);
+});
+
+test("resolveHeroPhoto serves the photo CDN's files same-origin, without a preconnect", async () => {
+  await withFetch(catalogAnswer(PHOTO_CDN_ORIGIN + "/bhutan"), async () => {
+    assert.deepEqual(await resolveHeroPhoto(`${P}?size=large`), {
+      src: "/photo-cdn/bhutan/a-1600.webp",
+      srcSet: "/photo-cdn/bhutan/a-600.webp 600w, /photo-cdn/bhutan/a-1600.webp 1600w",
+      preconnect: null,
+    });
+  });
+});
+
+test("resolveHeroPhoto adds the 960 w file once the catalog redirects size=medium", async () => {
+  await withFetch(catalogAnswer(PHOTO_CDN_ORIGIN + "/bhutan", "redirect"), async () => {
+    const h = await resolveHeroPhoto(`${P}?size=large`);
+    assert.equal(
+      h?.srcSet,
+      "/photo-cdn/bhutan/a-600.webp 600w, /photo-cdn/bhutan/a-960.webp 960w, /photo-cdn/bhutan/a-1600.webp 1600w",
+    );
+  });
+});
+
+test("resolveRedirect is null when there is no usable redirect; resolvePhotoUrl then keeps the catalog URL", async () => {
+  await withFetch((async () => new Response("{}", { status: 422 })) as typeof fetch, async () => {
+    assert.equal(await resolveRedirect(`${P}?size=medium`), null);
+    assert.equal(await resolvePhotoUrl(`${P}?size=small`), `${P}?size=small`);
+  });
+  await withFetch((async () => { throw new Error("down"); }) as typeof fetch, async () => {
+    assert.equal(await resolveRedirect(`${P}?size=small`), null);
+  });
+});
+
+test("resolveTilePhoto: the CDN file same-origin, else the catalog URL", async () => {
+  await withFetch(catalogAnswer(PHOTO_CDN_ORIGIN + "/vn"), async () => {
+    assert.equal(await resolveTilePhoto(`${P}?size=small`), "/photo-cdn/vn/a-600.webp");
+  });
+  await withFetch((async () => new Response("{}", { status: 500 })) as typeof fetch, async () => {
+    assert.equal(await resolveTilePhoto(`${P}?size=small`), `${P}?size=small`);
+  });
+  assert.equal(await resolveTilePhoto(null), null);
+});
+
+test("sameOriginPhotoUrl rewrites only the photo CDN host and keeps path and query", () => {
+  assert.equal(sameOriginPhotoUrl(`${PHOTO_CDN_ORIGIN}/vn/f-600.webp?v=ab12`), "/photo-cdn/vn/f-600.webp?v=ab12");
+  assert.equal(sameOriginPhotoUrl("https://img.example/vn/f.webp"), "https://img.example/vn/f.webp");
+  assert.equal(sameOriginPhotoUrl(`${P}?size=large`), `${P}?size=large`);
+  assert.equal(sameOriginPhotoUrl("not a url"), "not a url");
+});
+
+test("next.config.mjs proxies the same prefix to the same CDN host, with rewrite caching on", () => {
+  const cfg = readFileSync(new URL("../next.config.mjs", import.meta.url), "utf8");
+  assert.ok(cfg.includes(`const PHOTO_CDN_ORIGIN = "${PHOTO_CDN_ORIGIN}";`), "PHOTO_CDN_ORIGIN differs from next.config.mjs");
+  assert.ok(cfg.includes(`const PHOTO_PROXY_PREFIX = "${PHOTO_PROXY_PREFIX}";`), "PHOTO_PROXY_PREFIX differs from next.config.mjs");
+  assert.match(cfg, /x-vercel-enable-rewrite-caching", value: "1"/);
 });
