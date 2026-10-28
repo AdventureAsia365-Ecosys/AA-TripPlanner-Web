@@ -39,6 +39,18 @@ const TRIP_FEATURE_SOURCE = "trip-feature-line";
 const LINES_PROVISIONAL = ["1", "true", "on"].includes((process.env.NEXT_PUBLIC_MAP_LINES_PROVISIONAL ?? "").toLowerCase());
 
 // Extend bounds by a destination: its bbox for a line, its point otherwise.
+// AA-995: mapbox-gl skips camera animations for the OS reduced-motion setting, not for the site's own gate
+// (<html data-motion="reduce">, set by the footer "Reduce motion" toggle too). Read the gate at call time.
+function motionReduced(): boolean {
+  return typeof document !== "undefined" && document.documentElement.getAttribute("data-motion") === "reduce";
+}
+function camMs(ms: number): number {
+  return motionReduced() ? 0 : ms;
+}
+function camReduced(): { duration?: number } {
+  return motionReduced() ? { duration: 0 } : {};
+}
+
 function extendBy(b: mapboxgl.LngLatBounds, p: DestinationPin) {
   if (isLine(p) && p.bbox) {
     b.extend([p.bbox[0], p.bbox[1]]);
@@ -672,6 +684,7 @@ export default function MapView() {
           map.easeTo({
             center: (f.geometry as GeoJSON.Point).coordinates as [number, number],
             zoom,
+            ...camReduced(),
           });
         });
       });
@@ -752,7 +765,7 @@ export default function MapView() {
       if (fitPins.length > 0) {
         const b = new mapboxgl.LngLatBounds();
         for (const p of fitPins) extendBy(b, p);
-        map.fitBounds(b, { padding: 80, maxZoom: 8, duration: 700 });
+        map.fitBounds(b, { padding: 80, maxZoom: 8, duration: camMs(700) });
       }
     });
     return () => {
@@ -773,7 +786,7 @@ export default function MapView() {
     if (searchResults.length > 0) {
       const b = new mapboxgl.LngLatBounds();
       for (const p of searchResults) extendBy(b, p); // a river result frames its whole bbox
-      map.fitBounds(b, { padding: 80, maxZoom: 9, duration: 600 });
+      map.fitBounds(b, { padding: 80, maxZoom: 9, duration: camMs(600) });
     }
   }, [searchResults, refreshVisibleTiles, setSourceData]);
 
@@ -965,7 +978,7 @@ export default function MapView() {
     });
     const b = new mapboxgl.LngLatBounds(stops[0].coord, stops[0].coord);
     for (const st of stops) b.extend(st.coord);
-    map.fitBounds(b, { padding: 80, maxZoom: 9, duration: 600 });
+    map.fitBounds(b, { padding: 80, maxZoom: 9, duration: camMs(600) });
   }, [routePreview]);
 
   // Open a destination's popup when something (e.g. a suggestion click) asks
@@ -984,7 +997,7 @@ export default function MapView() {
     const map = mapRef.current;
     const pin = pinsRef.current.get(focusDestinationId);
     if (map && pin) {
-      map.easeTo({ center: [pin.lng, pin.lat], zoom: Math.max(map.getZoom(), 7) });
+      map.easeTo({ center: [pin.lng, pin.lat], zoom: Math.max(map.getZoom(), 7), ...camReduced() });
     }
     focusDestination(null);
   }, [focusDestinationId, focusDestination]);

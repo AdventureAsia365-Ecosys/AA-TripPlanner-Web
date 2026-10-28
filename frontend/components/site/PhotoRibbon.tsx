@@ -12,6 +12,7 @@
 // The duration is computed here: --tp-ribbon-count tiles x the per-tile seconds of each breakpoint.
 import Link from "next/link";
 import type { CSSProperties } from "react";
+import { cvSize } from "@/lib/contentVisibility";
 import { ribbonMode, ribbonRepeats, uniqueRibbonItems, type RibbonItem } from "@/lib/photos";
 import RibbonControl from "./RibbonControl";
 
@@ -46,12 +47,15 @@ export default function PhotoRibbon({
   title,
   label,
   items,
+  cvHeight,
 }: {
   id: string;
   title: string;
   // Accessible name of the photo list ("Photos from our trips").
   label: string;
   items: RibbonItem[];
+  // Below the fold: skip rendering until near the viewport (globals.css .tp-cv); the estimated height in px.
+  cvHeight?: number;
 }) {
   const unique = uniqueRibbonItems(items);
   const mode = ribbonMode(unique.length);
@@ -60,7 +64,7 @@ export default function PhotoRibbon({
   const reps = animate ? ribbonRepeats(unique.length) : 1;
   // Tiles without a link leave nothing to Tab to, so the scrollable still row itself takes focus (arrow keys scroll it).
   const linkless = unique.some((it) => !it.href);
-  const style = { "--tp-ribbon-count": unique.length * reps } as CSSProperties;
+  const style = { "--tp-ribbon-count": unique.length * reps, ...(cvHeight ? cvSize(cvHeight) : {}) } as CSSProperties;
   const copy = (copyIndex: number) =>
     Array.from({ length: reps }, (_, r) =>
       unique.map((it, i) => {
@@ -74,7 +78,7 @@ export default function PhotoRibbon({
     );
 
   return (
-    <section id={id} aria-labelledby={`${id}-title`} className="tp-ribbon bg-k-bg py-section" data-animate={animate ? "" : undefined} style={style}>
+    <section id={id} aria-labelledby={`${id}-title`} className={`tp-ribbon scroll-mt-header bg-k-bg py-section${cvHeight ? " tp-cv" : ""}`} data-animate={animate ? "" : undefined} style={style}>
       <div className="mx-auto flex max-w-page items-center justify-between gap-4 px-gutter">
         <h2 id={`${id}-title`} className="font-script text-script-sm text-k-ink">{title}</h2>
         {animate && <RibbonControl ribbonId={id} />}

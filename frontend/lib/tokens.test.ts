@@ -40,6 +40,9 @@ const FILES = [
   "components/site/TourCarousel.tsx",
   "components/site/TrustStrip.tsx",
   "components/site/WaysIn.tsx",
+  // S254 round 10: the footer "Reduce motion" toggle and the timeline "Expand all".
+  "components/site/MotionToggle.tsx",
+  "components/site/DayToggleAll.tsx",
 ];
 
 const BANNED: [string, RegExp][] = [

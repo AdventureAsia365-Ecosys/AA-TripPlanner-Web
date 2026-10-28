@@ -12,6 +12,7 @@ import Link from "next/link";
 import { notFound, permanentRedirect } from "next/navigation";
 import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "@/components/AiLabel";
 import CtaBand, { CTA_REASSURANCES } from "@/components/site/CtaBand";
+import DayToggleAll from "@/components/site/DayToggleAll";
 import JsonLd from "@/components/site/JsonLd";
 import NoPhotoTile from "@/components/site/NoPhotoTile";
 import PhotoRibbon from "@/components/site/PhotoRibbon";
@@ -24,6 +25,7 @@ import { getTour, siteUrl } from "@/lib/catalog";
 import type { CatalogPhoto, TourDetail } from "@/lib/catalogTypes";
 import { resolveHeroPhoto, type HeroPhoto } from "@/lib/photoResolve";
 import { RIBBON_MIN_ANIMATED, uniqueRibbonItems, type RibbonItem } from "@/lib/photos";
+import { cvSize } from "@/lib/contentVisibility";
 import { clip, coverAlt, daysText, splitLines, titleCase } from "@/lib/text";
 import { routeLines, routePoints } from "@/lib/tourMap";
 import { Badge, ButtonLink, Icon } from "@/ui";
@@ -116,6 +118,8 @@ const MOSAIC_PHOTOS = 3;
 const CTA_BAND_MIN_DAYS = 5;
 // Spec §4.3 row 5: up to 5 activity chips, then "+N more".
 const ACTIVITY_CHIPS = 5;
+// "Expand all / Collapse all" over the timeline only when there is more than one day to open.
+const DAY_TOGGLE_MIN_DAYS = 2;
 
 function SectionHeading({ id, children, ai = false }: { id: string; children: string; ai?: boolean }) {
   return (
@@ -392,8 +396,12 @@ export default async function TourPage({ params }: Props) {
               </section>
             )}
 
+            {/* Not content-visibility: its AI label's explanation popover could be clipped by paint containment. */}
             <section className="mt-12" aria-labelledby="itinerary">
-              <SectionHeading id="itinerary" ai={t.days.length > 0 || Boolean(t.itinerary_text?.trim())}>Day by day</SectionHeading>
+              <div className="flex max-w-[72ch] flex-wrap items-end justify-between gap-x-4 gap-y-1">
+                <SectionHeading id="itinerary" ai={t.days.length > 0 || Boolean(t.itinerary_text?.trim())}>Day by day</SectionHeading>
+                {t.days.length >= DAY_TOGGLE_MIN_DAYS && <DayToggleAll listId="itinerary-days" />}
+              </div>
               {t.days.length === 0 && t.itinerary_text?.trim() ? (
                 // Legacy itinerary text that is not in "Day N — Title" blocks: show it as written.
                 <div className="mt-5 max-w-[72ch] whitespace-pre-line rounded-card border border-k-line bg-k-card p-5 text-body text-k-body">
@@ -405,7 +413,7 @@ export default async function TourPage({ params }: Props) {
                 </p>
               ) : (
                 // Timeline: a dotted gold line behind the day circles; each day is a <details>, day 1 open.
-                <ol className="tp-timeline relative mt-5 max-w-[72ch] space-y-3">
+                <ol id="itinerary-days" className="tp-timeline relative mt-5 max-w-[72ch] space-y-3">
                   {t.days.map((d, i) => (
                     <li key={d.day_number} className="relative pl-12">
                       <details open={i === 0} className="tp-day group rounded-card border border-k-line bg-k-card">
@@ -431,7 +439,7 @@ export default async function TourPage({ params }: Props) {
             </section>
 
             {(points.length > 0 || lines.length > 0) && (
-              <section className="mt-12" aria-labelledby="route-map">
+              <section className="tp-cv mt-12" style={cvSize(560)} aria-labelledby="route-map">
                 <SectionHeading id="route-map">Where you go</SectionHeading>
                 <div className="mt-5 grid gap-5 rounded-panel bg-k-sand p-4 md:grid-cols-[1fr_220px] md:p-6">
                   <StaticMap points={points} lines={lines} route title={`${t.title} route`} caption="Numbers follow the itinerary order." />
@@ -494,9 +502,13 @@ export default async function TourPage({ params }: Props) {
           </aside>
         </div>
 
-        {t.days.length >= CTA_BAND_MIN_DAYS && <CtaBand id="plan-this-trip" planHref={planHref(t)} askHref={planHref(t, true)} />}
+        {t.days.length >= CTA_BAND_MIN_DAYS && (
+          <CtaBand id="plan-this-trip" planHref={planHref(t)} askHref={planHref(t, true)} cvHeight={420} />
+        )}
 
-        {ribbon && <PhotoRibbon id={ribbon.id} title="More from this trip" label={`More photos from ${t.title}`} items={ribbonItems} />}
+        {ribbon && (
+          <PhotoRibbon id={ribbon.id} title="More from this trip" label={`More photos from ${t.title}`} items={ribbonItems} cvHeight={440} />
+        )}
       </main>
 
       {/* Mobile sticky CTA bar (after main in the DOM; the page keeps bottom padding so the footer is not covered). */}

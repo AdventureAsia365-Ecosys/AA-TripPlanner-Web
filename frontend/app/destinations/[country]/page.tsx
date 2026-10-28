@@ -24,6 +24,7 @@ import TourCard from "@/components/site/TourCard";
 import TourCarousel from "@/components/site/TourCarousel";
 import { getDestination, siteUrl } from "@/lib/catalog";
 import type { CountryPlace, DestinationPage } from "@/lib/catalogTypes";
+import { cvSize } from "@/lib/contentVisibility";
 import { firstUseOfCover } from "@/lib/photos";
 import { resolveHeroPhoto } from "@/lib/photoResolve";
 import { formatDayRange, slugify, titleCase } from "@/lib/text";
@@ -238,8 +239,9 @@ export default async function DestinationRoute({ params }: Props) {
           </div>
         </section>
 
-        {/* 4 · Places our tours visit (sand): map + the same numbers in the list */}
-        <section aria-labelledby="places" className="bg-k-sand py-section">
+        {/* 4 · Places our tours visit (sand): map + the same numbers in the list. Sections 4–6 are below the fold:
+            content-visibility (globals.css .tp-cv, spec R14); the hero and the tours (the #tours anchor) are not. */}
+        <section aria-labelledby="places" className="tp-cv bg-k-sand py-section" style={cvSize(d.places.length === 0 ? 420 : 960)}>
           <div className="mx-auto max-w-page px-gutter">
             <div data-reveal="">
               <SectionTitle id="places" title="Places our tours visit" />
@@ -291,11 +293,12 @@ export default async function DestinationRoute({ params }: Props) {
         </section>
 
         {/* 5 · Navy CTA band */}
-        <CtaBand id="make-it-yours" title={`Make ${d.country} yours`} planHref={planHref} />
+        <CtaBand id="make-it-yours" title={`Make ${d.country} yours`} planHref={planHref} cvHeight={420} />
 
         {/* 6 · Photo ribbon from the tours' photos here (< 4 photos: nothing; the old static grid is gone). */}
         <PhotoRibbon
           id="around"
+          cvHeight={440}
           title={`Around ${d.country}`}
           label={`Photos from our tours in ${d.country}`}
           items={d.photos.map((p) => ({

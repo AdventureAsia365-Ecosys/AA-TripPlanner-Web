@@ -9,7 +9,7 @@ import AccountLink from "@/components/AccountLink";
 // dominates the viewport (map-first product).
 // AA-995 (spec §4.4, light touch): the same navy chrome as the customer pages' header (--tp-band, light text, the
 // band AI chip, account link and theme toggle) and the new tagline; height and layout unchanged, so the planner's
-// flows and its 56 px offset stay as they are. The planner font stays Inter (its own slice, spec R10).
+// flows and its 56 px offset stay as they are. Poppins like the site since the R10 slice.
 export default function Header() {
   return (
     <header

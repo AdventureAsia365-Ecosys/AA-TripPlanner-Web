@@ -3,6 +3,7 @@
 // planner's trip panel, where the draft goes to an advisor). Dark mode adds a hairline top and bottom so
 // the band reads apart from the page (--tp-band-edge).
 import { ButtonLink, Icon } from "@/ui";
+import { cvSize } from "@/lib/contentVisibility";
 
 export const CTA_REASSURANCES = [
   "Real Adventure Asia tours",
@@ -15,15 +16,22 @@ export default function CtaBand({
   title = "Talk it through with an advisor",
   planHref = "/plan",
   askHref = "/plan?ask=1",
+  cvHeight,
 }: {
   id?: string;
   title?: string;
   // Destination and tour pages open the planner on their own country / tour.
   planHref?: string;
   askHref?: string;
+  // Below the fold: skip rendering until near the viewport (globals.css .tp-cv); the estimated height in px.
+  cvHeight?: number;
 }) {
   return (
-    <section aria-labelledby={`${id}-title`} className="tp-on-dark border-y border-k-band-edge bg-k-band py-section text-center">
+    <section
+      aria-labelledby={`${id}-title`}
+      className={`tp-on-dark border-y border-k-band-edge bg-k-band py-section text-center${cvHeight ? " tp-cv" : ""}`}
+      style={cvHeight ? cvSize(cvHeight) : undefined}
+    >
       <div className="mx-auto max-w-page px-gutter" data-reveal="">
         <h2 id={`${id}-title`} className="font-script text-script text-k-band-accent">{title}</h2>
         <p className="mx-auto mt-4 max-w-[60ch] text-lead text-k-on-band-muted">

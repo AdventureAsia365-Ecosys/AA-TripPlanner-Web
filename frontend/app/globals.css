@@ -10,15 +10,12 @@ body {
 }
 
 /* AA-837: theme-aware (ui/tokens.css), the map planner included.
-   AA-995: Poppins by default; the planner wrapper (app/plan/layout.tsx) sets Inter for its own tree. */
+   AA-995: Poppins everywhere, the map planner included (spec R10). */
 body {
   font-family: var(--aa-font-sans);
   background-color: var(--aa-bg);
   color: var(--aa-ink);
   -webkit-font-smoothing: antialiased;
-}
-.tp-planner-font {
-  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
 }
 
 /* Consistent gold focus ring for interactive elements (aa-focus). */
@@ -357,7 +354,9 @@ html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-tile:is(:hover, :focu
 }
 
 /* ── Safety net (map-first graft): an OS reduced-motion setting stops every animation even if the
-   gate attribute is stale. ── */
+   gate attribute is stale. The same net under the gate itself, so the footer "Reduce motion" toggle (which sets
+   only <html data-motion="reduce">) also stops motion not driven by the tokens (Tailwind `transition`,
+   `animate-spin`…). ── */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -367,6 +366,14 @@ html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-tile:is(:hover, :focu
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+html[data-motion="reduce"] *,
+html[data-motion="reduce"] *::before,
+html[data-motion="reduce"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }
 
 /* ── Inner page hero (destination pages, spec §4.2 row 2): 420 / 520 px, grows with long text ── */
@@ -404,4 +411,15 @@ html[data-motion="ok"] .tp-ribbon[data-animate] .tp-ribbon-tile:is(:hover, :focu
   html[data-motion="ok"] .tp-day[open]::details-content {
     height: auto;
   }
+}
+
+/* ── Below-fold sections skip rendering until they near the viewport (spec §6 step 5, R14). Used only on sections after
+   the first two of the destination and tour pages, never on an anchor's own section above it. The block size is the
+   page's estimate (--tp-cv-h, set inline per section); `auto` makes the browser keep the last rendered size, so a
+   section that has been on screen once never jumps back to the estimate. Only the block size: the inline size still
+   comes from the parent (a grid or flex parent must not see a fake width). Paint containment clips overflow, so a
+   section with a popover that can leave its box (the AI label's explanation) does not get it. ── */
+.tp-cv {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto var(--tp-cv-h, 640px);
 }
