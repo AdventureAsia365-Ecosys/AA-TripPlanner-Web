@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.10.0...v0.11.0) (2026-10-28)
+
+
+### Features
+
+* remove the acc1 Bedrock fallback, Claude on acc3 only ([#174](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/174)) ([8327bb0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/8327bb0e8b34939ca8778a8fb8adeaa88f972abc))
+
+
+### Bug Fixes
+
+* final Golden Hour polish (console errors, /trips CLS, LCP image, search card layout) ([#172](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/172)) ([6917392](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/691739230f62fa713d5a8c60a9ea8a9579441071))
+* remove internal issue IDs from user-visible text ([#176](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/176)) ([e71a7f6](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/e71a7f667e99dca9390f157c61d41cd6228e6f18))
+
 ## [0.10.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.9.0...v0.10.0) (2026-10-28)
 
 
