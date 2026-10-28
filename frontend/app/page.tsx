@@ -131,7 +131,9 @@ export default async function HomePage() {
 
         {/* 3 · Search card overlapping the hero, 4 · ways in (cream) */}
         <section aria-label="Plan a trip" className="relative z-10 bg-k-bg pb-section">
-          <div className="mx-auto -mt-12 max-w-[1104px] px-gutter md:-mt-14">
+          {/* Card = the page column (aligned with the header and the hero text), not 1040 px: the one-row search
+              needs that width for the five "How long" pills (S255 final review, see HomeSearch). */}
+          <div className="mx-auto -mt-12 max-w-page px-gutter md:-mt-14">
             <HomeSearch countries={countries.map((c) => ({ country: c.country, tour_count: c.tour_count }))} />
             {!countriesRes.ok && (
               <p className="mt-2 text-caption font-normal text-k-muted">
