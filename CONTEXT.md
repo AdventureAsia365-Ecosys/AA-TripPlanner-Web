@@ -40,6 +40,10 @@ AA-CIS-App. What it shares with the rest of the ecosystem is a small set of AWS-
 
 ## Architecture at a glance
 
+Architecture diagram (AWS icons): `AA-Ecosys/docs/architecture/diagrams/tripplanner.svg`, drawn from `tripplanner.py` in the
+same folder; the catalog page `AA-Ecosys/docs/architecture/diagrams/README.md` holds every view and is shown in the CIS
+admin at `/admin/docs?path=docs/architecture/diagrams/README.md`.
+
 ```text
 Traveler (browser)
       │
