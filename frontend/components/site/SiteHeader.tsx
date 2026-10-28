@@ -31,7 +31,9 @@ export default function SiteHeader({ overHero = false }: { overHero?: boolean })
       >
         <div className="mx-auto flex h-full max-w-page items-center justify-between gap-3 px-gutter">
           <div className="flex min-w-0 items-center gap-2.5">
-            <Link href="/" aria-label="Adventure Asia Trip Planner — home" className="shrink-0">
+            {/* No prefetch (S255): a prefetch of "/" from every page runs the home hero preload (60 KB AVIF, high
+                priority) next to that page's own LCP image. */}
+            <Link href="/" prefetch={false} aria-label="Adventure Asia Trip Planner — home" className="shrink-0">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/brand/logo.png" alt="Adventure Asia" width={50} height={32} className="h-8 w-auto lg:h-9" />
             </Link>

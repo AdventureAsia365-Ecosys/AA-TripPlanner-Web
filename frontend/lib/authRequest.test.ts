@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { authEnv, authLogLine, callContext, safeNext } from "./authRequest.ts";
-import { meOutcome, tripFacts, tripStatusLabel, tripTitle, updatedLabel, type MyTrip } from "./myTrips.ts";
+import { meOutcome, signedOutWithoutMe, tripFacts, tripStatusLabel, tripTitle, updatedLabel, type MyTrip } from "./myTrips.ts";
 
 test("sign-in is off without a session secret of at least 32 characters", () => {
   assert.equal(authEnv({}).sessionSecret, "");
@@ -52,4 +52,13 @@ test("My Trips: only 401 is the sign-in prompt; every other failure is the error
   assert.equal(meOutcome(200), "ok");
   assert.equal(meOutcome(401), "signed_out");
   for (const s of [0, 400, 403, 404, 429, 500, 502, 503]) assert.equal(meOutcome(s), "error");
+});
+
+test("My Trips skips GET /api/me only on a real signed-out answer with sign-in available", () => {
+  assert.equal(signedOutWithoutMe({ answered: true, signedIn: false, available: true }), true);
+  // the status call failed: unknown, so /api/me decides (its 401 / 5xx paths stay as they were)
+  assert.equal(signedOutWithoutMe({ answered: false, signedIn: false, available: true }), false);
+  // signed in, or sign-in not configured on this deployment (/api/me answers 503 there: the error state)
+  assert.equal(signedOutWithoutMe({ answered: true, signedIn: true, available: true }), false);
+  assert.equal(signedOutWithoutMe({ answered: true, signedIn: false, available: false }), false);
 });

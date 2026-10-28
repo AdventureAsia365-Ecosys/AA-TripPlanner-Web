@@ -145,6 +145,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `rgba()` and `rounded-2xl` / `shadow-aa` in the rebuilt customer files; `lib/restoreTheme.test.ts` runs the
   inline script; `lib/photos.test.ts` covers the duplicate-cover rule, grid order and the ribbon fill rule.
 - Day counts go through `formatDays` / `formatDayRange` (`lib/text.ts`): "1 day", "3 to 8 days".
+- **Prefetch rule (AA-833, S255).** No `prefetch` on card / tile / photo links, footer links, breadcrumbs, or any
+  link to `/`: a prefetch of `/` runs the home hero preload (60 KB AVIF, high priority) on the current page, inside
+  its LCP window. The favicon is `app/icon.svg` (without it every view logged a `/favicon.ico` 404).
 
 ### Pages (AA-812)
 

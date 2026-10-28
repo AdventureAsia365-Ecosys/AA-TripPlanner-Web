@@ -18,7 +18,8 @@ export default function Header() {
     >
       <div className="flex items-center gap-3">
         {/* Official Adventure Asia logo — AA-812: links back to the search-first home. */}
-        <Link href="/" aria-label="Adventure Asia Trip Planner — home" className="aa-focus">
+        {/* No prefetch (S255): a prefetch of "/" runs the home hero preload next to the map's own loads. */}
+        <Link href="/" prefetch={false} aria-label="Adventure Asia Trip Planner — home" className="aa-focus">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/brand/logo.png"

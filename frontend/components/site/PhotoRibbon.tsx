@@ -13,14 +13,14 @@
 import Link from "next/link";
 import type { CSSProperties } from "react";
 import { cvSize } from "@/lib/contentVisibility";
-import { ribbonMode, ribbonRepeats, uniqueRibbonItems, type RibbonItem } from "@/lib/photos";
+import { ribbonMode, ribbonRepeats, ribbonTileAlt, uniqueRibbonItems, type RibbonItem } from "@/lib/photos";
 import RibbonControl from "./RibbonControl";
 
 function Tile({ item, hidden }: { item: RibbonItem & { src: string }; hidden: boolean }) {
   const body = (
     <>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={item.src} alt={hidden ? "" : item.alt} width={240} height={240} loading="lazy" decoding="async"
+      <img src={item.src} alt={ribbonTileAlt(item, hidden)} width={240} height={240} loading="lazy" decoding="async"
            sizes="(min-width: 768px) 240px, 160px" className="h-full w-full object-cover" />
       <span className="tp-ribbon-cap absolute bottom-2 left-2 max-w-[calc(100%-16px)] truncate rounded-pill bg-k-scrim px-2.5 py-1 text-caption text-white">
         {item.caption}

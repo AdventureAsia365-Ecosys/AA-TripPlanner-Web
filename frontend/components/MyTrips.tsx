@@ -5,9 +5,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, ButtonLink, EmptyState, ErrorState } from "@/ui";
 import { STORAGE_KEY } from "@/lib/guestIds";
-import { signOut } from "@/lib/useAccount";
+import { fetchAccountStatus, signOut } from "@/lib/useAccount";
 import MyPayments from "@/components/MyPayments";
-import { meOutcome, tripFacts, tripStatusLabel, tripTitle, updatedLabel, type MyTrip } from "@/lib/myTrips";
+import { meOutcome, signedOutWithoutMe, tripFacts, tripStatusLabel, tripTitle, updatedLabel, type MyTrip } from "@/lib/myTrips";
 
 type State =
   | { kind: "loading" }
@@ -34,9 +34,18 @@ export default function MyTrips() {
 
   useEffect(() => {
     let live = true;
-    fetch("/api/me", { cache: "no-store" })
+    // The header already asked /api/auth/status (one shared request); a signed-out answer needs no /api/me call.
+    fetchAccountStatus()
+      .then((account) => {
+        if (!live) return null;
+        if (attempt === 0 && signedOutWithoutMe(account)) {
+          setState({ kind: "signed_out" });
+          return null;
+        }
+        return fetch("/api/me", { cache: "no-store" });
+      })
       .then(async (r) => {
-        if (!live) return;
+        if (!r || !live) return;
         const outcome = meOutcome(r.status);
         if (outcome !== "ok") return setState({ kind: outcome });
         const b = await r.json();

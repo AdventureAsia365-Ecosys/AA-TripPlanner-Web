@@ -11,9 +11,12 @@ export interface AccountStatus {
   email: string | null;
   // false when sign-in is not configured on this deployment (a preview without TP_SESSION_SECRET)
   available: boolean;
+  // true only when /api/auth/status answered (200 with a body); a failed call leaves it false, so a caller can tell
+  // "signed out" from "unknown" (AA-995 S255: My Trips skips GET /api/me only on a real "signed out").
+  answered: boolean;
 }
 
-const LOADING: AccountStatus = { loaded: false, signedIn: false, email: null, available: true };
+const LOADING: AccountStatus = { loaded: false, signedIn: false, email: null, available: true, answered: false };
 let pending: Promise<AccountStatus> | null = null;
 
 export function fetchAccountStatus(): Promise<AccountStatus> {
@@ -25,6 +28,7 @@ export function fetchAccountStatus(): Promise<AccountStatus> {
         signedIn: b?.signed_in === true,
         email: typeof b?.email === "string" ? b.email : null,
         available: b?.signed_in === true || b?.available !== false,
+        answered: b !== null && typeof b === "object",
       }))
       .catch(() => ({ ...LOADING, loaded: true }));
   }
