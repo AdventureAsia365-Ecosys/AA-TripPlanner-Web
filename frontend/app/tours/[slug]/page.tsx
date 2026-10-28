@@ -398,7 +398,7 @@ export default async function TourPage({ params }: Props) {
 
             {/* Not content-visibility: its AI label's explanation popover could be clipped by paint containment. */}
             <section className="mt-12" aria-labelledby="itinerary">
-              <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
+              <div className="flex max-w-[72ch] flex-wrap items-end justify-between gap-x-4 gap-y-1">
                 <SectionHeading id="itinerary" ai={t.days.length > 0 || Boolean(t.itinerary_text?.trim())}>Day by day</SectionHeading>
                 {t.days.length >= DAY_TOGGLE_MIN_DAYS && <DayToggleAll listId="itinerary-days" />}
               </div>
