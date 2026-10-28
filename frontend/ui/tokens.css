@@ -154,8 +154,8 @@
 :root {
   /* Families. The font files come from next/font in app/layout.tsx (--font-poppins, --font-satisfy).
      AA-995: Fahkwang is gone (the live brand does not use it, research §1.4; raised to AA-994), so the
-     display family points to the sans until AA-994 decides on one. Inter stays only in /plan
-     (app/plan/layout.tsx). */
+     display family points to the sans until AA-994 decides on one. Inter is gone too: the
+     map planner uses Poppins since its own slice (spec R10). */
   --aa-font-sans:    var(--font-poppins), system-ui, -apple-system, "Segoe UI", sans-serif;
   --aa-font-display: var(--aa-font-sans);
   --tp-font-script:  var(--font-satisfy), var(--font-poppins), cursive;

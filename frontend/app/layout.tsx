@@ -6,7 +6,7 @@ import { RESTORE_THEME_SCRIPT } from "@/ui/restoreTheme";
 import { siteUrl } from "@/lib/catalog";
 
 // AA-995: Poppins for everything + Satisfy for section titles, the two faces adventure.asia uses.
-// Fahkwang is gone (the live brand does not use it); Inter loads only in /plan (app/plan/layout.tsx).
+// Fahkwang is gone (the live brand does not use it); Inter is gone since the planner moved to Poppins (spec R10).
 const poppins = Poppins({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],

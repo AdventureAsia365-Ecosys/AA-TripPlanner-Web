@@ -446,7 +446,10 @@ export default function TripPanel() {
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-k-ink">
                         {isLine(d) && (
-                          <span aria-label="Route" className="mr-1 text-k-accent-deep">〰</span>
+                          // The SVG wave, not the "〰" glyph: it is missing from Poppins and most system fonts.
+                          <span role="img" aria-label="Route" className="mr-1 inline-block align-[-3px] text-k-accent-deep">
+                            <Icon name="wave" className="h-4 w-4" />
+                          </span>
                         )}
                         {d.name}
                       </p>

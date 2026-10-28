@@ -1,10 +1,11 @@
 // AA-995 (spec §3.9) — navy footer: Satisfy column titles, light links, the TrustStrip on the band. No top margin (each
 // page ends with its own section padding) and a light hairline on top, so a navy CTA band right above it reads apart.
 // Legal links (and every footer link) use prefetch={false}: four RSC prefetches per view were measured
-// on every page (research §2.6) and Vercel challenged them.
+// on every page (research §2.6) and Vercel challenged them. The bottom row carries the "Reduce motion" toggle.
 import Link from "next/link";
 import { LEGAL_LINKS } from "@/lib/legal";
 import TrustStrip from "./TrustStrip";
+import MotionToggle from "./MotionToggle";
 
 const EXPLORE = [
   { href: "/destinations", label: "Destinations" },
@@ -47,7 +48,11 @@ export default function SiteFooter() {
             </ul>
           </nav>
         </div>
-        <p className="mt-10 border-t border-k-band-line pt-6 text-caption font-normal">© Adventure Asia</p>
+        {/* The viewer's "Reduce motion" choice (spec §1.4, optional toggle): the only client island in the footer. */}
+        <div className="mt-10 flex flex-col-reverse gap-4 border-t border-k-band-line pt-6 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-caption font-normal">© Adventure Asia</p>
+          <MotionToggle />
+        </div>
       </div>
     </footer>
   );

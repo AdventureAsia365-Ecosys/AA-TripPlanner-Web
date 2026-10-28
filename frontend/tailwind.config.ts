@@ -56,7 +56,7 @@ const config: Config = {
         ui: ["var(--aa-font-sans)"],
         // AA-995: Satisfy, section titles only (>= 28 px, <= 6 words).
         script: ["var(--tp-font-script)"],
-        // Site pages: Poppins. The planner sets Inter on its own wrapper (app/plan/layout.tsx).
+        // Poppins everywhere, the map planner included (AA-995, spec R10).
         sans: ["var(--aa-font-sans)"],
       },
       // AA-995 type scale (ui/tokens.css). New names only: Tailwind's own text-sm/lg… stay as they are.
