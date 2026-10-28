@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- AA-995 (S255): favicon. The logo's gold mountain lines (components/site/NoPhotoTile.tsx MountainMotif) on the
+       navy band colour. Without an icon every page view asked /favicon.ico and logged a 404 console error. -->
+  <rect width="64" height="64" rx="14" fill="#1F2933"/>
+  <g fill="none" stroke="#DB9628" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M8 46 22 26l6 7 9-14 11 14 4-5 6 18"/>
+    <path d="M17 46 26 34l4 5 7-9 9 16"/>
+  </g>
+</svg>

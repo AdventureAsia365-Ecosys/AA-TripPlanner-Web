@@ -4,7 +4,11 @@
 // travellers → "Plan my trip" opens the map planner with the route finder pre-filled.
 // AA-995 (spec §4.1 row 3) — the white search card that overlaps the hero: "Where to" select, "How long"
 // chips 5/7/10/14 (plus "Other" for any length 2–30, so no length the old number field allowed is lost),
-// a travellers stepper and the gold "Plan my trip" button. One row from md, stacked below. Targets >= 44 px.
+// a travellers stepper and the gold "Plan my trip" button. Targets >= 44 px.
+// Layout (S255 final review): the "How long" row needs ~460 px for its five pills, so one row only fits from xl
+// (card = page column, 1184 px): Where · How long (its content width) · Travellers · button, hairlines between.
+// md to xl: two columns — Where | Travellers, then How long and the button across the card. Below md: stacked.
+// The old "one row from md" left 133 px for the pills at 768 and 332 px at 1440: "14 days" cut, "Other" hidden.
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -54,7 +58,7 @@ export default function HomeSearch({ countries }: { countries: CountryChoice[] }
     router.push(planHref(country, days, travellers));
   };
 
-  const field = "flex min-w-0 flex-col gap-1.5 px-1 py-2 md:px-5 md:py-1";
+  const field = "flex min-w-0 flex-col gap-1.5 px-1 py-2 xl:px-5 xl:py-1";
   const label = "flex items-center gap-1.5 text-kicker uppercase text-k-muted";
   const chip = (on: boolean) =>
     `inline-flex min-h-11 shrink-0 items-center gap-1 rounded-pill border px-3.5 text-small transition-colors duration-fast ease-std ${
@@ -70,14 +74,14 @@ export default function HomeSearch({ countries }: { countries: CountryChoice[] }
       aria-label="Plan a trip"
       className="rounded-panel border border-k-line bg-k-card p-4 shadow-e3 md:p-3"
     >
-      <div className="grid gap-2 md:grid-cols-[minmax(0,1.1fr)_minmax(0,1.6fr)_auto_auto] md:items-center md:divide-x md:divide-k-line">
+      <div className="grid gap-2 md:grid-flow-row-dense md:grid-cols-2 md:gap-x-4 xl:grid-flow-row xl:grid-cols-[minmax(0,1fr)_auto_auto_auto] xl:items-center xl:gap-x-2 xl:divide-x xl:divide-k-line">
         <label className={field}>
           <span className={label}><Icon name="pin" className="h-3.5 w-3.5" /> Where to</span>
           <select
             value={country}
             onChange={(e) => setCountry(e.target.value)}
             aria-label="Destination"
-            className="min-h-11 w-full min-w-0 max-w-full rounded-tile border border-k-line bg-k-card px-3 text-body font-medium text-k-ink md:border-0 md:px-0"
+            className="min-h-11 w-full min-w-0 max-w-full rounded-tile border border-k-line bg-k-card px-3 text-body font-medium text-k-ink xl:border-0 xl:px-0"
           >
             <option value="">Anywhere in Asia</option>
             {countries.map((c) => (
@@ -88,7 +92,7 @@ export default function HomeSearch({ countries }: { countries: CountryChoice[] }
           </select>
         </label>
 
-        <fieldset className={field}>
+        <fieldset className={`${field} md:col-span-2 xl:col-span-1`}>
           <legend className="sr-only">How long</legend>
           <span aria-hidden className={label}><Icon name="calendar" className="h-3.5 w-3.5" /> How long</span>
           {/* Own horizontal scroll on a narrow screen; the page never scrolls sideways. */}
@@ -140,8 +144,8 @@ export default function HomeSearch({ countries }: { countries: CountryChoice[] }
           </div>
         </div>
 
-        <div className="pt-2 md:py-1 md:pl-4">
-          <button type="submit" className={buttonClass("primary", "lg", "min-h-[52px] w-full md:w-auto")}>
+        <div className="pt-2 md:col-span-2 xl:col-span-1 xl:py-1 xl:pl-4">
+          <button type="submit" className={buttonClass("primary", "lg", "min-h-[52px] w-full xl:w-auto")}>
             <Icon name="route" className="h-4 w-4" /> Plan my trip
           </button>
         </div>

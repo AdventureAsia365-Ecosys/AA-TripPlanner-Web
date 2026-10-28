@@ -45,6 +45,14 @@ export function updatedLabel(iso: string | null): string {
 // out while the list failed to load).
 export type MeOutcome = "ok" | "signed_out" | "error";
 
+// AA-995 (S255 final review): a signed-out visit to /trips asked GET /api/me, which answers 401, and the browser logs
+// every 4xx as a console error. /api/auth/status (always 200, shared with the header link) already says "signed out",
+// so My Trips shows the sign-in prompt without the second request. Only a real answer counts: a failed status call,
+// or a deployment without sign-in (available false: /api/me answers 503 there, the error state), still asks /api/me.
+export function signedOutWithoutMe(s: { answered: boolean; signedIn: boolean; available: boolean }): boolean {
+  return s.answered && !s.signedIn && s.available;
+}
+
 export function meOutcome(status: number): MeOutcome {
   if (status === 401) return "signed_out";
   if (status >= 200 && status < 300) return "ok";

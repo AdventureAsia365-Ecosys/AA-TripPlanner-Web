@@ -27,7 +27,9 @@ export default function TripsPage() {
           lead="Trips you planned while signed in. Open one to keep shaping it on the map."
         />
         <div className="bg-k-sand py-section">
-          <div className="mx-auto max-w-3xl px-gutter">
+          {/* min-h-72 (288 px) holds the slot of the sign-in prompt (274 px at 390 and 1440) while the account check
+              runs, so the footer does not jump when it lands (S255: CLS 0.15 at 390 without it). */}
+          <div className="mx-auto min-h-72 max-w-3xl px-gutter">
             <MyTrips />
           </div>
         </div>

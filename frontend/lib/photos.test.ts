@@ -6,6 +6,7 @@ import {
   photoKey,
   ribbonMode,
   ribbonRepeats,
+  ribbonTileAlt,
   RIBBON_FILL_PX,
   RIBBON_STRIDE_PX,
   sortForGrid,
@@ -73,4 +74,11 @@ test("fill rule: one copy of the moving track is always >= 2400 px wide", () => 
     assert.ok(n * (reps - 1) * RIBBON_STRIDE_PX < RIBBON_FILL_PX, `n=${n} repeats more than needed`);
   }
   assert.equal(ribbonRepeats(0), 0);
+});
+
+test("ribbon alt: empty when it only repeats the visible caption, and on duplicate tiles", () => {
+  assert.equal(ribbonTileAlt({ alt: "Dambulla", caption: "Dambulla" }, false), "");
+  assert.equal(ribbonTileAlt({ alt: " dambulla  cave ", caption: "Dambulla Cave" }, false), "");
+  assert.equal(ribbonTileAlt({ alt: "Monks at Punakha Dzong", caption: "Bhutan" }, false), "Monks at Punakha Dzong");
+  assert.equal(ribbonTileAlt({ alt: "Monks at Punakha Dzong", caption: "Bhutan" }, true), "");
 });

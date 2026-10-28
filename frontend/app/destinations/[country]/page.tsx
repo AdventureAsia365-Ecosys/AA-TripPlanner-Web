@@ -181,9 +181,10 @@ export default async function DestinationRoute({ params }: Props) {
           <div className="mx-auto max-w-page px-gutter pb-10 md:pb-14">
             <div className="max-w-[720px] text-white">
               <nav aria-label="Breadcrumb" className="text-caption font-normal">
-                <Link href="/" className="underline-offset-2 hover:underline">Home</Link>
+                {/* No prefetch on breadcrumbs: a prefetch of "/" runs the home hero preload on this page (S255). */}
+                <Link href="/" prefetch={false} className="underline-offset-2 hover:underline">Home</Link>
                 <span aria-hidden> / </span>
-                <Link href="/destinations" className="underline-offset-2 hover:underline">Destinations</Link>
+                <Link href="/destinations" prefetch={false} className="underline-offset-2 hover:underline">Destinations</Link>
               </nav>
               <h1 className="mt-3 text-h1 uppercase tracking-[0.08em] !text-white">{d.country}</h1>
               <p className="mt-2 text-small font-semibold">{destinationMeta(d)}</p>

@@ -200,7 +200,7 @@ function Gallery({
             {i === 0 && hero ? (
               // The LCP image: resolved CDN URL, eager, high priority.
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={hero.src} srcSet={hero.srcSet ?? undefined} sizes="(min-width: 768px) 66vw, 88vw"
+              <img src={hero.src} srcSet={hero.srcSet ?? undefined} sizes={GALLERY_LCP_SIZES}
                    alt={p.place_label || t.title} width={1600} height={900} fetchPriority="high" loading="eager" decoding="async"
                    className="h-full w-full object-cover" />
             ) : (
@@ -262,19 +262,25 @@ function CtaCard({ t }: { t: TourDetail }) {
   );
 }
 
+// The rendered width of the first gallery photo (measured S255 at 320–1440): below md the strip tile is 88 % of the
+// row inside the 16 px gutters; from md the mosaic's large cell is 2/3 of the page column (max 784 px at 1440). The
+// old "88vw" over-stated the phone slot, so a 1.75x phone (Lighthouse mobile) took the 1600 w file (142 KB) for a
+// 334 px slot instead of the 600 w one (42 KB).
+const GALLERY_LCP_SIZES = "(min-width: 1248px) 784px, (min-width: 768px) 62vw, calc(88vw - 28px)";
+
 function KeyFacts({ facts }: { facts: { icon: string; label: string; value: string }[] }) {
   if (facts.length === 0) return null;
   return (
     <dl className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
       {facts.map((f) => (
-        <div key={f.label} className="flex min-w-0 items-start gap-3 rounded-tile border border-k-line bg-k-card p-3">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-k-accent-tint">
+        // A <dl> group may hold only <dt>/<dd> (axe definition-list / dlitem, S255): the icon is a decorative,
+        // aria-hidden third <dd>, placed in the first grid column across both rows.
+        <div key={f.label} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 rounded-tile border border-k-line bg-k-card p-3">
+          <dt className="col-start-2 row-start-1 text-caption font-normal text-k-muted">{f.label}</dt>
+          <dd className="col-start-2 row-start-2 min-w-0 text-small font-semibold text-k-ink">{f.value}</dd>
+          <dd aria-hidden className="col-start-1 row-span-2 row-start-1 flex h-9 w-9 shrink-0 items-center justify-center self-start rounded-full bg-k-accent-tint">
             <Icon name={f.icon} className="h-4 w-4 text-k-accent-deep" />
-          </span>
-          <div className="min-w-0">
-            <dt className="text-caption font-normal text-k-muted">{f.label}</dt>
-            <dd className="text-small font-semibold text-k-ink">{f.value}</dd>
-          </div>
+          </dd>
         </div>
       ))}
     </dl>
@@ -331,14 +337,16 @@ export default async function TourPage({ params }: Props) {
       <SiteHeader />
 
       <main id="main">
+        {/* No prefetch on breadcrumbs (S255): a prefetch of "/" runs the home hero preload (a 60 KB AVIF at high
+            priority) on this page while its own LCP photo loads; Lighthouse mobile LCP 4.8 s → 3.9 s without them. */}
         <nav aria-label="Breadcrumb" className="mx-auto max-w-page px-gutter pb-3 pt-4 text-caption font-normal text-k-muted">
-          <Link href="/" className="hover:text-k-accent-deep">Home</Link>
+          <Link href="/" prefetch={false} className="hover:text-k-accent-deep">Home</Link>
           <span aria-hidden> / </span>
-          <Link href="/destinations" className="hover:text-k-accent-deep">Destinations</Link>
+          <Link href="/destinations" prefetch={false} className="hover:text-k-accent-deep">Destinations</Link>
           {t.country && (
             <>
               <span aria-hidden> / </span>
-              <Link href={`/destinations/${t.country_slug}`} className="hover:text-k-accent-deep">{t.country}</Link>
+              <Link href={`/destinations/${t.country_slug}`} prefetch={false} className="hover:text-k-accent-deep">{t.country}</Link>
             </>
           )}
         </nav>

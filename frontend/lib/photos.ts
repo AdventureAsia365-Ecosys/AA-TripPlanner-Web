@@ -53,6 +53,15 @@ export interface RibbonItem {
   caption: string;
 }
 
+// The ribbon tile's alt text. Every tile shows its caption on the photo, so an alt equal to the caption
+// ("Dambulla" + "Dambulla") is read twice and makes the link name "Dambulla Dambulla" (Lighthouse / axe
+// image-redundant-alt, S255): the image is then decorative (alt ""). Duplicate tiles are always decorative.
+export function ribbonTileAlt(item: { alt: string; caption: string }, hidden: boolean): string {
+  if (hidden) return "";
+  const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+  return norm(item.alt) === norm(item.caption) ? "" : item.alt;
+}
+
 // Ribbon content (spec §3.6): skip items without a photo, dedupe by photo.
 export function uniqueRibbonItems(items: RibbonItem[]): (RibbonItem & { src: string })[] {
   const keep = firstUseOfCover(items, (i) => i.src);

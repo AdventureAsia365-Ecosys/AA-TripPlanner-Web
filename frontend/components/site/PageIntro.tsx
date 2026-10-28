@@ -41,7 +41,8 @@ export default function PageIntro({
           <nav aria-label="Breadcrumb" className="mb-3 text-caption font-normal text-k-on-band-muted">
             {crumbs.map((c) => (
               <span key={c.href}>
-                <Link href={c.href} className="underline-offset-2 hover:text-k-band-accent hover:underline">{c.label}</Link>
+                {/* No prefetch on breadcrumbs: a prefetch of "/" runs the home hero preload on this page (S255). */}
+                <Link href={c.href} prefetch={false} className="underline-offset-2 hover:text-k-band-accent hover:underline">{c.label}</Link>
                 <span aria-hidden> / </span>
               </span>
             ))}
