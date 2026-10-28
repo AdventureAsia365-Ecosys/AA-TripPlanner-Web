@@ -162,11 +162,14 @@ def test_acc1_is_not_a_known_satellite_and_has_no_config():
 
 
 def test_no_backend_module_names_the_retired_acc1_account():
-    """AA-998 guard: acc1 left the ecosystem; no runtime code may route to it again."""
+    """AA-998 guard: acc1 left the ecosystem; no runtime code may route to it again (an "acc1" /
+    'acc1' string literal, or a read of the removed fallback env)."""
     import pathlib
+    import re
+    pattern = re.compile(r"""["']acc1["']|_FALLBACK["']""")
     root = pathlib.Path(__file__).resolve().parents[1]
     hits = [str(p.relative_to(root)) for p in root.rglob("*.py")
-            if "tests" not in p.relative_to(root).parts and '"acc1"' in p.read_text()]
+            if "tests" not in p.relative_to(root).parts and pattern.search(p.read_text())]
     assert hits == []
 
 
