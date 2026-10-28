@@ -42,7 +42,7 @@ from) AA-CIS**.
                     ┌──────────────┴───────────────┐
                     ▼                               ▼
         Bedrock Cohere Embed v4          Bedrock Claude (satellite:
-        (direct, acc2)                    assume acc3 / acc1 role)
+        (direct, acc2)                    assume the acc3 role)
 ```
 
 Three deployable units + one offline pipeline:
@@ -113,7 +113,8 @@ unit-tested directly; a thin `handler()` adapts the API Gateway event.
   `TRIPPLANNER_DATABASE_URL_ARN` (Secrets Manager, prod).
 - `bedrock_satellite.py` — **hybrid Bedrock**: `embed()` is a DIRECT acc2
   Cohere call; `invoke()` / `invoke_stream()` (Claude) assume the
-  cross-account satellite role (acc3 primary → acc1 fallback).
+  cross-account satellite role on acc3 (the only LLM satellite since AA-998;
+  the former acc1 fallback is retired).
 - `auth.py` — edge shared-secret check (`X-TripPlanner-Key`). Disabled
   when the key env is empty (local/tests).
 
@@ -178,12 +179,12 @@ existing AA-CIS Terraform:
     (NEW — edge shared secret, `random_password`), injected as Lambda env.
   - Direct Cohere embed IAM grant + caller-side `sts:AssumeRole` for the
     satellite invoker roles.
-- **`AA-CIS-Infra/accounts/acc3-bedrock` + `accounts/acc1-bedrock`** — the
-  cross-account **trust** side: the TripPlanner Lambda exec role is added
-  as a trusted principal on `AA3-Bedrock-Invoker` (acc3) /
-  `AA-Bedrock-Invoker` (acc1), reusing the exact satellite pattern
-  AA-CIS/ACPv2 already uses. These roles allow the **`global.`** Claude
-  profile.
+- **`AA-CIS-Infra/accounts/acc3-bedrock`** — the cross-account **trust**
+  side: the TripPlanner Lambda exec role is a trusted principal on
+  `AA3-Bedrock-Invoker` (acc3), reusing the exact satellite pattern
+  AA-CIS/ACPv2 already uses. The role allows the **`global.`** Claude
+  profile. (The former `accounts/acc1-bedrock` fallback root is retired,
+  AA-998.)
 - **`versions.tf`** — added the `hashicorp/random` provider (for the api
   key).
 

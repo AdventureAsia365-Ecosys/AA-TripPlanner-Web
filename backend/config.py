@@ -34,36 +34,29 @@ SCHEMA_SHARED = "shared"
 CIS_PUBLIC_API_BASE = _get("CIS_PUBLIC_API_BASE", "https://api-cis.lumiguides.it.com")
 
 # --- Bedrock ---
-# Region for all Bedrock calls. Verified live: acc2/acc3/acc1 all us-west-1.
+# Region for all Bedrock calls (acc2 and acc3 are both us-west-1).
 BEDROCK_REGION = _get("BEDROCK_REGION", "us-west-1")
 
 # LLM (compose/renarrate) — Claude via the satellite pattern. acc2
 # (where the Lambdas run) is a channel-program account and CANNOT invoke Claude
 # ("Access to this model is not available for channel program accounts"),
-# so the app assumes a cross-account role: acc3 primary, acc1 fallback —
-# same as AA-CIS-App/ACPv2. Verified live on acc1: us.anthropic.claude-
-# sonnet-4-6 invokes OK. Models MUST be called by inference-profile id
+# so the app assumes a cross-account role on acc3, the only LLM satellite (AA-998 retired
+# the former acc1 fallback) — same as AA-CIS-App. Models MUST be called by inference-profile id
 # (the bare foundation-model id fails with ValidationException).
-# Satellite account IDs come from the Lambda environment (AA-CIS-Infra tripplanner.tf); this repo
-# is public, so no account ID is written here (AA-902). Unset -> that satellite is skipped with a
-# clear error in the failover log (llm_gateway._satellite_target), acc2 and the other one still run.
+# The satellite account ID comes from the Lambda environment (AA-CIS-Infra tripplanner.tf); this
+# repo is public, so no account ID is written here (AA-902). Unset -> the satellite is skipped
+# with a clear error in the failover log (llm_gateway._satellite_target); acc2 still runs.
 BEDROCK_ACCT_PRIMARY = _get("BEDROCK_ACCT_PRIMARY", "")   # acc3
-BEDROCK_ACCT_FALLBACK = _get("BEDROCK_ACCT_FALLBACK", "")  # acc1
-# The satellite invoker role has a DIFFERENT name on each account:
-#   acc3 (primary)  -> AA3-Bedrock-Invoker
-#   acc1 (fallback) -> AA-Bedrock-Invoker
-# so a single role name cannot cover both. BEDROCK_ROLE_NAME is kept only as
-# a legacy fallback default if a per-account name is not set.
+# acc3 invoker role and ExternalId. BEDROCK_ROLE_NAME is kept only as a legacy default
+# when BEDROCK_ROLE_NAME_PRIMARY is set empty.
 BEDROCK_ROLE_NAME = _get("BEDROCK_ROLE_NAME", "")  # legacy single-role fallback
 BEDROCK_ROLE_NAME_PRIMARY = _get("BEDROCK_ROLE_NAME_PRIMARY", "AA3-Bedrock-Invoker")
-BEDROCK_ROLE_NAME_FALLBACK = _get("BEDROCK_ROLE_NAME_FALLBACK", "AA-Bedrock-Invoker")
 BEDROCK_EXTERNAL_ID_PRIMARY = _get("BEDROCK_EXTERNAL_ID_PRIMARY", "aa296-satellite-bedrock-acc3")
-BEDROCK_EXTERNAL_ID_FALLBACK = _get("BEDROCK_EXTERNAL_ID_FALLBACK", "aa296-satellite-bedrock")
 # AA-685: which model each call uses (and its Bedrock profile per account) comes from the Model
 # Gateway tables in the shared RDS — stages tp_compose / tp_extract (Claude via the satellite
 # roles) and tp_search_embed / tp_component_embed (Cohere Embed v4: acc2 first, then satellite
-# rows by route, AA-862 — the embed fall-through reuses the BEDROCK_ACCT_* / ROLE_NAME_* /
-# EXTERNAL_ID_* values above; the account IDs must be set on both Lambdas). See
+# rows by route, AA-862 — the embed fall-through reuses the BEDROCK_ACCT_PRIMARY /
+# ROLE_NAME_PRIMARY / EXTERNAL_ID_PRIMARY values above; the account ID must be set on both Lambdas). See
 # backend/shared/llm_gateway.py. Embeddings must stay 1536-dim to match VECTOR(1536).
 EMBED_DIM = 1536
 

@@ -1,4 +1,4 @@
-"""AA-862: Cohere embed fall-through acc2 -> acc3 (-> acc1) and the cached satellite embed client.
+"""AA-862: Cohere embed fall-through acc2 -> acc3 and the cached satellite embed client (acc1 retired, AA-998).
 Fully stubbed: no live AWS, no DB, boto3 never called."""
 from __future__ import annotations
 
@@ -20,8 +20,11 @@ ACC2 = gw.Model("cohere-embed-v4", "cohere", "embed", {"acc2": "global.cohere.em
                 0.12, 0.0)
 ACC3 = gw.Model("cohere-embed-v4-acc3", "cohere", "embed", {"acc3": "global.cohere.embed-v4:0"},
                 0.12, 0.0)
-ACC1_OFF = gw.Model("cohere-embed-v4-acc1", "cohere", "embed", {"acc1": "global.cohere.embed-v4:0"},
+ACC3_OFF = gw.Model("cohere-embed-v4-acc3b", "cohere", "embed", {"acc3": "global.cohere.embed-v4:0"},
                     0.12, 0.0, enabled=False)
+# The pre-AA-998 acc1 row, enabled: must never be called (acc1 is not a supported account).
+ACC1_STALE = gw.Model("cohere-embed-v4-acc1", "cohere", "embed", {"acc1": "global.cohere.embed-v4:0"},
+                      0.12, 0.0)
 ROUTE = gw.Route("tp_search_embed", "embed", (ACC2, ACC3))
 
 
@@ -29,9 +32,7 @@ ROUTE = gw.Route("tp_search_embed", "embed", (ACC2, ACC3))
 def _setup(monkeypatch):
     monkeypatch.setattr(config, "BEDROCK_ROLE_NAME", "")
     monkeypatch.setattr(config, "BEDROCK_ROLE_NAME_PRIMARY", "PrimaryBedrockRole")
-    monkeypatch.setattr(config, "BEDROCK_ROLE_NAME_FALLBACK", "FallbackBedrockRole")
     monkeypatch.setattr(config, "BEDROCK_ACCT_PRIMARY", "111111111111")
-    monkeypatch.setattr(config, "BEDROCK_ACCT_FALLBACK", "222222222222")
     monkeypatch.setattr(config, "BEDROCK_EXTERNAL_ID_PRIMARY", "ext-acc3")
     monkeypatch.setattr(config, "EMBED_DIM", 3)
     monkeypatch.setattr(gw, "_acc2_embed", None)
@@ -114,16 +115,18 @@ def test_acc2_success_never_touches_the_satellite():
     assert seen == [] and acc3.calls == []
 
 
-def test_disabled_acc1_row_is_skipped_and_the_chain_error_still_reads_as_throttle():
-    route = gw.Route("tp_search_embed", "embed", (ACC2, ACC3, ACC1_OFF))
-    acc1 = StubEmbed()
+def test_disabled_and_acc1_rows_are_skipped_and_the_chain_error_still_reads_as_throttle():
+    route = gw.Route("tp_search_embed", "embed", (ACC2, ACC3, ACC3_OFF, ACC1_STALE))
+    acc1, seen = StubEmbed(), []
     failures: list = []
     with pytest.raises(bs.BedrockError) as e:
         gw.embed_texts(route, ["x"], client_factory=make_factory(
-            StubEmbed(THROTTLE), StubEmbed(THROTTLE), acc1), failures=failures)
+            StubEmbed(THROTTLE), StubEmbed(THROTTLE), acc1, seen=seen), failures=failures)
     assert acc1.calls == []
-    assert "cohere-embed-v4-acc1: skipped" in str(e.value)
+    assert "cohere-embed-v4-acc3b: skipped" in str(e.value)
+    assert "cohere-embed-v4-acc1: no profile on a supported account" in str(e.value)
     assert [f.account for f in failures] == ["acc2", "acc3"]
+    assert [s["RoleArn"].split(":")[4] for s in seen] == ["111111111111"]  # never acc1
     # search.py starts its keyword cooldown when any attempt in the failed chain was a throttle
     assert gw.is_throttle(str(e.value))
 
@@ -256,7 +259,7 @@ def test_credentials_keep_the_sts_expiration_and_the_old_name_still_works():
 
 def test_cache_key_ignores_which_accounts_serve_the_same_model():
     base = gw.Route("tp_search_embed", "embed", (ACC2,))
-    chained = gw.Route("tp_search_embed", "embed", (ACC2, ACC3, ACC1_OFF))
+    chained = gw.Route("tp_search_embed", "embed", (ACC2, ACC3, ACC3_OFF))
     k = gw.embed_cache_key(base, "search_query", "beach")
     assert k == gw.embed_cache_key(chained, "search_query", "beach")
     other = gw.Route("tp_search_embed", "embed",

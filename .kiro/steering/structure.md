@@ -43,7 +43,7 @@ AA-TripPlanner-Web/
 │   │                                          #   (email v1)
 │   ├── shared/
 │   │   ├── bedrock_satellite.py          # STS assume-role + invoke,
-│   │   │                                  #   acc3 -> acc1 (reimplemented,
+│   │   │                                  #   acc3 only (reimplemented,
 │   │   │                                  #   not imported — see tech.md)
 │   │   └── db.py                          # asyncpg pool
 │   └── extraction/                      # offline pipeline, NOT a Lambda,

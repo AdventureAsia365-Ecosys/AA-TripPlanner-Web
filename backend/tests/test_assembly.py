@@ -1318,8 +1318,8 @@ async def test_narrate_logs_failed_attempts_even_when_it_returns_502(monkeypatch
         return llm_gateway.builtin_route(stage)
 
     def failing_generate_text(route, system, user, max_tokens, failures=None):
-        for acct in ("acc3", "acc1"):
-            failures.append(llm_gateway._failed(route, route.models[0], acct, 0, "throttled"))
+        for position in (0, 1):  # e.g. two models of the route, both failing on acc3
+            failures.append(llm_gateway._failed(route, route.models[0], "acc3", position, "throttled"))
         raise llm_gateway.BedrockError("All models failed")
 
     async def fake_record(db, call, quality_signal, **kw):
@@ -1330,4 +1330,4 @@ async def test_narrate_logs_failed_attempts_even_when_it_returns_502(monkeypatch
     monkeypatch.setattr(handler.llm_gateway, "record", fake_record)
     resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn)
     assert resp["statusCode"] == 502
-    assert recorded == [("acc3", True, "error"), ("acc1", True, "error")]
+    assert recorded == [("acc3", True, "error"), ("acc3", True, "error")]

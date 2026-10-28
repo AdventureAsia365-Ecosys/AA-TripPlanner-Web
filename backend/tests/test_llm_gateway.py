@@ -13,13 +13,10 @@ from backend.shared import llm_gateway as gw
 
 @pytest.fixture(autouse=True)
 def _role_configured(monkeypatch):
-    # The two satellite accounts use DIFFERENT role names in production (acc3
-    # AA3-Bedrock-Invoker / acc1 AA-Bedrock-Invoker); mirror that here.
+    # acc3 is the only satellite account (AA-998); its role name is per-account config.
     monkeypatch.setattr(config, "BEDROCK_ROLE_NAME", "")
     monkeypatch.setattr(config, "BEDROCK_ROLE_NAME_PRIMARY", "PrimaryBedrockRole")
-    monkeypatch.setattr(config, "BEDROCK_ROLE_NAME_FALLBACK", "FallbackBedrockRole")
     monkeypatch.setattr(config, "BEDROCK_ACCT_PRIMARY", "111111111111")
-    monkeypatch.setattr(config, "BEDROCK_ACCT_FALLBACK", "222222222222")
     monkeypatch.setattr(config, "EMBED_DIM", 3)
     gw._cache.clear()
 
@@ -47,8 +44,9 @@ class _Body:
 
 class StubBedrock:
     def __init__(self, *, fail: bool = False, response: dict | None = None,
-                 headers: dict | None = None):
+                 headers: dict | None = None, fail_converse: bool = False):
         self.fail = fail
+        self.fail_converse = fail_converse
         self.response = response or {}
         self.headers = headers
         self.calls: list = []
@@ -64,13 +62,14 @@ class StubBedrock:
 
     def converse(self, **kwargs):
         self.calls.append(("converse", kwargs["modelId"], kwargs))
-        if self.fail:
+        if self.fail or self.fail_converse:
             raise RuntimeError("simulated failure")
         return self.response
 
 
 def make_factory(by_account: dict, arns: list):
-    """bedrock-runtime clients per account: 'acc3'/'acc1' via assumed creds, 'acc2' direct."""
+    """bedrock-runtime clients per account: 'acc3' via assumed creds, 'acc2' direct. A stub for
+    the retired 'acc1' (id 222222222222) may be passed to prove it is never reached."""
     ids = {"111111111111": "acc3", "222222222222": "acc1"}
 
     def factory(service, *, creds=None, region=None):
@@ -90,9 +89,12 @@ def _claude_reply(text="Day 1: Hello.", tin=100, tout=20):
             "usage": {"input_tokens": tin, "output_tokens": tout}}
 
 
-SONNET = gw.Model("sonnet", "anthropic", "anthropic_native",
-                  {"acc3": "global.sonnet", "acc1": "global.sonnet"}, 3.0, 15.0)
+SONNET = gw.Model("sonnet", "anthropic", "anthropic_native", {"acc3": "global.sonnet"}, 3.0, 15.0)
 ROUTE = gw.Route("tp_compose", "writer", (SONNET,), "acc3")
+# A catalog row as it stood before CIS migration 295 stripped the acc1 profiles (AA-998).
+SONNET_STALE = gw.Model("sonnet", "anthropic", "anthropic_native",
+                        {"acc3": "global.sonnet", "acc1": "global.sonnet"}, 3.0, 15.0)
+CONVERSE = gw.Model("sonnet-5", "anthropic", "converse", {"acc3": "global.sonnet-5"}, 2.0, 10.0)
 
 
 # --- generate_text ------------------------------------------------------------
@@ -114,27 +116,70 @@ def test_generate_text_on_primary_prices_from_catalog():
     assert body["messages"] == [{"role": "user", "content": "user"}]
 
 
-def test_generate_text_fails_over_acc3_to_acc1_with_per_account_roles():
-    """Regression: acc3 and acc1 have DIFFERENT satellite role names."""
+def test_acc3_failure_never_fails_over_to_a_stale_acc1_profile():
+    """AA-998 guard: a catalog row that still names acc1 is called on acc3 only; when acc3 fails the
+    call fails (no cross-account fallback), and no role in acc1 is ever assumed."""
     arns: list = []
-    factory = make_factory({"acc3": StubBedrock(fail=True),
-                            "acc1": StubBedrock(response=_claude_reply())}, arns)
-    _, call = gw.generate_text(ROUTE, "sys", "user", 100, client_factory=factory)
-    assert call.account == "acc1" and call.fallback_used is False  # same model, other account
-    assert arns == ["arn:aws:iam::111111111111:role/PrimaryBedrockRole",
-                    "arn:aws:iam::222222222222:role/FallbackBedrockRole"]
+    acc1 = StubBedrock(response=_claude_reply())
+    factory = make_factory({"acc3": StubBedrock(fail=True), "acc1": acc1}, arns)
+    route = gw.Route("tp_compose", "writer", (SONNET_STALE,), "acc3")
+    failures: list = []
+    with pytest.raises(bs.BedrockError, match="All models failed"):
+        gw.generate_text(route, "sys", "user", 100, client_factory=factory, failures=failures)
+    assert acc1.calls == []
+    assert arns == ["arn:aws:iam::111111111111:role/PrimaryBedrockRole"]
+    assert [f.account for f in failures] == ["acc3"]
+
+
+def test_account_route_acc1_from_the_db_is_ignored():
+    """AA-998 guard: a stage left on account_route='acc1' still runs on acc3."""
+    acc1 = StubBedrock(response=_claude_reply())
+    acc3 = StubBedrock(response=_claude_reply())
+    route = gw.Route("tp_compose", "writer", (SONNET_STALE,), "acc1")
+    _, call = gw.generate_text(route, "s", "u", 50,
+                               client_factory=make_factory({"acc3": acc3, "acc1": acc1}, []))
+    assert call.account == "acc3" and acc1.calls == []
+    assert gw._accounts(SONNET_STALE, "acc1") == ["acc3"]
+
+
+def test_a_model_with_only_an_acc1_profile_is_reported_not_called():
+    acc1_only = gw.Model("old", "anthropic", "anthropic_native", {"acc1": "global.old"}, 3.0, 15.0)
+    acc1 = StubBedrock(response=_claude_reply())
+    with pytest.raises(bs.BedrockError, match="old: no profile on a supported account"):
+        gw.generate_text(gw.Route("tp_compose", "writer", (acc1_only,), "acc3"), "s", "u", 50,
+                         client_factory=make_factory({"acc1": acc1}, []))
+    assert acc1.calls == []
+
+
+def test_acc1_is_not_a_known_satellite_and_has_no_config():
+    with pytest.raises(bs.BedrockError, match="Unknown account 'acc1'"):
+        gw._satellite_target("acc1")
+    assert gw.SUPPORTED_ACCOUNTS == ("acc3", "acc2")
+    for name in ("BEDROCK_ACCT_FALLBACK", "BEDROCK_ROLE_NAME_FALLBACK",
+                 "BEDROCK_EXTERNAL_ID_FALLBACK"):
+        assert not hasattr(config, name), name
+    assert all("acc1" not in m.profiles for r in gw.BUILTIN_ROUTES.values() for m in r.models)
+
+
+def test_no_backend_module_names_the_retired_acc1_account():
+    """AA-998 guard: acc1 left the ecosystem; no runtime code may route to it again (an "acc1" /
+    'acc1' string literal, or a read of the removed fallback env)."""
+    import pathlib
+    import re
+    pattern = re.compile(r"""["']acc1["']|_FALLBACK["']""")
+    root = pathlib.Path(__file__).resolve().parents[1]
+    hits = [str(p.relative_to(root)) for p in root.rglob("*.py")
+            if "tests" not in p.relative_to(root).parts and pattern.search(p.read_text())]
+    assert hits == []
 
 
 def test_generate_text_next_model_in_route_marks_fallback_used():
-    converse_model = gw.Model("sonnet-5", "anthropic", "converse", {"acc3": "global.sonnet-5"},
-                              2.0, 10.0)
-    route = gw.Route("tp_compose", "writer", (converse_model, SONNET), "acc3")
-    acc3 = StubBedrock(fail=True)
-    acc1 = StubBedrock(response=_claude_reply())
+    route = gw.Route("tp_compose", "writer", (CONVERSE, SONNET), "acc3")
+    acc3 = StubBedrock(response=_claude_reply(), fail_converse=True)
     _, call = gw.generate_text(route, "s", "u", 50,
-                               client_factory=make_factory({"acc3": acc3, "acc1": acc1}, []))
-    assert call.model == "sonnet" and call.fallback_used is True
-    assert acc3.calls[0][0] == "converse"
+                               client_factory=make_factory({"acc3": acc3}, []))
+    assert (call.model, call.account, call.fallback_used) == ("sonnet", "acc3", True)
+    assert [c[0] for c in acc3.calls] == ["converse", "invoke_model"]
 
 
 def test_generate_text_converse_shape_and_usage():
@@ -151,29 +196,27 @@ def test_generate_text_converse_shape_and_usage():
 
 
 def test_generate_text_raises_when_everything_fails():
-    factory = make_factory({"acc3": StubBedrock(fail=True), "acc1": StubBedrock(fail=True)}, [])
+    factory = make_factory({"acc3": StubBedrock(fail=True)}, [])
     with pytest.raises(bs.BedrockError, match="All models failed"):
         gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory)
 
 
 def test_missing_role_raises(monkeypatch):
     monkeypatch.setattr(config, "BEDROCK_ROLE_NAME_PRIMARY", "")
-    monkeypatch.setattr(config, "BEDROCK_ROLE_NAME_FALLBACK", "")
     factory = make_factory({"acc3": StubBedrock(response=_claude_reply())}, [])
     with pytest.raises(bs.BedrockError):
         gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory)
 
 
 
-def test_unset_satellite_account_fails_over_without_an_sts_call(monkeypatch):
+def test_unset_satellite_account_fails_without_an_sts_call(monkeypatch):
     """AA-902: no account-ID default in this public repo; an unset acc3 id is skipped, not assumed."""
     monkeypatch.setattr(config, "BEDROCK_ACCT_PRIMARY", "")
     arns: list = []
-    factory = make_factory({"acc3": StubBedrock(response=_claude_reply()),
-                            "acc1": StubBedrock(response=_claude_reply())}, arns)
-    _, call = gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory)
-    assert call.account == "acc1"
-    assert arns == ["arn:aws:iam::222222222222:role/FallbackBedrockRole"]
+    factory = make_factory({"acc3": StubBedrock(response=_claude_reply())}, arns)
+    with pytest.raises(bs.BedrockError, match="BEDROCK_ACCT_PRIMARY is unset"):
+        gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory)
+    assert arns == []
     with pytest.raises(bs.BedrockError, match="BEDROCK_ACCT_PRIMARY is unset"):
         gw._satellite_target("acc3")
 
@@ -270,22 +313,23 @@ async def test_record_never_raises():
 # --- AA-805: fork defects ---------------------------------------------------------
 
 def test_failed_attempts_are_reported_for_logging():
-    factory = make_factory({"acc3": StubBedrock(fail=True),
-                            "acc1": StubBedrock(response=_claude_reply())}, [])
+    route = gw.Route("tp_compose", "writer", (CONVERSE, SONNET), "acc3")
+    factory = make_factory({"acc3": StubBedrock(response=_claude_reply(), fail_converse=True)}, [])
     failures: list = []
-    _, call = gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory, failures=failures)
-    assert call.account == "acc1" and not call.failed
-    assert [(f.account, f.failed, f.stop_reason, f.cost_usd) for f in failures] == \
-        [("acc3", True, "error", 0.0)]
+    _, call = gw.generate_text(route, "s", "u", 50, client_factory=factory, failures=failures)
+    assert (call.model, call.account, call.failed) == ("sonnet", "acc3", False)
+    assert [(f.model, f.account, f.failed, f.stop_reason, f.cost_usd) for f in failures] == \
+        [("sonnet-5", "acc3", True, "error", 0.0)]
     assert "simulated failure" in failures[0].extra["error"]
 
 
 def test_all_failed_attempts_are_reported_before_the_raise():
-    factory = make_factory({"acc3": StubBedrock(fail=True), "acc1": StubBedrock(fail=True)}, [])
+    route = gw.Route("tp_compose", "writer", (CONVERSE, SONNET), "acc3")
+    factory = make_factory({"acc3": StubBedrock(fail=True)}, [])
     failures: list = []
     with pytest.raises(bs.BedrockError):
-        gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory, failures=failures)
-    assert [f.account for f in failures] == ["acc3", "acc1"]
+        gw.generate_text(route, "s", "u", 50, client_factory=factory, failures=failures)
+    assert [(f.model, f.account) for f in failures] == [("sonnet-5", "acc3"), ("sonnet", "acc3")]
 
 
 def test_embed_failed_attempt_is_reported():

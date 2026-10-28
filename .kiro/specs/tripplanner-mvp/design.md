@@ -1,5 +1,8 @@
 # Design: AA_TripPlanner_AI (map-first, v0.3)
 
+> **Historical (AA-998, 28/10/2026):** this spec predates the retirement of acc1. Claude now runs on the
+> acc3 satellite only; read `CONTEXT.md` for the current Bedrock routing.
+
 ## Architecture
 Browser -> Frontend (Next.js, Vercel) -> BFF (Next.js API routes) fans out
 to two independent Lambdas:
