@@ -78,7 +78,7 @@ export default function PhotoRibbon({
     );
 
   return (
-    <section id={id} aria-labelledby={`${id}-title`} className={`tp-ribbon bg-k-bg py-section${cvHeight ? " tp-cv" : ""}`} data-animate={animate ? "" : undefined} style={style}>
+    <section id={id} aria-labelledby={`${id}-title`} className={`tp-ribbon scroll-mt-header bg-k-bg py-section${cvHeight ? " tp-cv" : ""}`} data-animate={animate ? "" : undefined} style={style}>
       <div className="mx-auto flex max-w-page items-center justify-between gap-4 px-gutter">
         <h2 id={`${id}-title`} className="font-script text-script-sm text-k-ink">{title}</h2>
         {animate && <RibbonControl ribbonId={id} />}
