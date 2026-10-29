@@ -4,7 +4,8 @@
 // AA-995 "Golden Hour" (spec §4.2): photo hero under the transparent header (cover resolved to its CDN URL on the
 // server, it is the LCP; no cover = the navy no-photo hero) → tours (white; a carousel above 3 tours, else a grid) →
 // places our tours visit (sand; map + numbered list) → navy CTA band → photo ribbon "Around {country}" → footer.
-// Same single catalog read as before (getDestination); the hero adds one server-side redirect lookup per size.
+// Same single catalog read as before (getDestination); the hero adds one server-side redirect lookup per size, and the
+// tour cards one per distinct cover (S257, in parallel with the hero, one shared deadline).
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, permanentRedirect } from "next/navigation";
@@ -26,7 +27,7 @@ import { getDestination, siteUrl } from "@/lib/catalog";
 import type { CountryPlace, DestinationPage } from "@/lib/catalogTypes";
 import { cvSize } from "@/lib/contentVisibility";
 import { firstUseOfCover } from "@/lib/photos";
-import { resolveHeroPhoto } from "@/lib/photoResolve";
+import { resolveHeroPhoto, resolvePhotoMap } from "@/lib/photoResolve";
 import { formatDayRange, slugify, titleCase } from "@/lib/text";
 import { ButtonLink, EmptyState, Icon } from "@/ui";
 
@@ -135,14 +136,24 @@ export default async function DestinationRoute({ params }: Props) {
   const firstPlaces = listed.slice(0, PLACES_FIRST);
   const morePlaces = listed.slice(PLACES_FIRST);
 
-  const hero = await resolveHeroPhoto(d.cover_url);
   // Duplicate-cover rule (spec §3.4): a cover already shown on an earlier card becomes the no-photo tile.
-  const tourPhoto = firstUseOfCover(d.tours, (t) => t.cover_url_small ?? t.cover_url);
+  const cardCover = (t: (typeof d.tours)[number]) => t.cover_url_small ?? t.cover_url;
+  const tourPhoto = firstUseOfCover(d.tours, cardCover);
+  // S257 (mobile LCP): the tour cards' covers are resolved on the server too, in parallel with the hero, and served
+  // same-origin. The first card sits right under the hero, inside the browser's lazy-load distance, so its photo was
+  // fetched while the page loaded — through the catalog 302 and a second host (S256 prod-after, Bhutan: LCP 1.9 s or
+  // 3.9 s depending on whether that chain fell before the first paint). The places list and the ribbon stay on the
+  // catalog URL: they are further down, in content-visibility sections, and were not fetched during load.
+  const [hero, cardPhotos] = await Promise.all([
+    resolveHeroPhoto(d.cover_url),
+    resolvePhotoMap(d.tours.filter((_, i) => tourPhoto[i]).map(cardCover)),
+  ]);
   let noPhoto = 0;
   const tourTone = tourPhoto.map((on) => (on ? "band" : noPhotoTone(noPhoto++)));
   const tourCards = d.tours.map((t, i) => (
     <li key={t.source_id} className="min-w-0">
-      <TourCard tour={t} eager={false} showPhoto={tourPhoto[i]} noPhotoTone={tourTone[i]} />
+      <TourCard tour={t} eager={false} showPhoto={tourPhoto[i]} noPhotoTone={tourTone[i]}
+                photo={tourPhoto[i] ? (cardPhotos.get(cardCover(t) ?? "") ?? null) : null} />
     </li>
   ));
   const seeAll =

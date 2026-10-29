@@ -618,6 +618,74 @@ async def test_destination_places_query_takes_tour_ids():
     assert set(args[0]) == {fx.TOURS[0]["tour_id"], fx.TOURS[1]["tour_id"]}  # retired one excluded
 
 
+async def test_destination_page_reads_the_places_once():
+    # S257 (C4.3 W44): the page's one v_tour_place read also ranks the top tours' fallback covers.
+    pool = fx.FakeCatalogPool(tours=_without_photos(0))
+    _, page, _ = await _get("/browse/catalog/destinations/vietnam", pool=pool)
+    assert sum(1 for q, _ in pool.calls if q == cat.COUNTRY_PLACES_SQL) == 1
+    assert not any(q == cat.TOUR_DESTINATIONS_SQL for q, _ in pool.calls)
+    t0 = next(t for t in page["tours"] if t["title"] == "Hanoi and Ha Long Bay")
+    assert t0["cover_source"] == "destination" and t0["cover_place"] == "Hanoi"
+    mekong = next(t for t in page["tours"] if t["title"] == "Mekong Delta by Boat")
+    assert mekong["cover_source"] == "country"
+
+
+async def test_destination_page_fallback_from_shared_rows_matches_the_separate_read():
+    # Same covers as the list endpoint's own read (TOUR_DESTINATIONS_SQL) for the same tours.
+    tours = [dict(t, cover_photo_path=None, photo_count=0) for t in fx.TOURS]
+    _, page, _ = await _get("/browse/catalog/destinations/vietnam", pool=fx.FakeCatalogPool(tours=tours))
+    _, listed, _ = await _get("/browse/catalog/tours", {"country": "vietnam"}, pool=fx.FakeCatalogPool(tours=tours))
+    key = lambda t: (t["title"], t["cover_source"], t["cover_place"], t["cover_url"])  # noqa: E731
+    assert sorted(map(key, page["tours"])) == sorted(map(key, listed["tours"]))
+
+
+async def test_destination_place_with_a_destination_but_no_coordinates(monkeypatch):
+    # The shared read now returns places without lat/lng too: off the map and the counts, still a fallback
+    # candidate (ranking by days, as before).
+    halong_no_geo = [dict(p, lat=None, lng=None) if p["destination_id"] == fx.HALONG else p for p in fx.PLACES]
+    monkeypatch.setattr(fx, "PLACES", halong_no_geo)
+    _, page, _ = await _get("/browse/catalog/destinations/vietnam", pool=fx.FakeCatalogPool(tours=_without_photos(0)))
+    assert {p["name"] for p in page["places"]} == {"Hanoi", "Can Tho"}
+    assert "kayaking" not in page["top_activities"]  # Ha Long Bay's activity, as when the SQL dropped the row
+    t0 = next(t for t in page["tours"] if t["title"] == "Hanoi and Ha Long Bay")
+    assert t0["cover_place"] == "Hanoi"
+
+
+def _tuned_read(calls: list, sql: str) -> bool:
+    """Every `sql` call sits in its own BEGIN, SET LOCAL plan_cache_mode, SET LOCAL jit, sql, END window."""
+    qs = [q for q, _ in calls]
+    hits = [i for i, q in enumerate(qs) if q == sql]
+    return bool(hits) and all(
+        qs[i - 3:i + 2] == ["BEGIN", cat.FORCE_CUSTOM_PLAN_SQL, cat.NO_JIT_SQL, sql, "END"] for i in hits)
+
+
+async def test_place_reads_run_custom_plan_no_jit_in_their_own_transaction():
+    # S257: the v_tour_place `= ANY` reads, never under a generic plan nor JIT; the other reads keep the defaults.
+    from backend.browse import routes as rt
+    assert cat.FORCE_CUSTOM_PLAN_SQL == rt.FORCE_CUSTOM_PLAN_SQL == "SET LOCAL plan_cache_mode = force_custom_plan"
+    assert cat.NO_JIT_SQL == "SET LOCAL jit = off"
+    pool = fx.FakeCatalogPool(tours=_without_photos(0))
+    await _get("/browse/catalog/destinations/vietnam", pool=pool)
+    assert _tuned_read(pool.calls, cat.COUNTRY_PLACES_SQL)
+    assert [q for q, _ in pool.calls].count(cat.NO_JIT_SQL) == 1
+    pool = fx.FakeCatalogPool()
+    await _get("/browse/catalog/tours", {"limit": "1", "offset": "2"}, pool=pool)  # Mekong: no own cover
+    assert _tuned_read(pool.calls, cat.TOUR_DESTINATIONS_SQL)
+    assert [q for q, _ in pool.calls].count(cat.FORCE_CUSTOM_PLAN_SQL) == 1
+
+
+async def test_fill_fallback_covers_with_place_rows_skips_the_read():
+    item = {"tour_id": fx.TOURS[0]["tour_id"], "country": "Vietnam",
+            "cover_url": None, "cover_url_small": None, "cover_source": None, "cover_place": None}
+    rows = [{"tour_id": p["tour_id"], "destination_id": p["destination_id"],
+             "destination_name": p["destination_name"], "day_number": p["day_number"]}
+            for p in fx.PLACES if p["destination_id"]]
+    pool = fx.FakeCatalogPool()
+    await cat.fill_fallback_covers([item], pool=pool, place_rows=rows)
+    assert item["cover_source"] == "destination" and item["cover_place"] == "Hanoi"
+    assert not any(q == cat.TOUR_DESTINATIONS_SQL for q, _ in pool.calls)
+
+
 async def test_tour_route_needs_uuid():
     status, _, _ = await _get("/browse/tour-route", {"tour_id": "x'; drop"})
     assert status == 400

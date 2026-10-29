@@ -123,12 +123,15 @@ COUNTRIES_SQL = f"""
 # Places of the country's listed tours, by tour id (the ids come from TOUR_CARDS_SQL). A plain
 # uuid = ANY(...) can be pushed into the security_barrier view; filtering v_tour_place through a
 # join on the computed country slug would make it build every tour's places first (AA-812 review).
+# S257 (AA-995 follow-up, C4.3 W44): the page's ONLY v_tour_place read. It also carries day_number and the places
+# without coordinates, so the same rows rank the top tours' main destinations for their fallback covers
+# (fill_fallback_covers place_rows=) instead of a second read (TOUR_DESTINATIONS_SQL) of the same view. The map and
+# the counts keep only the geocoded rows (destination_page filters them, as the SQL did before).
 COUNTRY_PLACES_SQL = """
     SELECT p.destination_id::text AS destination_id, p.destination_name, p.lat, p.lng,
-           p.tour_id::text AS tour_id, p.activity_types, p.located_by, p.precision
+           p.tour_id::text AS tour_id, p.activity_types, p.located_by, p.precision, p.day_number
     FROM catalog.v_tour_place p
-    WHERE p.tour_id = ANY($1::uuid[])
-      AND p.destination_id IS NOT NULL AND p.lat IS NOT NULL AND p.lng IS NOT NULL
+    WHERE p.tour_id = ANY($1::uuid[]) AND p.destination_id IS NOT NULL
 """
 
 DESTINATION_COVERS_SQL = """
@@ -155,6 +158,33 @@ TOUR_DESTINATIONS_SQL = """
     FROM catalog.v_tour_place p
     WHERE p.tour_id = ANY($1::uuid[]) AND p.destination_id IS NOT NULL
 """
+
+# S257 (AA-995 follow-up; data standards C4.3 W44: TOUR_DESTINATIONS_SQL mean 335 ms, p95 ~2.5 s, max 7.75 s over 4,141
+# calls, every block a buffer hit, plus temp spill): the two `tour_id = ANY($1)` reads of catalog.v_tour_place run with
+# two transaction-local settings.
+#  - plan_cache_mode = force_custom_plan: planned for THESE ids every time. The browse Lambda keeps one pooled
+#    connection for its whole life and asyncpg caches the prepared statement, so after five runs Postgres may switch
+#    to a generic plan whose row estimates suit no real id list; over this view (four LATERAL lookups per place) that
+#    is the AA-847 trap (routes.proposals: EXPLAIN 11.7 ms against 841 ms timed).
+#  - jit = off: the view's plan costs far above jit_above_cost, so Postgres JIT-compiles ~125 expressions on every
+#    call (a local stand-in of the view: ~55 of ~78 ms per call was JIT; the RDS number is in the root audit of S257).
+#    A lookup that returns a few hundred rows never wins that back.
+# SET LOCAL ends with the transaction: every other read keeps the server defaults. One asyncpg exception: the first
+# read on a fresh connection introspects the uuid[] parameter type, and asyncpg turns jit off for that with a
+# session-level set_config that it restores only to a value other than 'off', so the browse connection keeps jit off
+# afterwards (tests/test_catalog_reads_pg.py documents it). Fine for this Lambda: it only runs short reads.
+FORCE_CUSTOM_PLAN_SQL = "SET LOCAL plan_cache_mode = force_custom_plan"
+NO_JIT_SQL = "SET LOCAL jit = off"
+
+
+async def fetch_place_read(pool: Any, sql: str, *args: Any) -> list:
+    """pool.fetch(sql, *args) with a custom plan and no JIT, both scoped to its own transaction."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(FORCE_CUSTOM_PLAN_SQL)
+            await conn.execute(NO_JIT_SQL)
+            return await conn.fetch(sql, *args)
+
 
 COUNTRY_COVERS_SQL = """
     SELECT lower(d.country) AS country_key, d.name, d.cover_photo_path
@@ -421,7 +451,8 @@ def main_destinations(rows: Iterable[Any]) -> dict[str, list[tuple[str, Optional
     return out
 
 
-async def fill_fallback_covers(items: list[dict], *, pool: Any) -> None:
+async def fill_fallback_covers(items: list[dict], *, pool: Any,
+                               place_rows: Optional[Iterable[Any]] = None) -> None:
     """Give tours without their own cover a destination photo, in place (AA-812 D4/D5).
 
     Order: the cover of the tour's main destination (catalog.v_tour_place -> v_destination), else
@@ -429,7 +460,11 @@ async def fill_fallback_covers(items: list[dict], *, pool: Any) -> None:
     cover_url (+ cover_url_small when the item has it), cover_source ("destination" | "country")
     and cover_place (the destination's name), so the page labels it a destination photo and never
     presents it as a photo of the tour. Items that already have a cover are not touched; when no
-    place photo exists the item keeps cover_url None (the placeholder)."""
+    place photo exists the item keeps cover_url None (the placeholder).
+
+    `place_rows`: v_tour_place rows the caller already read for these tours (tour_id, destination_id,
+    destination_name, day_number; destination_id never NULL, as TOUR_DESTINATIONS_SQL returns them). Given,
+    the places are not read again (S257: the destination page reads v_tour_place once)."""
     missing = [it for it in items if not it.get("cover_url")]
     if not missing:
         return
@@ -441,7 +476,13 @@ async def fill_fallback_covers(items: list[dict], *, pool: Any) -> None:
         it["cover_source"] = source
         it["cover_place"] = place
 
-    ranked = main_destinations(await pool.fetch(TOUR_DESTINATIONS_SQL, [it["tour_id"] for it in missing]))
+    ids_missing = [it["tour_id"] for it in missing]
+    if place_rows is None:
+        rows: Iterable[Any] = await fetch_place_read(pool, TOUR_DESTINATIONS_SQL, ids_missing)
+    else:
+        wanted = set(ids_missing)
+        rows = [r for r in place_rows if r["tour_id"] in wanted and r["destination_id"]]
+    ranked = main_destinations(rows)
     ids = sorted({did for dests in ranked.values() for did, _ in dests})
     covers = ({r["destination_id"]: r["cover_photo_path"]
                for r in await pool.fetch(DESTINATION_COVERS_SQL, ids) if r["cover_photo_path"]}
@@ -689,8 +730,9 @@ async def destination_page(country: str, *, pool: Any) -> Optional[dict]:
         return None
     cards = sort_cards([_card(r) for r in rows], "featured")
     days = [c["duration_days"] for c in cards if c["duration_days"]]
-    place_rows = await pool.fetch(COUNTRY_PLACES_SQL, [c["tour_id"] for c in cards])
-    places = aggregate_places(place_rows)
+    place_rows = await fetch_place_read(pool, COUNTRY_PLACES_SQL, [c["tour_id"] for c in cards])
+    geo_rows = [r for r in place_rows if r["lat"] is not None and r["lng"] is not None]
+    places = aggregate_places(geo_rows)
     ids = [p["destination_id"] for p in places]
     covers = {r["destination_id"]: r for r in await pool.fetch(DESTINATION_COVERS_SQL, ids)} if ids else {}
     for p in places:
@@ -711,7 +753,7 @@ async def destination_page(country: str, *, pool: Any) -> Optional[dict]:
             if len(photos) == GALLERY_PHOTOS_PER_COUNTRY:
                 break
     acts: dict[str, int] = {}
-    for r in place_rows:
+    for r in geo_rows:
         for a in r["activity_types"] or []:
             acts[a] = acts.get(a, 0) + 1
     name = cards[0]["country"]
@@ -719,7 +761,7 @@ async def destination_page(country: str, *, pool: Any) -> Optional[dict]:
     # listed tours get their destination fallbacks, so a tour photo always wins).
     hero = next((c["cover_url"] for c in cards if c["cover_url"]), None) or (photos[0]["url"] if photos else None)
     top = cards[:TOP_TOURS_PER_COUNTRY]
-    await fill_fallback_covers(top, pool=pool)
+    await fill_fallback_covers(top, pool=pool, place_rows=place_rows)
     return {
         "country": name,
         "slug": cslug,

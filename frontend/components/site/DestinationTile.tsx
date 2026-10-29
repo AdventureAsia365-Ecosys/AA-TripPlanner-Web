@@ -12,21 +12,24 @@ export function destinationMeta(c: Pick<CountrySummary, "tour_count" | "min_days
   return c.min_days && c.max_days ? `${tours} · ${formatDayRange(c.min_days, c.max_days, "–")}` : tours;
 }
 
-// `above`: the tile is in the first row of /destinations (S256, mobile LCP): `photo` is its cover already resolved on the
-// server (same-origin CDN file, lib/photoResolve.resolveTilePhoto), loaded eagerly; `lcp` marks the one LCP tile
-// (fetchpriority=high). Every other tile keeps the lazy catalog URL.
+// `photo`: the cover already resolved on the server (same-origin CDN file, lib/photoResolve.resolvePhotoMap; S257: every
+// tile of /destinations), used instead of the catalog URL; null / absent keeps the catalog URL. `above`: the tile is in
+// the first row of /destinations (S256, mobile LCP), loaded eagerly; `lcp` marks the one LCP tile (fetchpriority=high).
+// Every other tile stays lazy.
 export default function DestinationTile({
   c,
   showPhoto = true,
   tone = "band",
+  photo,
   above,
 }: {
   c: CountrySummary;
   showPhoto?: boolean;
   tone?: NoPhotoTone;
-  above?: { photo: string | null; lcp: boolean };
+  photo?: string | null;
+  above?: { lcp: boolean };
 }) {
-  const src = showPhoto ? ((above?.photo ?? null) || (c.cover_url_small ?? c.cover_url)) : null;
+  const src = showPhoto ? (photo || (c.cover_url_small ?? c.cover_url)) : null;
   const meta = destinationMeta(c);
   // AA-833: no prefetch. Every tile in view would render its destination page at once after a deploy or
   // ISR expiry and throttle the browse Lambda.

@@ -179,13 +179,15 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   (`lib/photoResolve.ts`): the catalog photo URL's 302 `Location` (the image CDN) is read once per ISR render (1.5 s
   timeout, any failure keeps the catalog URL) and used for that one image; a presigned
   (expiring) Location or a redirect cached for less than a day is refused, since the ISR page can be served stale
-  long after a presign expires; every other photo
+  long after a presign expires. Since S257 the photos a page fetches while it loads are resolved the same way
+  (`resolvePhotoMap`: up to 24 distinct URLs in parallel under ONE shared 1.5 s deadline): every tile of
+  `/destinations` and the tour cards of a destination page. Every other photo (places list, photo ribbons, home)
   keeps the catalog URL. Same browse reads per page as before. Since S256 a resolved photo-CDN file is served
   **same-origin** as `/photo-cdn/<path>?v=…`, an external rewrite in `next.config.mjs` to the CIS photo CDN
   (`img.lumiguides.it.com`, AA-844) with `x-vercel-enable-rewrite-caching: 1`, so the Vercel CDN caches the versioned
   file and the browser reuses the HTML connection (no preconnect needed). The hero also asks the catalog for
   `?size=medium` (960 w) and adds it to the srcset only when CIS redirects it to a file (CIS answers 422 today).
-  The first-row tiles of `/destinations` are resolved the same way and load eagerly (the first is the LCP).
+  The first-row tiles of `/destinations` load eagerly (the first is the LCP); the others stay lazy.
 - **On-demand purge on a CIS tour lifecycle event (AA-987).** CIS posts one HMAC-signed notice per event of
   `catalog.v_tour_lifecycle_outbox` (CIS job `tripplanner_purge`, retried with backoff, swept every 5 min) to
   `POST /api/revalidate/catalog` (`app/api/revalidate/catalog/route.ts`, logic in `lib/catalogPurge.ts`). Header

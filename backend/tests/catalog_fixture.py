@@ -223,9 +223,9 @@ class FakeCatalogPool:
                 c["cover_photo_path"] = c["cover_photo_path"] or t["cover_photo_path"]
                 c["updated_at"] = max(c["updated_at"], t["updated_at"])
             return sorted(out.values(), key=lambda c: (-c["tour_count"], c["country"]))
-        if q == _norm(cat.COUNTRY_PLACES_SQL):
+        if q == _norm(cat.COUNTRY_PLACES_SQL):   # S257: geocoded or not (the page filters), with day_number
             ids = set(args[0])
-            return [p for p in PLACES if p["tour_id"] in ids and p["destination_id"] and p["lat"] is not None]
+            return [p for p in PLACES if p["tour_id"] in ids and p["destination_id"]]
         if q == _norm(cat.DESTINATION_COVERS_SQL):
             return [{"destination_id": d, "cover_photo_path": self._dest_cover(d),
                      "photo_count": sum(1 for p in self.dest_photos if p["destination_id"] == d),
@@ -303,6 +303,24 @@ class FakeCatalogPool:
             t = self._by_id(args[0])
             return (t["duration_days"] or 0) if t else None
         return None
+
+    async def execute(self, query: str, *args: Any) -> str:   # S257: SET LOCAL plan_cache_mode (fetch_custom_plan)
+        self.calls.append((query, args))
+        return "OK"
+
+    def transaction(self):
+        pool = self
+
+        class _Txn:
+            async def __aenter__(self):
+                pool.calls.append(("BEGIN", ()))
+                return pool
+
+            async def __aexit__(self, *a):
+                pool.calls.append(("END", ()))
+                return False
+
+        return _Txn()
 
     def acquire(self):
         pool = self
