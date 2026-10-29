@@ -15,7 +15,8 @@ import ts from "typescript";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCAN = ["app", "components", "lib", "ui", "proxy.ts", "instrumentation.ts"];
 const SOURCE = /\.(tsx?|mjs|js)$/;
-const SKIP = /\.test\.(mjs|ts|tsx)$/;
+// Tests and lint configs are never rendered: eslint-kit.mjs messages are developer-facing (the kit core copy, AA-994).
+const SKIP = /(\.test\.(mjs|ts|tsx)|(^|\/)eslint-[\w-]+\.mjs)$/;
 const ISSUE_ID = /\bAA-\d+\b/;
 // Strings that name an issue ID but never reach a screen, as "file:text". Changing one breaks something real.
 const NEVER_RENDERED = new Set([
