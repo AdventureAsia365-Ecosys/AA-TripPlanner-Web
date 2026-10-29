@@ -185,3 +185,20 @@ export async function resolveHeroPhoto(url: string | null | undefined): Promise<
     preconnect: src.startsWith("/") ? null : preconnectOrigin(src, large),
   };
 }
+
+// The URLs of a hero's files (its src and every srcset candidate).
+export function heroFiles(hero: HeroPhoto | null | undefined): string[] {
+  if (!hero) return [];
+  const set = (hero.srcSet ?? "").split(",").map((c) => c.trim().split(/\s+/)[0]).filter(Boolean);
+  return [hero.src, ...set];
+}
+
+// AA-995 S258 (mobile LCP) — the hero itself when a card under it shows the very same file (the destination cover is
+// usually the first tour's cover: Bhutan's hero 960 w and its first card's 600 w were the same photo, 46 KB more in the
+// first screen). Such a card then renders the hero's src + srcset with the hero's `sizes`, so the browser picks the
+// file it already has for the hero (memory cache) instead of a second size of the same photo. Compared on the
+// resolved file URLs, not the catalog ids (one file can sit behind several photo ids). null = an ordinary card.
+export function sameFileAsHero(cardPhoto: string | null | undefined, hero: HeroPhoto | null | undefined): HeroPhoto | null {
+  if (!cardPhoto || !hero) return null;
+  return heroFiles(hero).includes(cardPhoto) ? hero : null;
+}

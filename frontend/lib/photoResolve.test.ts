@@ -7,12 +7,14 @@ import {
   PHOTO_CDN_ORIGIN,
   PHOTO_PROXY_PREFIX,
   cacheMaxAge,
+  heroFiles,
   preconnectOrigin,
   redirectTarget,
   resolveHeroPhoto,
   resolvePhotoUrl,
   resolveRedirect,
   resolvePhotoMap,
+  sameFileAsHero,
   sameOriginPhotoUrl,
   sizedPhotoUrl,
   uniquePhotoUrls,
@@ -237,4 +239,25 @@ test("next.config.mjs proxies the same prefix to the same CDN host, with rewrite
   assert.ok(cfg.includes(`const PHOTO_CDN_ORIGIN = "${PHOTO_CDN_ORIGIN}";`), "PHOTO_CDN_ORIGIN differs from next.config.mjs");
   assert.ok(cfg.includes(`const PHOTO_PROXY_PREFIX = "${PHOTO_PROXY_PREFIX}";`), "PHOTO_PROXY_PREFIX differs from next.config.mjs");
   assert.match(cfg, /x-vercel-enable-rewrite-caching", value: "1"/);
+});
+
+test("sameFileAsHero matches a card photo that is one of the hero's files, compared on the resolved URL", () => {
+  const hero = {
+    src: "/photo-cdn/bt/f-1600.webp?v=1",
+    srcSet: "/photo-cdn/bt/f-600.webp?v=1 600w, /photo-cdn/bt/f-960.webp?v=1 960w, /photo-cdn/bt/f-1600.webp?v=1 1600w",
+    preconnect: null,
+  };
+  assert.deepEqual(heroFiles(hero), [
+    "/photo-cdn/bt/f-1600.webp?v=1", "/photo-cdn/bt/f-600.webp?v=1", "/photo-cdn/bt/f-960.webp?v=1", "/photo-cdn/bt/f-1600.webp?v=1",
+  ]);
+  assert.equal(sameFileAsHero("/photo-cdn/bt/f-600.webp?v=1", hero), hero);
+  // Another photo, another version of the file, or no resolved card photo: an ordinary card.
+  assert.equal(sameFileAsHero("/photo-cdn/bt/g-600.webp?v=1", hero), null);
+  assert.equal(sameFileAsHero("/photo-cdn/bt/f-600.webp?v=2", hero), null);
+  assert.equal(sameFileAsHero(null, hero), null);
+  assert.equal(sameFileAsHero("/photo-cdn/bt/f-600.webp?v=1", null), null);
+  // A hero without a srcset (the small size did not resolve) still matches its src.
+  const bare = { src: "/photo-cdn/bt/f-1600.webp?v=1", srcSet: null, preconnect: null };
+  assert.equal(sameFileAsHero("/photo-cdn/bt/f-1600.webp?v=1", bare), bare);
+  assert.deepEqual(heroFiles(null), []);
 });

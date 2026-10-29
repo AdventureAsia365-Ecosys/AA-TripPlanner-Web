@@ -189,6 +189,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   file and the browser reuses the HTML connection (no preconnect needed). The hero also asks the catalog for
   `?size=medium` (960 w) and adds it to the srcset only when CIS redirects it to a file (CIS answers 422 today).
   The first-row tiles of `/destinations` load eagerly (the first is the LCP); the others stay lazy.
+  Since S258 the static map (destination and tour pages) and the destination page's place thumbnails render through
+  `components/site/NearViewImage.tsx` (no `src` until 300 px below the viewport; `<noscript>` copy), because Chrome's
+  `loading="lazy"` fetched them during load on a phone; and a tour card that shows the hero's own file reuses the
+  hero's srcset + `sizes` (`sameFileAsHero`), so the browser takes the file it already has.
 - **On-demand purge on a CIS tour lifecycle event (AA-987).** CIS posts one HMAC-signed notice per event of
   `catalog.v_tour_lifecycle_outbox` (CIS job `tripplanner_purge`, retried with backoff, swept every 5 min) to
   `POST /api/revalidate/catalog` (`app/api/revalidate/catalog/route.ts`, logic in `lib/catalogPurge.ts`). Header
