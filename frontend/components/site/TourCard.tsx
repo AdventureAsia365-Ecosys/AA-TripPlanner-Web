@@ -2,7 +2,8 @@
 // AA-995 (spec §3.4) — Golden Hour card: 4:3 photo with the duration pill, the "Photo: {place}" caption when
 // the cover is a destination photo (AA-812 D4/D5), country kicker, 2-line title and summary, a meta row,
 // and "Explore trip →". The whole card is one link. `showPhoto={false}` (duplicate-cover rule,
-// lib/photos.ts) or a missing cover puts the no-photo tile in the photo slot.
+// lib/photos.ts) or a missing cover puts the no-photo tile in the photo slot. `photo` (S257): the cover already resolved
+// on the server (same-origin CDN file, lib/photoResolve.resolvePhotoMap), used instead of the catalog URL.
 import Link from "next/link";
 import { Icon } from "@/ui";
 import type { TourCard as TourCardData } from "@/lib/catalogTypes";
@@ -14,14 +15,16 @@ export default function TourCard({
   eager = false,
   showPhoto = true,
   noPhotoTone = "band",
+  photo,
 }: {
   tour: TourCardData;
   eager?: boolean;
   showPhoto?: boolean;
   noPhotoTone?: NoPhotoTone;
+  photo?: string | null;
 }) {
   const days = daysText(tour.duration_days, tour.duration_raw);
-  const src = showPhoto ? (tour.cover_url_small ?? tour.cover_url) : null;
+  const src = showPhoto ? (photo || (tour.cover_url_small ?? tour.cover_url)) : null;
   const fallbackCover = tour.cover_source && tour.cover_source !== "tour" && tour.cover_place;
   const highlights = tour.highlights?.length ?? 0;
   // AA-833: no prefetch. Cards come in grids (home, destination pages), and prefetching every card

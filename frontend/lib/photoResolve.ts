@@ -1,7 +1,8 @@
 // AA-995 (spec §6.1 phase 1, risk R1) — catalog photo URLs (`<CIS API>/content/photos/<id>?size=large|small`) answer
 // with a 302 to the image CDN, which costs the LCP image a full API Gateway round trip in the browser. On the server,
 // while the page renders (ISR), the hero image's URL is resolved once to its CDN location, so the browser asks the CDN
-// directly. Only the LCP image of a page is resolved; every other photo keeps the catalog URL (lazy, below the fold).
+// directly. The LCP image of a page is resolved, and since S257 the other photos fetched during page load on the
+// destination pages too (resolvePhotoMap); every other photo keeps the catalog URL (lazy, below the fold).
 //
 // Only a target that is safe to keep in the ISR page is used. The CDN branch of CIS `/content/photos/{id}` answers with a
 // versioned file URL (`…/<file>-1600.webp?v=<hash>`, `cache-control: public, max-age=86400`). Its other branch (no CDN:
@@ -80,7 +81,8 @@ export function preconnectOrigin(resolved: string | null | undefined, original: 
 // HTTP/2 connection it already has for the HTML instead of opening a new one (DNS + TCP + TLS) to the CDN host:
 // measured with Lighthouse mobile on a local production build, see the root audit 2026-10-28-S256-aa995-lcp.
 // Only the CDN host is proxied (next.config.mjs keeps the same constant; lib/photoResolve.test.ts checks it), and
-// only for the one LCP photo per page that this module resolves; every other photo keeps its catalog URL.
+// only for the photos this module resolves (the LCP photo, and resolvePhotoMap's set); every other photo keeps its
+// catalog URL.
 export const PHOTO_CDN_ORIGIN = "https://img.lumiguides.it.com";
 export const PHOTO_PROXY_PREFIX = "/photo-cdn";
 
@@ -106,9 +108,10 @@ export async function resolvePhotoUrl(url: string | null | undefined): Promise<s
 }
 
 // The CDN file a catalog photo URL redirects to, or null (no redirect, a refused target, an error or a timeout).
-export async function resolveRedirect(url: string): Promise<string | null> {
+// `signal` replaces the per-call timeout (resolvePhotoMap shares one deadline between its lookups).
+export async function resolveRedirect(url: string, signal?: AbortSignal): Promise<string | null> {
   try {
-    const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS) });
+    const res = await fetch(url, { redirect: "manual", signal: signal ?? AbortSignal.timeout(RESOLVE_TIMEOUT_MS) });
     // The body of a redirect is empty or tiny; release the connection either way.
     res.body?.cancel().catch(() => {});
     return redirectTarget(res.status, res.headers.get("location"), res.headers.get("cache-control"));
@@ -117,11 +120,44 @@ export async function resolveRedirect(url: string): Promise<string | null> {
   }
 }
 
-// One photo for an above-the-fold tile (the LCP tile of /destinations): its CDN file, same-origin, or the catalog URL
-// when the lookup fails.
-export async function resolveTilePhoto(url: string | null | undefined): Promise<string | null> {
-  const r = await resolvePhotoUrl(url);
-  return r ? sameOriginPhotoUrl(r) : null;
+// S257 (mobile LCP, follow-up of AA-995) — every photo the browser may fetch while the page is still loading, not only
+// the LCP one. Production Lighthouse (S256, prod-after) showed the cost of the photos left on the catalog URL: the
+// second-row tiles of /destinations and the first tour card of a destination page are fetched at once (in the viewport
+// or inside the browser's lazy-load distance), each as an API Gateway round trip (~0.6 s observed) for the 302, then a
+// new connection to the CDN host. When the first paint came late, Lighthouse counted that chain before the LCP: the
+// same page measured 1.4 s or 3.4 s (LCP "render delay" 0.05 s or 2.5 s). Served same-origin from the resolved file,
+// those photos ride the HTML's HTTP/2 connection and the Vercel CDN cache like the LCP photo.
+//
+// Resolves up to RESOLVE_MAX distinct catalog URLs in parallel under ONE shared deadline (RESOLVE_TIMEOUT_MS), so a
+// slow or failing catalog costs the ISR render at most that long, never one timeout per photo. Answer: catalog URL ->
+// same-origin URL (or another resolved https URL), only for the lookups that succeeded; the caller keeps the catalog
+// URL for every other photo (the 302 still works). Same refusal rules as resolvePhotoUrl (redirectTarget).
+export const RESOLVE_MAX = 24;
+
+// The distinct non-empty URLs, in first-seen order, at most `max`.
+export function uniquePhotoUrls(urls: Iterable<string | null | undefined>, max: number = RESOLVE_MAX): string[] {
+  const out: string[] = [];
+  for (const u of urls) {
+    if (out.length >= max) break;
+    if (u && !out.includes(u)) out.push(u);
+  }
+  return out;
+}
+
+export async function resolvePhotoMap(
+  urls: Iterable<string | null | undefined>,
+  max: number = RESOLVE_MAX,
+): Promise<Map<string, string>> {
+  const list = uniquePhotoUrls(urls, max);
+  const out = new Map<string, string>();
+  if (list.length === 0) return out;
+  const deadline = AbortSignal.timeout(RESOLVE_TIMEOUT_MS);
+  const targets = await Promise.all(list.map((u) => resolveRedirect(u, deadline)));
+  list.forEach((u, i) => {
+    const t = targets[i];
+    if (t) out.set(u, sameOriginPhotoUrl(t));
+  });
+  return out;
 }
 
 export interface HeroPhoto {

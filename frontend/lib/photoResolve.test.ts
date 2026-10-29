@@ -12,9 +12,10 @@ import {
   resolveHeroPhoto,
   resolvePhotoUrl,
   resolveRedirect,
-  resolveTilePhoto,
+  resolvePhotoMap,
   sameOriginPhotoUrl,
   sizedPhotoUrl,
+  uniquePhotoUrls,
 } from "./photoResolve.ts";
 
 const P = "https://api.example/content/photos/abc";
@@ -159,14 +160,69 @@ test("resolveRedirect is null when there is no usable redirect; resolvePhotoUrl 
   });
 });
 
-test("resolveTilePhoto: the CDN file same-origin, else the catalog URL", async () => {
-  await withFetch(catalogAnswer(PHOTO_CDN_ORIGIN + "/vn"), async () => {
-    assert.equal(await resolveTilePhoto(`${P}?size=small`), "/photo-cdn/vn/a-600.webp");
-  });
-  await withFetch((async () => new Response("{}", { status: 500 })) as typeof fetch, async () => {
-    assert.equal(await resolveTilePhoto(`${P}?size=small`), `${P}?size=small`);
-  });
-  assert.equal(await resolveTilePhoto(null), null);
+test("uniquePhotoUrls keeps the distinct non-empty URLs in first-seen order, capped", () => {
+  assert.deepEqual(uniquePhotoUrls([`${P}?size=small`, null, "", `${P}?size=small`, undefined, `${P}2?size=small`]), [
+    `${P}?size=small`,
+    `${P}2?size=small`,
+  ]);
+  assert.deepEqual(uniquePhotoUrls(["a", "b", "c"], 2), ["a", "b"]);
+  assert.deepEqual(uniquePhotoUrls([]), []);
+});
+
+test("resolvePhotoMap: each distinct URL looked up once, same-origin, failures left out (the caller keeps the catalog URL)", async () => {
+  const seen: string[] = [];
+  await withFetch(
+    (async (input: string | URL | Request) => {
+      const u = String(input);
+      seen.push(u);
+      if (u.includes("/bad")) return new Response("{}", { status: 500 });
+      if (u.includes("/presigned")) return new Response(null, { status: 302, headers: { location: PRESIGNED, "cache-control": PRESIGN_CC } });
+      if (u.includes("/other")) return new Response(null, { status: 302, headers: { location: CDN, "cache-control": CDN_CC } });
+      return new Response(null, { status: 302, headers: { location: `${PHOTO_CDN_ORIGIN}/vn/a-600.webp?v=1`, "cache-control": CDN_CC } });
+    }) as typeof fetch,
+    async () => {
+      const m = await resolvePhotoMap([`${P}?size=small`, `${P}?size=small`, null, `${P}/bad`, `${P}/presigned`, `${P}/other`]);
+      assert.deepEqual([...m.entries()], [
+        [`${P}?size=small`, "/photo-cdn/vn/a-600.webp?v=1"],
+        // A resolved file on another host still skips the 302 hop; it is just not same-origin.
+        [`${P}/other`, CDN],
+      ]);
+      assert.equal(seen.filter((u) => u === `${P}?size=small`).length, 1);
+    },
+  );
+  assert.equal((await resolvePhotoMap([null, undefined])).size, 0);
+});
+
+test("resolvePhotoMap shares one deadline: every lookup gets the same signal, a thrown lookup only drops its URL", async () => {
+  const signals = new Set<AbortSignal | null | undefined>();
+  await withFetch(
+    (async (input: string | URL | Request, init?: RequestInit) => {
+      signals.add(init?.signal);
+      if (String(input).includes("/slow")) throw new Error("aborted");
+      return new Response(null, { status: 302, headers: { location: `${PHOTO_CDN_ORIGIN}/la/b-600.webp`, "cache-control": CDN_CC } });
+    }) as typeof fetch,
+    async () => {
+      const m = await resolvePhotoMap([`${P}/a`, `${P}/slow`, `${P}/b`]);
+      assert.deepEqual([...m.keys()], [`${P}/a`, `${P}/b`]);
+      assert.equal(signals.size, 1);
+      assert.ok([...signals][0] instanceof AbortSignal);
+    },
+  );
+});
+
+test("resolvePhotoMap looks up at most RESOLVE_MAX URLs (the rest keep the catalog URL)", async () => {
+  let calls = 0;
+  await withFetch(
+    (async () => {
+      calls += 1;
+      return new Response(null, { status: 302, headers: { location: `${PHOTO_CDN_ORIGIN}/x/c.webp`, "cache-control": CDN_CC } });
+    }) as typeof fetch,
+    async () => {
+      const m = await resolvePhotoMap(Array.from({ length: 30 }, (_, i) => `${P}/${i}`), 5);
+      assert.equal(m.size, 5);
+      assert.equal(calls, 5);
+    },
+  );
 });
 
 test("sameOriginPhotoUrl rewrites only the photo CDN host and keeps path and query", () => {
