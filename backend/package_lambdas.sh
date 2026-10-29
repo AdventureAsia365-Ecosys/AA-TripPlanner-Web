@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Package the two TripPlanner Lambdas into dist/tripplanner/{browse,assembly}.zip
+# Package the TripPlanner Lambdas into dist/tripplanner/{browse,assembly,jobs}.zip
 # for AA-CIS-Infra's accounts/aa365/tripplanner.tf to deploy.
 #
-# Both Lambdas run the SAME backend/ package; they differ only in handler
-# entrypoint (backend.browse.handler.handler vs backend.assembly.handler.handler),
-# so the two zips have identical content. We build once and copy.
+# All three Lambdas run the SAME backend/ package; they differ only in handler
+# entrypoint (backend.browse.handler.handler, backend.assembly.handler.handler,
+# backend.jobs.handler.handler — AA-861, the tripplanner.job worker), so the
+# zips have identical content. We build once and copy.
 #
 # Runtime deps (requirements.txt, minus dev/test) are installed for the Lambda
 # runtime platform (python3.12, manylinux) so native wheels (asyncpg, pgvector)
@@ -16,6 +17,7 @@
 # Output:
 #   dist/tripplanner/browse.zip
 #   dist/tripplanner/assembly.zip
+#   dist/tripplanner/jobs.zip
 # =============================================================================
 set -euo pipefail
 
@@ -77,12 +79,13 @@ rm -f  "${BUILD_DIR}/backend/pytest.ini"
 
 echo "==> Creating ${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
-rm -f "${DIST_DIR}/browse.zip" "${DIST_DIR}/assembly.zip"
+rm -f "${DIST_DIR}/browse.zip" "${DIST_DIR}/assembly.zip" "${DIST_DIR}/jobs.zip"
 
 echo "==> Zipping"
 ( cd "${BUILD_DIR}" && zip -q -r "${DIST_DIR}/browse.zip" . )
-# Identical content for the assembly Lambda (different handler entrypoint only).
+# Identical content for the assembly and jobs Lambdas (different handler entrypoint only).
 cp "${DIST_DIR}/browse.zip" "${DIST_DIR}/assembly.zip"
+cp "${DIST_DIR}/browse.zip" "${DIST_DIR}/jobs.zip"
 
 echo "==> Done:"
 ls -lh "${DIST_DIR}"/*.zip

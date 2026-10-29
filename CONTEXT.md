@@ -57,11 +57,12 @@ API Gateway HTTP v2  (ANY /browse/{proxy+}, ANY /trip/{proxy+}; edge shared secr
 Two Python 3.12 Lambda functions
   ├─ browse      → stateless, cacheable reads (destinations, suggestions); embeds search text
   └─ assembly    → stateful writes (trip mutations) + Bedrock (AI narrative/plan)
+(+ jobs Lambda, no HTTP route: daily EventBridge tick → tripplanner.job worker, AA-861)
       │
       ▼
 Postgres (the shared RDS in acc2)
   ├─ tripplanner.*        (owned here — customers, sessions, trip_events, trip_drafts, outbox,
-  │                        narration_cache, llm_spend_daily, component_id_map)
+  │                        narration_cache, llm_spend_daily, component_id_map, job)
   ├─ shared.llm_*         (CIS Model Gateway: read config, write llm_call_log)
   └─ read-only: catalog.* views (CIS-owned: tours, places, tour graph, embeddings)
       │
@@ -255,6 +256,27 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   **fails closed**: on Lambda a missing, unreadable, empty or `REPLACE_ME` key answers 503
   (`{"evt":"api_key_unavailable"}` log line, no value). Only off Lambda with no env key is the gate
   disabled (local dev, unit tests). The secret itself is Infra's (`tripplanner.tf`).
+
+### Jobs Lambda and tripplanner.job (AA-861)
+
+- **`tripplanner.job`** (tp-021) is TripPlanner's job queue, rendered from the shared job table template (root ADR
+  0003a; AA-CIS-App `shared/jobs/job_table_template.sql`, byte copy + comparator in `migrations/tests/job_template/`,
+  checked by `test_tp021_pg.py`). Kinds are `tp_*`. Payloads and results hold flags, ids and counts only (DM-6.3).
+- **The worker is a third Lambda**, `aa-tripplanner-<env>-jobs` (`backend/jobs/handler.py`, same zip as browse and
+  assembly: `jobs.zip`; Infra `tripplanner_jobs.tf`): its own role (DB + Sentry DSN secrets only: no Bedrock, edge key
+  or SES), reserved concurrency 1 (one DB connection), no HTTP route. EventBridge Scheduler sends `{"op": "tick"}`
+  daily at 19:30 UTC: the Lambda queues the day's scheduled runs (idempotency key per kind and UTC day) and runs due
+  jobs (`backend/jobs/runner.py`: reap expired leases, claim with `FOR UPDATE SKIP LOCKED`, lease = time left + 60 s,
+  retry with backoff, stop with 45 s left). A tick that ends with a failed job or a HELD retention run raises, so the
+  errors alarm fires. Operators use `enqueue` / `run` / `status` by direct invoke (`docs/jobs-runbook.md`).
+- **`tp_retention_outbox_redact`** (`backend/jobs/outbox_redact.py`, DM-6.6 / DM-7.2): outbox rows older than 90 days
+  get `payload` rebuilt from an allowlist (`backend/jobs/redact.py`, AA-Booking's `bk_retention_inbox_redact` rule plus
+  `customer.identity`): name, email, phone, identity and custom day notes nulled, unknown keys dropped; `redacted_at`
+  set; row, `idempotency_key` and `schema_version` kept, so AA-Booking's dedupe and the outbox's own `ON CONFLICT` keep
+  working. DRY RUN by default; the daily run stays a DRY RUN until a manual live run of the same window succeeded, then
+  runs live and HOLDs above 2x the last live run. `manual_override` + `older_than_days` counts younger rows in a DRY
+  RUN anywhere; a live override needs `RETENTION_OVERRIDE_ENABLED=true` on Dev (Terraform, default off).
+- The outbox is still append-only for everyone else: the redaction kind is its one UPDATE (tp-021 table comment).
 
 ### Guest identity (AA-827)
 

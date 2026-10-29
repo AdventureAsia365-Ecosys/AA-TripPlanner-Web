@@ -1,13 +1,14 @@
 name: Deploy Lambdas
 
-# Builds the two TripPlanner Lambda zips and ships them to AWS via a
+# Builds the three TripPlanner Lambda zips (browse, assembly, jobs: AA-861) and ships them to AWS via a
 # least-privilege GitHub OIDC role (aa-tripplanner-dev-app-deploy, defined in
 # AA-CIS-Infra accounts/aa365/tripplanner.tf). This repo owns the Lambda CODE;
 # AA-CIS-Infra owns the infrastructure. See that repo's
 # docs/implementation-notes/AA-TripPlanner-backend.md.
 #
 # Prereqs (one-time, done in AA-CIS-Infra apply):
-#   - the two Lambdas + the artifacts bucket + the OIDC deploy role exist.
+#   - the three Lambdas + the artifacts bucket + the OIDC deploy role exist (the jobs
+#     Lambda: AA-CIS-Infra accounts/aa365/tripplanner_jobs.tf, AA-861).
 # Repo configuration (Settings -> Secrets and variables -> Actions):
 #   - secret AWS_DEPLOY_ROLE_ARN: the OIDC deploy role (AA-CIS-Infra output of
 #     aws_iam_role.tripplanner_app_deploy). Required. A SECRET, not a variable,
@@ -18,7 +19,7 @@ name: Deploy Lambdas
 #     from STS after the OIDC login; the account ID is masked in the log.
 #
 # Post-deploy verify (AA-993 V4, ADR 0016 D3): the `verify` job calls post-deploy-verify.yml (app lambdas, also
-# dispatchable with expected_sha; rows .github/verify/lambdas.rows): both functions Active, LastUpdateStatus
+# dispatchable with expected_sha; rows .github/verify/lambdas.rows): every function Active, LastUpdateStatus
 # Successful and CodeSha256 = the zip this run uploaded (S3 metadata git-sha / app-version / code-sha256 written
 # below), then the read-only browse + assembly rows through the production BFF (the former inline smoke, AA-879).
 # The `result` job ("Deploy Lambdas result") is red when any job did not succeed, skipped included: read that one.
@@ -44,6 +45,7 @@ env:
   ARTIFACTS_BUCKET_STEM: aa-tripplanner-dev-lambda-artifacts
   BROWSE_FUNCTION: aa-tripplanner-dev-browse
   ASSEMBLY_FUNCTION: aa-tripplanner-dev-assembly
+  JOBS_FUNCTION: aa-tripplanner-dev-jobs
 
 jobs:
   # AA-879: the deploy runs only after the full CI workflow passed on this commit (ci.yml is reusable via
@@ -103,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           APP_VERSION=$(jq -r '."."' .release-please-manifest.json)
-          for name in browse assembly; do
+          for name in browse assembly jobs; do
             zip="dist/tripplanner/${name}.zip"
             code=$(openssl dgst -sha256 -binary "$zip" | base64)
             meta=$(jq -cn --arg s "$GITHUB_SHA" --arg v "$APP_VERSION" --arg c "$code" \
@@ -122,12 +124,17 @@ jobs:
             --function-name "${ASSEMBLY_FUNCTION}" \
             --s3-bucket "${ARTIFACTS_BUCKET}" --s3-key assembly.zip \
             --publish >/dev/null
+          aws lambda update-function-code \
+            --function-name "${JOBS_FUNCTION}" \
+            --s3-bucket "${ARTIFACTS_BUCKET}" --s3-key jobs.zip \
+            --publish >/dev/null
 
       - name: Wait for updates to settle
         run: |
           aws lambda wait function-updated --function-name "${BROWSE_FUNCTION}"
           aws lambda wait function-updated --function-name "${ASSEMBLY_FUNCTION}"
-          echo "Both Lambdas updated."
+          aws lambda wait function-updated --function-name "${JOBS_FUNCTION}"
+          echo "All three Lambdas updated."
 
   # AA-993 V4 (ADR 0016 D3) — the post-update checks (the AA-879 smoke rows plus each function's CodeSha256 and
   # LastUpdateStatus) moved to post-deploy-verify.yml, also dispatchable on its own. It runs only when `deploy`

@@ -18,6 +18,7 @@
 
 lambda-browse|lambda|aa-tripplanner-dev-browse browse.zip|Successful|
 lambda-assembly|lambda|aa-tripplanner-dev-assembly assembly.zip|Successful|
+lambda-jobs|lambda|aa-tripplanner-dev-jobs jobs.zip|Successful|
 browse-countries|public|GET /api/browse?resource=countries&_cb={cb}|200|(.countries | length) > 0
 assembly-coverage|public|GET /api/trip?resource=coverage&trip_id=00000000-0000-0000-0000-000000000000|404|.error == "not found"
 assembly-itinerary|public|GET /api/trip?trip_id=00000000-0000-0000-0000-000000000000|200|.itinerary == [] and .custom_days == []
