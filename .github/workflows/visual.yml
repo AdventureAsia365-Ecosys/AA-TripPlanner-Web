@@ -85,15 +85,18 @@ jobs:
         env:
           BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: |
-          ARGS=(-sS -L -o /dev/null -w '%{http_code}' --max-time 30)
+          # No -L: Vercel protection answers 401/403, or redirects to its sign-in on vercel.com (which then answers 200).
+          ARGS=(-sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 30)
           [ -n "$BYPASS" ] && ARGS+=(-H "x-vercel-protection-bypass: $BYPASS")
           CODE=000
           for _ in 1 2 3; do
-            CODE=$(curl "${ARGS[@]}" "$BASE_URL/" || echo 000)
+            OUT=$(curl "${ARGS[@]}" "$BASE_URL/" || echo 000)
+            CODE=${OUT%% *}; LOC=${OUT#* }
+            case "$LOC" in *vercel.com*|*_vercel_sso*|*vercel.app/login*) CODE=401 ;; esac
             [ "$CODE" = "200" ] && break
             sleep 10
           done
-          echo "GET $BASE_URL/ -> HTTP $CODE"
+          echo "GET $BASE_URL/ -> HTTP $CODE ${LOC:-}"
           if [ "$CODE" = "200" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           if { [ "$CODE" = "401" ] || [ "$CODE" = "403" ]; } && [ "$TARGET" = "preview" ] && [ -z "$BYPASS" ]; then
             echo "::notice::The preview is behind Vercel protection and VERCEL_AUTOMATION_BYPASS_SECRET is not set: visual run skipped."
