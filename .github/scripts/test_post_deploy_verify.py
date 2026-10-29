@@ -44,7 +44,8 @@ OLD_SHA = "9e1b7c3a5d2f4e6a8c0b1d3f5a7e9c2b4d6f8a0c"
 VERSION = "0.8.2"
 CODE = "q1w2e3r4t5y6u7i8o9p0asdfghjklzxcvbnmQWERTYU="
 OTHER_CODE = "ZZZZe3r4t5y6u7i8o9p0asdfghjklzxcvbnmQWERTYU="
-FUNCS = {"aa-tripplanner-dev-browse": "browse.zip", "aa-tripplanner-dev-assembly": "assembly.zip"}
+FUNCS = {"aa-tripplanner-dev-browse": "browse.zip", "aa-tripplanner-dev-assembly": "assembly.zip",
+         "aa-tripplanner-dev-jobs": "jobs.zip"}  # AA-861: the jobs Lambda
 ZERO = "00000000-0000-0000-0000-000000000000"
 AWS_LEAK = "arn:aws:sts::123456789012:assumed-role/x/y 123456789012"
 
