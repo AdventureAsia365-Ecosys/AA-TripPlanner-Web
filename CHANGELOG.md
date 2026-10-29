@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.13.0...v0.14.0) (2026-10-29)
+
+
+### Features
+
+* inquiry key contract view for the CIS TP-03 handoff check (tp-022) ([#193](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/193)) ([01a72c1](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/01a72c16c97f4eaef685c91f0bb0083257aeed2d))
+
+
+### Bug Fixes
+
+* keep below-the-fold images out of the destination page load window ([#188](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/188)) ([25e8064](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/25e80647fd7438ab8e88571593fb3ee4efe012df))
+
 ## [0.13.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.12.0...v0.13.0) (2026-10-29)
 
 
