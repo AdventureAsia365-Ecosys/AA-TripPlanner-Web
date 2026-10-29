@@ -14,6 +14,7 @@ import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } fro
 import CtaBand, { CTA_REASSURANCES } from "@/components/site/CtaBand";
 import DayToggleAll from "@/components/site/DayToggleAll";
 import JsonLd from "@/components/site/JsonLd";
+import LcpImage from "@/components/site/LcpImage";
 import NoPhotoTile from "@/components/site/NoPhotoTile";
 import PhotoRibbon from "@/components/site/PhotoRibbon";
 import RevealObserver from "@/components/site/RevealObserver";
@@ -160,8 +161,7 @@ function Gallery({
         <HeroPreconnect hero={hero} />
         <figure className="relative h-[260px] overflow-hidden bg-k-hero-bg md:h-[440px] md:rounded-panel">
           {hero ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={hero.src} srcSet={hero.srcSet ?? undefined} sizes="(min-width: 1248px) 1184px, 100vw" alt={coverAlt(t)}
+            <LcpImage src={hero.src} srcSet={hero.srcSet ?? undefined} sizes="(min-width: 1248px) 1184px, 100vw" alt={coverAlt(t)}
                  width={1600} height={900} fetchPriority="high" loading="eager" decoding="async" className="h-full w-full object-cover" />
           ) : (
             <NoPhotoTile name={t.country ?? "Adventure Asia"} caption={t.title} className="h-full w-full" />
@@ -198,9 +198,9 @@ function Gallery({
             className={`relative h-[260px] ${photos.length === 1 ? "w-full" : "w-[88%]"} shrink-0 overflow-hidden rounded-tile bg-k-hero-bg md:h-auto md:w-auto md:rounded-none ${span(i)} ${i >= MOSAIC_PHOTOS ? "md:hidden" : ""}`}
           >
             {i === 0 && hero ? (
-              // The LCP image: resolved CDN URL, eager, high priority.
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={hero.src} srcSet={hero.srcSet ?? undefined} sizes={GALLERY_LCP_SIZES}
+              // The LCP image: resolved CDN URL, eager, high priority; a client component, so no Flight preload hint
+              // (components/site/LcpImage.tsx).
+              <LcpImage src={hero.src} srcSet={hero.srcSet ?? undefined} sizes={GALLERY_LCP_SIZES}
                    alt={p.place_label || t.title} width={1600} height={900} fetchPriority="high" loading="eager" decoding="async"
                    className="h-full w-full object-cover" />
             ) : (
@@ -337,8 +337,9 @@ export default async function TourPage({ params }: Props) {
       <SiteHeader />
 
       <main id="main">
-        {/* No prefetch on breadcrumbs (S255): a prefetch of "/" runs the home hero preload (a 60 KB AVIF at high
-            priority) on this page while its own LCP photo loads; Lighthouse mobile LCP 4.8 s → 3.9 s without them. */}
+        {/* No prefetch on breadcrumbs (S255): a prefetch of "/" ran the home hero preload (a 60 KB AVIF at high
+            priority) on this page while its own LCP photo loads; Lighthouse mobile LCP 4.8 s → 3.9 s without them.
+            S256: LCP images no longer send preload hints (components/site/LcpImage.tsx); the eager home cards still do. */}
         <nav aria-label="Breadcrumb" className="mx-auto max-w-page px-gutter pb-3 pt-4 text-caption font-normal text-k-muted">
           <Link href="/" prefetch={false} className="hover:text-k-accent-deep">Home</Link>
           <span aria-hidden> / </span>

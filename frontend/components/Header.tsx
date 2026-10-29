@@ -22,7 +22,7 @@ export default function Header() {
         <Link href="/" prefetch={false} aria-label="Adventure Asia Trip Planner — home" className="aa-focus">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/brand/logo.png"
+            src="/brand/logo-h108.png"
             alt="Adventure Asia"
             className="h-9 w-auto"
           />

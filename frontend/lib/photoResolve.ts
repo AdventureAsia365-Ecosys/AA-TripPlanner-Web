@@ -12,9 +12,11 @@
 // through the 302: the page never loses its photo because of this step.
 // Pure helpers first (unit-tested in lib/photoResolve.test.ts), then the one server function.
 
-export type PhotoSize = "small" | "large";
+export type PhotoSize = "small" | "medium" | "large";
 
 // The same catalog photo at another size (the browse API sends `?size=large` covers; small = 600 w, large = 1600 w).
+// "medium" (960 w) is not served by CIS yet (it answers 422): resolveHeroPhoto asks for it and uses it only when the
+// catalog redirects it to a file, so the rendition is picked up without a TripPlanner change once CIS stores it.
 export function sizedPhotoUrl(url: string | null | undefined, size: PhotoSize): string | null {
   if (!url) return null;
   try {
@@ -72,6 +74,27 @@ export function preconnectOrigin(resolved: string | null | undefined, original: 
   }
 }
 
+// AA-995 S256 (mobile LCP) — the LCP photo is served from the page's own origin. A CDN file URL is rewritten to
+// `/photo-cdn/<path>?<query>`, which next.config.mjs proxies to the CDN (Vercel external rewrite, cached at the edge on
+// the CDN's own `max-age`, the file URL being versioned by `?v=`). The browser then fetches the LCP image over the
+// HTTP/2 connection it already has for the HTML instead of opening a new one (DNS + TCP + TLS) to the CDN host:
+// measured with Lighthouse mobile on a local production build, see the root audit 2026-10-28-S256-aa995-lcp.
+// Only the CDN host is proxied (next.config.mjs keeps the same constant; lib/photoResolve.test.ts checks it), and
+// only for the one LCP photo per page that this module resolves; every other photo keeps its catalog URL.
+export const PHOTO_CDN_ORIGIN = "https://img.lumiguides.it.com";
+export const PHOTO_PROXY_PREFIX = "/photo-cdn";
+
+// The same-origin path of a CDN file URL; any other URL (catalog URL, another host, not a URL) is returned as is.
+export function sameOriginPhotoUrl(url: string, cdnOrigin: string = PHOTO_CDN_ORIGIN): string {
+  try {
+    const u = new URL(url);
+    if (u.origin !== cdnOrigin) return url;
+    return `${PHOTO_PROXY_PREFIX}${u.pathname}${u.search}`;
+  } catch {
+    return url;
+  }
+}
+
 export const RESOLVE_TIMEOUT_MS = 1500;
 
 // Server only (called from Server Components while the ISR page renders). Default fetch caching: the result lives in
@@ -79,14 +102,26 @@ export const RESOLVE_TIMEOUT_MS = 1500;
 // dynamic).
 export async function resolvePhotoUrl(url: string | null | undefined): Promise<string | null> {
   if (!url) return null;
+  return (await resolveRedirect(url)) ?? url;
+}
+
+// The CDN file a catalog photo URL redirects to, or null (no redirect, a refused target, an error or a timeout).
+export async function resolveRedirect(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS) });
     // The body of a redirect is empty or tiny; release the connection either way.
     res.body?.cancel().catch(() => {});
-    return redirectTarget(res.status, res.headers.get("location"), res.headers.get("cache-control")) ?? url;
+    return redirectTarget(res.status, res.headers.get("location"), res.headers.get("cache-control"));
   } catch {
-    return url;
+    return null;
   }
+}
+
+// One photo for an above-the-fold tile (the LCP tile of /destinations): its CDN file, same-origin, or the catalog URL
+// when the lookup fails.
+export async function resolveTilePhoto(url: string | null | undefined): Promise<string | null> {
+  const r = await resolvePhotoUrl(url);
+  return r ? sameOriginPhotoUrl(r) : null;
 }
 
 export interface HeroPhoto {
@@ -95,17 +130,22 @@ export interface HeroPhoto {
   preconnect: string | null;
 }
 
-// A page hero from one catalog photo URL: the large and small variants resolved in parallel, as a srcset
-// (600 w / 1600 w; at 390 @2x the browser takes the large one).
+// A page hero from one catalog photo URL: the variants resolved in parallel, as a srcset (600 w / [960 w] / 1600 w;
+// at 390 @2x the browser takes the large one). 960 w only when the catalog redirects `size=medium` to a file (see
+// sizedPhotoUrl). Resolved CDN files are served same-origin (sameOriginPhotoUrl); a URL that stays on another host
+// (the catalog URL after a failed lookup) keeps a preconnect.
 export async function resolveHeroPhoto(url: string | null | undefined): Promise<HeroPhoto | null> {
   const large = sizedPhotoUrl(url, "large");
   const small = sizedPhotoUrl(url, "small");
+  const medium = sizedPhotoUrl(url, "medium");
   if (!large) return null;
-  const [l, s] = await Promise.all([resolvePhotoUrl(large), resolvePhotoUrl(small)]);
-  const src = l ?? large;
+  const [l, s, m] = await Promise.all([resolvePhotoUrl(large), resolvePhotoUrl(small), medium ? resolveRedirect(medium) : null]);
+  const src = sameOriginPhotoUrl(l ?? large);
+  const smallSrc = s ? sameOriginPhotoUrl(s) : null;
+  const mediumSrc = m ? sameOriginPhotoUrl(m) : null;
   return {
     src,
-    srcSet: s ? `${s} 600w, ${src} 1600w` : null,
-    preconnect: preconnectOrigin(src, large),
+    srcSet: smallSrc ? [`${smallSrc} 600w`, ...(mediumSrc ? [`${mediumSrc} 960w`] : []), `${src} 1600w`].join(", ") : null,
+    preconnect: src.startsWith("/") ? null : preconnectOrigin(src, large),
   };
 }

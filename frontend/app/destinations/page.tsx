@@ -10,11 +10,16 @@ import RevealObserver from "@/components/site/RevealObserver";
 import SiteFooter from "@/components/site/SiteFooter";
 import SiteHeader from "@/components/site/SiteHeader";
 import { getCountries } from "@/lib/catalog";
+import { resolveTilePhoto } from "@/lib/photoResolve";
 import { gridWithPhotos } from "@/lib/photos";
 import { EmptyState, ErrorState } from "@/ui";
 
 // Route segment config must be a literal; keep it equal to CATALOG_REVALIDATE_S (lib/segmentConfig.test.ts checks).
 export const revalidate = 1800;
+
+// S256 (mobile LCP): the first row at 390 px (2 tiles) is above the fold, and its first photo tile is the LCP. Their
+// covers are resolved on the server to the same-origin CDN file and loaded eagerly; the rest stay lazy.
+const ABOVE_FOLD_TILES = 2;
 
 export const metadata: Metadata = {
   title: "Destinations",
@@ -28,6 +33,10 @@ export default async function DestinationsPage() {
   const { items: grid, shown } = gridWithPhotos(countries, (c) => c.cover_url_small ?? c.cover_url);
   let n = 0;
   const tones = shown.map((on) => (on ? "band" : noPhotoTone(n++)));
+  const firstPhoto = shown.indexOf(true);
+  const abovePhotos = await Promise.all(
+    grid.slice(0, ABOVE_FOLD_TILES).map((c, i) => (shown[i] ? resolveTilePhoto(c.cover_url_small ?? c.cover_url) : null)),
+  );
   const tourTotal = countries.reduce((sum, c) => sum + c.tour_count, 0);
 
   return (
@@ -54,7 +63,12 @@ export default async function DestinationsPage() {
               <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 md:gap-5 lg:grid-cols-4" data-reveal="" data-reveal-group="">
                 {grid.map((c, i) => (
                   <li key={c.slug}>
-                    <DestinationTile c={c} showPhoto={shown[i]} tone={tones[i]} />
+                    <DestinationTile
+                      c={c}
+                      showPhoto={shown[i]}
+                      tone={tones[i]}
+                      above={i < ABOVE_FOLD_TILES && shown[i] ? { photo: abovePhotos[i], lcp: i === firstPhoto } : undefined}
+                    />
                   </li>
                 ))}
               </ul>

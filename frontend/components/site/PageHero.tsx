@@ -6,6 +6,7 @@
 // at 390 px grows the hero instead of clipping it.
 import type { ReactNode } from "react";
 import type { HeroPhoto } from "@/lib/photoResolve";
+import LcpImage from "./LcpImage";
 import { MountainMotif } from "./NoPhotoTile";
 
 export default function PageHero({
@@ -23,8 +24,8 @@ export default function PageHero({
         <>
           {/* React 19 hoists it to <head>: the CDN connection opens while the HTML is still arriving. */}
           {photo.preconnect && <link rel="preconnect" href={photo.preconnect} />}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
+          {/* A client component: no Flight preload hint, so a prefetch of this page elsewhere never downloads it. */}
+          <LcpImage
             src={photo.src}
             srcSet={photo.srcSet ?? undefined}
             sizes="100vw"

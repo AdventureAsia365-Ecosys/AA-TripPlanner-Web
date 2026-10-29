@@ -4,6 +4,7 @@
 import Link from "next/link";
 import type { CountrySummary } from "@/lib/catalogTypes";
 import { formatDayRange } from "@/lib/text";
+import LcpImage from "./LcpImage";
 import NoPhotoTile, { type NoPhotoTone } from "./NoPhotoTile";
 
 export function destinationMeta(c: Pick<CountrySummary, "tour_count" | "min_days" | "max_days">): string {
@@ -11,16 +12,21 @@ export function destinationMeta(c: Pick<CountrySummary, "tour_count" | "min_days
   return c.min_days && c.max_days ? `${tours} · ${formatDayRange(c.min_days, c.max_days, "–")}` : tours;
 }
 
+// `above`: the tile is in the first row of /destinations (S256, mobile LCP): `photo` is its cover already resolved on the
+// server (same-origin CDN file, lib/photoResolve.resolveTilePhoto), loaded eagerly; `lcp` marks the one LCP tile
+// (fetchpriority=high). Every other tile keeps the lazy catalog URL.
 export default function DestinationTile({
   c,
   showPhoto = true,
   tone = "band",
+  above,
 }: {
   c: CountrySummary;
   showPhoto?: boolean;
   tone?: NoPhotoTone;
+  above?: { photo: string | null; lcp: boolean };
 }) {
-  const src = showPhoto ? (c.cover_url_small ?? c.cover_url) : null;
+  const src = showPhoto ? ((above?.photo ?? null) || (c.cover_url_small ?? c.cover_url)) : null;
   const meta = destinationMeta(c);
   // AA-833: no prefetch. Every tile in view would render its destination page at once after a deploy or
   // ISR expiry and throttle the browse Lambda.
@@ -33,9 +39,14 @@ export default function DestinationTile({
     >
       {src ? (
         <>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={src} alt="" width={480} height={600} loading="lazy" decoding="async"
-               className="tp-lift-img h-full w-full object-cover" />
+          {above ? (
+            <LcpImage src={src} alt="" width={480} height={600} loading="eager" decoding="async"
+                      fetchPriority={above.lcp ? "high" : undefined} className="tp-lift-img h-full w-full object-cover" />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={src} alt="" width={480} height={600} loading="lazy" decoding="async"
+                 className="tp-lift-img h-full w-full object-cover" />
+          )}
           <div className="tp-tile-scrim absolute inset-x-0 bottom-0 p-4 text-white">
             <p className="text-h3 uppercase tracking-[0.08em]">{c.country}</p>
             <p className="mt-1 text-caption">{meta}</p>
