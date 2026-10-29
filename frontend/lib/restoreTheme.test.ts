@@ -56,3 +56,9 @@ test("blocked storage still sets both attributes", () => {
 test("no matchMedia at all: light theme, motion reduced (fail static)", () => {
   assert.deepEqual(run({ noMatchMedia: true }).attrs, { "data-theme": "light", "data-motion": "reduce" });
 });
+
+test("the theme part is the kit core's restore script for tp_theme (AA-994 S5a)", async () => {
+  const { themeRestoreScript } = await import("../ui/core/theme.ts");
+  assert.ok(RESTORE_THEME_SCRIPT.startsWith(themeRestoreScript("tp_theme").trim()));
+  assert.ok(RESTORE_THEME_SCRIPT.includes('"tp_theme"'));
+});

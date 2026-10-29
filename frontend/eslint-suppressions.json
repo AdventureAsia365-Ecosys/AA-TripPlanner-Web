@@ -1,0 +1,12 @@
+{
+  "app/layout.tsx": {
+    "aa-kit/no-hex-colour": {
+      "count": 2
+    }
+  },
+  "components/MapView.tsx": {
+    "aa-kit/no-hex-colour": {
+      "count": 31
+    }
+  }
+}

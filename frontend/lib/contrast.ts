@@ -1,5 +1,5 @@
-// AA-837 — WCAG 2.x contrast of the theme tokens (ui/tokens.css), so a token change that breaks
-// AA in either theme fails `npm test` before it reaches a page. Pure functions, no imports.
+// AA-837 — WCAG 2.x contrast of the theme tokens (ui/core/tokens.css + ui/tokens.css), so a token change that
+// breaks AA in either theme fails `npm test` before it reaches a page. Pure functions, no imports.
 
 // "#DB9628" / "#fff" → [r, g, b] 0-255; null for anything else (rgba(), var(), names).
 export function parseHex(value: string): [number, number, number] | null {
@@ -45,10 +45,12 @@ export function compositeOver(scrim: string, under: string): string {
   return `#${mix.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
 }
 
-// The `--aa-*` and `--tp-*` custom properties of each theme block in tokens.css:
+// The `--aa-*` and `--tp-*` custom properties of each theme block of one tokens file:
 // `:root, [data-theme="light"] { … }` and `[data-theme="dark"] { … }`. `--aa-ink` is keyed "ink",
-// `--tp-band` is keyed "tp-band" (AA-995).
-export function readThemeTokens(css: string): { light: Record<string, string>; dark: Record<string, string> } {
+// `--tp-band` is keyed "tp-band" (AA-995). Comments are dropped first: the kit core's comments name tokens
+// ("--aa-scrim: flat scrim under …"), which would otherwise read as definitions (AA-994 S5a).
+export function readThemeTokens(source: string): { light: Record<string, string>; dark: Record<string, string> } {
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, "");
   const block = (selector: RegExp): Record<string, string> => {
     const m = selector.exec(css);
     if (!m) throw new Error(`theme block not found: ${selector}`);

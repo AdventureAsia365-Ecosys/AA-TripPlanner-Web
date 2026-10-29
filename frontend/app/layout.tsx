@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Poppins, Satisfy } from "next/font/google";
+// AA-994 S5a: the kit core token set first (every --aa-* value), then the TripPlanner-only --tp-* values.
+import "../ui/core/tokens.css";
 import "../ui/tokens.css";
 import "./globals.css";
 import { RESTORE_THEME_SCRIPT } from "@/ui/restoreTheme";

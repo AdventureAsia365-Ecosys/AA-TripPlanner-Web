@@ -9,7 +9,7 @@ body {
   height: 100%;
 }
 
-/* AA-837: theme-aware (ui/tokens.css), the map planner included.
+/* AA-837: theme-aware (ui/core/tokens.css), the map planner included.
    AA-995: Poppins everywhere, the map planner included (spec R10). */
 body {
   font-family: var(--aa-font-sans);
