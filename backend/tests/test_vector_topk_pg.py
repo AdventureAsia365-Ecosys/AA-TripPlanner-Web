@@ -248,17 +248,49 @@ async def test_search_matches_the_full_scan_aggregate(db):
                 assert [r["component_count"] for r in old] == [d["component_count"] for d in new]
 
 
-async def test_search_through_the_hnsw_index_keeps_the_top_destinations(db):
-    """HNSW is approximate: through the index the top destinations still match the exact answer
-    (these fixtures are random 256-d clusters, harder for HNSW than real embeddings)."""
+# AA-995: how far the HNSW answer may sit from the exact one. The fixture's top destinations of a query are packed
+# into a narrow band (ranks 2-10 often span ~0.01-0.02 of cosine distance, neighbours ~0.0005 apart), so an
+# approximate scan that misses a destination's best component, or skips one destination, reorders near neighbours.
+# Measured on fresh index builds (S257, local PostgreSQL 16): pgvector 0.8.7 (CI's major line) 2000 cases, worst
+# rank-by-rank excess 0.0005, never fewer than 9 of the exact top 10; pgvector 0.6.0 (no iterative scan) worst ~0.006,
+# once 8 of 10. A broken index (arbitrary rows) breaks both bounds by far.
+HNSW_RANK_DISTANCE_TOLERANCE = 0.01
+HNSW_TOP = 10
+HNSW_MIN_TOP_HITS = 8
+
+
+async def test_search_through_the_hnsw_index_keeps_the_top_destinations(db, caplog):
+    """HNSW is approximate: through the index the top destinations still match the exact answer up to near ties
+    (these fixtures are random 256-d clusters, harder for HNSW than real embeddings). The index graph differs on
+    every build (pgvector draws node levels at random), so the check is on distances, never on exact list order:
+      * at every rank of the top 10, the destination found through the index is, by its exact best distance, at
+        most HNSW_RANK_DISTANCE_TOLERANCE worse than the exact answer's destination at that rank;
+      * at least HNSW_MIN_TOP_HITS of the top 10 are true top-10 destinations (ties at the 10th distance count);
+      * 90 % of the 60 destinations are shared.
+    hnsw.ef_search cannot be raised from the test: ranked_destinations sets it transaction-locally per pass
+    (400 for k=200, the pgvector maximum 1000 for k=1000), which overrides a session or SET LOCAL value."""
     conn, ctx = db
     await conn.execute("SET enable_seqscan = off")
     await conn.execute("SET enable_bitmapscan = off")
+    caplog.set_level("INFO", logger=search_mod.__name__)
     for q in ctx["queries"]:
         for f in FILTER_CASES:
+            # exact best distance of every destination the filter allows (any of them may come back via the index)
+            exact = {str(r["id"]): r["best_distance"] for r in await _full_scan_search(conn, q, f, N_DEST)}
             old = [str(r["id"]) for r in await _full_scan_search(conn, q, f, 60)]
+            caplog.clear()
             new = [d["id"] for d in await _new_search(conn, q, f, 60)]
-            assert new[:10] == old[:10], f
+            if f == BrowseFilters():
+                # the unfiltered search is the one the index must serve; otherwise this compares exact with exact
+                assert "via topk:" in caplog.text, caplog.text
+            assert len(new) == len(old), f
+            assert set(new) <= set(exact), f
+            top = min(HNSW_TOP, len(old))
+            excess = [exact[new[i]] - exact[old[i]] for i in range(top)]
+            assert max(excess) <= HNSW_RANK_DISTANCE_TOLERANCE, (f, excess, new[:top], old[:top])
+            cutoff = exact[old[top - 1]] + 1e-9  # a destination tied with the exact 10th is a hit too
+            hits = sum(1 for d in new[:top] if exact[d] <= cutoff)
+            assert hits >= min(HNSW_MIN_TOP_HITS, top), (f, hits, new[:top], old[:top])
             assert len(set(new) & set(old)) >= 0.9 * len(old), f
 
 
