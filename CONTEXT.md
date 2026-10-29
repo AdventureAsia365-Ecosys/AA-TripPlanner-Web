@@ -109,24 +109,42 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   blocks any partner iframe of TripPlanner until an allow-list is designed (KAN-20 B2B). A production deploy
   fails red if `https://aa-tripplanner.vercel.app/` lacks any of them ("Check the production security headers"
   step in `vercel-deploy.yml`; TripPlanner has no UI smoke workflow, so this is its header smoke).
+- **Visual run (AA-994 S5b).** After every successful deploy, `vercel-deploy.yml` job `visual` calls
+  `.github/workflows/visual.yml` (also dispatchable with any `base_url`): Playwright (`e2e/visual/`, its own pinned
+  package) opens every page of `e2e/visual/pages.ts` at 1440 x 900 and 390 x 844 in light and dark, checks no page-level
+  horizontal overflow, no console / page error, no failed same-origin request, and uploads full-page PNGs + `report.json`
+  (14 days), with one table in the job summary and one PR comment. Previews use the deployment URL (skipped with a
+  notice while the project has no automation bypass), production the public host. Report-only: the deploy verdict
+  (`result`) does not wait on it. `frontend/lib/visualPages.test.ts` fails when an `app/**/page.tsx` route is neither
+  listed nor excluded with a reason.
 
-### Theme and contrast (AA-812, AA-837, AA-995)
+### Theme and contrast (AA-812, AA-837, AA-995, AA-994)
 
-- One palette: the `--aa-*` tokens in `frontend/ui/tokens.css` (CIS kit values, three light values
-  darkened for WCAG AA), exposed to Tailwind as `k-*` (`bg-k-card`, `text-k-muted`,
+- **Kit core, tokens profile (AA-994 S5a, root ADR 0016).** `frontend/ui/core/` is a byte copy of AA-CIS-App
+  `frontend/app/_kit/core/` (tokens.css, tokens.ts, brand.ts, theme.ts, check-kit-copy.mjs, eslint-kit.mjs,
+  MANIFEST.json), written only by the root `tools/kit/kit-sync.sh` (the CIS kit-sync bot opens the PR) and pinned in
+  `frontend/kit.lock.json`; never edit it here. The Frontend job checks integrity (`check-kit-copy.mjs`, plus
+  `--css .`: no `--aa-*` definition outside `ui/core/tokens.css`) and provenance
+  (`.github/scripts/check_kit_provenance.py`: the manifest is CIS's at the lock's ref, and the ref is on CIS main),
+  and lints `app/`, `components/`, `ui/` with the kit's token rules (`no-hex-colour`, `no-raw-aa-var`,
+  `no-aa-var-definition`) at error; older violations (Mapbox paint colours, the theme-color meta) sit in
+  `frontend/eslint-suppressions.json`, which may only shrink.
+- One palette: the `--aa-*` tokens of the kit core (`frontend/ui/core/tokens.css`, imported first in
+  `app/layout.tsx`; `frontend/ui/tokens.css` adds only the `--tp-*` values), exposed to Tailwind as `k-*` (`bg-k-card`, `text-k-muted`,
   `text-k-accent-deep`, `bg-k-accent text-k-on-accent`, inverted `bg-k-ink text-k-bg`…). Every page
   uses them, **the map planner included**: AA-837 retired the planner's light-only `aa-*` hex palette.
   Tokens are CSS variables, so Tailwind opacity modifiers (`/40`) do not apply — pick a token.
-- Light / dark / system theme on every page (`ui/theme.ts`, restore script in `app/layout.tsx`,
+- Light / dark / system theme on every page (the kit's `createThemeStore({ storageKey: "tp_theme" })` in
+  `ui/restoreTheme.ts`, used by `ui/theme.ts`; restore script in `app/layout.tsx`,
   `ThemeToggle` in both the site header and the planner header). The Mapbox basemap stays the light
   `outdoors-v12` style in both themes (map imagery, drawn on a canvas); the planner chrome around it
   follows the theme.
-- Guards (`npm test`): `lib/contrast.test.ts` checks every planner text/background token pair at
-  ≥ 4.5:1 in both themes and fails on raw palette classes (`aa-*`, `bg-white`, `text-gray-500`,
+- Guards (`npm test`): the `--aa-*` text/background pairs are checked in CIS (`lib/tokensContrast.test.mjs`, on
+  the core file, before any sync); `lib/contrast.test.ts` fails on raw palette classes (`aa-*`, `bg-white`, `text-gray-500`,
   `[#hex]`…) in the planner's files. Rendered-page check: axe `color-contrast` on `/plan` in light
   and dark at 1440 and 390 px (AA-837 implementation notes).
-- **Customer pages, "Golden Hour" (AA-995).** `ui/tokens.css` also holds the type, radius, space, shadow and
-  motion scales (`--aa-*`, proposed for AA-994 core) and the B2C surfaces (`--tp-*`: sand band, navy band
+- **Customer pages, "Golden Hour" (AA-995).** The type, radius, space, shadow and motion scales (`--aa-*`) are
+  in the kit core since AA-994 S1b; `ui/tokens.css` holds the B2C surfaces (`--tp-*`: sand band, navy band
   and its text, photo scrims, script face, ribbon speed), mapped to new Tailwind names only (`text-display|h1|h3|
   lead|body|small|caption|kicker|script`, `rounded-card|tile|panel|pill`, `shadow-e1..e3`, `duration-fast…`,
   `ease-std|out|in`, `k-sand`, `k-band`, `k-on-band`…), so the planner's Tailwind defaults are untouched. Fonts:

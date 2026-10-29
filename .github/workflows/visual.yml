@@ -1,0 +1,166 @@
+name: Visual
+
+# AA-994 S5b (root ADR 0016; plan docs/audits/2026-10-27-S252-aa994-design-system/plan.md section 4) — the public
+# pages of TripPlanner (e2e/visual/pages.ts: every app route, guard G16 in frontend/lib/visualPages.test.ts) at
+# 1440 x 900 and 390 x 844, light and dark, on a deployment:
+#   - no page-level horizontal overflow, no console error / page error, no failed same-origin request;
+#   - a full-page PNG per page x viewport x theme.
+# Artifact `visual-tripplanner-<target>-<run id>`: the PNGs + report.json (14 days). The job summary has one table
+# (page x 4 cells), and on a PR the run posts or updates one comment with it.
+#
+# Triggers:
+#   workflow_call      from vercel-deploy.yml after a deploy: target preview (the PR's deployment URL) or production
+#                      (the public host https://aa-tripplanner.vercel.app). Report-only: the caller's verdict job
+#                      does not wait on it, so a red visual run never blocks a deploy (plan 4.3).
+#   workflow_dispatch  any base_url (default: production), optional page filter.
+# TripPlanner has no signed-in capture (B2C, every page is public), so this workflow reads no secret except the Vercel
+# automation bypass for protected previews. Without it a protected preview answers 401: the run then says so in a
+# notice and skips (green), like the preview security-header check.
+
+on:
+  workflow_call:
+    inputs:
+      base_url:
+        description: "Deployment to capture (preview URL or the production host)."
+        required: true
+        type: string
+      target:
+        description: "preview or production (artifact name and comment)."
+        required: true
+        type: string
+      sha:
+        description: "The deployed commit (checks out the same spec and page list)."
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Deployment to capture"
+        required: true
+        type: string
+        default: https://aa-tripplanner.vercel.app
+      pages:
+        description: "Optional Playwright --grep on '<page slug> <theme>' (e.g. 'destination|tour')"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: visual-${{ inputs.base_url }}
+  cancel-in-progress: true
+
+jobs:
+  visual:
+    name: Visual (public pages, 1440/390, light/dark)
+    # Pinned like the CIS ui-smoke job: Playwright's Chromium is not supported on newer runner images yet.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: e2e/visual
+    env:
+      BASE_URL: ${{ inputs.base_url }}
+      TARGET: ${{ inputs.target || 'dispatch' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: e2e/visual/package-lock.json
+
+      # A protected preview without the bypass secret cannot be captured: say so and skip the rest (green).
+      - name: Can the deployment be read?
+        id: reach
+        env:
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          # No -L: Vercel protection answers 401/403, or redirects to its sign-in on vercel.com (which then answers 200).
+          ARGS=(-sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 30)
+          [ -n "$BYPASS" ] && ARGS+=(-H "x-vercel-protection-bypass: $BYPASS")
+          CODE=000
+          for _ in 1 2 3; do
+            OUT=$(curl "${ARGS[@]}" "$BASE_URL/" || echo 000)
+            CODE=${OUT%% *}; LOC=${OUT#* }
+            case "$LOC" in *vercel.com*|*_vercel_sso*|*vercel.app/login*) CODE=401 ;; esac
+            [ "$CODE" = "200" ] && break
+            sleep 10
+          done
+          echo "GET $BASE_URL/ -> HTTP $CODE ${LOC:-}"
+          if [ "$CODE" = "200" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if { [ "$CODE" = "401" ] || [ "$CODE" = "403" ]; } && [ "$TARGET" = "preview" ] && [ -z "$BYPASS" ]; then
+            echo "::notice::The preview is behind Vercel protection and VERCEL_AUTOMATION_BYPASS_SECRET is not set: visual run skipped."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error::$BASE_URL/ answered HTTP $CODE."
+          exit 1
+
+      - name: Install Playwright
+        if: steps.reach.outputs.ok == 'true'
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Capture and check
+        if: steps.reach.outputs.ok == 'true'
+        env:
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          GREP: ${{ inputs.pages }}
+        run: |
+          ARGS=(-c playwright.config.ts)
+          [ -n "$GREP" ] && ARGS+=(--grep "$GREP")
+          npx playwright test "${ARGS[@]}"
+
+      - name: Summary
+        if: always() && steps.reach.outputs.ok == 'true'
+        run: |
+          mkdir -p results
+          {
+            echo "### Visual — $TARGET ($BASE_URL)"
+            echo ""
+            node summary.mjs
+          } | tee results/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload screenshots and report
+        if: always() && steps.reach.outputs.ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-tripplanner-${{ inputs.target || 'dispatch' }}-${{ github.run_id }}
+          path: |
+            e2e/visual/results/shots/*.png
+            e2e/visual/results/report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      # One comment per PR (marker), edited in place. All values reach `run:` through env.
+      - name: Comment the summary on the PR
+        if: always() && steps.reach.outputs.ok == 'true' && inputs.target == 'preview' && inputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ inputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PR=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
+          if [ -z "$PR" ]; then echo "No PR for $SHA"; exit 0; fi
+          MARKER="<!-- visual-run -->"
+          # shellcheck disable=SC2016  # the backticks are literal Markdown
+          BODY=$(printf '%s\n%s\n\nCommit: `%s` · [run and screenshots](%s)\n' "$MARKER" "$(cat results/summary.md)" "$SHA" "$RUN_URL")
+          EXISTING=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                       --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" 2>/dev/null | head -n1 || true)
+          if [ -n "$EXISTING" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" -f body="$BODY" >/dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$BODY" >/dev/null
+          fi

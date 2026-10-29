@@ -1,84 +1,31 @@
 /* ──────────────────────────────────────────────────────────────────────────
-   AA-812 — shared Adventure Asia design tokens for TripPlanner.
-   AA-995 — "Golden Hour" customer pages: type, radius, shadow, space, layout and motion scales,
-   the B2C surfaces (sand band, navy band, photo scrims) and the Satisfy script face.
+   TripPlanner-only design tokens (`--tp-*`) and the base styles of the customer pages.
 
-   Colour values were copied from the AA-CIS-App UI kit (apps/AA-CIS-App/frontend/app/globals.css,
-   AA-601 part B, and app/_brand/tokens.ts, AA-605), so CIS admin/portal, AA-Booking and
-   TripPlanner read as one family. When a value changes there, change it here too.
+   AA-994 S5a (root ADR 0016 decision 4): every `--aa-*` value (colour, type, radius, space, shadow, z-index, motion)
+   comes from the kit core, `ui/core/tokens.css`, a byte copy of AA-CIS-App `frontend/app/_kit/core/tokens.css`
+   (tools/kit/kit-sync.sh in the root repo; tokens profile, frontend/kit.lock.json). It is imported before this file in
+   app/layout.tsx. This file must not define an `--aa-*` variable (`check-kit-copy.mjs --css .` fails the Frontend
+   job, ESLint `aa-kit/no-aa-var-definition` the same from JS); a value change goes to the CIS core, then a sync.
+   The contrast of the `--aa-*` pairs is checked in CIS (lib/tokensContrast.test.mjs); lib/contrast.test.ts here checks
+   the pairs that involve a `--tp-*` value (sand / navy bands, photo scrims) against both files.
 
-   Naming (ADR 0016 §3–4, AA-994):
-     --aa-*  generic scales (colour, type, radius, space, shadow, motion). The new non-colour scales
-             are proposed for AA-994 slice 1 ("token chung"); once `ui/core/tokens.css` exists, this
-             block is deleted here and nothing else changes.
-     --tp-*  TripPlanner-only B2C surfaces (sand band, navy band, photo scrims, script face, ribbon).
+   --tp-*  TripPlanner-only B2C surfaces (AA-995 "Golden Hour"): sand band, navy band and its text, photo scrims,
+           the Satisfy script face and its sizes, section spacing, container, gutter, header height, hero settle,
+           ribbon speed.
+   White on gold is never allowed: gold buttons keep dark text (--aa-on-accent).
+   Text on a photo sits only where the scrim is at least --tp-scrim-text (alpha .70): white over that scrim on a
+   pure-white pixel is about 6.8:1, while .55 would give only about 4.2:1.
 
-   Contrast (AA-812 D6, S237; AA-995): LIGHT values that differ from the CIS kit so every text pair
-   meets WCAG AA (4.5:1):
-     --aa-accent-deep  #9E6E16 -> #875D12  (on tint 4.05 -> 5.28, on white 4.47 -> 5.83)
-     --aa-muted        #6B7380 -> #5A6270  (AA-995: #656D7A was 4.48 on the new sand band; #5A6270
-                                            is the CIS AA-760 value, so the drift is gone too)
-     --aa-on-accent    #FFFFFF -> #1A1206  (text on the gold primary 2.49 -> 7.42)
-   White on gold is never allowed: gold buttons keep dark text.
-   Text on a photo sits only where the scrim is at least --tp-scrim-text (alpha .70): white over
-   that scrim on a pure-white pixel is about 6.8:1, while .55 would give only about 4.2:1.
-
-   Theme: <html data-theme="light|dark"> set before paint by the restore script (ui/restoreTheme.ts;
-   localStorage `tp_theme`; absent = follow the OS). Motion: the same script sets
-   <html data-motion="ok|reduce"> from prefers-reduced-motion; without JS there is no data-motion and
-   every page is static and fully visible.
-   lib/contrast.test.ts checks every text pair in both themes (and the scrims), lib/tokens.test.ts
-   bans raw px / hex / duration classes on the customer pages: change a value here and `npm test`
-   tells you if a pair drops under its WCAG threshold.
+   Theme: <html data-theme="light|dark"> set before paint by the restore script (ui/restoreTheme.ts, the kit's
+   createThemeStore with localStorage `tp_theme`; absent = follow the OS). Motion: the same script sets
+   <html data-motion="ok|reduce"> from prefers-reduced-motion; without JS there is no data-motion and every page is
+   static and fully visible. lib/tokens.test.ts bans raw px / hex / duration classes on the customer pages.
    ────────────────────────────────────────────────────────────────────────── */
 
 :root,
 [data-theme="light"] {
-  --aa-accent:        #DB9628;
-  --aa-accent-deep:   #875D12; /* kit #9E6E16, see Contrast above */
-  --aa-accent-soft:   #F4E2C2;
-  --aa-accent-tint:   #FBF3E3;
-  --aa-accent-border: #DDA64E;
-  --aa-slate:         #35495E;
-
-  --aa-red:           #C20101;
-  --aa-red-soft:      #FBE9E7;
-  --aa-red-border:    #F2C4BF;
-  --aa-green:         #2E7D5B;
-  --aa-green-soft:    #E4F1E9;
-  --aa-kit-amber:      #B5791F;
-  --aa-kit-amber-soft: #FBEFD6;
-  --aa-info:          #1E40AF;
-  --aa-info-soft:     #DBEAFE;
-  --aa-neutral-bg:    #F3F4F6;
-  --aa-neutral-fg:    #4B5563;
-
-  --aa-ink:           #1F2933;
-  --aa-ink2:          #2A333E;
-  --aa-ink3:          #3A4453;
-  --aa-body:          #33363D;
-  --aa-muted:         #5A6270; /* kit #6B7380; CIS AA-760 value, see Contrast above */
-  --aa-muted2:        #9099A6;
-  --aa-bg:            #F8F6F2;
-  --aa-card:          #FFFFFF;
-  --aa-line:          #E9E4DB;
-  --aa-line2:         #F0EBE0;
-
-  --aa-on-accent:     #1A1206; /* kit #FFFFFF */
-  --aa-on-solid:      #FFFFFF;
-  /* TripPlanner-only: flat scrim under small white text on photos (pills, captions). AA-995: .55 -> .68
-     so white text passes 4.5:1 even over a white pixel. */
-  --aa-scrim:         rgba(15, 20, 27, 0.68);
-  /* TripPlanner-only: solid dark under a text-over-photo hero, so its white text stays readable
-     while the photo loads, when it fails, or when there is no photo (AA-812 D6) */
-  --aa-hero-bg:       #1F2933;
-
-  /* AA-995 shadows (light geometry). */
-  --aa-shadow-sm:     0 1px 2px rgba(31, 41, 51, 0.06), 0 1px 1px rgba(31, 41, 51, 0.04);
-  --aa-shadow-md:     0 6px 16px -4px rgba(31, 41, 51, 0.10), 0 2px 4px rgba(31, 41, 51, 0.06);
-  --aa-shadow-lg:     0 18px 40px -12px rgba(31, 41, 51, 0.22);
-
-  /* AA-995 B2C surfaces. */
+  /* AA-995 B2C surfaces. The flat scrim (--aa-scrim) and the hero fallback (--aa-hero-bg) moved to the kit core
+     (AA-994 S1b promoted them unchanged). */
   --tp-surface-sand:  #F3EDE3; /* alternate band (destinations) */
   --tp-band:          #1F2933; /* navy CTA band, header (solid), footer */
   --tp-on-band:       #F8F6F2;
@@ -96,46 +43,6 @@
 }
 
 [data-theme="dark"] {
-  --aa-accent:        #E8A838;
-  --aa-accent-deep:   #F0C070;
-  --aa-accent-soft:   #4A3A1C;
-  --aa-accent-tint:   #332814;
-  --aa-accent-border: #6B531F;
-  --aa-slate:         #8CA3BC;
-
-  --aa-red:           #F2746F;
-  --aa-red-soft:      #3A1E1C;
-  --aa-red-border:    #6E3330;
-  --aa-green:         #4FB488;
-  --aa-green-soft:    #15301F;
-  --aa-kit-amber:      #E0A040;
-  --aa-kit-amber-soft: #352711;
-  --aa-info:          #7FA0F0;
-  --aa-info-soft:     #1C2847;
-  --aa-neutral-bg:    #263040;
-  --aa-neutral-fg:    #B8C0CC;
-
-  --aa-ink:           #EAEEF4;
-  --aa-ink2:          #D4DAE2;
-  --aa-ink3:          #B8C0CC;
-  --aa-body:          #D4DAE2;
-  --aa-muted:         #9099A6;
-  --aa-muted2:        #8A93A2;
-  --aa-bg:            #0F141B;
-  --aa-card:          #19212C;
-  --aa-line:          #2A3542;
-  --aa-line2:         #222C38;
-
-  --aa-on-accent:     #1A1206;
-  --aa-on-solid:      #FFFFFF;
-  --aa-scrim:         rgba(5, 8, 12, 0.72);
-  --aa-hero-bg:       #19212C;
-
-  /* Same geometry, darker; always paired with an --aa-line border on cards. */
-  --aa-shadow-sm:     0 1px 2px rgba(0, 0, 0, 0.45), 0 1px 1px rgba(0, 0, 0, 0.30);
-  --aa-shadow-md:     0 6px 16px -4px rgba(0, 0, 0, 0.45), 0 2px 4px rgba(0, 0, 0, 0.35);
-  --aa-shadow-lg:     0 18px 40px -12px rgba(0, 0, 0, 0.55);
-
   --tp-surface-sand:  #151C25;
   --tp-band:          #0A0E13;
   --tp-on-band:       #EAEEF4;
@@ -150,56 +57,24 @@
   color-scheme: dark;
 }
 
-/* ── Type, radius, space, layout, z-index, motion (theme independent) ───────────────────────── */
+/* ── Type, layout and motion of the customer pages (theme independent) ──────────────────────────────────────── */
 :root {
-  /* Families. The font files come from next/font in app/layout.tsx (--font-poppins, --font-satisfy).
-     AA-995: Fahkwang is gone (the live brand does not use it, research §1.4; raised to AA-994), so the
-     display family points to the sans until AA-994 decides on one. Inter is gone too: the
-     map planner uses Poppins since its own slice (spec R10). */
-  --aa-font-sans:    var(--font-poppins), system-ui, -apple-system, "Segoe UI", sans-serif;
-  --aa-font-display: var(--aa-font-sans);
+  /* Families. The font files come from next/font in app/layout.tsx (--font-poppins, --font-satisfy); the kit's
+     --aa-font-sans / --aa-font-display read --font-poppins. TripPlanner loads no Fahkwang (the live brand does not
+     use it), so the kit's display family resolves to Poppins here. The script face stays app-local. */
   --tp-font-script:  var(--font-satisfy), var(--font-poppins), cursive;
 
-  /* Fluid scale between 390 and 1440 px (clamp is linear on vw). */
-  --aa-text-display:   clamp(2rem, 1.4rem + 2.6vw, 3.25rem);     /* 32 -> 52, home hero h1 */
-  --aa-text-h1:        clamp(1.75rem, 1.35rem + 1.7vw, 2.5rem);  /* 28 -> 40 */
-  --aa-text-h3:        clamp(1.125rem, 1.08rem + 0.2vw, 1.25rem); /* 18 -> 20, card titles */
-  --aa-text-lead:      1.0625rem;                                 /* 17 */
-  --aa-text-body:      1rem;
-  --aa-text-small:     0.875rem;
-  --aa-text-caption:   0.8125rem;
-  --aa-text-kicker:    0.75rem;
+  /* Script sizes, fluid between 390 and 1440 px (clamp is linear on vw). */
   --tp-text-script:    clamp(2.25rem, 1.9rem + 1.5vw, 3rem);     /* 36 -> 48, section h2 */
   --tp-text-script-sm: clamp(1.75rem, 1.45rem + 1.2vw, 2.5rem);  /* 28 -> 40, kicker, ribbon title */
-
-  --aa-radius-sm:   6px;   /* badges, small chips */
-  --aa-radius-md:   12px;  /* inputs, thumbs, ribbon tiles */
-  --aa-radius-lg:   16px;  /* cards, destination tiles */
-  --aa-radius-xl:   24px;  /* hero search card */
-  --aa-radius-pill: 999px;
-
-  --aa-space-1: 4px;  --aa-space-2: 8px;  --aa-space-3: 12px; --aa-space-4: 16px; --aa-space-5: 20px;
-  --aa-space-6: 24px; --aa-space-7: 32px; --aa-space-8: 48px; --aa-space-9: 64px; --aa-space-10: 96px;
 
   --tp-section-y: clamp(3rem, 2rem + 4vw, 6rem); /* 48 at 390, about 90 at 1440 */
   --tp-container: 1248px;
   --tp-gutter:    16px;
   --tp-header-h:  56px;
 
-  --aa-z-header: 30;
-  --aa-z-sticky-cta: 40;
-  --aa-z-popover: 50;
-
-  /* Motion (spec §1.4). Under data-motion="reduce" every duration collapses to 0.01ms (below). */
-  --aa-dur-instant: 100ms;
-  --aa-dur-fast:    160ms;
-  --aa-dur-base:    240ms;
-  --aa-dur-slow:    420ms;
-  --aa-dur-reveal:  560ms;
-  --aa-ease-std: cubic-bezier(0.4, 0, 0.2, 1);
-  --aa-ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
-  --aa-ease-in:  cubic-bezier(0.4, 0, 1, 1);
-  /* Hero settle (immersive graft, replaces the 16 s Ken Burns): plays once, under 5 s, so WCAG
+  /* Motion (spec §1.4): the kit's --aa-dur-* collapse under data-motion="reduce" (ui/core/tokens.css).
+     Hero settle (immersive graft, replaces the 16 s Ken Burns): plays once, under 5 s, so WCAG
      2.2.2 needs no pause control for it. */
   --tp-settle-dur: 4.8s;
   /* Ribbon: seconds per tile = (tile + gap) / speed. 166 px at 40 px/s, 248 px at 50 px/s. */
@@ -221,16 +96,7 @@
 @media (min-width: 1024px) {
   :root {
     --tp-header-h: 64px;
-    --aa-text-lead: 1.125rem; /* 18 */
   }
-}
-
-html[data-motion="reduce"] {
-  --aa-dur-instant: 0.01ms;
-  --aa-dur-fast: 0.01ms;
-  --aa-dur-base: 0.01ms;
-  --aa-dur-slow: 0.01ms;
-  --aa-dur-reveal: 0.01ms;
 }
 
 /* Pages built on the kit: theme-aware surface + brand type. */

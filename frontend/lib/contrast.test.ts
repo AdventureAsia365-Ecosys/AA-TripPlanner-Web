@@ -1,28 +1,27 @@
-// AA-837 (D10): the map planner moved onto the k-* tokens and follows the site theme, so every
-// text/background pair it uses must meet WCAG AA (4.5:1, all its text is small) in BOTH themes,
-// and the planner must not slide back to raw palette classes. Browser axe runs cover the rendered
-// page (docs/implementation-notes/AA-837.md); this guards the tokens and the class usage.
+// AA-837 (D10) / AA-995 — WCAG AA (4.5:1; all checked text is small) in BOTH themes for every pair that involves a
+// TripPlanner-only `--tp-*` value (the sand and navy bands, the photo scrims), and no raw palette class in the map
+// planner. Browser axe runs cover the rendered page (docs/implementation-notes/AA-837.md).
+// AA-994 S5a: the `--aa-*` values come from the kit core (ui/core/tokens.css, a byte copy of CIS); their own pairs
+// (ink / body / muted / accent-deep on card, bg, tints; on-accent on gold; red; neutral pills — the old PAIRS list
+// here) are checked in AA-CIS-App lib/tokensContrast.test.mjs, so a token change fails there, before any sync.
 // Run: npm test (node --test with type stripping; no extra dependencies).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { compositeOver, contrastRatio, parseHex, parseRgba, readThemeTokens } from "./contrast.ts";
 
-const css = readFileSync(new URL("../ui/tokens.css", import.meta.url), "utf8");
-const themes = readThemeTokens(css);
+// The kit core first, then the app file on top (the order of the imports in app/layout.tsx).
+const core = readThemeTokens(readFileSync(new URL("../ui/core/tokens.css", import.meta.url), "utf8"));
+const app = readThemeTokens(readFileSync(new URL("../ui/tokens.css", import.meta.url), "utf8"));
+const themes = {
+  light: { ...core.light, ...app.light },
+  dark: { ...core.dark, ...app.dark },
+};
 
-// [text token, background token] — every pairing the planner renders at rest (hover-only fills
-// included where text stays on them).
-const PAIRS: [string, string][] = [
-  ["ink", "card"], ["ink", "bg"], ["ink", "accent-tint"], ["ink", "neutral-bg"], ["ink", "line"],
-  ["body", "card"], ["body", "bg"],
-  ["muted", "card"], ["muted", "bg"], ["muted", "accent-tint"], ["muted", "neutral-bg"],
-  ["accent-deep", "card"], ["accent-deep", "bg"], ["accent-deep", "accent-tint"], ["accent-deep", "neutral-bg"],
-  ["on-accent", "accent"], // gold buttons, day-number dots, filter count
-  ["bg", "ink"], // inverted pills (Map | List, day counter, Explore/Your trip badge)
-  ["red", "card"], ["red", "red-soft"], ["red", "bg"],
-  ["neutral-fg", "neutral-bg"],
-];
+test("the app tokens file defines only --tp-* values (every --aa-* value comes from the kit core)", () => {
+  const css = readFileSync(new URL("../ui/tokens.css", import.meta.url), "utf8");
+  assert.deepEqual(css.match(/(?<![\w-])--aa-[\w-]+\s*:/g) ?? [], []);
+});
 
 // AA-995 "Golden Hour" customer pages: the sand band and the navy band (header, CTA band, footer,
 // no-photo tiles). Every pair is small text, so 4.5:1, in both themes.
@@ -48,18 +47,6 @@ test("contrastRatio matches known WCAG values", () => {
   assert.equal(Math.round(contrastRatio("#DB9628", "#FFFFFF") * 100) / 100, 2.5); // the old gold label
   assert.equal(parseHex("rgba(0,0,0,0.5)"), null);
 });
-
-for (const theme of ["light", "dark"] as const) {
-  test(`every planner text pair meets WCAG AA in the ${theme} theme`, () => {
-    const t = themes[theme];
-    const failures = PAIRS.map(([fg, bg]) => {
-      assert.ok(t[fg] && t[bg], `token missing in ${theme}: --aa-${t[fg] ? bg : fg}`);
-      const ratio = contrastRatio(t[fg], t[bg]);
-      return { pair: `--aa-${fg} on --aa-${bg}`, ratio: Math.round(ratio * 100) / 100 };
-    }).filter((r) => r.ratio < 4.5);
-    assert.deepEqual(failures, []);
-  });
-}
 
 for (const theme of ["light", "dark"] as const) {
   test(`every customer-page band pair meets WCAG AA in the ${theme} theme`, () => {

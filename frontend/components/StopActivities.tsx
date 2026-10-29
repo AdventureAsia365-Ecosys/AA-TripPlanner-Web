@@ -63,7 +63,7 @@ export default function StopActivities({ destinationId }: { destinationId: strin
                 checked={a.selected}
                 disabled={busy !== null}
                 onChange={() => toggle(a)}
-                className="mt-0.5 accent-[var(--aa-accent-deep)]"
+                className="mt-0.5 accent-k-accent-deep"
               />
               <span>
                 <span className="font-medium text-k-ink">{LABEL[a.activity] ?? a.activity}</span>

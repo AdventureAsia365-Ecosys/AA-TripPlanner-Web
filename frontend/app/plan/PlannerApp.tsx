@@ -148,7 +148,7 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
 }
 
 export default function PlannerApp({ intent }: { intent: PlanIntent }) {
-  // AA-837: the planner follows the site theme (ui/tokens.css). Its surfaces and form controls use
+  // AA-837: the planner follows the site theme (ui/core/tokens.css). Its surfaces and form controls use
   // the k-* tokens, so browser-styled controls (country select, days input) stay readable in dark.
   // The Mapbox basemap stays the light outdoors style in both themes (map imagery, not UI text).
   return (

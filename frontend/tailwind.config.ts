@@ -9,7 +9,7 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // AA-812: kit tokens (ui/tokens.css, same values as the CIS kit), theme-aware.
+        // AA-812: kit tokens (ui/core/tokens.css, the CIS kit core copy since AA-994 S5a), theme-aware.
         // Every page uses `k-*`, the map planner included (AA-837 retired the light-only `aa-*` hex
         // palette). Colours are CSS variables, so Tailwind opacity modifiers (`/40`) do not apply:
         // pick a token instead (e.g. `k-accent-border` for a soft gold border).
@@ -59,7 +59,7 @@ const config: Config = {
         // Poppins everywhere, the map planner included (AA-995, spec R10).
         sans: ["var(--aa-font-sans)"],
       },
-      // AA-995 type scale (ui/tokens.css). New names only: Tailwind's own text-sm/lg… stay as they are.
+      // AA-995 type scale (ui/core/tokens.css). New names only: Tailwind's own text-sm/lg… stay as they are.
       fontSize: {
         display: ["var(--aa-text-display)", { lineHeight: "1.1", letterSpacing: "-0.015em", fontWeight: "600" }],
         h1: ["var(--aa-text-h1)", { lineHeight: "1.15", letterSpacing: "-0.01em", fontWeight: "600" }],
