@@ -9,6 +9,10 @@ import type { HeroPhoto } from "@/lib/photoResolve";
 import LcpImage from "./LcpImage";
 import { MountainMotif } from "./NoPhotoTile";
 
+// The hero's `sizes`. A card that shows the hero's own file uses the same value (TourCard heroFile), so the browser
+// picks the same srcset candidate there and takes it from the memory cache.
+export const HERO_SIZES = "100vw";
+
 export default function PageHero({
   photo,
   alt,
@@ -28,7 +32,7 @@ export default function PageHero({
           <LcpImage
             src={photo.src}
             srcSet={photo.srcSet ?? undefined}
-            sizes="100vw"
+            sizes={HERO_SIZES}
             alt={alt}
             width={1600}
             height={900}

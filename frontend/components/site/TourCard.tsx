@@ -4,11 +4,15 @@
 // and "Explore trip →". The whole card is one link. `showPhoto={false}` (duplicate-cover rule,
 // lib/photos.ts) or a missing cover puts the no-photo tile in the photo slot. `photo` (S257): the cover already resolved
 // on the server (same-origin CDN file, lib/photoResolve.resolvePhotoMap), used instead of the catalog URL.
+// `heroFile` (S258): this card's photo is the page hero's file (lib/photoResolve.sameFileAsHero); the card then uses
+// the hero's src + srcset + sizes, so the browser reuses the file it already downloaded for the hero.
 import Link from "next/link";
 import { Icon } from "@/ui";
 import type { TourCard as TourCardData } from "@/lib/catalogTypes";
+import type { HeroPhoto } from "@/lib/photoResolve";
 import { coverAlt, daysText } from "@/lib/text";
 import NoPhotoTile, { type NoPhotoTone } from "./NoPhotoTile";
+import { HERO_SIZES } from "./PageHero";
 
 export default function TourCard({
   tour,
@@ -16,12 +20,14 @@ export default function TourCard({
   showPhoto = true,
   noPhotoTone = "band",
   photo,
+  heroFile = null,
 }: {
   tour: TourCardData;
   eager?: boolean;
   showPhoto?: boolean;
   noPhotoTone?: NoPhotoTone;
   photo?: string | null;
+  heroFile?: HeroPhoto | null;
 }) {
   const days = daysText(tour.duration_days, tour.duration_raw);
   const src = showPhoto ? (photo || (tour.cover_url_small ?? tour.cover_url)) : null;
@@ -40,7 +46,9 @@ export default function TourCard({
         {src ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={src}
+            src={heroFile ? heroFile.src : src}
+            srcSet={heroFile?.srcSet ?? undefined}
+            sizes={heroFile?.srcSet ? HERO_SIZES : undefined}
             alt={coverAlt(tour)}
             width={600}
             height={450}

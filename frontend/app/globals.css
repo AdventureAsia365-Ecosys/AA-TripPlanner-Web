@@ -423,3 +423,9 @@ html[data-motion="reduce"] *::after {
   content-visibility: auto;
   contain-intrinsic-block-size: auto var(--tp-cv-h, 640px);
 }
+
+/* ── NearViewImage (components/site/NearViewImage.tsx): the server sends the image without src and a <noscript> copy.
+   Without JS (no data-motion on <html>, see the restore script) the empty element is hidden and the copy shows. ── */
+html:not([data-motion]) img[data-near-view]:not([src]) {
+  display: none;
+}

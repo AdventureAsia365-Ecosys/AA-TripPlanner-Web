@@ -12,6 +12,7 @@ import { notFound, permanentRedirect } from "next/navigation";
 import CtaBand from "@/components/site/CtaBand";
 import { destinationMeta } from "@/components/site/DestinationTile";
 import JsonLd from "@/components/site/JsonLd";
+import NearViewImage from "@/components/site/NearViewImage";
 import { MountainMotif, noPhotoTone } from "@/components/site/NoPhotoTile";
 import PageHero from "@/components/site/PageHero";
 import PhotoRibbon from "@/components/site/PhotoRibbon";
@@ -27,7 +28,7 @@ import { getDestination, siteUrl } from "@/lib/catalog";
 import type { CountryPlace, DestinationPage } from "@/lib/catalogTypes";
 import { cvSize } from "@/lib/contentVisibility";
 import { firstUseOfCover } from "@/lib/photos";
-import { resolveHeroPhoto, resolvePhotoMap } from "@/lib/photoResolve";
+import { resolveHeroPhoto, resolvePhotoMap, sameFileAsHero } from "@/lib/photoResolve";
 import { formatDayRange, slugify, titleCase } from "@/lib/text";
 import { ButtonLink, EmptyState, Icon } from "@/ui";
 
@@ -79,10 +80,10 @@ function PlaceRow({ p, label }: { p: CountryPlace; label: string }) {
   return (
     <li className="flex items-center gap-3 rounded-tile border border-k-line bg-k-card p-2.5">
       {p.cover_url ? (
-        // The place name is right next to it: the thumbnail is decorative.
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={p.cover_url} alt="" width={56} height={56} loading="lazy" decoding="async"
-             className="h-14 w-14 shrink-0 rounded-chip object-cover" />
+        // The place name is right next to it: the thumbnail is decorative. Requested only near the viewport (S258):
+        // a catalog 302 to a 600 w file each, which plain lazy loading fetched during page load on a phone.
+        <NearViewImage src={p.cover_url} alt="" width={56} height={56} decoding="async"
+                       className="h-14 w-14 shrink-0 rounded-chip object-cover" />
       ) : (
         <span aria-hidden className="relative h-14 w-14 shrink-0 overflow-hidden rounded-chip bg-k-band">
           <MountainMotif className="-bottom-0.5 right-0 w-full text-k-band-accent" />
@@ -150,12 +151,16 @@ export default async function DestinationRoute({ params }: Props) {
   ]);
   let noPhoto = 0;
   const tourTone = tourPhoto.map((on) => (on ? "band" : noPhotoTone(noPhoto++)));
-  const tourCards = d.tours.map((t, i) => (
-    <li key={t.source_id} className="min-w-0">
-      <TourCard tour={t} eager={false} showPhoto={tourPhoto[i]} noPhotoTone={tourTone[i]}
-                photo={tourPhoto[i] ? (cardPhotos.get(cardCover(t) ?? "") ?? null) : null} />
-    </li>
-  ));
+  // S258: a card whose photo is the hero's own file reuses the hero's srcset (no second size of the same photo).
+  const tourCards = d.tours.map((t, i) => {
+    const photo = tourPhoto[i] ? (cardPhotos.get(cardCover(t) ?? "") ?? null) : null;
+    return (
+      <li key={t.source_id} className="min-w-0">
+        <TourCard tour={t} eager={false} showPhoto={tourPhoto[i]} noPhotoTone={tourTone[i]}
+                  photo={photo} heroFile={sameFileAsHero(photo, hero)} />
+      </li>
+    );
+  });
   const seeAll =
     d.tour_count > d.tours.length ? (
       <Link href={planHref} className="text-small font-semibold text-k-accent-deep">

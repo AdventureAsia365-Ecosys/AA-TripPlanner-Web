@@ -6,10 +6,13 @@ import type { MapPoint } from "@/lib/tourMap";
 import { GEOCODE_ATTRIBUTION, needsGeocodeAttribution } from "@/lib/types";
 import { isExactPin, isLine } from "@/lib/lines";
 import { MAX_PINS, staticMapUrl, type StaticLine } from "@/lib/staticMap";
+import NearViewImage from "./NearViewImage";
 
 // AA-847 (ADR 0007): an approximate point (precision "area": the model's point, not a geocoded one) gets a
 // muted pin, so it never reads as an exact spot; the caption says so. Slice 6d: a river / road / trail is drawn as a
 // path (lib/staticMap.ts), never a pin; with no geometry yet it is left off the map (listed by name next to it).
+// AA-995 S258: the map (a ~300 KB PNG on another host) is always below the first screen on a phone, so it is requested
+// only near the viewport (NearViewImage), never while the page loads.
 export { staticMapUrl };
 
 export default function StaticMap({
@@ -33,8 +36,7 @@ export default function StaticMap({
   const geoapify = needsGeocodeAttribution(shown);
   return (
     <figure className="overflow-hidden rounded-card border border-k-line bg-k-card shadow-e1">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={url} alt={`Map: ${title}`} loading="lazy" className="aspect-[5/3] w-full object-cover" />
+      <NearViewImage src={url} alt={`Map: ${title}`} className="aspect-[5/3] w-full object-cover" />
       <figcaption className="px-4 py-2.5 text-caption font-normal text-k-muted">
         {caption ? `${caption} ` : ""}
         {approximate ? "Grey pins mark an approximate area. " : ""}
