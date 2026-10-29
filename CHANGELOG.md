@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.12.0...v0.13.0) (2026-10-29)
+
+
+### Features
+
+* jobs Lambda runner and outbox PII redaction after 90 days (tp_retention_outbox_redact) ([#185](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/185)) ([a694a88](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/a694a88aaf862675463cb29e211cf7a94b1934e0))
+
+
+### Bug Fixes
+
+* make the HNSW top-k test compare distances, not exact order ([#187](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/187)) ([84df8e0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/84df8e0f4e413db09879702dd9b6d1f44b4f4e4b))
+
 ## [0.12.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.11.1...v0.12.0) (2026-10-29)
 
 
