@@ -98,6 +98,25 @@ jobs:
           aws sts get-caller-identity --query Arn --output text
           echo "ARTIFACTS_BUCKET=${BUCKET_OVERRIDE:-${ARTIFACTS_BUCKET_STEM}-${account}}" >> "$GITHUB_ENV"
 
+      # AA-861: fail before anything is uploaded or updated when one of the three functions is not reachable with
+      # this role. The jobs function and its deploy grant come from the AA-CIS-Infra Terraform apply
+      # (tripplanner_jobs.tf); without this check a deploy that ran before that apply would update browse and
+      # assembly, then fail on jobs (half a deploy, a red verify). Live order: docs/jobs-runbook.md "First deploy".
+      - name: Preflight — every function exists and is deployable
+        run: |
+          set -uo pipefail
+          missing=""
+          for fn in "${BROWSE_FUNCTION}" "${ASSEMBLY_FUNCTION}" "${JOBS_FUNCTION}"; do
+            if ! aws lambda get-function-configuration --function-name "$fn" --query FunctionName --output text >/dev/null 2>&1; then
+              missing="${missing} ${fn}"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Not found or not deployable with this role:${missing}. Apply the AA-CIS-Infra Terraform first (aa-tripplanner-dev-jobs: accounts/aa365/tripplanner_jobs.tf). Nothing was uploaded or updated."
+            exit 1
+          fi
+          echo "All three functions are reachable."
+
       # AA-993: each zip carries what it was built from as object metadata: git-sha (this commit), app-version (the
       # manifest, as package_lambdas.sh baked it in) and code-sha256 (base64 SHA-256 of the zip, the same form as the
       # function's CodeSha256). The verify compares the running functions against these, also on a later dispatch.

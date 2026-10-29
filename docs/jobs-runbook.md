@@ -9,6 +9,32 @@ after the row was written (data standards DM-6.6 / DM-7.2). The row, its `idempo
 Commands are single-line (WSL2 rule). They need the acc2 admin profile; the function name is the same in every
 command. Answers carry ids, statuses and counts only.
 
+## First deploy (live order, once)
+
+Three repos ship this together, and only one order works. Do steps 3 to 6 within one day, between two ticks: the
+daily tick fires at 19:30 UTC (02:30 ICT) inside a 30-minute window, so start after 20:00 UTC and finish before
+19:30 UTC (in practice: one Vietnam working day).
+
+1. Merge the TripPlanner tp-021 PR (migration only).
+2. Merge the AA-CIS-Infra PR (byte copy of tp-021, `tripplanner.job` in the registry, the jobs Lambda). Its Migration
+   Copy Guard compares the copy with tp-021 on TripPlanner `main`, so it goes after step 1.
+3. DB Migrate on AA-CIS-Infra: `check`, then `apply` tp-021. It has no `-- migrate: expand` header, so it is a contract
+   file: dispatch the apply by hand. Confirm `tp-021` is the latest TripPlanner version.
+4. Terraform apply of AA-CIS-Infra through its CI workflow. It creates `aa-tripplanner-dev-jobs` with a placeholder zip,
+   the deploy grant, the schedule and two alarms. Between this step and step 6, a tick would invoke the placeholder,
+   fail with an import error (it writes nothing) and fire the errors alarm.
+   `aa-tripplanner-dev-jobs-not-run` (missing data = breaching) is in ALARM as soon as it is created and stays there
+   until the first invocation (step 6).
+5. Rebase this code PR on `main` (it was stacked on the tp-021 commit, now squash-merged), re-run CI, merge it through
+   the merge queue.
+6. The merge deploys the three functions (`deploy-lambdas.yml`; its preflight fails before any upload when step 4 is
+   missing). After the post-deploy verify is green, invoke `{"op":"status"}` once (command below): the answer lists
+   no jobs and the invocation clears the not-run alarm. Then run the DRY RUN (step 1 of the next section) and check
+   that `aa-tripplanner-dev-jobs-errors` stays OK.
+
+Wrong orders and what they break: code deployed before step 4 → the preflight stops the deploy (nothing updated);
+step 4 without step 3 or step 6 → the next tick fails (`UndefinedTable` or import error) and the errors alarm fires.
+
 ## Read the latest jobs
 
 ```bash
@@ -64,7 +90,8 @@ close it. An override run never counts as the last live run: the daily tick stay
 - `aa-tripplanner-dev-jobs-errors`: a tick failed, a job failed, or a retention run was HELD. Read the `status` and
   the log group `/aws/lambda/aa-tripplanner-dev-jobs` (`job_finished`, `jobs_run`, `outbox_redact_held`,
   `outbox_redact_failed` lines). A failed live run keeps the batches it committed; the job result says how many.
-- `aa-tripplanner-dev-jobs-not-run`: no invocation for 2 days (schedule disabled or broken).
+- `aa-tripplanner-dev-jobs-not-run`: no invocation for 2 days (schedule disabled or broken). Missing data is
+  breaching, so it is also in ALARM from its creation until the first invocation (see "First deploy", step 6).
 
 ## What stays working after a redaction
 
