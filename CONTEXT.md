@@ -109,6 +109,14 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   blocks any partner iframe of TripPlanner until an allow-list is designed (KAN-20 B2B). A production deploy
   fails red if `https://aa-tripplanner.vercel.app/` lacks any of them ("Check the production security headers"
   step in `vercel-deploy.yml`; TripPlanner has no UI smoke workflow, so this is its header smoke).
+- **Visual run (AA-994 S5b).** After every successful deploy, `vercel-deploy.yml` job `visual` calls
+  `.github/workflows/visual.yml` (also dispatchable with any `base_url`): Playwright (`e2e/visual/`, its own pinned
+  package) opens every page of `e2e/visual/pages.ts` at 1440 x 900 and 390 x 844 in light and dark, checks no page-level
+  horizontal overflow, no console / page error, no failed same-origin request, and uploads full-page PNGs + `report.json`
+  (14 days), with one table in the job summary and one PR comment. Previews use the deployment URL (skipped with a
+  notice while the project has no automation bypass), production the public host. Report-only: the deploy verdict
+  (`result`) does not wait on it. `frontend/lib/visualPages.test.ts` fails when an `app/**/page.tsx` route is neither
+  listed nor excluded with a reason.
 
 ### Theme and contrast (AA-812, AA-837, AA-995, AA-994)
 

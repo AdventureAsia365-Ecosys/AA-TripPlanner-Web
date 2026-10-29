@@ -26,6 +26,9 @@ name: Vercel Deploy
 # The `result` job ("Vercel deploy result") is the run's verdict: on the production path (push, or a dispatch with
 # target=production) it is red unless `deploy` and `verify` both succeeded (skipped included). Previews keep their
 # behaviour: no verify, a failed preview deploy is red, a skipped one (fork / Dependabot PR) stays green.
+#
+# AA-994 S5b: after any successful deploy the `visual` job calls visual.yml (public pages, 1440/390, light/dark,
+# screenshots + report artifact, one PR comment). Report-only: it is not in `result`'s needs.
 
 on:
   pull_request:
@@ -300,6 +303,24 @@ jobs:
       app: web
       expected_sha: ${{ needs.deploy.outputs.sha }}
       from_deploy: true
+
+  # AA-994 S5b — the visual run (visual.yml): every public page at 1440 / 390, light / dark, on the deployment just
+  # made: the PR's preview URL, or the public production host (the production deployment URL itself is protected).
+  # Report-only: `result` does not wait on it, so a red visual run never turns a deploy red (plan 4.3). It reads the
+  # Vercel automation bypass secret for protected previews (the secrets are inherited) and comments its table on the PR.
+  visual:
+    name: Visual
+    needs: deploy
+    if: needs.deploy.result == 'success' && needs.deploy.outputs.url != ''
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/visual.yml
+    secrets: inherit
+    with:
+      base_url: ${{ needs.deploy.outputs.target == 'production' && 'https://aa-tripplanner.vercel.app' || needs.deploy.outputs.url }}
+      target: ${{ needs.deploy.outputs.target }}
+      sha: ${{ needs.deploy.outputs.sha }}
 
   # AA-993 — the run's verdict. GitHub shows a skipped job grey, not red, so without this a production push whose
   # deploy or verify did not run could look like nothing to check.

@@ -1,0 +1,14 @@
+{
+  "name": "aa-tripplanner-visual",
+  "private": true,
+  "type": "module",
+  "description": "AA-994 S5b: Playwright visual run of the public TripPlanner pages (see visual.spec.ts).",
+  "scripts": {
+    "visual": "playwright test -c playwright.config.ts",
+    "summary": "node summary.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1",
+    "@types/node": "20.16.11"
+  }
+}
