@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.11.1...v0.12.0) (2026-10-29)
+
+
+### Features
+
+* migration tp-021 (tripplanner.job from the job template, outbox.redacted_at) ([#183](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/183)) ([35e294b](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/35e294b7216f8d4954b6d61e1ee1939b6635ab9d))
+
+
+### Bug Fixes
+
+* faster catalog place reads and same-origin load-time photos on destination pages ([#181](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/181)) ([7118a92](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/7118a92d9bfe654d51cdf27280ea2edbff3c8081))
+
 ## [0.11.1](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.11.0...v0.11.1) (2026-10-29)
 
 
