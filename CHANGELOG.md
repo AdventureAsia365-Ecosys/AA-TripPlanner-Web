@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.11.0...v0.11.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* mobile LCP on the public pages (same-origin LCP photo, no cross-page hero preloads) ([#178](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/178)) ([c9d84bc](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/c9d84bc3b9058f7ea9b44703a2ee9ba968001238))
+
 ## [0.11.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.10.0...v0.11.0) (2026-10-28)
 
 
