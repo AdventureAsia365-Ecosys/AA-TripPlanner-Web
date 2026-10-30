@@ -80,6 +80,8 @@ CREATE TABLE tripplanner.component_id_map (old_id uuid PRIMARY KEY, new_id uuid 
 CREATE TABLE tripplanner.trip_events (id bigserial PRIMARY KEY, trip_id text, event_type text, payload jsonb);
 -- AA-990 (CIS 285): component ids a CIS place rebuild dropped → the component of the same place.
 CREATE TABLE catalog.v_component_redirect (component_id uuid, new_component_id uuid);
+-- AA-847 (CIS 257): a merged destination id → its keeper (the merged row stays in v_destination).
+CREATE TABLE catalog.v_destination_redirect (destination_id uuid, keeper_id uuid);
 """
 
 D = {k: uuid.UUID(int=i + 1) for i, k in enumerate(("VTE", "VV", "LPB", "PKS", "HAN"))}
@@ -235,6 +237,25 @@ async def test_destination_detail_lists_the_catalog_components(pool):
     catalog_ids = {str(r["component_id"]) for r in await pool.fetch(
         "SELECT component_id FROM catalog.v_tour_component WHERE destination_id = $1", D["LPB"])}
     assert {c["id"] for c in body["components"]} == catalog_ids       # stable uuid5 ids
+
+
+async def test_destination_detail_hides_suspect_and_redirects_merged_rows(pool):
+    """AA-997: catalog.v_destination keeps a hidden (suspect) and a merged row; the detail read by id serves the
+    first without any location field and answers 301 to the keeper for the second."""
+    suspect, merged = uuid.UUID(int=901), uuid.UUID(int=902)
+    for did, name, status in ((suspect, "Ban Fictiveau", "suspect"), (merged, "Ban Fictiveau Nuea", "ok")):
+        await pool.execute("INSERT INTO catalog.v_destination (source_id, destination_id, name, country, lat, lng, "
+                           "geo_status, located_by, precision, min_lat, min_lng, max_lat, max_lng) "
+                           "VALUES ($1,$2,$3,'Laos',19.5,102.5,$4,'llm','area',19.5,102.5,19.5,102.5)",
+                           str(did), did, name, status)
+    await pool.execute("INSERT INTO catalog.v_destination_redirect VALUES ($1, $2)", merged, D["LPB"])
+    status, body = await _get(pool, f"/browse/destinations/{suspect}")
+    assert status == 200 and body["location_hidden"] is True and body["name"] == "Ban Fictiveau"
+    assert not {"located_by", "precision", "bbox", "lat", "lng"} & set(body) and body["components"] == []
+    resp = await h.route("GET", f"/browse/destinations/{merged}", {}, pool=pool)
+    assert resp["statusCode"] == 301 and resp["headers"]["location"] == str(D["LPB"])
+    _, keeper = await _get(pool, f"/browse/destinations/{D['LPB']}")
+    assert "location_hidden" not in keeper and keeper["precision"] == "area"
 
 
 async def test_search_ranks_every_live_tours_components(pool):

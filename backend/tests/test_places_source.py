@@ -110,8 +110,8 @@ async def test_countries_and_by_country():
 
 async def test_destination_detail_lists_view_components():
     pool = RecordingPool([
-        ("FROM catalog.v_destination WHERE destination_id", [
-            {"id": VTE, "name": "Vientiane", "country": "Laos", "cover_image_url": None,
+        ("FROM catalog.v_destination d", [
+            {"id": VTE, "name": "Vientiane", "country": "Laos", "cover_image_url": None, "geo_status": "ok",
              "located_by": "llm", "precision": "area"}]),
         ("FROM catalog.v_tour_component", [
             {"id": "0f1e2d3c-4b5a-5968-8776-a5b4c3d2e1f0", "name": "That Luang", "activity": "cultural_heritage",
@@ -126,12 +126,61 @@ async def test_destination_detail_lists_view_components():
 
 async def test_merged_destination_redirects_to_its_keeper():
     """AA-847 (CIS 257): a merged id has no v_destination row; v_destination_redirect names the keeper → 301."""
-    pool = RecordingPool([("FROM catalog.v_destination_redirect", [{"keeper_id": LPB}])])
+    pool = RecordingPool([("SELECT keeper_id FROM catalog.v_destination_redirect", [{"keeper_id": LPB}])])
     resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
     assert resp["statusCode"] == 301 and resp["headers"]["location"] == LPB
     assert json.loads(resp["body"]) == {"redirect_to": LPB}
     assert "max-age" in resp["headers"]["cache-control"]
     _assert_cis_only(pool)
+
+
+def test_destination_detail_never_reads_a_merged_row():
+    """AA-997: catalog.v_destination still lists a merged row (duplicate_of set); the detail read skips it so the
+    handler answers 301 to the keeper instead of 200 with the duplicate's location."""
+    from backend.browse import destinations as dest_mod
+    sql = " ".join(dest_mod.DEST_SQL.split())
+    assert "NOT EXISTS (SELECT 1 FROM catalog.v_destination_redirect r WHERE r.destination_id = d.destination_id)" in sql
+    assert "d.geo_status" in sql
+
+
+async def test_suspect_destination_answers_without_any_location_field():
+    """AA-997: a hidden place (geo_status 'suspect') keeps name, country and cover, never its location fields."""
+    pool = RecordingPool([
+        ("FROM catalog.v_destination d", [
+            {"id": VTE, "name": "Vientiane", "country": "Laos", "cover_image_url": "https://img.example/v.jpg",
+             "geo_status": "suspect", "located_by": "llm", "precision": "line", "shape_kind": "line",
+             "shape_status": "ok", "length_km": 12.0, "min_lat": 17.9, "min_lng": 102.5, "max_lat": 18.0,
+             "max_lng": 102.7}]),
+    ])
+    resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool)
+    assert resp["statusCode"] == 200
+    body = json.loads(resp["body"])
+    assert body["location_hidden"] is True
+    assert body["name"] == "Vientiane" and body["cover_image_url"] == "https://img.example/v.jpg"
+    for key in ("located_by", "precision", "shape_kind", "shape_status", "length_km", "bbox", "lat", "lng",
+                "geo_status"):
+        assert key not in body, key
+    assert body["components"] == []
+    _assert_cis_only(pool)
+
+
+async def test_shown_destination_has_no_location_hidden_flag():
+    pool = RecordingPool([
+        ("FROM catalog.v_destination d", [
+            {"id": VTE, "name": "Vientiane", "country": "Laos", "cover_image_url": None, "geo_status": "manual",
+             "located_by": "manual", "precision": "point"}]),
+    ])
+    body = json.loads((await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=pool))["body"])
+    assert "location_hidden" not in body and body["precision"] == "point"
+
+
+def test_country_covers_never_read_a_location():
+    """AA-997: the country cover read keeps hidden / merged places (photo + caption only) and so must never select a
+    point or a bbox."""
+    from backend.browse import catalog as cat
+    sql = cat.COUNTRY_COVERS_SQL.lower()
+    for col in ("lat", "lng", "min_lat", "max_lat", "shape_lo", "located_by", "precision"):
+        assert not re.search(rf"\b{col}\b", sql), col
 
 
 async def test_unknown_destination_is_still_404():
@@ -144,7 +193,8 @@ async def test_unknown_destination_is_still_404():
 async def test_redirect_lookup_failure_is_still_404():
     class Broken(RecordingPool):
         async def fetchrow(self, query, *args):
-            if "v_destination_redirect" in query:
+            # AA-997: the detail read (DEST_SQL) also names the view; only the keeper lookup fails here
+            if query.lstrip().startswith("SELECT keeper_id FROM catalog.v_destination_redirect"):
                 raise RuntimeError("relation does not exist")
             return await super().fetchrow(query, *args)
     resp = await h.route("GET", f"/browse/destinations/{VTE}", {}, pool=Broken([]))
