@@ -134,6 +134,12 @@ export default function MapView() {
   const [selected, setSelected] = useState<string | null>(null);
   // AA-847: the Geoapify / OSM attribution is shown while a Geoapify-located point is drawn.
   const [attribution, setAttribution] = useState(false);
+  // The map's own layers and sources exist (set at the end of the "load" handler). The effects below gate on this,
+  // not on map.isStyleLoaded(): Mapbox answers false there while ANY tile is still loading, and an effect that
+  // bailed for that reason never ran again, so a country set before the map settled (?country=Bhutan from the home
+  // page, or a pick while tiles were loading) never flew the camera. Being state, it also re-runs those effects
+  // once the map is ready (S260 UAT finding).
+  const [mapReady, setMapReady] = useState(false);
   const filtersRef = useRef(filters);
   // When search is active, the map shows the ranked result set instead of
   // tiles-by-bounds. Kept in a ref so the moveend handler can bail out.
@@ -693,7 +699,8 @@ export default function MapView() {
       map.on("zoomend", () => {
         if (shapeLevel(map.getZoom()) !== lineLevelRef.current) void drawLines();
       });
-      refreshVisibleTiles();
+      // The first tile load comes from the filters effect, which this re-runs.
+      setMapReady(true);
     });
 
     return () => {
@@ -705,6 +712,7 @@ export default function MapView() {
       ro.disconnect();
       map.remove();
       mapRef.current = null;
+      setMapReady(false);
     };
   }, [refreshVisibleTiles, drawLines]);
 
@@ -712,9 +720,9 @@ export default function MapView() {
   useEffect(() => {
     if (searchResults) return; // filters re-apply via a fresh search instead
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map || !mapReady) return;
     refreshVisibleTiles();
-  }, [filters, refreshVisibleTiles, searchResults]);
+  }, [filters, refreshVisibleTiles, searchResults, mapReady]);
 
   // Drive the country polygon highlight. A hover-preview (previewCountry) wins
   // over the committed selection (filters.country) so hovering a country in
@@ -722,13 +730,13 @@ export default function MapView() {
   // the trip. Clearing the preview falls back to the selected country.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map || !mapReady) return;
     const active = previewCountry ?? filters.country ?? null;
     const iso = active ? COUNTRY_ISO[active] ?? "__none__" : "__none__";
     const f: mapboxgl.FilterSpecification = ["==", ["get", "iso_3166_1"], iso];
     if (map.getLayer("country-highlight-fill")) map.setFilter("country-highlight-fill", f);
     if (map.getLayer("country-highlight-line")) map.setFilter("country-highlight-line", f);
-  }, [previewCountry, filters.country]);
+  }, [previewCountry, filters.country, mapReady]);
 
   // When a COUNTRY is picked (country-first filter), fly the map to that
   // country and show its destinations — otherwise selecting a country only
@@ -736,7 +744,7 @@ export default function MapView() {
   useEffect(() => {
     if (searchResults) return; // search takes precedence
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map || !mapReady) return;
 
     const country = filters.country;
     if (!country) {
@@ -771,31 +779,27 @@ export default function MapView() {
     return () => {
       cancelled = true;
     };
-  }, [filters.country, searchResults, setSourceData]);
+  }, [filters.country, searchResults, setSourceData, mapReady]);
 
-  // Render semantic-search results (or return to tiles when cleared).
+  // Render semantic-search results. Back to browse mode (cleared) is the filters effect above: it re-runs on
+  // searchResults too, and a second refresh in the same commit would abort its tile requests and send them again.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    if (searchResults === null) {
-      // Back to browse mode: repopulate from the current viewport.
-      refreshVisibleTiles();
-      return;
-    }
+    if (!map || !mapReady || searchResults === null) return;
     setSourceData(searchResults);
     if (searchResults.length > 0) {
       const b = new mapboxgl.LngLatBounds();
       for (const p of searchResults) extendBy(b, p); // a river result frames its whole bbox
       map.fitBounds(b, { padding: 80, maxZoom: 9, duration: camMs(600) });
     }
-  }, [searchResults, refreshVisibleTiles, setSourceData]);
+  }, [searchResults, setSourceData, mapReady]);
 
   // Draw the trip path (day-ordered line + numbered stops) from the itinerary.
   // AA-847 slice 6d: a river / road / trail day is not a stop; its stretch between the two stops is a gold "feature"
   // leg that replaces the road / flight leg between them (lib/lines.ts planTrip).
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map || !mapReady) return;
     const lineSrc = map.getSource(TRIP_LINE_SOURCE) as
       | mapboxgl.GeoJSONSource
       | undefined;
@@ -937,7 +941,7 @@ export default function MapView() {
     return () => {
       cancelled = true;
     };
-  }, [itinerary]);
+  }, [itinerary, mapReady]);
 
   // AA-674: draw (or clear) the previewed AA route and frame it.
   useEffect(() => {
