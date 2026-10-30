@@ -186,6 +186,10 @@ async def fetch_place_read(pool: Any, sql: str, *args: Any) -> list:
             return await conn.fetch(sql, *args)
 
 
+# AA-997 (S260, decided): this read keeps hidden (geo_status 'suspect') and merged destinations on purpose. It serves
+# only a photo path and the place name as the photo's caption, never a point: a suspect row's photos are the place's
+# own (matched by name / tour, not by coordinates), and a merged row names the same place as its keeper. Dropping them
+# would only remove country covers. It must never select lat / lng (tests/test_places_source.py guards it).
 COUNTRY_COVERS_SQL = """
     SELECT lower(d.country) AS country_key, d.name, d.cover_photo_path
     FROM catalog.v_destination d
