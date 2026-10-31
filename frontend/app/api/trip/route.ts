@@ -11,6 +11,8 @@ import { parseTripBody, tripHeaders as lambdaHeaders, tripReadAnswer, tripReadPa
 import { refresh, travellerIp } from "@/lib/cognito";
 import { currentAccess, type Access } from "@/lib/authSession";
 import { authEnv, callContext } from "@/lib/authRequest";
+import { checkBotId } from "botid/server";
+import { BOT_CHECK_LEVEL, botCheckOn, botCheckRefusal } from "@/lib/botCheck";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
 // Maps a single { op } POST body onto the Lambda's REST verbs/paths.
@@ -167,8 +169,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "unknown op" }, { status: 400 });
   }
 
-  const guest = requestGuestToken(req);
   const requestId = requestIdFor(req.headers);
+  if (b.op === "narrate") {
+    // AA-1015 (S262): BotID Basic (free) before the Lambda, so a refused narration is never counted by the
+    // per-session limit and never reaches a model. The planner calls POST /api/trip/narrate (lib/botCheck.ts).
+    const refused = await botCheckRefusal("narrate", botCheckOn(), () =>
+      checkBotId({ advancedOptions: { checkLevel: BOT_CHECK_LEVEL } }),
+    );
+    if (refused) {
+      return NextResponse.json(refused.body, {
+        status: refused.status,
+        headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
+      });
+    }
+  }
+  const guest = requestGuestToken(req);
   const access = await travellerAccess(req);
   const started = Date.now();
   const upstream = await fetch(`${TRIP_API_URL}${path}`, {

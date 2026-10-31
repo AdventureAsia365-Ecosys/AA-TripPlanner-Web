@@ -313,7 +313,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `tp_guest` under local http; Secure, SameSite=Lax, Path=/). **Lifetime rule:** Max-Age 400 days
   (the browser cap), sliding — every matched request re-sends it with a fresh Max-Age; nothing else
   expires a guest (`sessions.expires_at` is informational, not enforced). `frontend/proxy.ts`
-  mints it on `/plan` and on `/api/trip` only (the home, destination and tour pages are CDN-cached, so a
+  mints it on `/plan`, `/api/trip` and `/api/trip/narrate` only (the home, destination and tour pages are CDN-cached, so a
   per-visitor Set-Cookie must never ride on them), as a
   raw `Set-Cookie` header — never `res.cookies.set`, which also echoes the value into an
   `x-middleware-set-cookie` response header that client JS can read — and refuses a cross-site POST
@@ -648,7 +648,15 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   access token); both are trusted only with the right `x-tripplanner-key`. The counter fails open (ERROR line); the
   jobs Lambda kind `tp_retention_ai_rate_counter` deletes windows older than 2 days (DM-7.2). Optional stage caps
   `TP_DAILY_SPEND_CAP_SEARCH_USD` / `_COMPOSE_USD` (unset = combined cap only) and a once-a-day `llm_spend_alert`
-  line at 80 % and 100 % of a cap. The bot check (BotID / Turnstile) is not built yet (cost not checked).
+  line at 80 % and 100 % of a cap.
+- **Bot check (AA-1015, S262)**: Vercel BotID **Basic** (free on every plan; `checkLevel: "basic"` pinned on client
+  and server, so the paid Deep Analysis never runs) in the BFF before the Lambda, on search and narration only
+  (`frontend/lib/botCheck.ts`). The planner calls them at their own paths, `GET /api/browse/search` and
+  `POST /api/trip/narrate` (the BotID client matches the pathname, so map tiles and trip edits never wait for the
+  challenge); the shared branches (`resource=search`, `op: "narrate"`) check whatever the path. Refused: 403
+  `bot_check_failed`, not counted by the limits, calm EN / VI line. One build-time switch for client and server,
+  `NEXT_PUBLIC_TP_BOT_CHECK` from `TP_BOT_CHECK` (`next.config.mjs botCheckFlag`; unset = on for a Vercel build).
+  A check that throws fails open with a `bot_check_error` line (limits + spend cap still apply).
 - **Fail closed + degrade mode (AA-642 S0, root ADR 0009 decisions 5 and 6)**: the gateway never calls a
   model it cannot account for. Spend counter unreadable (or a counter write failed in the last 60 s,
   `SPEND_UNREADABLE_HOLD_SECONDS`, per container) → `budget_status` is `exhausted` with reason

@@ -121,6 +121,17 @@ Read them in the database, read-only, through the usual ECS exec pattern of the 
   (`x-tp-client-ip`) and the signed-in state (`x-tp-signed-in`, search only); the Lambdas trust them only with the
   right `x-tripplanner-key`. Without a trusted IP there is no per-IP limit; a counter that cannot be written lets the
   request through with an `ai_rate_counter_error` line (the spend cap still fails closed).
+- **Bot check (AA-1015, S262)** — Vercel BotID at the **Basic** level (free on every Vercel plan; Deep Analysis is
+  paid and pinned off per route) runs in the BFF before the two calls that can reach a model: the planner calls
+  `GET /api/browse/search` and `POST /api/trip/narrate` (their own paths, because the BotID client matches the
+  pathname; the old spellings `?resource=search` / `{op:"narrate"}` on `/api/browse` / `/api/trip` are checked too).
+  A failed check answers 403 `{"error":"bot_check_failed"}` before the Lambda (never counted by the limits), one
+  `bot_check_refused` line, and a calm EN / VI line in the planner. Switch: `TP_BOT_CHECK` on / off (Vercel env,
+  needs a redeploy); unset = on for a Vercel build, off for local `next dev` / `next start`, CI and tests. A check
+  that cannot run (Vercel API down, OIDC token missing) lets the request through with a `bot_check_error` line.
+  E2E: Playwright drives the real page, whose BotID client solves the challenge, so it passes on Vercel; a
+  headless `curl` gets the 403. To exempt a runner, use a Vercel Firewall bypass rule (BotID docs) or set
+  `TP_BOT_CHECK=off` on that environment and redeploy.
 - **Stage caps and the 80 % alert (AA-1015)** — `TP_DAILY_SPEND_CAP_SEARCH_USD` / `TP_DAILY_SPEND_CAP_COMPOSE_USD`
   (unset by default = only the combined `TP_DAILY_SPEND_CAP_USD`) stop one stage without touching the other. At 80 %
   and at 100 % of a cap each container prints one `llm_spend_alert` line a UTC day (`threshold` near / cap, `level`

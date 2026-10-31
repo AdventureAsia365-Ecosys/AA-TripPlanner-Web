@@ -69,5 +69,6 @@ export async function proxy(req: NextRequest, event?: NextFetchEvent) {
 
 export const config = {
   // AA-986 L6: "/tours/:slug" for the 410 of a retired tour (no cookie is ever set on it).
-  matcher: ["/plan/:path*", "/api/trip", "/tours/:slug"],
+  // AA-1015: "/api/trip/narrate" is the narrate op of /api/trip under its own path (BotID), same guest cookie rules.
+  matcher: ["/plan/:path*", "/api/trip", "/api/trip/narrate", "/tours/:slug"],
 };
