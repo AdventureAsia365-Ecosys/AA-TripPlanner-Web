@@ -1,0 +1,10 @@
+{
+  "adr": "root ADR 0009 decision 13",
+  "canonical": {
+    "repo": "AdventureAsia365-Ecosys/AA-CIS-App",
+    "path": "shared/aa_llm"
+  },
+  "ref": "ba6afe134863de9970e2d29982a542e0ecb94722",
+  "dest": "backend/aa_llm",
+  "manifest_sha256": "eb3bc9fd3137c7b7d2c0b1ab09ec2aff4175afc67ff4c54d827312b418ce274d"
+}
