@@ -67,8 +67,9 @@ async def get(conn: _Conn, key: str) -> Optional[dict]:
 
 
 async def put(conn: _Conn, key: str, mode: str, narration: str, source: str, days: int) -> None:
-    """Store a narration that used the model. Master-only text is never cached (it is cheap and
-    must follow CIS edits at once)."""
+    """Store a narration that used the model. Master-only text is never cached: the handler answers it
+    before the cache lookup (AA-1015, S262), since it is built in memory from the day texts the key needs
+    anyway, so a cache row would save nothing (and the tp-010 CHECK allows only 'llm' / 'mixed')."""
     if source not in CACHEABLE_SOURCES or not narration:
         return
     try:

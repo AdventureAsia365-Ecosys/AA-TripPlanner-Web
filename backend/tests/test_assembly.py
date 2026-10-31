@@ -1406,6 +1406,51 @@ async def test_narrate_paused_with_master_days_is_master_basic(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_an_all_master_narration_needs_no_cache_budget_route_or_counter(monkeypatch):
+    """AA-1015 (S262 live check: every AA-text narration answered cached=false): a trip whose every day has AA's own
+    text is answered before the cache, the spend counter, the route config and the per-session limit. Two identical
+    calls give the same text, nothing is stored, and even a spent budget does not flag a degrade that did not happen."""
+    def build(itinerary, day_texts):
+        return "Day 1: Old town walk.\nDay 2: River market.", []         # every day has AA text
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("an all-master narration must not read the budget or the route")
+
+    monkeypatch.setattr(handler.master_content, "build_narration", build)
+    monkeypatch.setattr(handler.llm_gateway, "budget_status", must_not_run)
+    monkeypatch.setattr(handler.llm_gateway, "load_route", must_not_run)
+    conn = RateConn()
+    conn.spent = 99.0
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    calls: list = []
+    bodies = [json.loads((await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn,
+                                     narrator=_counting_narrator(calls)))["body"]) for _ in range(12)]
+    assert calls == [] and conn.cache == {} and conn.counters == {}
+    assert {b["narration"] for b in bodies} == {"Day 1: Old town walk.\nDay 2: River market."}
+    first = bodies[0]
+    assert first["source"] == "master" and first["ai_generated"] is True and first["cached"] is False
+    assert "ai_budget_exhausted" not in first and "ai_paused" not in first
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_narration_is_cached_and_the_second_identical_call_is_a_hit(monkeypatch):
+    """The other side of the master shortcut: a trip with one day of AA text and one day for the model is cached."""
+    def build(itinerary, day_texts):
+        return "Day 1: Old town walk.", [e for e in itinerary if e["day"] != 1]
+
+    monkeypatch.setattr(handler.master_content, "build_narration", build)
+    conn = AiConn()
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c3"})
+    calls: list = []
+    first, second = [json.loads((await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn,
+                                            narrator=_counting_narrator(calls)))["body"]) for _ in range(2)]
+    assert len(calls) == 1
+    assert first["source"] == "mixed" and first["cached"] is False
+    assert second["source"] == "mixed" and second["cached"] is True and second["narration"] == first["narration"]
+
+
+@pytest.mark.asyncio
 async def test_narrate_logs_failed_attempts_of_a_defect_and_returns_502(monkeypatch):
     """A non-provider error (a defect, not an outage) is still a 502, with failed attempts logged."""
     from backend.shared import llm_gateway

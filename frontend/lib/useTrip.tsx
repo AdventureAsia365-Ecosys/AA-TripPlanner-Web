@@ -46,7 +46,8 @@ interface TripState {
   searchQuery: string;
   searchResults: DestinationPin[] | null;
   searching: boolean;
-  // AA-1015: set when this visitor reached the search limit (429); cleared by the next answered search.
+  // AA-1015: set when this visitor reached the search limit (429) or the bot check refused the search (403);
+  // cleared by the next answered search.
   searchNotice: AiNoticeKey | null;
   // Countries that actually have components (for the country-first filter).
   countries: CountryOption[];
@@ -326,10 +327,11 @@ export function TripProvider({
     try {
       // Semantic search is ranked within the active closed-enum filters
       // (activity/intensity/season/country) — pass the current filters.
-      const { pins, limited } = await api.search(query, filtersRef.current);
-      // AA-1015: over the search limit the map keeps what it shows and a calm line says why (no empty result).
-      setSearchNotice(limited ? "searchLimit" : null);
-      if (!limited) setSearchResults(pins);
+      const { pins, notice } = await api.search(query, filtersRef.current);
+      // AA-1015: over the search limit, or refused by the bot check, the map keeps what it shows and a calm line says
+      // why (no empty result).
+      setSearchNotice(notice);
+      if (!notice) setSearchResults(pins);
     } finally {
       setSearching(false);
     }

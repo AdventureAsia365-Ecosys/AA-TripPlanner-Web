@@ -32,10 +32,22 @@ export function previewHeaders(env = process.env) {
 }
 const PHOTO_PROXY_PREFIX = "/photo-cdn";
 
+// AA-1015 (S262) — the BotID Basic check on search and narration (lib/botCheck.ts). One build-time value for the
+// browser bundle and the route handlers alike: TP_BOT_CHECK "on" / "off" wins; unset = on for a build on Vercel
+// (VERCEL=1, production and preview), off elsewhere (local dev / start, CI, tests). lib/botCheck.test.ts checks it.
+/** @param {Record<string, string | undefined>} [env] */
+export function botCheckFlag(env = process.env) {
+  const v = (env.TP_BOT_CHECK ?? "").trim().toLowerCase();
+  if (v === "on" || v === "off") return v;
+  return env.VERCEL === "1" ? "on" : "off";
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // Inlined into client and server code at build (lib/botCheck.ts botCheckOn). Set TP_BOT_CHECK, never this name.
+  env: { NEXT_PUBLIC_TP_BOT_CHECK: botCheckFlag() },
   async headers() {
     return [
       { source: "/(.*)", headers: [...SECURITY_HEADERS, ...previewHeaders()] },

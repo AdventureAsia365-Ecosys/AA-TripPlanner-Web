@@ -7,6 +7,8 @@ import { aiLimitHeaders } from "@/lib/tripProxy";
 import { refresh, travellerIp } from "@/lib/cognito";
 import { currentAccess } from "@/lib/authSession";
 import { authEnv, callContext } from "@/lib/authRequest";
+import { checkBotId } from "botid/server";
+import { BOT_CHECK_LEVEL, botCheckOn, botCheckRefusal } from "@/lib/botCheck";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -92,6 +94,17 @@ export async function GET(req: NextRequest) {
   let limitHeaders: Record<string, string> = {};
   let setCookies: string[] = [];
   if (resource === "search") {
+    // AA-1015 (S262): BotID Basic (free) before anything else, so a refused request never reaches the Lambda and is
+    // never counted by the per-IP limit. The planner calls GET /api/browse/search (lib/botCheck.ts).
+    const refused = await botCheckRefusal("search", botCheckOn(), () =>
+      checkBotId({ advancedOptions: { checkLevel: BOT_CHECK_LEVEL } }),
+    );
+    if (refused) {
+      return NextResponse.json(refused.body, {
+        status: refused.status,
+        headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
+      });
+    }
     const env = authEnv(process.env);
     const access = await currentAccess(env.sessionSecret, req.cookies, (rt) => refresh(rt, callContext(env, req.headers)));
     limitHeaders = aiLimitHeaders(travellerIp(req.headers), access.accessToken !== null);
