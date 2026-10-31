@@ -188,6 +188,11 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   pins that tour's whole route through the existing apply-route flow (`&ask=1` opens the trip).
 - `/tours/[slug]` and `/destinations/[country]`: Server Components with ISR (30 min, the browse
   CDN TTL), JSON-LD (`TouristTrip`, `TouristDestination`), `sitemap.xml`, `robots.txt`.
+- **Preview until go-live (TL-24, S262):** every deployment, the Dev host included, is a preview unless its Vercel env
+  sets `SITE_INDEXING=on` (`frontend/lib/siteMode.ts`): root-layout robots `noindex, nofollow`, an `X-Robots-Tag:
+  noindex, nofollow` header on every response (`next.config.mjs`), `robots.txt` without the sitemap line (crawl rules
+  kept so crawlers read the noindex), and a "Preview site" line in the footer. `VERCEL_ENV` cannot be used: the Dev
+  host is a Vercel production deployment. Go-live sets the flag on the live project only.
 - AA-995 (S254) puts the rest of the customer pages on "Golden Hour": `/destinations/[country]` (photo hero under the
   transparent header → tours carousel / grid → places map + list → navy CTA band → "Around {country}" ribbon),
   `/tours/[slug]` (gallery strip / mosaic → title, key facts, chips → highlights → day-by-day timeline → where you go

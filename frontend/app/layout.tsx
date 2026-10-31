@@ -6,6 +6,7 @@ import "../ui/tokens.css";
 import "./globals.css";
 import { RESTORE_THEME_SCRIPT } from "@/ui/restoreTheme";
 import { siteUrl } from "@/lib/catalog";
+import { isLiveSite, layoutRobots } from "@/lib/siteMode";
 
 // AA-995: Poppins for everything + Satisfy for section titles, the two faces adventure.asia uses.
 // Fahkwang is gone (the live brand does not use it); Inter is gone since the planner moved to Poppins (spec R10).
@@ -34,6 +35,9 @@ export const metadata: Metadata = {
   description:
     "Find an Adventure Asia tour, shape it on the map day by day, and have an Adventure Asia advisor tailor it for you.",
   openGraph: { siteName: "Adventure Asia Trip Planner", type: "website" },
+  // TL-24 (S262): noindex, nofollow on every deployment until the live site sets SITE_INDEXING=on (lib/siteMode.ts).
+  // A page's own `robots` replaces this one; every page that sets one today sets index: false.
+  robots: layoutRobots(isLiveSite()),
 };
 
 export const viewport: Viewport = {

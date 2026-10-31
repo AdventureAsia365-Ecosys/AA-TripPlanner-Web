@@ -1,11 +1,13 @@
 // AA-995 (spec §3.9) — navy footer: Satisfy column titles, light links, the TrustStrip on the band. No top margin (each
 // page ends with its own section padding) and a light hairline on top, so a navy CTA band right above it reads apart.
 // Legal links (and every footer link) use prefetch={false}: four RSC prefetches per view were measured
-// on every page (research §2.6) and Vercel challenged them. The bottom row carries the "Reduce motion" toggle.
+// on every page (research §2.6) and Vercel challenged them. The bottom row carries the "Reduce motion" toggle and,
+// until go-live, the "Preview site" line (TL-24, S262: shown unless SITE_INDEXING=on, lib/siteMode.ts).
 import Link from "next/link";
 import { LEGAL_LINKS } from "@/lib/legal";
 import TrustStrip from "./TrustStrip";
 import MotionToggle from "./MotionToggle";
+import { isLiveSite, PREVIEW_SITE_NOTE } from "@/lib/siteMode";
 
 const EXPLORE = [
   { href: "/destinations", label: "Destinations" },
@@ -16,6 +18,7 @@ const EXPLORE = [
 const link = "inline-flex min-h-8 items-center text-small text-k-on-band-muted transition-colors duration-fast ease-std hover:text-k-band-accent";
 
 export default function SiteFooter() {
+  const preview = !isLiveSite();
   return (
     <footer className="tp-on-dark border-t border-k-band-line bg-k-band text-k-on-band-muted">
       <div className="mx-auto max-w-page px-gutter py-section">
@@ -50,7 +53,14 @@ export default function SiteFooter() {
         </div>
         {/* The viewer's "Reduce motion" choice (spec §1.4, optional toggle): the only client island in the footer. */}
         <div className="mt-10 flex flex-col-reverse gap-4 border-t border-k-band-line pt-6 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-caption font-normal">© Adventure Asia</p>
+          <div className="space-y-1">
+            <p className="text-caption font-normal">© Adventure Asia</p>
+            {preview && (
+              <p data-testid="preview-site-note" className="text-caption font-normal text-k-band-accent">
+                {PREVIEW_SITE_NOTE}
+              </p>
+            )}
+          </div>
           <MotionToggle />
         </div>
       </div>
