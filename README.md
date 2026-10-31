@@ -113,6 +113,18 @@ Read them in the database, read-only, through the usual ECS exec pattern of the 
   closed).
 - **Throttling** — API Gateway route settings (AA-CIS-Infra): `POST /trip/{trip_id}/narrate`
   2 rps / burst 5, `GET /browse/search` 10 / 20. A throttled call gets 429 before the Lambda runs.
+- **Per-visitor AI limits (AA-1015, tp-023)** — the Lambdas count each request that would call a model in
+  `tripplanner.ai_rate_counter` (fixed windows): 10 narrations per hour per guest session, 30 searches per minute
+  per traveller IP, twice that signed in (`TP_RATE_*` env, defaults in `backend/config.py`). Over a limit the answer is
+  429 `{"error":"rate_limited","scope":…,"retry_after_s":…}` with `retry-after`, and one `ai_rate_limited` log line
+  (no key, IP or session). The planner shows a calm EN / VI line, no spinner. The BFF sends the traveller IP
+  (`x-tp-client-ip`) and the signed-in state (`x-tp-signed-in`, search only); the Lambdas trust them only with the
+  right `x-tripplanner-key`. Without a trusted IP there is no per-IP limit; a counter that cannot be written lets the
+  request through with an `ai_rate_counter_error` line (the spend cap still fails closed).
+- **Stage caps and the 80 % alert (AA-1015)** — `TP_DAILY_SPEND_CAP_SEARCH_USD` / `TP_DAILY_SPEND_CAP_COMPOSE_USD`
+  (unset by default = only the combined `TP_DAILY_SPEND_CAP_USD`) stop one stage without touching the other. At 80 %
+  and at 100 % of a cap each container prints one `llm_spend_alert` line a UTC day (`threshold` near / cap, `level`
+  warning / error); `budget_status` also returns `near_cap`.
 - **Search on inactive tours** — `backend/tests/fixtures/search_labelled_30.json` is the labelled
   30-query set for live runs: every destination returned must have at least one embedded component
   of a tour with `published_tours.master_status = 'active'` and `deleted_at IS NULL`. Join exactly as

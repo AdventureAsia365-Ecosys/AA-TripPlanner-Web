@@ -31,18 +31,22 @@ import os
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
-from backend.jobs import outbox_redact, queue, runner
+from backend.jobs import outbox_redact, queue, rate_counter_purge, runner
 from backend.shared import observability
 
 # kind -> handler(pool, job). Every kind matches '^tp_[a-z0-9_]+$' (tp-021 job_kind_chk, owners.yaml tp_).
 HANDLERS: dict[str, runner.Handler] = {
     outbox_redact.KIND: outbox_redact.run,
+    rate_counter_purge.KIND: rate_counter_purge.run,  # AA-1015: tripplanner.ai_rate_counter windows > 2 days
 }
 # Kinds the daily tick queues: kind -> (payload, max_attempts, idempotency key of a UTC day).
 DAILY: dict[str, tuple[dict[str, Any], int, Callable[[date], str]]] = {
     outbox_redact.KIND: ({"trigger": "schedule"}, outbox_redact.MAX_ATTEMPTS, outbox_redact.schedule_key),
+    rate_counter_purge.KIND: ({"trigger": "schedule"}, rate_counter_purge.MAX_ATTEMPTS,
+                              rate_counter_purge.schedule_key),
 }
-MAX_ATTEMPTS: dict[str, int] = {outbox_redact.KIND: outbox_redact.MAX_ATTEMPTS}
+MAX_ATTEMPTS: dict[str, int] = {outbox_redact.KIND: outbox_redact.MAX_ATTEMPTS,
+                                rate_counter_purge.KIND: rate_counter_purge.MAX_ATTEMPTS}
 SCHEDULER = "scheduler:tp-jobs-daily"
 OPERATOR = "operator:lambda-invoke"
 OPS = ("tick", "enqueue", "run", "status")

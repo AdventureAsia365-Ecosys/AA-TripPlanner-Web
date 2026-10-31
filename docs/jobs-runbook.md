@@ -2,9 +2,18 @@
 
 The jobs Lambda `aa-tripplanner-dev-jobs` (AA-861) is the worker of `tripplanner.job` (migration tp-021). An
 EventBridge Scheduler rule wakes it once a day at 19:30 UTC with `{"op": "tick"}`; an operator invokes it directly
-(IAM, no HTTP route). Its only kind today is `tp_retention_outbox_redact`: the personal data in
-`tripplanner.outbox.payload` (customer name, email, phone, signed-in identity, custom day notes) is removed 90 days
-after the row was written (data standards DM-6.6 / DM-7.2). The row, its `idempotency_key` and `schema_version` stay.
+(IAM, no HTTP route). Its kinds:
+
+- `tp_retention_outbox_redact`: the personal data in `tripplanner.outbox.payload` (customer name, email, phone,
+  signed-in identity, custom day notes) is removed 90 days after the row was written (data standards DM-6.6 / DM-7.2).
+  The row, its `idempotency_key` and `schema_version` stay.
+- `tp_retention_ai_rate_counter` (AA-1015, tp-023): the windows of `tripplanner.ai_rate_counter` (the AI route
+  limiter's counters: an HMAC key, a window start and a count, no personal data) that started before UTC midnight
+  2 days ago are deleted. Same mode rules: the daily run is a DRY RUN until a manual live run succeeded, then live,
+  HELD above 2x the last live run (floor 10,000 rows). No override. First live run:
+  `aws lambda invoke --function-name aa-tripplanner-dev-jobs --cli-binary-format raw-in-base64-out --payload '{"op":"enqueue","kind":"tp_retention_ai_rate_counter","payload":{"dry_run":true}}' --profile aa365-admin --region us-west-1 /tmp/tp-jobs.json && cat /tmp/tp-jobs.json`,
+  then the same with `"payload":{"dry_run":false,"max_rows":N}` (N = the approved `candidates_total`). Log lines:
+  `rate_counter_purge_held`, `rate_counter_purge_failed`.
 
 Commands are single-line (WSL2 rule). They need the acc2 admin profile; the function name is the same in every
 command. Answers carry ids, statuses and counts only.
@@ -89,7 +98,8 @@ close it. An override run never counts as the last live run: the daily tick stay
 
 - `aa-tripplanner-dev-jobs-errors`: a tick failed, a job failed, or a retention run was HELD. Read the `status` and
   the log group `/aws/lambda/aa-tripplanner-dev-jobs` (`job_finished`, `jobs_run`, `outbox_redact_held`,
-  `outbox_redact_failed` lines). A failed live run keeps the batches it committed; the job result says how many.
+  `outbox_redact_failed`, `rate_counter_purge_held`, `rate_counter_purge_failed` lines). A tick before tp-023 is
+  applied fails the rate-counter kind (`UndefinedTableError`): apply tp-023, the next tick is clean. A failed live run keeps the batches it committed; the job result says how many.
 - `aa-tripplanner-dev-jobs-not-run`: no invocation for 2 days (schedule disabled or broken). Missing data is
   breaching, so it is also in ALARM from its creation until the first invocation (see "First deploy", step 6).
 

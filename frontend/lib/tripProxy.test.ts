@@ -3,7 +3,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GUEST_TOKEN_HEADER } from "./guestToken.ts";
-import { ACCESS_TOKEN_HEADER, EMPTY_TRIP_BODY, parseTripBody, tripHeaders, tripReadAnswer, tripReadPath } from "./tripProxy.ts";
+import {
+  ACCESS_TOKEN_HEADER,
+  CLIENT_IP_HEADER,
+  EMPTY_TRIP_BODY,
+  SIGNED_IN_HEADER,
+  aiLimitHeaders,
+  parseTripBody,
+  tripHeaders,
+  tripReadAnswer,
+  tripReadPath,
+} from "./tripProxy.ts";
 
 const TRIP = "00000000-0000-4000-8000-0000000000b1";
 const DEST = "00000000-0000-4000-8000-0000000000d1";
@@ -85,4 +95,21 @@ test("other reads and other statuses pass through untouched", () => {
   }
   assert.deepEqual(tripReadAnswer("itinerary", 200, '{"itinerary":[1]}'), { status: 200, body: '{"itinerary":[1]}' });
   assert.deepEqual(tripReadAnswer("itinerary", 500, "boom"), { status: 500, body: "boom" });
+});
+
+// AA-1015: the per-IP / per-session AI limits need the traveller's address and signed-in state at the Lambda.
+test("the AI limit headers carry the traveller address and the signed-in flag, nothing when unknown", () => {
+  assert.deepEqual(aiLimitHeaders("203.0.113.7", true), { [CLIENT_IP_HEADER]: "203.0.113.7", [SIGNED_IN_HEADER]: "1" });
+  assert.deepEqual(aiLimitHeaders("203.0.113.7"), { [CLIENT_IP_HEADER]: "203.0.113.7" });
+  assert.deepEqual(aiLimitHeaders(null, false), {});
+  assert.equal(CLIENT_IP_HEADER, "x-tp-client-ip");
+  assert.equal(SIGNED_IN_HEADER, "x-tp-signed-in");
+});
+
+test("trip calls forward the traveller address next to the shared key", () => {
+  const h = tripHeaders("key-1", TOKEN, "req-1", null, "198.51.100.20");
+  assert.equal(h[CLIENT_IP_HEADER], "198.51.100.20");
+  assert.equal(h["x-tripplanner-key"], "key-1");
+  assert.equal(SIGNED_IN_HEADER in h, false); // narration reads the signed-in state from the verified access token
+  assert.equal(CLIENT_IP_HEADER in tripHeaders("key-1", TOKEN), false);
 });

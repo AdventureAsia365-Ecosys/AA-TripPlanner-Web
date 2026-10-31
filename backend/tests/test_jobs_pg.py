@@ -22,10 +22,11 @@ import pytest
 
 asyncpg = pytest.importorskip("asyncpg")
 
-from backend.jobs import handler, outbox_redact as kind, queue, runner  # noqa: E402
+from backend.jobs import handler, outbox_redact as kind, queue, rate_counter_purge as purge, runner  # noqa: E402
 from backend.jobs.queue import Job  # noqa: E402
 
 TP021 = Path(__file__).resolve().parents[2] / "migrations" / "021_job_table_outbox_redaction.sql"
+TP023 = Path(__file__).resolve().parents[2] / "migrations" / "023_ai_rate_counter.sql"  # AA-1015
 STANDIN = """
 DO $$
 BEGIN
@@ -87,6 +88,7 @@ async def env(pg_dsn):
         await su.execute(STANDIN)
         await su.execute("SET ROLE tp_owner")
         await su.execute(TP021.read_text(encoding="utf-8"))
+        await su.execute(TP023.read_text(encoding="utf-8"))
         await su.execute("RESET ROLE")
         parsed = urlparse(db_dsn)
         tp_dsn = urlunparse(parsed._replace(netloc=f"tripplanner@{parsed.hostname}:{parsed.port or 5432}"))
@@ -121,14 +123,21 @@ async def _serve(env, event, today=None):
                                today=today)
 
 
+def _of(out, kind_name: str) -> dict:
+    """The one job of `kind_name` in a serve answer (a tick runs every daily kind)."""
+    jobs = [j for j in out["jobs"] if j["kind"] == kind_name]
+    assert len(jobs) == 1, out["jobs"]
+    return jobs[0]
+
+
 async def test_tick_queues_one_scheduled_dry_run_per_day_and_counts_without_writing(env):
     su = env["su"]
     await _outbox(su, 3, 120)
     await _outbox(su, 2, 10)
     first = await _serve(env, {"op": "tick"}, today=date(2026, 10, 29))
     again = await _serve(env, {"op": "tick"}, today=date(2026, 10, 29))
-    assert len(first["queued"]) == 1 and again["queued"] == [] and again["jobs"] == []
-    job = first["jobs"][0]
+    assert len(first["queued"]) == len(handler.DAILY) == 2 and again["queued"] == [] and again["jobs"] == []
+    job = _of(first, kind.KIND)
     assert job["status"] == "succeeded" and job["kind"] == kind.KIND
     res = job["result"]
     assert (res["mode"], res["trigger"], res["candidates_total"], res["candidates_with_contact"]) == \
@@ -216,7 +225,7 @@ async def test_schedule_goes_live_after_an_approved_live_run_and_holds_on_growth
                                                                         "pause_ms": 0}})
     await _outbox(su, 3, 100)
     out = await _serve(env, {"op": "tick"}, today=date(2026, 10, 30))
-    res = out["jobs"][0]["result"]
+    res = _of(out, kind.KIND)["result"]
     assert (res["mode"], res["affected_total"], res["previous_live_affected"]) == ("live", 3, 2)
 
     # Growth past max(2 x 3, 1000) is HELD: nothing written, and a tick reports it as an error.
@@ -246,7 +255,7 @@ async def test_override_live_run_never_counts_as_the_last_live_run(env):
         await queue.complete(conn, job.id, "test-worker", result)
         assert await kind.last_live(conn) is None
     out = await _serve(env, {"op": "tick"}, today=date(2026, 11, 1))
-    assert out["jobs"][0]["result"]["mode"] == "dry_run"
+    assert _of(out, kind.KIND)["result"]["mode"] == "dry_run"
 
 
 async def test_claim_lease_reap_and_retry_backoff(env):
@@ -301,8 +310,49 @@ async def test_runner_stops_claiming_when_the_invocation_is_almost_over(env):
 async def test_status_and_bad_events(env):
     await _serve(env, {"op": "tick"}, today=date(2026, 10, 29))
     status = await _serve(env, {"op": "status"})
-    assert status["jobs"][0]["kind"] == kind.KIND and status["jobs"][0]["result"]["mode"] == "dry_run"
+    assert {j["kind"]: j["result"]["mode"] for j in status["jobs"]} == {kind.KIND: "dry_run", purge.KIND: "dry_run"}
     assert "unknown op" in (await _serve(env, {}))["error"]
     assert "unknown kind" in (await _serve(env, {"op": "enqueue", "kind": "bk_retention_job"}))["error"]
     assert "reserved" in (await _serve(env, {"op": "enqueue", "kind": kind.KIND,
                                              "payload": {"trigger": "schedule"}}))["error"]
+
+
+# --- AA-1015: tp_retention_ai_rate_counter ------------------------------------------------------------------------
+
+async def _windows(su, n: int, age: str) -> None:
+    await su.execute(
+        "INSERT INTO tripplanner.ai_rate_counter (key_hash, window_start, count) "
+        f"SELECT md5('k' || g || '{age}'), date_trunc('minute', now() - interval '{age}'), 3 FROM generate_series(1, $1) g",
+        n)
+
+
+async def test_rate_counter_purge_dry_run_then_manual_live_then_scheduled_live(env):
+    su = env["su"]
+    await _windows(su, 4, "3 days")
+    await _windows(su, 2, "5 minutes")
+    first = _of(await _serve(env, {"op": "tick"}, today=date.today()), purge.KIND)["result"]
+    assert (first["mode"], first["candidates_total"]) == ("dry_run", 4)
+    assert first["reason"].startswith("no approved live run")
+    assert await su.fetchval("SELECT count(*) FROM tripplanner.ai_rate_counter") == 6
+
+    live = _of(await _serve(env, {"op": "enqueue", "kind": purge.KIND,
+                                  "payload": {"dry_run": False, "max_rows": 4, "batch_size": 3, "pause_ms": 0}}),
+               purge.KIND)["result"]
+    assert (live["mode"], live["affected_total"], live["batches"], live["remaining"]) == ("live", 4, 2, 0)
+    assert await su.fetchval("SELECT count(*) FROM tripplanner.ai_rate_counter") == 2   # the live windows stay
+
+    await _windows(su, 3, "4 days")
+    tomorrow = date.today() + timedelta(days=1)
+    sched = _of(await _serve(env, {"op": "tick"}, today=tomorrow), purge.KIND)["result"]
+    assert (sched["mode"], sched["affected_total"], sched["previous_live_affected"]) == ("live", 3, 4)
+
+
+async def test_rate_counter_purge_holds_on_growth(env):
+    su = env["su"]
+    await _windows(su, 1, "3 days")
+    await _serve(env, {"op": "enqueue", "kind": purge.KIND, "payload": {"dry_run": False, "max_rows": 1,
+                                                                         "pause_ms": 0}})
+    await _windows(su, purge.GROWTH_FLOOR_ROWS + 1, "3 days")
+    with pytest.raises(handler.JobsNeedAttention):
+        await _serve(env, {"op": "tick"}, today=date.today())
+    assert await su.fetchval("SELECT count(*) FROM tripplanner.ai_rate_counter") == purge.GROWTH_FLOOR_ROWS + 1

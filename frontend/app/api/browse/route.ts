@@ -3,6 +3,10 @@ import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestI
 import { tourRouteBffAnswer } from "@/lib/tourRoute";
 import { addCacheTag } from "@vercel/functions";
 import { CATALOG_CACHE_TAG, browseCacheHeaders } from "@/lib/catalogPurge";
+import { aiLimitHeaders } from "@/lib/tripProxy";
+import { refresh, travellerIp } from "@/lib/cognito";
+import { currentAccess } from "@/lib/authSession";
+import { authEnv, callContext } from "@/lib/authRequest";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -83,9 +87,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "unknown resource" }, { status: 400 });
   }
 
+  // AA-1015: search calls the embedding model, so it carries the traveller's address and signed-in state for the
+  // per-IP limit (30 a minute, twice that signed in). Only search: the other reads are CDN-cached and call no model.
+  let limitHeaders: Record<string, string> = {};
+  let setCookies: string[] = [];
+  if (resource === "search") {
+    const env = authEnv(process.env);
+    const access = await currentAccess(env.sessionSecret, req.cookies, (rt) => refresh(rt, callContext(env, req.headers)));
+    limitHeaders = aiLimitHeaders(travellerIp(req.headers), access.accessToken !== null);
+    setCookies = access.setCookies;
+  }
   const started = Date.now();
   const upstream = await fetch(`${BROWSE_API_URL}${upstreamPath}`, {
-    headers: upstreamHeaders({ accept: "application/json", [REQUEST_ID_HEADER]: requestId }),
+    headers: upstreamHeaders({ accept: "application/json", [REQUEST_ID_HEADER]: requestId, ...limitHeaders }),
   });
   let body = await upstream.text();
   console.log(
@@ -116,7 +130,7 @@ export async function GET(req: NextRequest) {
       // tagging is best effort: the header still carries the tag, and the CDN TTL bounds the lag
     }
   }
-  return new NextResponse(body, {
+  const res = new NextResponse(body, {
     status,
     headers: {
       "content-type": "application/json",
@@ -124,4 +138,7 @@ export async function GET(req: NextRequest) {
       [REQUEST_ID_HEADER]: requestId,
     },
   });
+  // A refreshed (or cleared) traveller session rides on the search answer (no-store), as on /api/trip.
+  for (const c of setCookies) res.headers.append("set-cookie", c);
+  return res;
 }

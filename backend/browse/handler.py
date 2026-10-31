@@ -42,7 +42,7 @@ from backend.browse import search as search_mod
 from backend.browse import shapes as shapes_mod
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import TileError
-from backend.shared import observability
+from backend.shared import observability, ratelimit
 
 _TILE_RE = re.compile(r"^/browse/tiles/([^/]+)$")
 _DEST_RE = re.compile(r"^/browse/destinations/([^/]+)$")
@@ -82,6 +82,7 @@ async def route(
     query: dict[str, Any],
     *,
     pool,
+    client: ratelimit.Client = ratelimit.UNKNOWN_CLIENT,
 ) -> dict:
     if method != "GET":
         return _resp(405, {"error": "method not allowed"}, _NO_STORE_HEADERS)
@@ -202,6 +203,14 @@ async def route(
         q = query.get("q")
         if isinstance(q, list):
             q = q[0] if q else None
+        # AA-1015: 30 searches per minute per traveller IP (twice that signed in), when the BFF told us the IP. A query
+        # with no word never reaches the model and is not counted.
+        if client.ip and search_mod.has_search_word(q):
+            decision = await ratelimit.hit(pool, ratelimit.SCOPE_SEARCH, ratelimit.KIND_IP, client.ip,
+                                           signed_in=client.signed_in)
+            if not decision.allowed:
+                return _resp(429, ratelimit.limited_body(decision),
+                             ratelimit.limited_headers(decision, _NO_STORE_HEADERS))
         # AA-642 S0: a refused model call (cap, spend or route unreadable) is a keyword ranking, never 503.
         data = await search_mod.search(q or "", filters, pool=pool)
         return _resp(200, data, _NO_STORE_HEADERS)
@@ -248,10 +257,12 @@ def _handle(event, context):  # pragma: no cover - thin AWS adapter
         return denied
 
     method, path, query = _extract_request(event)
+    # AA-1015: the traveller's IP and signed-in state, trusted only with the right edge key (ratelimit.py).
+    client = ratelimit.client_from_headers(auth._headers_lower(event))  # noqa: SLF001
 
     async def _run():
         pool = await get_pool()
-        return await route(method, path, query, pool=pool)
+        return await route(method, path, query, pool=pool, client=client)
 
     return asyncio.get_event_loop().run_until_complete(_run())
 

@@ -46,6 +46,8 @@ interface TripState {
   searchQuery: string;
   searchResults: DestinationPin[] | null;
   searching: boolean;
+  // AA-1015: set when this visitor reached the search limit (429); cleared by the next answered search.
+  searchNotice: AiNoticeKey | null;
   // Countries that actually have components (for the country-first filter).
   countries: CountryOption[];
   // Next-to-pin suggestions, refreshed as the trip changes.
@@ -163,6 +165,7 @@ export function TripProvider({
     null,
   );
   const [searching, setSearching] = useState<boolean>(false);
+  const [searchNotice, setSearchNotice] = useState<AiNoticeKey | null>(null);
   const [coverage, setCoverage] = useState<Coverage | null>(null);
   const [customDays, setCustomDays] = useState<CustomDay[]>([]);
   const [unavailableStops, setUnavailableStops] = useState<UnavailableStop[]>([]);
@@ -323,14 +326,17 @@ export function TripProvider({
     try {
       // Semantic search is ranked within the active closed-enum filters
       // (activity/intensity/season/country) — pass the current filters.
-      const results = await api.search(query, filtersRef.current);
-      setSearchResults(results);
+      const { pins, limited } = await api.search(query, filtersRef.current);
+      // AA-1015: over the search limit the map keeps what it shows and a calm line says why (no empty result).
+      setSearchNotice(limited ? "searchLimit" : null);
+      if (!limited) setSearchResults(pins);
     } finally {
       setSearching(false);
     }
   }, []);
 
   const clearSearch = useCallback(() => {
+    setSearchNotice(null);
     setSearchQuery("");
     setSearchResults(null);
     setSearching(false);
@@ -344,8 +350,9 @@ export function TripProvider({
         if (res.ok) {
           setNarration(res.narration);
           setNarrationSource(res.source ?? "");
-          setNarrationNotice(res.notice);
         }
+        // AA-1015: a limit answer keeps the current narration and only shows its notice.
+        if (res.ok || res.notice) setNarrationNotice(res.notice);
       } finally {
         setNarrating(false);
       }
@@ -387,6 +394,7 @@ export function TripProvider({
     searchQuery,
     searchResults,
     searching,
+    searchNotice,
     countries,
     suggestions,
     focusDestinationId,

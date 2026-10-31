@@ -8,7 +8,7 @@ import {
 } from "@/lib/guestToken";
 import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
 import { parseTripBody, tripHeaders as lambdaHeaders, tripReadAnswer, tripReadPath } from "@/lib/tripProxy";
-import { refresh } from "@/lib/cognito";
+import { refresh, travellerIp } from "@/lib/cognito";
 import { currentAccess, type Access } from "@/lib/authSession";
 import { authEnv, callContext } from "@/lib/authRequest";
 
@@ -24,8 +24,14 @@ const TRIPPLANNER_API_KEY = process.env.TRIPPLANNER_API_KEY ?? "";
 // AA-871: plus the request id, which the Lambda binds to its log lines and echoes back.
 // AA-908: plus the signed-in traveller's access token (refreshed when about to expire), so the account that owns a
 // trip can open and edit it from any browser, and a signed-in edit links its session to the account.
-function tripHeaders(guestToken: string | null, requestId: string, accessToken: string | null): Record<string, string> {
-  return lambdaHeaders(TRIPPLANNER_API_KEY, guestToken, requestId, accessToken);
+// AA-1015: plus the traveller's address (x-tp-client-ip), for the per-IP AI limits.
+function tripHeaders(
+  guestToken: string | null,
+  requestId: string,
+  accessToken: string | null,
+  clientIp: string | null,
+): Record<string, string> {
+  return lambdaHeaders(TRIPPLANNER_API_KEY, guestToken, requestId, accessToken, clientIp);
 }
 
 async function travellerAccess(req: NextRequest): Promise<Access> {
@@ -77,7 +83,7 @@ export async function GET(req: NextRequest) {
   const started = Date.now();
   const upstream = await fetch(`${TRIP_API_URL}${read.path}`, {
     method: "GET",
-    headers: tripHeaders(requestGuestToken(req).token, requestId, access.accessToken),
+    headers: tripHeaders(requestGuestToken(req).token, requestId, access.accessToken, travellerIp(req.headers)),
   });
   const text = await upstream.text();
   const resource = req.nextUrl.searchParams.get("resource");
@@ -167,7 +173,7 @@ export async function POST(req: NextRequest) {
   const started = Date.now();
   const upstream = await fetch(`${TRIP_API_URL}${path}`, {
     method,
-    headers: tripHeaders(guest.token, requestId, access.accessToken),
+    headers: tripHeaders(guest.token, requestId, access.accessToken, travellerIp(req.headers)),
     body: JSON.stringify(payload),
   });
   const text = await upstream.text();

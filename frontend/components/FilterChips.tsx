@@ -1,5 +1,6 @@
 "use client";
 
+import { aiNotice } from "@/lib/aiNotices";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import {
@@ -46,6 +47,7 @@ export default function FilterChips() {
     clearSearch,
     searching,
     searchResults,
+    searchNotice,
     countries,
     setPreviewCountry,
   } = useTrip();
@@ -149,6 +151,13 @@ export default function FilterChips() {
             )}
           </button>
         </div>
+
+        {/* AA-1015: the search limit, one calm line (the map keeps its pins; no spinner). */}
+        {searchNotice && (
+          <p role="status" className="border-t border-k-line px-3 py-1.5 text-xs text-k-muted">
+            {aiNotice(searchNotice)}
+          </p>
+        )}
 
         {/* Search result banner */}
         {resultCount !== null && (
