@@ -21,6 +21,15 @@ const SECURITY_HEADERS = [
 // file on the CDN's own Cache-Control (public, max-age one year; the file URL is versioned by ?v=), so the CDN is
 // asked once per file and region, not once per visit.
 const PHOTO_CDN_ORIGIN = "https://img.lumiguides.it.com";
+
+// TL-24 (S262) — until go-live every deployment is a preview: X-Robots-Tag noindex on every response unless the Vercel env
+// sets SITE_INDEXING=on. Same rule as isLiveSite() / PREVIEW_ROBOTS_HEADER in lib/siteMode.ts (lib/siteMode.test.ts
+// checks both). Read when Next loads the config (build and server start), like any other env-driven header.
+/** @param {Record<string, string | undefined>} [env] */
+export function previewHeaders(env = process.env) {
+  const live = (env.SITE_INDEXING ?? "").trim().toLowerCase() === "on";
+  return live ? [] : [{ key: "X-Robots-Tag", value: "noindex, nofollow" }];
+}
 const PHOTO_PROXY_PREFIX = "/photo-cdn";
 
 /** @type {import('next').NextConfig} */
@@ -29,7 +38,7 @@ const nextConfig = {
   poweredByHeader: false,
   async headers() {
     return [
-      { source: "/(.*)", headers: SECURITY_HEADERS },
+      { source: "/(.*)", headers: [...SECURITY_HEADERS, ...previewHeaders()] },
       { source: `${PHOTO_PROXY_PREFIX}/:path*`, headers: [{ key: "x-vercel-enable-rewrite-caching", value: "1" }] },
     ];
   },
