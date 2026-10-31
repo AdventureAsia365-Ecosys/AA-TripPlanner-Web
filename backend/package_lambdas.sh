@@ -75,6 +75,7 @@ find "${BUILD_DIR}/backend" -type d -name '__pycache__' -prune -exec rm -rf {} +
 rm -rf "${BUILD_DIR}/backend/tests"
 rm -f  "${BUILD_DIR}/backend/.env" "${BUILD_DIR}/backend/.env.example"
 rm -f  "${BUILD_DIR}/backend/package_lambdas.sh"
+rm -rf "${BUILD_DIR}/backend/scripts"   # AA-642 S8: CI / maintenance scripts (vendored-copy check), not runtime
 rm -f  "${BUILD_DIR}/backend/pytest.ini"
 
 echo "==> Creating ${DIST_DIR}"

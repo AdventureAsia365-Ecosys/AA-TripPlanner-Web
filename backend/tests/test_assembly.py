@@ -1193,8 +1193,8 @@ class AiConn(FakeConn):
         q = " ".join(query.split())
         if q.startswith("UPDATE tripplanner.narration_cache"):
             return self.cache.get(args[0])
-        if "FROM tripplanner.llm_spend_daily" in q:
-            return {"spent": self.spent}
+        if "FROM tripplanner.llm_spend_daily" in q or "FROM catalog.v_llm_app_spend_today_v1" in q:
+            return {"spent": self.spent}   # AA-642 S8: the spend view (CIS 323), or the tp-010 counter
         return await super().fetchrow(query, *args)
 
 
@@ -1346,7 +1346,8 @@ async def test_narrate_pauses_ai_when_the_spend_counter_is_unreadable(monkeypatc
     """AA-642 S0 (root ADR 0009 decision 6): spend unreadable = no model call, 200 basic + ai_paused."""
     class UnreadableSpend(AiConn):
         async def fetchrow(self, query, *args):
-            if "FROM tripplanner.llm_spend_daily" in " ".join(query.split()):
+            q = " ".join(query.split())
+            if "FROM tripplanner.llm_spend_daily" in q or "FROM catalog.v_llm_app_spend_today_v1" in q:
                 raise RuntimeError("permission denied for table llm_spend_daily")
             return await super().fetchrow(query, *args)
 

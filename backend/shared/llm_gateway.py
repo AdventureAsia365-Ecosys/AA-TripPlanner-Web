@@ -40,6 +40,17 @@ AA-805 (fork defects vs. the CIS client):
     tp_component_embed — extraction and embedding backfills) are logged in shared.llm_call_log but
     neither counted nor capped here, so a backfill can never take customer search/narration down.
 
+AA-642 S8 (root ADR 0009 decision 13): the shared core `backend/aa_llm` (a byte copy of AA-CIS-App
+`shared/aa_llm`, pinned by `backend/aa_llm.lock.json`; never edit it here) gives the ledger row, the error
+classes and the spend decision. The route is read from the CIS contract view `catalog.v_llm_gateway_config_v1`
+and today's spend from `catalog.v_llm_app_spend_today_v1` (CIS migration 323). Until that migration is applied
+(the view is missing or not granted: SQLSTATE 42P01 / 42501), each read falls back to the old source
+(`shared.llm_role_config` + `shared.llm_model_catalog`, `tripplanner.llm_spend_daily`) and does not try the
+view again for VIEW_RETRY_SECONDS. `record()` writes the ledger v2 row (`aa_llm.ledger.LedgerRow`: app,
+status, error_class, latency_ms, attempt_no, connection, cache tokens, pricing_mode), or the pre-319 row when
+the v2 columns are missing (SQLSTATE 42703). A failed ledger write of an online stage pauses AI like a failed
+counter write: the spend view sums the ledger, so a lost row undercounts.
+
 AA-856: `EmbeddingCache` / `query_embed_cache` keep query embeddings in the Lambda container
 (bounded LRU + TTL, keyed by stage, route models, input type and the normalised text). A cache hit
 is not a model call: no llm_call_log row, no spend.
@@ -56,6 +67,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from backend import config
+from backend.aa_llm import budget as core_budget
+from backend.aa_llm import contract, ledger
 from backend.shared import bedrock_satellite, observability
 from backend.shared.bedrock_satellite import BedrockError, ClientFactory
 
@@ -88,7 +101,9 @@ class Route:
 @dataclass
 class Call:
     """One model call attempt, ready for `record()`. `failed` attempts carry the error in
-    `extra["error"]`; `cost_usd` is None when the catalog has no price for the model."""
+    `extra["error"]` and its ledger outcome in `status` / `error_class`; `cost_usd` is None when the
+    catalog has no price for the model. `attempt_no` counts the attempts of one request from 1,
+    `latency_ms` is the provider call's wall time, `wire_id` the profile it called."""
     stage: str
     role: str
     model: str
@@ -100,6 +115,13 @@ class Call:
     stop_reason: Optional[str] = None
     extra: dict = field(default_factory=dict)
     failed: bool = False
+    latency_ms: Optional[int] = None
+    attempt_no: Optional[int] = None
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    wire_id: Optional[str] = None
+    status: Optional[str] = None
+    error_class: Optional[str] = None
 
     @property
     def provider(self) -> str:
@@ -140,39 +162,95 @@ def _num(v: Any) -> Optional[float]:
     return float(v) if v is not None else None
 
 
+# AA-642 S8: a contract view (CIS 323) that is missing or not granted yet: SQLSTATE undefined_table /
+# insufficient_privilege. The read falls back to the old source and skips the view for VIEW_RETRY_SECONDS.
+_MISSING_VIEW_STATES = ("42P01", "42501")
+VIEW_RETRY_SECONDS = 300.0
+_view_missing_until: dict[str, float] = {}
+
+
+def _is_missing_object(e: BaseException) -> bool:
+    return getattr(e, "sqlstate", None) in _MISSING_VIEW_STATES
+
+
+def _view_usable(view: str) -> bool:
+    return time.monotonic() >= _view_missing_until.get(view, 0.0)
+
+
+def _mark_view_missing(view: str, e: BaseException) -> None:
+    _view_missing_until[view] = time.monotonic() + VIEW_RETRY_SECONDS
+    observability.emit("llm_gateway_note", view=view, error=type(e).__name__,
+                       detail=f"{view} is not readable yet (CIS migration 323); reading the old source")
+
+
+def _profiles(raw: Any) -> dict:
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return dict(raw or {})
+
+
+def _model(r: Any, enabled_key: str) -> Model:
+    return Model(r["model_key"], r["vendor"], r["api_style"], _profiles(r["bedrock_profile_ids"]),
+                 _num(r["price_in_per_mtok"]), _num(r["price_out_per_mtok"]),
+                 _num(r["price_cache_read_per_mtok"]), _num(r["price_cache_write_per_mtok"]),
+                 bool(r[enabled_key]))
+
+
+async def _route_from_view(db: Any, stage: str) -> tuple[Any, tuple]:
+    """(route config row, models in chain order) from catalog.v_llm_gateway_config_v1. A chain key that is
+    not in the catalog (in_catalog false) is skipped, as before."""
+    rows = await db.fetch(contract.GATEWAY_CONFIG_SQL, stage)
+    if not rows:
+        raise LookupError(f"no active route for {stage!r} in {contract.GATEWAY_CONFIG_VIEW}")
+    models = tuple(_model(r, "model_enabled") for r in sorted(rows, key=lambda r: r["position"])
+                   if r["in_catalog"])
+    if not models:
+        raise LookupError(f"none of the {stage!r} route models is in the catalog")
+    return rows[0], models
+
+
+async def _route_from_tables(db: Any, stage: str) -> tuple[Any, tuple]:
+    """The pre-323 read: shared.llm_role_config + shared.llm_model_catalog (grandfathered SELECT, CIS 173)."""
+    rows = await db.fetch(
+        "SELECT role, model_id, fallback_model_ids, account_route, shadow_model_id, "
+        "shadow_sample_pct FROM shared.llm_role_config WHERE stage = $1 AND is_active", stage)
+    if not rows:
+        raise LookupError(f"no active llm_role_config row for {stage!r}")
+    cfg = rows[0]
+    keys = [cfg["model_id"], *(cfg["fallback_model_ids"] or [])]
+    cat = await db.fetch(
+        "SELECT model_key, vendor, api_style, bedrock_profile_ids, price_in_per_mtok, "
+        "price_out_per_mtok, price_cache_read_per_mtok, price_cache_write_per_mtok, enabled "
+        "FROM shared.llm_model_catalog WHERE model_key = ANY($1::text[])", keys)
+    by_key = {r["model_key"]: _model(r, "enabled") for r in cat}
+    models = tuple(by_key[k] for k in keys if k in by_key)
+    if not models:
+        raise LookupError(f"none of {keys} is in llm_model_catalog")
+    return cfg, models
+
+
+async def _read_route(db: Any, stage: str) -> tuple[Any, tuple]:
+    view = contract.GATEWAY_CONFIG_VIEW
+    if _view_usable(view):
+        try:
+            return await _route_from_view(db, stage)
+        except Exception as e:  # noqa: BLE001 — only a missing / ungranted view falls back
+            if not _is_missing_object(e):
+                raise
+            _mark_view_missing(view, e)
+    return await _route_from_tables(db, stage)
+
+
 async def load_route(db: Any, stage: str) -> Route:
     """`db` is an asyncpg pool or connection. Raises AiPaused("route_unreadable") when the route
-    tables cannot be read (AA-642 S0: fail closed, never the hard-coded BUILTIN_ROUTES models); the
+    cannot be read (AA-642 S0: fail closed, never the hard-coded BUILTIN_ROUTES models); the
     failure is not cached, so the next request reads again."""
     cached = _cache.get(stage)
     now = time.monotonic()
     if cached and now - cached[1] < _CACHE_TTL_SECONDS:
         return cached[0]
     try:
-        rows = await db.fetch(
-            "SELECT role, model_id, fallback_model_ids, account_route, shadow_model_id, "
-            "shadow_sample_pct FROM shared.llm_role_config WHERE stage = $1 AND is_active", stage)
-        if not rows:
-            raise LookupError(f"no active llm_role_config row for {stage!r}")
-        cfg = rows[0]
-        keys = [cfg["model_id"], *(cfg["fallback_model_ids"] or [])]
-        cat = await db.fetch(
-            "SELECT model_key, vendor, api_style, bedrock_profile_ids, price_in_per_mtok, "
-            "price_out_per_mtok, price_cache_read_per_mtok, price_cache_write_per_mtok, enabled "
-            "FROM shared.llm_model_catalog WHERE model_key = ANY($1::text[])", keys)
-        by_key = {}
-        for r in cat:
-            profiles = r["bedrock_profile_ids"]
-            if isinstance(profiles, str):
-                profiles = json.loads(profiles)
-            by_key[r["model_key"]] = Model(
-                r["model_key"], r["vendor"], r["api_style"], dict(profiles or {}),
-                _num(r["price_in_per_mtok"]), _num(r["price_out_per_mtok"]),
-                _num(r["price_cache_read_per_mtok"]), _num(r["price_cache_write_per_mtok"]),
-                bool(r["enabled"]))
-        models = tuple(by_key[k] for k in keys if k in by_key)
-        if not models:
-            raise LookupError(f"none of {keys} is in llm_model_catalog")
+        cfg, models = await _read_route(db, stage)
         shadow = cfg.get("shadow_model_id") if (cfg.get("shadow_sample_pct") or 0) > 0 else None
         if shadow:
             observability.emit("llm_gateway_note", stage=stage,
@@ -238,10 +316,19 @@ def _cost(model: Model, tin: int, tout: int, cache_read: int = 0,
     return round(total / 1_000_000, 6)
 
 
-def _failed(route: Route, model: Model, account: str, position: int, error: str) -> Call:
-    """A failed attempt: nothing billed, the error kept for the log row."""
+def _failed(route: Route, model: Model, account: str, position: int, error: str, *,
+            latency_ms: Optional[int] = None, attempt_no: Optional[int] = None) -> Call:
+    """A failed attempt: nothing billed, the error kept for the log row, its ledger outcome
+    ('refused' for an access / credit / rate-limit refusal, else 'error') from the shared core."""
+    status, error_class = ledger.failed_outcome(error)
     return Call(route.stage, route.role, model.key, account, 0, 0, 0.0, fallback_used=position > 0,
-                stop_reason="error", extra={"error": error[:500]}, failed=True)
+                stop_reason="error", extra={"error": error[:500]}, failed=True,
+                latency_ms=latency_ms, attempt_no=attempt_no, wire_id=model.profiles.get(account),
+                status=status, error_class=error_class)
+
+
+def _ms(started: float) -> int:
+    return max(0, int((time.monotonic() - started) * 1000))
 
 
 def _read_body(resp: dict) -> dict:
@@ -284,6 +371,7 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
     """Runs the route: each enabled model in order, each of its accounts in order.
     Every failed attempt is appended to `failures` (when given) so the caller logs it too."""
     errors = []
+    attempt = 0
     for position, model in enumerate(route.models):
         if not model.enabled or model.api_style == "embed":
             errors.append(f"{model.key}: skipped")
@@ -292,23 +380,29 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
         if not accounts:
             errors.append(_no_account(model))
         for account in accounts:
+            attempt += 1
+            started = time.monotonic()
             try:
                 text, usage, stop = _text_call(model, account, system, user, max_tokens,
                                                client_factory)
             except Exception as e:  # noqa: BLE001 — fail over to the next account/model
                 errors.append(f"{model.key}@{account}: {str(e)[:200]}")
                 if failures is not None:
-                    failures.append(_failed(route, model, account, position, str(e)))
+                    failures.append(_failed(route, model, account, position, str(e),
+                                            latency_ms=_ms(started), attempt_no=attempt))
                 continue
             if not text:
                 errors.append(f"{model.key}@{account}: empty response")
                 if failures is not None:
-                    failures.append(_failed(route, model, account, position, "empty response"))
+                    failures.append(_failed(route, model, account, position, "empty response",
+                                            latency_ms=_ms(started), attempt_no=attempt))
                 continue
             return text, Call(
                 route.stage, route.role, model.key, account, usage["in"], usage["out"],
                 _cost(model, usage["in"], usage["out"], usage["cache_read"], usage["cache_write"]),
-                fallback_used=position > 0, stop_reason=stop)
+                fallback_used=position > 0, stop_reason=stop, latency_ms=_ms(started),
+                attempt_no=attempt, cache_read_tokens=int(usage["cache_read"] or 0),
+                cache_write_tokens=int(usage["cache_write"] or 0), wire_id=model.profiles.get(account))
     raise BedrockError(f"All models failed for stage {route.stage!r}: " + "; ".join(errors))
 
 
@@ -407,6 +501,7 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
     """Cohere Embed v4 request shape (the only embedding vendor in the catalog). acc2 first, then
     satellite rows by route (AA-862): each catalog row names one account, the route orders them."""
     errors = []
+    attempt = 0
     for position, model in enumerate(route.models):
         if not model.enabled or model.api_style != "embed" or model.vendor != "cohere":
             errors.append(f"{model.key}: skipped")
@@ -415,6 +510,8 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
         if not accounts:
             errors.append(_no_account(model))
         for account in accounts:
+            attempt += 1
+            started = time.monotonic()
             try:
                 rt = _embed_runtime(account, client_factory)
                 resp = rt.invoke_model(modelId=model.profiles[account], body=json.dumps(
@@ -430,14 +527,16 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
                     _drop_stale_satellite_client(account, str(e))
                 errors.append(f"{model.key}@{account}: {str(e)[:200]}")
                 if failures is not None:
-                    failures.append(_failed(route, model, account, position, str(e)))
+                    failures.append(_failed(route, model, account, position, str(e),
+                                            latency_ms=_ms(started), attempt_no=attempt))
                 continue
             header = (resp.get("ResponseMetadata", {}).get("HTTPHeaders", {})
                       .get("x-amzn-bedrock-input-token-count"))
             tokens = int(header) if header is not None else sum(max(1, len(t) // 4) for t in texts)
             return [[float(x) for x in v] for v in vectors], Call(
                 route.stage, route.role, model.key, account, tokens, 0, _cost(model, tokens, 0),
-                fallback_used=position > 0, extra={"tokens_estimated": header is None})
+                fallback_used=position > 0, extra={"tokens_estimated": header is None},
+                latency_ms=_ms(started), attempt_no=attempt, wire_id=model.profiles.get(account))
     raise BedrockError(f"All models failed for stage {route.stage!r}: " + "; ".join(errors))
 
 
@@ -540,23 +639,52 @@ def is_throttle(error: str) -> bool:
     return "throttl" in low or "too many requests" in low
 
 
+# The pre-319 row (no ledger v2 columns): written only when the v2 INSERT finds a column missing.
+_LEGACY_INSERT_SQL = (
+    "INSERT INTO shared.llm_call_log (tenant_id, stage, role, model, tokens_in, tokens_out, "
+    "cost_usd, quality_signal, stop_reason, account, fallback_used, provider) "
+    "VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)")
+_UNDEFINED_COLUMN = "42703"
+
+
+def ledger_row(call: Call, signal: dict, tenant_id: Optional[str] = None) -> ledger.LedgerRow:
+    """The ledger v2 row of one attempt (AA-642 S8). A priced success says how it was priced
+    ('catalog': the route's catalog prices); a failed attempt carries its status and error class."""
+    return ledger.LedgerRow(
+        app=APP, stage=call.stage, role=call.role, model=call.model, tokens_in=call.tokens_in,
+        tokens_out=call.tokens_out, cost_usd=call.cost_usd, quality_signal=signal, tenant_id=tenant_id,
+        stop_reason=call.stop_reason, account=call.account, fallback_used=call.fallback_used,
+        provider=call.provider, cache_read_tokens=call.cache_read_tokens or None,
+        cache_write_tokens=call.cache_write_tokens or None,
+        pricing_mode="catalog" if call.cost_usd is not None and not call.failed else None,
+        status=call.status if call.failed else None, error_class=call.error_class if call.failed else None,
+        latency_ms=call.latency_ms, connection_key=call.account, deployment_wire_id=call.wire_id,
+        attempt_no=call.attempt_no)
+
+
 async def record(db: Any, call: Call, quality_signal: dict, *,
                  tenant_id: Optional[str] = None) -> None:
-    """Writes the shared.llm_call_log row (and, for ONLINE_STAGES, today's spend counter).
-    Never raises: a lost log row must not fail a request."""
+    """Writes the shared.llm_call_log row (ledger v2; the pre-319 row when its columns are missing)
+    and, for ONLINE_STAGES, today's spend counter. Never raises: a lost log row must not fail a
+    request, but it is an ERROR line and, for an online stage, pauses AI for the hold window (the
+    spend view sums the ledger, so the day would undercount)."""
+    global _spend_unreadable_until
     signal = {"app": APP, **call.extra, **quality_signal}
     if call.failed:
         signal["failed"] = True
+    row = ledger_row(call, signal, tenant_id)
     try:
-        await db.execute(
-            "INSERT INTO shared.llm_call_log (tenant_id, stage, role, model, tokens_in, tokens_out, "
-            "cost_usd, quality_signal, stop_reason, account, fallback_used, provider) "
-            "VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)",
-            tenant_id, call.stage, call.role, call.model, call.tokens_in, call.tokens_out,
-            call.cost_usd, json.dumps(signal), call.stop_reason, call.account,
-            call.fallback_used, call.provider)
+        try:
+            await db.execute(ledger.insert_sql(), *row.args())
+        except Exception as e:  # noqa: BLE001
+            if getattr(e, "sqlstate", None) != _UNDEFINED_COLUMN:
+                raise
+            await db.execute(_LEGACY_INSERT_SQL, *row.base_values()[:8], call.stop_reason, call.account,
+                             call.fallback_used, call.provider)
     except Exception as e:  # noqa: BLE001 — AA-642 S0: logged as an ERROR (unlogged spend)
         _error("call_log_write_failed", call.stage, e)
+        if call.stage in ONLINE_STAGES:
+            _spend_unreadable_until = time.monotonic() + SPEND_UNREADABLE_HOLD_SECONDS
     if call.stage in ONLINE_STAGES:
         await _add_spend(db, call)
 
@@ -588,8 +716,8 @@ SPEND_UNREADABLE_HOLD_SECONDS = 60.0
 _spend_unreadable_until = 0.0
 
 # budget_status reasons when `exhausted` is True.
-REASON_CAP = "cap_reached"
-REASON_SPEND_UNREADABLE = "spend_unreadable"
+REASON_CAP = core_budget.REASON_CAP
+REASON_SPEND_UNREADABLE = core_budget.REASON_SPEND_UNREADABLE
 
 
 def _error(what: str, stage: Optional[str], e: BaseException) -> None:
@@ -627,12 +755,10 @@ _alerted: set[tuple[str, str, str]] = set()
 def _alert(scope: str, spent: float, cap: float) -> None:
     """One `llm_spend_alert` line per container, UTC day, scope and threshold: 'near' at
     SPEND_NEAR_CAP_RATIO of the cap (level warning), 'cap' when reached (level error)."""
-    if spent >= cap:
-        threshold, level = "cap", "error"
-    elif spent >= cap * config.SPEND_NEAR_CAP_RATIO:
-        threshold, level = "near", "warning"
-    else:
+    threshold = core_budget.threshold(spent, cap, config.SPEND_NEAR_CAP_RATIO)
+    if threshold is None:
         return
+    level = "error" if threshold == core_budget.THRESHOLD_CAP else "warning"
     key = (time.strftime("%Y-%m-%d", time.gmtime()), scope, threshold)
     if key in _alerted:
         return
@@ -642,7 +768,20 @@ def _alert(scope: str, spent: float, cap: float) -> None:
 
 
 async def _spent(db: Any, stages: list) -> float:
-    row = await db.fetchrow(_SPEND_TODAY_SQL, stages)
+    """Today's (UTC) spend of `stages`: the CIS contract view over the ledger (CIS 323), else the
+    tp-010 counter while the view is missing or not granted. Any other error raises (fail closed)."""
+    row = None
+    view = contract.APP_SPEND_VIEW
+    if _view_usable(view):
+        try:
+            row = await db.fetchrow(contract.APP_SPEND_SQL, stages)
+        except Exception as e:  # noqa: BLE001 — only a missing / ungranted view falls back
+            if not _is_missing_object(e):
+                raise
+            _mark_view_missing(view, e)
+            row = await db.fetchrow(_SPEND_TODAY_SQL, stages)
+    else:
+        row = await db.fetchrow(_SPEND_TODAY_SQL, stages)
     return float(row["spent"]) if row and row["spent"] is not None else 0.0
 
 
@@ -661,24 +800,17 @@ async def budget_status(db: Any, stage: Optional[str] = None) -> dict:
     Calls with no catalog price add nothing."""
     cap = float(config.TP_DAILY_SPEND_CAP_USD)
     stage_cap = _stage_cap(stage)
-    unreadable = {"spent_usd": None, "cap_usd": cap, "exhausted": True,
-                  "reason": REASON_SPEND_UNREADABLE, "near_cap": False}
     if spend_unreadable_flag_active():
-        return unreadable
+        return core_budget.unreadable(cap).as_dict()
     try:
         spent = await _spent(db, list(ONLINE_STAGES))
         stage_spent = await _spent(db, [stage]) if stage_cap is not None else None
     except Exception as e:  # noqa: BLE001
         _error("spend_unreadable", stage, e)
-        return unreadable
-    exhausted = spent >= cap
-    near = spent >= cap * config.SPEND_NEAR_CAP_RATIO
+        return core_budget.unreadable(cap).as_dict()
     _alert("total", spent, cap)
-    out: dict = {"spent_usd": round(spent, 6), "cap_usd": cap}
     if stage_cap is not None and stage_spent is not None:
-        exhausted = exhausted or stage_spent >= stage_cap
-        near = near or stage_spent >= stage_cap * config.SPEND_NEAR_CAP_RATIO
         _alert(str(stage), stage_spent, stage_cap)
-        out.update(stage=stage, stage_spent_usd=round(stage_spent, 6), stage_cap_usd=stage_cap)
-    out.update(exhausted=exhausted, reason=REASON_CAP if exhausted else None, near_cap=near)
-    return out
+    decision = core_budget.decide(spent, cap, near_ratio=config.SPEND_NEAR_CAP_RATIO, stage=stage,
+                                  stage_spent=stage_spent, stage_cap=stage_cap)
+    return decision.as_dict()

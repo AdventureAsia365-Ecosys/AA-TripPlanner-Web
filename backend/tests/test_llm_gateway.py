@@ -7,6 +7,7 @@ import json
 import pytest
 
 from backend import config
+from backend.aa_llm import contract, ledger
 from backend.shared import bedrock_satellite as bs
 from backend.shared import llm_gateway as gw
 
@@ -19,6 +20,7 @@ def _role_configured(monkeypatch):
     monkeypatch.setattr(config, "BEDROCK_ACCT_PRIMARY", "111111111111")
     monkeypatch.setattr(config, "EMBED_DIM", 3)
     gw._cache.clear()
+    gw._view_missing_until.clear()
 
 
 # --- Stub building blocks ---------------------------------------------------
@@ -247,19 +249,46 @@ def test_embed_wrong_dimension_is_a_failure():
 
 # --- load_route / record ----------------------------------------------------------
 
+class PgError(Exception):
+    """An asyncpg-like error with its SQLSTATE."""
+
+    def __init__(self, sqlstate, message="pg error"):
+        super().__init__(message)
+        self.sqlstate = sqlstate
+
+
+def _row(args) -> dict:
+    """The ledger v2 INSERT arguments by column name."""
+    assert len(args) == len(ledger.COLUMNS)
+    return dict(zip(ledger.COLUMNS, args))
+
+
 class FakeDb:
-    def __init__(self, role_rows=None, catalog_rows=None, fail=False, fail_execute=False):
+    """`view_rows` None = CIS 323 not applied (the view read raises undefined_table)."""
+
+    def __init__(self, role_rows=None, catalog_rows=None, fail=False, fail_execute=False, view_rows=None,
+                 view_error=None):
         self.role_rows = role_rows or []
         self.catalog_rows = catalog_rows or []
+        self.view_rows = view_rows
+        self.view_error = view_error
         self.fail = fail
         self.fail_execute = fail_execute
         self.fetches = 0
+        self.sql: list = []
         self.executed: list = []
 
     async def fetch(self, sql, *args):
         self.fetches += 1
+        self.sql.append(sql)
         if self.fail:
             raise RuntimeError("permission denied for table llm_role_config")
+        if contract.GATEWAY_CONFIG_VIEW in sql:
+            if self.view_error is not None:
+                raise self.view_error
+            if self.view_rows is None:
+                raise PgError("42P01", f'relation "{contract.GATEWAY_CONFIG_VIEW}" does not exist')
+            return self.view_rows
         return self.role_rows if "llm_role_config" in sql else self.catalog_rows
 
     async def execute(self, sql, *args):
@@ -286,7 +315,7 @@ async def test_load_route_reads_config_and_catalog_and_caches():
     assert [m.key for m in route.models] == ["sonnet-5", "sonnet"]  # route order, not row order
     assert route.models[1].profiles == {"acc3": "g.s"}
     await gw.load_route(db, "tp_compose")
-    assert db.fetches == 2  # second call served from the cache
+    assert db.fetches == 3  # the missing view, then the two tables; the second call served from the cache
 
 
 async def test_load_route_pauses_ai_when_db_is_unreadable(capsys):
@@ -306,10 +335,11 @@ async def test_record_writes_one_row_tagged_with_the_app():
     call = gw.Call("tp_compose", "writer", "sonnet", "acc3", 10, 5, 0.0001, False, "end_turn")
     await gw.record(db, call, {"mode": "compose"})
     sql, args = db.executed[0]
-    assert "shared.llm_call_log" in sql
-    assert args[1:4] == ("tp_compose", "writer", "sonnet")
-    assert json.loads(args[7]) == {"app": "tripplanner", "mode": "compose"}
-    assert args[-1] == "bedrock-satellite"
+    assert sql == ledger.insert_sql()
+    row = _row(args)
+    assert (row["stage"], row["role"], row["model"]) == ("tp_compose", "writer", "sonnet")
+    assert json.loads(row["quality_signal"]) == {"app": "tripplanner", "mode": "compose"}
+    assert (row["provider"], row["app"], row["status"]) == ("bedrock-satellite", "tripplanner", "ok")
 
 
 async def test_record_never_raises():
@@ -378,14 +408,17 @@ async def test_record_logs_null_cost_and_failed_flag_and_counts_spend():
     failed = gw._failed(ROUTE, SONNET, "acc3", 0, "AccessDenied")
     await gw.record(db, failed, {"mode": "compose"})
     sql, args = db.executed[0]
-    assert args[6] == 0.0 and args[8] == "error"
-    signal = json.loads(args[7])
+    row = _row(args)
+    assert row["cost_usd"] == 0.0 and row["stop_reason"] == "error"
+    assert (row["status"], row["error_class"], row["pricing_mode"]) == ("error", "other", None)
+    signal = json.loads(row["quality_signal"])
     assert signal["failed"] is True and signal["error"] == "AccessDenied"
     assert "tripplanner.llm_spend_daily" in db.executed[1][0]
 
     db = FakeDb()
     await gw.record(db, gw.Call("tp_compose", "writer", "new", "acc3", 10, 5, None, False), {})
-    assert db.executed[0][1][6] is None                       # NULL, not 0
+    assert _row(db.executed[0][1])["cost_usd"] is None        # NULL, not 0
+    assert _row(db.executed[0][1])["pricing_mode"] is None    # nothing priced it
     assert db.executed[1][1] == ("tp_compose", 0.0, 1)        # adds nothing, counted as unpriced
 
 
@@ -544,3 +577,195 @@ async def test_under_80_percent_prints_no_alert(monkeypatch, capsys):
     status = await gw.budget_status(StageSpendDb({"tp_compose": 3.9}))
     assert status["near_cap"] is False
     assert "llm_spend_alert" not in capsys.readouterr().out
+
+
+# --- AA-642 S8: the CIS contract views (CIS 323) and the ledger v2 row ---------------------------------------
+
+def _view_row(position, key, *, in_catalog=True, api_style="converse", enabled=True, price_in=2.0,
+              profiles=None, role="writer", shadow=None, shadow_pct=0):
+    return {"stage": "tp_compose", "role": role, "is_active": True, "account_route": "acc3",
+            "allowed_scopes": None, "shadow_model_id": shadow, "shadow_sample_pct": shadow_pct,
+            "position": position, "model_key": key, "in_catalog": in_catalog,
+            "vendor": "anthropic" if in_catalog else None, "provider": "bedrock" if in_catalog else None,
+            "api_style": api_style if in_catalog else None,
+            "bedrock_profile_ids": (profiles or {"acc3": f"zz.{key}"}) if in_catalog else None,
+            "wire_model": None, "max_output_tokens": 4096, "model_enabled": enabled if in_catalog else None,
+            "price_in_per_mtok": price_in if in_catalog else None, "price_out_per_mtok": 10 if in_catalog else None,
+            "price_cache_read_per_mtok": None, "price_cache_write_per_mtok": None, "deployments": [],
+            "route_updated_at": None}
+
+
+async def test_load_route_reads_the_contract_view_in_chain_order():
+    db = FakeDb(view_rows=[_view_row(2, "zz-writer-c", profiles=json.dumps({"acc3": "zz.c"})),
+                           _view_row(1, "zz-not-in-catalog", in_catalog=False),
+                           _view_row(0, "zz-writer-a", enabled=False)])
+    route = await gw.load_route(db, "tp_compose")
+    assert [m.key for m in route.models] == ["zz-writer-a", "zz-writer-c"]     # position order, unknown key skipped
+    assert route.models[0].enabled is False and route.models[1].profiles == {"acc3": "zz.c"}
+    assert (route.role, route.account_route) == ("writer", "acc3")
+    assert db.fetches == 1 and contract.GATEWAY_CONFIG_VIEW in db.sql[0]       # no read of the shared.* tables
+
+
+async def test_load_route_from_the_view_notes_a_shadow(capsys):
+    db = FakeDb(view_rows=[_view_row(0, "zz-writer-a", shadow="zz-writer-b", shadow_pct=5)])
+    route = await gw.load_route(db, "tp_compose")
+    assert route.shadow_model == "zz-writer-b"
+    assert "does not run shadows" in capsys.readouterr().out
+
+
+async def test_an_empty_view_pauses_ai():
+    with pytest.raises(gw.AiPaused):
+        await gw.load_route(FakeDb(view_rows=[]), "tp_compose")
+
+
+async def test_a_view_error_other_than_missing_pauses_ai_without_the_tables():
+    db = FakeDb(view_error=PgError("57014", "canceling statement due to statement timeout"),
+                role_rows=[{"role": "writer", "model_id": "sonnet", "fallback_model_ids": [],
+                            "account_route": "acc3"}])
+    with pytest.raises(gw.AiPaused):
+        await gw.load_route(db, "tp_compose")
+    assert db.fetches == 1
+
+
+@pytest.mark.parametrize("sqlstate", ["42P01", "42501"])
+async def test_a_missing_or_ungranted_view_falls_back_and_is_not_retried_for_a_while(monkeypatch, capsys, sqlstate):
+    now = [500.0]
+    monkeypatch.setattr(gw.time, "monotonic", lambda: now[0])
+    db = FakeDb(view_error=PgError(sqlstate),
+                role_rows=[{"role": "writer", "model_id": "sonnet", "fallback_model_ids": [], "account_route": "acc3"}],
+                catalog_rows=[{"model_key": "sonnet", "vendor": "anthropic", "api_style": "anthropic_native",
+                               "bedrock_profile_ids": {"acc3": "g.s"}, "price_in_per_mtok": 3,
+                               "price_out_per_mtok": 15, "price_cache_read_per_mtok": None,
+                               "price_cache_write_per_mtok": None, "enabled": True}])
+    assert [m.key for m in (await gw.load_route(db, "tp_compose")).models] == ["sonnet"]
+    assert db.fetches == 3 and "not readable yet" in capsys.readouterr().out
+    gw._cache.clear()
+    await gw.load_route(db, "tp_compose")
+    assert db.fetches == 5                                    # the tables only: the view waits VIEW_RETRY_SECONDS
+    gw._cache.clear()
+    now[0] += gw.VIEW_RETRY_SECONDS + 1
+    await gw.load_route(db, "tp_compose")
+    assert db.fetches == 8 and contract.GATEWAY_CONFIG_VIEW in db.sql[5]
+
+
+class ViewSpendDb:
+    """The spend read: the contract view when `view` holds a value, a missing view (42P01) when None."""
+
+    def __init__(self, view=None, counter=0.0, view_error=None):
+        self.view, self.counter, self.view_error = view, counter, view_error
+        self.sql: list = []
+
+    async def fetchrow(self, sql, *args):
+        self.sql.append(sql)
+        if contract.APP_SPEND_VIEW in sql:
+            if self.view_error is not None:
+                raise self.view_error
+            if self.view is None:
+                raise PgError("42P01")
+            return {"spent": self.view}
+        assert "tripplanner.llm_spend_daily" in sql
+        return {"spent": self.counter}
+
+
+async def test_budget_reads_the_spend_view(monkeypatch):
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    db = ViewSpendDb(view=5.5, counter=0.0)
+    status = await gw.budget_status(db)
+    assert status["exhausted"] is True and status["spent_usd"] == 5.5
+    assert db.sql == [contract.APP_SPEND_SQL]
+
+
+async def test_budget_falls_back_to_the_counter_while_the_view_is_missing(monkeypatch):
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    db = ViewSpendDb(view=None, counter=1.0)
+    status = await gw.budget_status(db)
+    assert status["spent_usd"] == 1.0 and status["exhausted"] is False
+    await gw.budget_status(db)
+    assert sum(contract.APP_SPEND_VIEW in q for q in db.sql) == 1          # not retried within the window
+
+
+async def test_budget_fails_closed_on_another_view_error(monkeypatch):
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    status = await gw.budget_status(ViewSpendDb(view_error=PgError("08006", "connection failure"), counter=0.0))
+    assert status["reason"] == "spend_unreadable" and status["spent_usd"] is None
+
+
+def test_attempts_carry_number_latency_wire_and_outcome():
+    route = gw.Route("tp_compose", "writer", (CONVERSE, SONNET), "acc3")
+    acc3 = StubBedrock(response=_claude_reply(), fail_converse=True)
+    failures: list = []
+    _, call = gw.generate_text(route, "s", "u", 50, client_factory=make_factory({"acc3": acc3}, []),
+                               failures=failures)
+    (failed,) = failures
+    assert (failed.attempt_no, call.attempt_no) == (1, 2)
+    assert failed.latency_ms >= 0 and call.latency_ms >= 0
+    assert (failed.wire_id, call.wire_id) == ("global.sonnet-5", "global.sonnet")
+    assert (failed.status, failed.error_class) == ("error", "other")         # "simulated failure": not a refusal
+
+
+def test_a_refused_attempt_is_classified_by_the_shared_core():
+    refused = gw._failed(ROUTE, SONNET, "acc3", 0,
+                         "An error occurred (AccessDeniedException) when calling the InvokeModel operation")
+    assert (refused.status, refused.error_class) == ("refused", "access_denied")
+    throttled = gw._failed(ROUTE, SONNET, "acc3", 0, "ThrottlingException: Too many requests")
+    assert (throttled.status, throttled.error_class) == ("refused", "throttled")
+
+
+def test_cache_tokens_reach_the_call():
+    reply = _claude_reply()
+    reply["usage"].update(cache_read_input_tokens=300, cache_creation_input_tokens=40)
+    _, call = gw.generate_text(ROUTE, "s", "u", 50,
+                               client_factory=make_factory({"acc3": StubBedrock(response=reply)}, []))
+    assert (call.cache_read_tokens, call.cache_write_tokens) == (300, 40)
+
+
+async def test_record_writes_the_ledger_v2_columns():
+    db = FakeDb()
+    call = gw.Call("tp_search_embed", "embed", "cohere-embed-v4", "acc2", 12, 0, 0.0000014, False,
+                   latency_ms=38, attempt_no=1, cache_read_tokens=0, wire_id="us.zz-embed")
+    await gw.record(db, call, {"cache": "miss"})
+    row = _row(db.executed[0][1])
+    assert (row["app"], row["status"], row["error_class"]) == ("tripplanner", "ok", None)
+    assert (row["latency_ms"], row["attempt_no"], row["connection_key"]) == (38, 1, "acc2")
+    assert (row["deployment_wire_id"], row["pricing_mode"], row["provider"]) == ("us.zz-embed", "catalog",
+                                                                                   "bedrock-native")
+    assert (row["cache_read_tokens"], row["cache_write_tokens"], row["is_shadow"]) == (None, None, False)
+
+
+class LegacyLedgerDb(FakeDb):
+    """llm_call_log before CIS 319: the v2 INSERT fails with undefined_column."""
+
+    async def execute(self, sql, *args):
+        if "attempt_no" in sql:
+            raise PgError("42703", 'column "app" of relation "llm_call_log" does not exist')
+        self.executed.append((sql, args))
+
+
+async def test_record_falls_back_to_the_pre_319_row():
+    db = LegacyLedgerDb()
+    await gw.record(db, gw.Call("tp_compose", "writer", "sonnet", "acc3", 10, 5, 0.0001, False, "end_turn"),
+                    {"mode": "compose"})
+    sql, args = db.executed[0]
+    assert sql == gw._LEGACY_INSERT_SQL and len(args) == 12
+    assert args[1:4] == ("tp_compose", "writer", "sonnet") and args[-1] == "bedrock-satellite"
+    assert json.loads(args[7]) == {"app": "tripplanner", "mode": "compose"}
+    assert gw.spend_unreadable_flag_active() is False
+
+
+async def test_a_lost_ledger_row_of_an_online_stage_pauses_ai(monkeypatch):
+    """The spend view sums the ledger: a lost online row undercounts, so AI pauses for the hold window even when
+    the tp-010 counter write succeeded."""
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    now = [2000.0]
+    monkeypatch.setattr(gw.time, "monotonic", lambda: now[0])
+
+    class LedgerDown(FakeDb):
+        async def execute(self, sql, *args):
+            if "shared.llm_call_log" in sql:
+                raise PgError("08006", "connection failure")
+            self.executed.append((sql, args))
+
+    db = LedgerDown()
+    await gw.record(db, gw.Call("tp_search_embed", "embed", "cohere-embed-v4", "acc2", 1, 0, 0.001, False), {})
+    assert "tripplanner.llm_spend_daily" in db.executed[0][0]              # the counter write still happened
+    assert (await gw.budget_status(ViewSpendDb(view=0.0)))["reason"] == "spend_unreadable"
