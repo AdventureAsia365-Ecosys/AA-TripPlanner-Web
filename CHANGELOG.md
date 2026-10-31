@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.15.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.14.0...v0.15.0) (2026-10-31)
+
+
+### Features
+
+* bot check (Vercel BotID Basic) before search and narration; AA-text narration answered first ([#201](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/201)) ([4fd7dca](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/4fd7dcabba569ce489084ccdcb08f6546fd0365b))
+* Dev and preview deployments are noindex and show a "Preview site" footer line ([#200](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/200)) ([25d1803](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/25d1803c4f488776ac4dee4edd818150b6366505))
+* gateway on the shared core aa_llm (CIS 323 views with fallback, ledger v2 rows) (AA-642 S8) ([#203](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/203)) ([c845b62](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/c845b623030ed42bfcb8dede46b5f889486fe8d8))
+* per-session and per-IP AI limits on narration and search, stage caps and 80% spend alerts ([#199](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/199)) ([4c6b341](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/4c6b341483d7c4249d39a908b73bae4c257ffc14))
+
+
+### Bug Fixes
+
+* destination detail hides suspect points and redirects merged ids ([#195](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/195)) ([26c2c97](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/26c2c976f40ca8b2452e353b3537bef55abc0d2c))
+* fail closed and degrade narration and search when AI cannot run ([#198](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/198)) ([0f2fcb8](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/0f2fcb8581319030ae97bcf19444317b092db7a1))
+
 ## [0.14.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.13.0...v0.14.0) (2026-10-29)
 
 
