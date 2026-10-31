@@ -204,3 +204,37 @@ def test_registered_kinds_carry_the_tripplanner_prefix_and_daily_runs_never_retr
         assert name.startswith("tp_")
     assert handler.DAILY[kind.KIND][1] == 1
     assert handler.DAILY[kind.KIND][2](date(2026, 10, 29)) == "tp_retention_outbox_redact:schedule:2026-10-29"
+
+
+# --- AA-1015: tp_retention_ai_rate_counter (pure parts) --------------------------------------------------------------
+
+from backend.jobs import rate_counter_purge as purge  # noqa: E402
+
+
+@pytest.mark.parametrize("payload, candidates, prev, mode, limit", [
+    ({}, 5, None, "dry_run", 0),
+    ({"dry_run": False, "max_rows": 3}, 5, None, "live", 3),
+    ({"trigger": "schedule"}, 5, None, "dry_run", 0),
+    ({"trigger": "schedule"}, 5, {"windows": {"windows": 7}, "affected_total": 9}, "dry_run", 0),
+    ({"trigger": "schedule"}, 5, {"windows": purge.WINDOWS, "affected_total": 2}, "live", 5),
+    ({"trigger": "schedule"}, purge.GROWTH_FLOOR_ROWS + 1, {"windows": purge.WINDOWS, "affected_total": 2}, "held", 0),
+])
+def test_rate_counter_purge_decide_mode(payload, candidates, prev, mode, limit):
+    assert purge.decide_mode(payload, candidates, prev)[:2] == (mode, limit)
+
+
+@pytest.mark.parametrize("payload", [[], {"older_than_days": 3}, {"trigger": "manual_override"}, {"dry_run": "no"},
+                                     {"max_rows": "9"}])
+def test_rate_counter_purge_refuses_bad_payloads(payload):
+    with pytest.raises(runner.PermanentError):
+        purge.validate_payload(payload)
+
+
+def test_rate_counter_purge_live_manual_run_needs_max_rows():
+    with pytest.raises(runner.PermanentError):
+        purge.decide_mode({"dry_run": False}, 5, None)
+
+
+def test_rate_counter_purge_is_a_daily_kind_without_retries():
+    assert purge.KIND in handler.HANDLERS and handler.DAILY[purge.KIND][1] == 1
+    assert handler.DAILY[purge.KIND][2](date(2026, 11, 2)) == "tp_retention_ai_rate_counter:schedule:2026-11-02"

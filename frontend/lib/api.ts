@@ -1,5 +1,5 @@
 // Thin client that talks to the BFF routes (never the Lambdas directly).
-import { narrationNotice, type AiNoticeKey } from "./aiNotices";
+import { limitNotice, narrationNotice, type AiNoticeKey } from "./aiNotices";
 import type {
   BrowseFilters,
   CountryOption,
@@ -107,17 +107,19 @@ export async function fetchByCountry(
   return data.destinations ?? [];
 }
 
+// `limited` (AA-1015): this visitor reached the per-IP search limit (429); the caller keeps what the map shows.
 export async function search(
   q: string,
   filters: BrowseFilters,
-): Promise<DestinationPin[]> {
+): Promise<{ pins: DestinationPin[]; limited: boolean }> {
   const qs = filterParams(filters);
   const res = await fetch(
     `/api/browse?resource=search&q=${encodeURIComponent(q)}&${qs}`,
   );
-  if (!res.ok) return [];
+  if (res.status === 429) return { pins: [], limited: true };
+  if (!res.ok) return { pins: [], limited: false };
   const data = await res.json();
-  return data.destinations ?? [];
+  return { pins: data.destinations ?? [], limited: false };
 }
 
 interface TripResponse {
@@ -220,7 +222,7 @@ export async function narrate(
   sessionId: string,
   mode: "compose" | "renarrate" = "compose",
 ): Promise<{ ok: boolean; narration: string; source: string; notice: AiNoticeKey | null }> {
-  const { ok, data } = await postTrip<{
+  const { ok, status, data } = await postTrip<{
     narration?: string;
     source?: string;
     ai_paused?: boolean;
@@ -231,6 +233,8 @@ export async function narrate(
     session_id: sessionId,
     mode,
   });
+  // AA-1015: the per-session narration limit (429) keeps the current narration and says why.
+  if (status === 429) return { ok: false, narration: "", source: "", notice: limitNotice("narrate") };
   if (!ok) return { ok: false, narration: "", source: "", notice: null };
   return {
     ok: true,

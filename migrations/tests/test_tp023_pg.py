@@ -36,14 +36,9 @@ BEFORE_TP023 = sorted(f for f in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql") if 13 
 TP023 = MIGRATIONS / "023_ai_rate_counter.sql"
 TABLE = "tripplanner.ai_rate_counter"
 
-# The limiter's upsert (backend/shared/ratelimit.py UPSERT_SQL) and the retention delete, in the shape the code runs.
-UPSERT = """
-    INSERT INTO tripplanner.ai_rate_counter (key_hash, window_start, count)
-    VALUES ($1, to_timestamp(floor(extract(epoch FROM now()) / $2) * $2), 1)
-    ON CONFLICT (key_hash, window_start)
-    DO UPDATE SET count = tripplanner.ai_rate_counter.count + 1
-    RETURNING count
-"""
+# The limiter's upsert, exactly as the code runs it (backend/shared/ratelimit.py), and the retention delete.
+UPSERT = (MIGRATIONS.parent / "backend" / "shared" / "ratelimit.py").read_text(encoding="utf-8").split(
+    'UPSERT_SQL = """', 1)[1].split('"""', 1)[0]
 
 
 async def _as_owner(admin, path) -> None:
@@ -156,8 +151,9 @@ def test_runtime_role_counts_and_purges_but_cannot_truncate(db):
         try:
             async with su.transaction():
                 await su.execute("SET LOCAL ROLE tripplanner")
-                counts = [await su.fetchval(UPSERT, "k1", 60) for _ in range(3)]
-                other = await su.fetchval(UPSERT, "k2", 60)
+                counts = [(await su.fetchrow(UPSERT, "k1", 60))["count"] for _ in range(3)]
+                retry = (await su.fetchrow(UPSERT, "k3", 3600))["retry_after_s"]
+                other = (await su.fetchrow(UPSERT, "k2", 60))["count"]
                 await su.execute(
                     "INSERT INTO tripplanner.ai_rate_counter (key_hash, window_start, count)"
                     " VALUES ('old', now() - interval '3 days', 4)")
@@ -166,15 +162,16 @@ def test_runtime_role_counts_and_purges_but_cannot_truncate(db):
                 left = await su.fetchval("SELECT count(*) AS n FROM tripplanner.ai_rate_counter")
                 truncate = await su.fetchval(
                     "SELECT has_table_privilege('tripplanner', 'tripplanner.ai_rate_counter', 'TRUNCATE') AS t")
-                raise _Rollback((counts, other, purged, left, truncate))
+                raise _Rollback((counts, other, retry, purged, left, truncate))
         except _Rollback as r:
             return r.value
         finally:
             await su.close()
 
-    counts, other, purged, left, truncate = run(check())
+    counts, other, retry, purged, left, truncate = run(check())
     assert counts == [1, 2, 3] and other == 1
-    assert purged == "DELETE 1" and left == 2
+    assert 1 <= retry <= 3600                                 # seconds left in the hour window
+    assert purged == "DELETE 1" and left == 3
     assert truncate is False
 
 

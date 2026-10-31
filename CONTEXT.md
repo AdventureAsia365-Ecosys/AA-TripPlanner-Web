@@ -62,7 +62,7 @@ Two Python 3.12 Lambda functions
       ▼
 Postgres (the shared RDS in acc2)
   ├─ tripplanner.*        (owned here — customers, sessions, trip_events, trip_drafts, outbox,
-  │                        narration_cache, llm_spend_daily, component_id_map, job)
+  │                        narration_cache, llm_spend_daily, component_id_map, job, ai_rate_counter)
   ├─ shared.llm_*         (CIS Model Gateway: read config, write llm_call_log)
   └─ read-only: catalog.* views (CIS-owned: tours, places, tour graph, embeddings)
       │
@@ -635,6 +635,15 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   logged but neither counted nor capped here, so a backfill never takes search/narration down.
   Over the cap narration falls back to AA text + neutral day lines (`ai_budget_exhausted`) and search
   answers the keyword ranking (200, `ai_budget_exhausted`; it was a 503 before AA-642 S0).
+- **Per-visitor AI limits (AA-1015, migration tp-023)**: `backend/shared/ratelimit.py` counts each request that would
+  call a model in `tripplanner.ai_rate_counter` (fixed windows, key = HMAC of scope + kind + value keyed with the edge
+  key: no IP, session or account stored): narrate 10 / hour / guest session, search 30 / minute / traveller IP, x2
+  signed in. Over the limit: 429 `rate_limited` with `retry_after_s` and a calm EN / VI line in the planner. The BFF
+  forwards `x-tp-client-ip` (all trip calls and search) and `x-tp-signed-in` (search; narration uses the verified
+  access token); both are trusted only with the right `x-tripplanner-key`. The counter fails open (ERROR line); the
+  jobs Lambda kind `tp_retention_ai_rate_counter` deletes windows older than 2 days (DM-7.2). Optional stage caps
+  `TP_DAILY_SPEND_CAP_SEARCH_USD` / `_COMPOSE_USD` (unset = combined cap only) and a once-a-day `llm_spend_alert`
+  line at 80 % and 100 % of a cap. The bot check (BotID / Turnstile) is not built yet (cost not checked).
 - **Fail closed + degrade mode (AA-642 S0, root ADR 0009 decisions 5 and 6)**: the gateway never calls a
   model it cannot account for. Spend counter unreadable (or a counter write failed in the last 60 s,
   `SPEND_UNREADABLE_HOLD_SECONDS`, per container) → `budget_status` is `exhausted` with reason

@@ -7,6 +7,7 @@ sessions table, plus a no-op transaction context manager.
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
 
@@ -1429,3 +1430,72 @@ async def test_narrate_logs_failed_attempts_of_a_defect_and_returns_502(monkeypa
     resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn)
     assert resp["statusCode"] == 502
     assert recorded == [("acc3", True)]
+
+
+# --- AA-1015: per-session narration limit ------------------------------------------------------------------------
+
+class RateConn(AiConn):
+    """AiConn without the narration cache (every call is a miss) plus the tp-023 counter, one window."""
+
+    def __init__(self):
+        super().__init__()
+        self.counters: dict[str, int] = {}
+
+    async def execute(self, query, *args):
+        if "INSERT INTO tripplanner.narration_cache" in " ".join(query.split()):
+            return "OK"
+        return await super().execute(query, *args)
+
+    async def fetchrow(self, query, *args):
+        if "INSERT INTO tripplanner.ai_rate_counter" in " ".join(query.split()):
+            self.counters[args[0]] = self.counters.get(args[0], 0) + 1
+            return {"count": self.counters[args[0]], "retry_after_s": 1800}
+        return await super().fetchrow(query, *args)
+
+
+@pytest.mark.asyncio
+async def test_the_11th_narration_in_an_hour_is_429_and_another_session_still_works(capsys):
+    conn = RateConn()
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    calls: list = []
+    statuses = [(await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn,
+                            narrator=_counting_narrator(calls)))["statusCode"] for _ in range(11)]
+    assert statuses == [200] * 10 + [429] and len(calls) == 10            # the 11th never reached the model
+    limited = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn,
+                         narrator=_counting_narrator(calls))
+    assert limited["headers"]["retry-after"] == "1800"
+    assert json.loads(limited["body"]) == {"error": "rate_limited", "scope": "narrate", "limit": 10,
+                                           "window_s": 3600, "retry_after_s": 1800}
+    other_trip, other_session = str(uuid.uuid4()), str(uuid.uuid4())
+    conn.sessions[other_session] = _session(other_session)
+    await events.append_event(conn, other_trip, other_session, "add_component", {"component_id": "c1"})
+    ok = await call("POST", f"/trip/{other_trip}/narrate", {"session_id": other_session}, conn=conn,
+                    narrator=_counting_narrator(calls))
+    assert ok["statusCode"] == 200
+    assert S1 not in json.dumps(conn.counters) and other_session not in json.dumps(conn.counters)  # hashed keys
+    line = [json.loads(x) for x in capsys.readouterr().out.splitlines() if x.startswith('{"evt": "ai_rate_limited"')]
+    assert line and line[0]["scope"] == "narrate" and S1 not in json.dumps(line)
+
+
+@pytest.mark.asyncio
+async def test_narrations_that_need_no_model_are_not_counted():
+    """Over the daily cap (no model call) the limiter is not touched, so it never refuses a basic answer."""
+    conn = RateConn()
+    conn.spent = 99.0
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    for _ in range(12):
+        resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn,
+                          narrator=_counting_narrator([]))
+        assert resp["statusCode"] == 200
+    assert conn.counters == {}
+
+
+@pytest.mark.asyncio
+async def test_an_unwritable_counter_lets_the_narration_through(capsys):
+    """AA-1015 fail mode: the limiter fails open (ERROR line); the spend cap still guards the budget."""
+    conn = AiConn()   # no ai_rate_counter: the upsert returns no row
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn,
+                      narrator=_counting_narrator([]))
+    assert resp["statusCode"] == 200
+    assert '"evt": "ai_rate_counter_error"' in capsys.readouterr().out

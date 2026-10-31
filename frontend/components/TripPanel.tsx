@@ -625,7 +625,7 @@ export default function TripPanel() {
                 />
               )}
               {/* AA-642 S0: a narration made without AI says why, in one calm line (no spinner, no error). */}
-              {narration && narrationNotice && (
+              {narrationNotice && (
                 <p role="status" className="mt-1.5 text-[11px] leading-snug text-k-muted">
                   {aiNotice(narrationNotice)}
                 </p>

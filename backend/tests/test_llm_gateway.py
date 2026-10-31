@@ -412,7 +412,7 @@ async def test_budget_status_fails_closed_when_the_counter_is_unreadable(monkeyp
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
     closed = await gw.budget_status(SpendDb(fail=True))
     assert closed == {"spent_usd": None, "cap_usd": 5.0, "exhausted": True,
-                      "reason": "spend_unreadable"}
+                      "reason": "spend_unreadable", "near_cap": False}
     line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert line["evt"] == "llm_gateway_error" and line["level"] == "error"
 
@@ -481,3 +481,66 @@ async def test_offline_stages_never_exhaust_the_customer_budget(monkeypatch):
 def test_online_stages_are_the_customer_facing_routes():
     assert set(gw.ONLINE_STAGES) == {"tp_compose", "tp_search_embed"}
     assert all(s in gw.BUILTIN_ROUTES for s in gw.ONLINE_STAGES)
+
+
+# --- AA-1015: stage caps and the 80 % alert ------------------------------------------------------
+
+class StageSpendDb:
+    """Answers the spend read per stage list: the combined read gets the sum, a one-stage read that stage."""
+
+    def __init__(self, by_stage):
+        self.by_stage = by_stage
+        self.reads: list = []
+
+    async def fetchrow(self, sql, *args):
+        self.reads.append(list(args[0]))
+        return {"spent": sum(v for k, v in self.by_stage.items() if k in args[0])}
+
+
+async def test_without_stage_caps_only_the_combined_cap_applies(monkeypatch):
+    """Unset stage caps (the default) = the AA-805 behaviour: one combined read, one combined cap."""
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_COMPOSE_USD", None)
+    db = StageSpendDb({"tp_compose": 3.0, "tp_search_embed": 1.0})
+    status = await gw.budget_status(db, "tp_compose")
+    assert status == {"spent_usd": 4.0, "cap_usd": 5.0, "exhausted": False, "reason": None, "near_cap": True}
+    assert db.reads == [list(gw.ONLINE_STAGES)]
+
+
+async def test_a_stage_cap_stops_that_stage_only(monkeypatch):
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_SEARCH_USD", 1.0)
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_COMPOSE_USD", 4.0)
+    db = StageSpendDb({"tp_compose": 0.5, "tp_search_embed": 1.0})
+    search = await gw.budget_status(db, "tp_search_embed")
+    assert search["exhausted"] is True and search["reason"] == "cap_reached"
+    assert (search["stage"], search["stage_spent_usd"], search["stage_cap_usd"]) == ("tp_search_embed", 1.0, 1.0)
+    compose = await gw.budget_status(db, "tp_compose")
+    assert compose["exhausted"] is False and compose["near_cap"] is False and compose["stage_cap_usd"] == 4.0
+    # the combined cap still applies over a stage cap
+    over = await gw.budget_status(StageSpendDb({"tp_compose": 0.1, "tp_search_embed": 5.0}), "tp_compose")
+    assert over["exhausted"] is True and over["stage_spent_usd"] == 0.1
+
+
+async def test_near_cap_and_cap_alerts_print_once_per_day_and_scope(monkeypatch, capsys):
+    """AA-1015: the 80 % alert fires (a warning line), the cap alert fires (an error line), each once."""
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_SEARCH_USD", 1.0)
+    db = StageSpendDb({"tp_compose": 3.5, "tp_search_embed": 0.85})
+    for _ in range(3):
+        status = await gw.budget_status(db, "tp_search_embed")
+    assert status["near_cap"] is True and status["exhausted"] is False
+    db.by_stage["tp_search_embed"] = 1.2
+    await gw.budget_status(db, "tp_search_embed")
+    await gw.budget_status(db, "tp_search_embed")
+    alerts = [json.loads(x) for x in capsys.readouterr().out.splitlines() if '"llm_spend_alert"' in x]
+    got = [(a["scope"], a["threshold"], a["level"]) for a in alerts]
+    assert got == [("total", "near", "warning"), ("tp_search_embed", "near", "warning"),
+                   ("tp_search_embed", "cap", "error")]
+
+
+async def test_under_80_percent_prints_no_alert(monkeypatch, capsys):
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    status = await gw.budget_status(StageSpendDb({"tp_compose": 3.9}))
+    assert status["near_cap"] is False
+    assert "llm_spend_alert" not in capsys.readouterr().out

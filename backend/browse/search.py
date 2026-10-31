@@ -131,7 +131,7 @@ async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Opt
         return cached, None
     if time.monotonic() < _throttled_until:
         return None, "throttle_cooldown"
-    budget = await llm_gateway.budget_status(pool)
+    budget = await llm_gateway.budget_status(pool, STAGE)  # AA-1015: + the search stage cap, when set
     if budget["exhausted"]:
         if budget.get("reason") == llm_gateway.REASON_SPEND_UNREADABLE:
             return None, llm_gateway.REASON_SPEND_UNREADABLE

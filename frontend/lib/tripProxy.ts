@@ -13,18 +13,34 @@ import { REQUEST_ID_HEADER } from "./requestId.ts";
 // account that owns a trip open it from any browser and links the trips it edits. Never logged or echoed.
 export const ACCESS_TOKEN_HEADER = "x-tripplanner-access"; // backend config.ACCESS_TOKEN_HEADER
 
+// AA-1015: the per-IP / per-session AI limits. The Lambda only sees Vercel's address, so the BFF forwards the
+// traveller's (lib/cognito.ts travellerIp: the edge-set x-forwarded-for) and whether a traveller session is signed
+// in (a higher allowance). The Lambda trusts both only together with the shared key (backend/shared/ratelimit.py).
+export const CLIENT_IP_HEADER = "x-tp-client-ip"; // backend config.CLIENT_IP_HEADER
+export const SIGNED_IN_HEADER = "x-tp-signed-in"; // backend config.SIGNED_IN_HEADER
+
+export function aiLimitHeaders(clientIp?: string | null, signedIn = false): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (clientIp) h[CLIENT_IP_HEADER] = clientIp;
+  if (signedIn) h[SIGNED_IN_HEADER] = "1";
+  return h;
+}
+
 export function tripHeaders(
   apiKey: string,
   guestToken?: string | null,
   requestId?: string | null,
   accessToken?: string | null,
+  clientIp?: string | null,
 ): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
   if (apiKey) h["x-tripplanner-key"] = apiKey;
   if (guestToken) h[GUEST_TOKEN_HEADER] = guestToken;
   if (requestId) h[REQUEST_ID_HEADER] = requestId;
   if (accessToken) h[ACCESS_TOKEN_HEADER] = `Bearer ${accessToken}`;
-  return h;
+  // The narration limit is per session and the signed-in state comes from the verified access token, so only the
+  // address rides here.
+  return { ...h, ...aiLimitHeaders(clientIp) };
 }
 
 export interface SearchParamSource {

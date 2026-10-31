@@ -1,12 +1,13 @@
 // AA-642 S0 (root ADR 0009 decisions 5 and 6): the plain notices a traveller sees when the AI part of
 // the planner is not used for a request — AI paused (the spend counter or the route config cannot be
-// read, or the model provider is down) or the daily AI budget is spent. The answer itself is still
+// read, or the model provider is down) or the daily AI budget is spent, and (AA-1015) when this visitor reached the
+// per-session narration limit or the per-IP search limit (429). The answer itself is still
 // useful (basic day lines, keyword search), so a notice is a calm sentence, never a spinner or an error.
 //
 // English is the default (pages open in English); Vietnamese is used only when the page language is
 // Vietnamese (`<html lang="vi">`). Both tables must have the same keys (lib/aiNotices.test.ts).
 
-export type AiNoticeKey = "narrationPaused" | "narrationBudget";
+export type AiNoticeKey = "narrationPaused" | "narrationBudget" | "narrationLimit" | "searchLimit";
 
 export type AiNoticeLang = "en" | "vi";
 
@@ -18,6 +19,10 @@ export const AI_NOTICES: Record<AiNoticeLang, Record<AiNoticeKey, string>> = {
     narrationBudget:
       "Today's AI writing limit is reached, so days without Adventure Asia's own itinerary text show only " +
       "their places. Your advisor confirms every detail.",
+    narrationLimit:
+      "You have asked for many narrations in a short time. Your trip is saved; please try again in a little while.",
+    searchLimit:
+      "Lots of searches in a short time. Please wait a minute before searching again; the map still works.",
   },
   vi: {
     narrationPaused:
@@ -26,6 +31,11 @@ export const AI_NOTICES: Record<AiNoticeLang, Record<AiNoticeKey, string>> = {
     narrationBudget:
       "Hôm nay đã đạt giới hạn viết bằng AI, nên những ngày chưa có lịch trình riêng của Adventure Asia " +
       "chỉ hiện tên địa điểm. Chuyên viên tư vấn sẽ xác nhận mọi chi tiết.",
+    narrationLimit:
+      "Bạn đã yêu cầu viết lịch trình nhiều lần trong thời gian ngắn. Chuyến đi của bạn vẫn được lưu; " +
+      "vui lòng thử lại sau ít phút.",
+    searchLimit:
+      "Bạn đã tìm kiếm nhiều lần trong thời gian ngắn. Vui lòng đợi một phút rồi tìm lại; bản đồ vẫn dùng bình thường.",
   },
 };
 
@@ -45,4 +55,9 @@ export function narrationNotice(body: { ai_paused?: boolean; ai_budget_exhausted
   if (body.ai_paused) return "narrationPaused";
   if (body.ai_budget_exhausted) return "narrationBudget";
   return null;
+}
+
+// A 429 from the BFF (AA-1015): the limit notice of that route.
+export function limitNotice(scope: "narrate" | "search"): AiNoticeKey {
+  return scope === "narrate" ? "narrationLimit" : "searchLimit";
 }

@@ -7,6 +7,7 @@ Secrets Manager (acc2); locally it comes from the environment / .env.
 from __future__ import annotations
 
 import os
+from typing import Optional
 from datetime import datetime, timezone
 
 
@@ -115,11 +116,37 @@ REQUIRE_REGISTRATION_BEFORE_HANDOFF = (
 )
 
 # --- AI Phase 0 guards (AA-805) ---
-# Daily hard stop on TripPlanner model spend (all tp_* stages together, UTC day), counted in
-# tripplanner.llm_spend_daily (migration tp-010). PLACEHOLDER default — the business cap is an
-# open question for Nghiệp; override with the env var on both Lambdas. When reached, narration
-# falls back to AA text + neutral day lines and free-text search answers 503.
+# Daily hard stop on TripPlanner model spend (the customer-facing stages together, UTC day), counted in
+# tripplanner.llm_spend_daily (migration tp-010). Infra sets it explicitly on both Lambdas (AA-1015); the code
+# default is the same 5.0. When reached, narration falls back to AA text + neutral day lines and free-text search
+# to the keyword ranking (AA-642 S0).
 TP_DAILY_SPEND_CAP_USD = float(_get("TP_DAILY_SPEND_CAP_USD", "5.0"))
+
+
+def _optional_usd(name: str) -> Optional[float]:
+    raw = (_get(name, "") or "").strip()
+    return float(raw) if raw else None
+
+
+# AA-1015: separate daily caps per stage, so search and narration cannot use each other's share. Unset (the default)
+# = no stage cap: only the combined cap above applies, as before. Both caps apply when a stage cap is set.
+TP_DAILY_SPEND_CAP_SEARCH_USD = _optional_usd("TP_DAILY_SPEND_CAP_SEARCH_USD")
+TP_DAILY_SPEND_CAP_COMPOSE_USD = _optional_usd("TP_DAILY_SPEND_CAP_COMPOSE_USD")
+# AA-1015: share of a cap at which the gateway prints the "near cap" alert line (and budget_status says near_cap).
+SPEND_NEAR_CAP_RATIO = 0.8
+
+# --- AI route limits (AA-1015, migration tp-023) ---
+# Fixed windows counted in tripplanner.ai_rate_counter (backend/shared/ratelimit.py). Capacity plan S261 §2.5:
+# 10 narrations per hour per session, 30 searches per minute per traveller IP, a signed-in traveller gets
+# TP_RATE_SIGNED_IN_FACTOR times that. Only requests that would call a model are counted (a cached narration, an
+# all-AA-text narration or an empty query is not).
+TP_RATE_NARRATE_PER_HOUR = int(_get("TP_RATE_NARRATE_PER_HOUR", "10"))
+TP_RATE_SEARCH_PER_MINUTE = int(_get("TP_RATE_SEARCH_PER_MINUTE", "30"))
+TP_RATE_SIGNED_IN_FACTOR = int(_get("TP_RATE_SIGNED_IN_FACTOR", "2"))
+# Sent by the BFF (Vercel) with the traveller's address and whether a traveller session is signed in. Trusted ONLY
+# when the request also carries the right x-tripplanner-key (only the BFF has it); otherwise ignored.
+CLIENT_IP_HEADER = "x-tp-client-ip"
+SIGNED_IN_HEADER = "x-tp-signed-in"
 
 # How long a narration in tripplanner.narration_cache is reused for the same itinerary.
 NARRATION_CACHE_TTL_HOURS = int(_get("NARRATION_CACHE_TTL_HOURS", "168"))

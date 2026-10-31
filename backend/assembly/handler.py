@@ -54,7 +54,7 @@ from backend.assembly import account as account_mod
 from backend.assembly import activities as activities_mod
 from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
-from backend.shared import component_ids, llm_gateway, observability
+from backend.shared import component_ids, llm_gateway, observability, ratelimit
 
 _COMPONENTS_RE = re.compile(r"^/trip/([^/]+)/components$")
 _COMPONENT_ITEM_RE = re.compile(r"^/trip/([^/]+)/components/([^/]+)$")
@@ -305,10 +305,18 @@ async def route(
         # AA-642 S0 (root ADR 0009 decisions 5 and 6): the same degrade mode when AI is paused: the spend
         # counter or the route config cannot be read (fail closed, no model call), or every model of the
         # route failed (provider outage). The answer is 200 basic / master_basic with `ai_paused`, never 502.
-        budget = await llm_gateway.budget_status(conn)
+        budget = await llm_gateway.budget_status(conn, agent_mod.STAGE)  # AA-1015: + the compose stage cap
         calls: list = []
         paused: Optional[str] = budget.get("reason") if budget.get("reason") != llm_gateway.REASON_CAP else None
         narrate_fn = None
+        # AA-1015: 10 model narrations per hour per session (twice that signed in). Counted only when this request
+        # would call the model: a cached answer, an all-AA-text trip or a stopped budget costs nothing.
+        if not budget["exhausted"] and master_content.build_narration(itinerary, day_texts)[1]:
+            decision = await ratelimit.hit(conn, ratelimit.SCOPE_NARRATE, ratelimit.KIND_SESSION, session_id,
+                                           signed_in=caller.signed_in)
+            if not decision.allowed:
+                return {"statusCode": 429, "headers": ratelimit.limited_headers(decision, _HEADERS),
+                        "body": json.dumps(ratelimit.limited_body(decision))}
         if not budget["exhausted"]:
             try:
                 narrate_fn = await _resolve_narrator(mode, narrator, conn, calls)

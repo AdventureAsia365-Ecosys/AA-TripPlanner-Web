@@ -612,26 +612,73 @@ async def _add_spend(db: Any, call: Call) -> None:
         _spend_unreadable_until = time.monotonic() + SPEND_UNREADABLE_HOLD_SECONDS
 
 
-async def budget_status(db: Any) -> dict:
-    """Today's (UTC) customer-facing (ONLINE_STAGES) model spend against TP_DAILY_SPEND_CAP_USD.
+# AA-1015: the stage caps (config, unset = none) and the once-per-day alert lines.
+def _stage_cap(stage: Optional[str]) -> Optional[float]:
+    caps = {"tp_compose": config.TP_DAILY_SPEND_CAP_COMPOSE_USD,
+            "tp_search_embed": config.TP_DAILY_SPEND_CAP_SEARCH_USD}
+    cap = caps.get(stage) if stage else None
+    return float(cap) if cap is not None else None
 
-    Returns {"spent_usd", "cap_usd", "exhausted", "reason"}. Fails CLOSED (AA-642 S0, root ADR 0009
-    decision 6): when the counter cannot be read (tp-010 missing, permission, DB error), or a counter
-    write failed in the last SPEND_UNREADABLE_HOLD_SECONDS, `exhausted` is True with reason
-    "spend_unreadable" and `spent_usd` None, so no model is called and callers degrade (basic
-    narration, keyword search). Over the cap the reason is "cap_reached"; under it, None.
+
+# (UTC day, scope, threshold) already announced by this container, so a busy day prints each alert once.
+_alerted: set[tuple[str, str, str]] = set()
+
+
+def _alert(scope: str, spent: float, cap: float) -> None:
+    """One `llm_spend_alert` line per container, UTC day, scope and threshold: 'near' at
+    SPEND_NEAR_CAP_RATIO of the cap (level warning), 'cap' when reached (level error)."""
+    if spent >= cap:
+        threshold, level = "cap", "error"
+    elif spent >= cap * config.SPEND_NEAR_CAP_RATIO:
+        threshold, level = "near", "warning"
+    else:
+        return
+    key = (time.strftime("%Y-%m-%d", time.gmtime()), scope, threshold)
+    if key in _alerted:
+        return
+    _alerted.add(key)
+    observability.emit("llm_spend_alert", level=level, threshold=threshold, scope=scope,
+                       spent_usd=round(spent, 6), cap_usd=cap, ratio=config.SPEND_NEAR_CAP_RATIO)
+
+
+async def _spent(db: Any, stages: list) -> float:
+    row = await db.fetchrow(_SPEND_TODAY_SQL, stages)
+    return float(row["spent"]) if row and row["spent"] is not None else 0.0
+
+
+async def budget_status(db: Any, stage: Optional[str] = None) -> dict:
+    """Today's (UTC) customer-facing (ONLINE_STAGES) model spend against TP_DAILY_SPEND_CAP_USD and, when
+    `stage` has a stage cap (AA-1015: TP_DAILY_SPEND_CAP_COMPOSE_USD / _SEARCH_USD), that stage's spend
+    against it. Both caps apply; with no stage cap set only the combined cap does (behaviour unchanged).
+
+    Returns {"spent_usd", "cap_usd", "exhausted", "reason", "near_cap"} (+ "stage", "stage_spent_usd",
+    "stage_cap_usd" when a stage cap applies). `near_cap` is True from SPEND_NEAR_CAP_RATIO (80 %) of
+    either cap, and the first time a container sees 80 % or 100 % of a cap on a UTC day it prints one
+    `llm_spend_alert` line. Fails CLOSED (AA-642 S0, root ADR 0009 decision 6): when the counter cannot
+    be read, or a counter write failed in the last SPEND_UNREADABLE_HOLD_SECONDS, `exhausted` is True
+    with reason "spend_unreadable" and `spent_usd` None, so no model is called and callers degrade
+    (basic narration, keyword search). Over a cap the reason is "cap_reached"; under it, None.
     Calls with no catalog price add nothing."""
     cap = float(config.TP_DAILY_SPEND_CAP_USD)
+    stage_cap = _stage_cap(stage)
     unreadable = {"spent_usd": None, "cap_usd": cap, "exhausted": True,
-                  "reason": REASON_SPEND_UNREADABLE}
+                  "reason": REASON_SPEND_UNREADABLE, "near_cap": False}
     if spend_unreadable_flag_active():
         return unreadable
     try:
-        row = await db.fetchrow(_SPEND_TODAY_SQL, list(ONLINE_STAGES))
-        spent = float(row["spent"]) if row and row["spent"] is not None else 0.0
+        spent = await _spent(db, list(ONLINE_STAGES))
+        stage_spent = await _spent(db, [stage]) if stage_cap is not None else None
     except Exception as e:  # noqa: BLE001
-        _error("spend_unreadable", None, e)
+        _error("spend_unreadable", stage, e)
         return unreadable
     exhausted = spent >= cap
-    return {"spent_usd": round(spent, 6), "cap_usd": cap, "exhausted": exhausted,
-            "reason": REASON_CAP if exhausted else None}
+    near = spent >= cap * config.SPEND_NEAR_CAP_RATIO
+    _alert("total", spent, cap)
+    out: dict = {"spent_usd": round(spent, 6), "cap_usd": cap}
+    if stage_cap is not None and stage_spent is not None:
+        exhausted = exhausted or stage_spent >= stage_cap
+        near = near or stage_spent >= stage_cap * config.SPEND_NEAR_CAP_RATIO
+        _alert(str(stage), stage_spent, stage_cap)
+        out.update(stage=stage, stage_spent_usd=round(stage_spent, 6), stage_cap_usd=stage_cap)
+    out.update(exhausted=exhausted, reason=REASON_CAP if exhausted else None, near_cap=near)
+    return out
