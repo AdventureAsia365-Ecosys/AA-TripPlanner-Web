@@ -152,8 +152,40 @@ async def test_cache_hit_is_served_over_the_daily_cap(gateway, monkeypatch):
     pool.spent = 5.0
     out = await search_mod.search("beach", BrowseFilters(), pool=pool)
     assert out["ranking"] == "semantic" and len(gateway["embeds"]) == 1
-    with pytest.raises(search_mod.SearchUnavailable):     # a miss over the cap is still 503
-        await search_mod.search("mountain", BrowseFilters(), pool=pool)
+    # AA-642 S0: a miss over the cap is a keyword ranking (no embed call), never a 503.
+    miss = await search_mod.search("mountain", BrowseFilters(), pool=pool)
+    assert miss["ranking"] == "keyword" and miss["ai_budget_exhausted"] is True
+    assert "ai_paused" not in miss and len(gateway["embeds"]) == 1
+
+
+class UnreadableSpendPool(Pool):
+    async def fetchrow(self, query, *args):
+        self.calls.append((query, args))
+        raise RuntimeError("permission denied for table llm_spend_daily")
+
+
+async def test_unreadable_spend_counter_pauses_the_embed_and_ranks_by_keyword(gateway, capsys):
+    """AA-642 S0 (root ADR 0009 decision 6): spend unreadable = fail closed, 200 keyword ranking."""
+    pool = UnreadableSpendPool([("best_score", [HOI_AN | {"best_score": 3}])])
+    resp = await h.route("GET", "/browse/search", {"q": "Hoi An lanterns"}, pool=pool)
+    assert resp["statusCode"] == 200
+    body = json.loads(resp["body"])
+    assert body["ranking"] == "keyword" and body["ai_paused"] is True
+    assert [d["name"] for d in body["destinations"]] == ["Hoi An"]
+    assert gateway["embeds"] == [] and gateway["recorded"] == []   # no model call at all
+    assert _evts(capsys)[-1]["reason"] == "spend_unreadable"
+
+
+async def test_unreadable_route_config_pauses_the_embed_and_ranks_by_keyword(gateway, monkeypatch):
+    async def paused(db, stage):
+        raise llm_gateway.AiPaused("route_unreadable", "permission denied")
+
+    monkeypatch.setattr(search_mod.llm_gateway, "load_route", paused)
+    pool = Pool([("best_score", [HOI_AN | {"best_score": 3}])])
+    resp = await h.route("GET", "/browse/search", {"q": "Hoi An"}, pool=pool)
+    body = json.loads(resp["body"])
+    assert resp["statusCode"] == 200 and body["ranking"] == "keyword" and body["ai_paused"] is True
+    assert gateway["embeds"] == []
 
 
 # --- search: keyword fallback -----------------------------------------------------------------

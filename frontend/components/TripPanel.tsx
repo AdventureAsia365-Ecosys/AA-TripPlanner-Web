@@ -9,6 +9,7 @@ import RoutePlanner from "@/components/RoutePlanner";
 import StopActivities from "@/components/StopActivities";
 import { Icon } from "@/ui/Icon";
 import AiLabel from "@/components/AiLabel";
+import { aiNotice } from "@/lib/aiNotices";
 import { parseNarration } from "@/lib/narration";
 import { LEGAL_LINKS } from "@/lib/legal";
 import { formatDays } from "@/lib/text";
@@ -42,8 +43,8 @@ const NARRATION_LABEL: Record<string, { label: string; shortLabel: string; expla
     label: AA_ITINERARY_LABEL,
     shortLabel: AA_ITINERARY_SHORT,
     explanation:
-      `${AA_ITINERARY_TEXT} Today's AI writing limit is reached, so the days it does not cover show ` +
-      "only their places. Your advisor confirms every detail.",
+      `${AA_ITINERARY_TEXT} AI writing is not available right now (paused, or today's limit is reached), ` +
+      "so the days it does not cover show only their places. Your advisor confirms every detail.",
   },
   mixed: {
     label: "AA itinerary + Adventure Asia AI",
@@ -83,6 +84,7 @@ export default function TripPanel() {
     narration,
     narrating,
     narrationSource,
+    narrationNotice,
     suggestions,
     focusDestination,
     remove,
@@ -621,6 +623,12 @@ export default function TripPanel() {
                   explanation={NARRATION_LABEL[narrationSource].explanation}
                   variant={narrationSource === "llm" ? "outline" : "solid"}
                 />
+              )}
+              {/* AA-642 S0: a narration made without AI says why, in one calm line (no spinner, no error). */}
+              {narration && narrationNotice && (
+                <p role="status" className="mt-1.5 text-[11px] leading-snug text-k-muted">
+                  {aiNotice(narrationNotice)}
+                </p>
               )}
               {narration ? (
                 <div className="mt-2.5 space-y-2.5">

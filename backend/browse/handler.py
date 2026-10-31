@@ -202,10 +202,8 @@ async def route(
         q = query.get("q")
         if isinstance(q, list):
             q = q[0] if q else None
-        try:
-            data = await search_mod.search(q or "", filters, pool=pool)
-        except search_mod.SearchUnavailable as e:  # AA-805: daily spend cap reached
-            return _resp(503, {"error": "search_unavailable", "detail": str(e)}, _NO_STORE_HEADERS)
+        # AA-642 S0: a refused model call (cap, spend or route unreadable) is a keyword ranking, never 503.
+        data = await search_mod.search(q or "", filters, pool=pool)
         return _resp(200, data, _NO_STORE_HEADERS)
 
     return _resp(404, {"error": "not found"}, _NO_STORE_HEADERS)

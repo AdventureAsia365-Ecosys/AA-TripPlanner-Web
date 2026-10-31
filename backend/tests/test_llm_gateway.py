@@ -289,9 +289,16 @@ async def test_load_route_reads_config_and_catalog_and_caches():
     assert db.fetches == 2  # second call served from the cache
 
 
-async def test_load_route_falls_back_to_builtin_when_db_is_unreadable():
-    route = await gw.load_route(FakeDb(fail=True), "tp_search_embed")
-    assert route == gw.BUILTIN_ROUTES["tp_search_embed"]
+async def test_load_route_pauses_ai_when_db_is_unreadable(capsys):
+    """AA-642 S0: an unreadable route never falls back to the hard-coded models (fail closed)."""
+    with pytest.raises(gw.AiPaused) as e:
+        await gw.load_route(FakeDb(fail=True), "tp_search_embed")
+    assert e.value.reason == "route_unreadable"
+    assert isinstance(e.value, gw.BedrockError)
+    assert "tp_search_embed" not in gw._cache                 # not cached: the next request reads again
+    line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert line["evt"] == "llm_gateway_error" and line["level"] == "error"
+    assert line["what"] == "route_unreadable"
 
 
 async def test_record_writes_one_row_tagged_with_the_app():
@@ -394,10 +401,44 @@ class SpendDb:
 
 async def test_budget_status_against_the_cap(monkeypatch):
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
-    assert (await gw.budget_status(SpendDb(1.25)))["exhausted"] is False
-    assert (await gw.budget_status(SpendDb(5.0)))["exhausted"] is True
-    open_ = await gw.budget_status(SpendDb(fail=True))         # fails open, spent unknown
-    assert open_ == {"spent_usd": None, "cap_usd": 5.0, "exhausted": False}
+    under = await gw.budget_status(SpendDb(1.25))
+    assert under["exhausted"] is False and under["reason"] is None
+    over = await gw.budget_status(SpendDb(5.0))
+    assert over["exhausted"] is True and over["reason"] == "cap_reached"
+
+
+async def test_budget_status_fails_closed_when_the_counter_is_unreadable(monkeypatch, capsys):
+    """AA-642 S0 (root ADR 0009 decision 6): replaces the AA-805 fail-open test."""
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    closed = await gw.budget_status(SpendDb(fail=True))
+    assert closed == {"spent_usd": None, "cap_usd": 5.0, "exhausted": True,
+                      "reason": "spend_unreadable"}
+    line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert line["evt"] == "llm_gateway_error" and line["level"] == "error"
+
+
+async def test_a_failed_spend_write_pauses_ai_for_the_hold_window(monkeypatch):
+    """AA-642 S0: a lost counter write undercounts, so AI pauses for SPEND_UNREADABLE_HOLD_SECONDS
+    even though the counter itself reads fine, then recovers."""
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
+    now = [1000.0]
+    monkeypatch.setattr(gw.time, "monotonic", lambda: now[0])
+    db = FakeDb(fail_execute=True)
+    await gw.record(db, gw.Call("tp_compose", "writer", "sonnet", "acc3", 1, 1, 0.01, False), {})
+    assert (await gw.budget_status(SpendDb(0.0)))["reason"] == "spend_unreadable"
+    now[0] += gw.SPEND_UNREADABLE_HOLD_SECONDS - 1
+    assert (await gw.budget_status(SpendDb(0.0)))["exhausted"] is True
+    now[0] += 2
+    assert (await gw.budget_status(SpendDb(0.0)))["exhausted"] is False
+
+
+async def test_a_failed_ledger_write_is_logged_as_an_error(capsys):
+    """AA-642 S0: an unlogged paid call is an ERROR line, never a quiet note."""
+    db = FakeDb(fail_execute=True)
+    await gw.record(db, gw.Call("tp_extract", "writer", "sonnet", "acc3", 1, 1, 0.01, False), {})
+    lines = [json.loads(x) for x in capsys.readouterr().out.strip().splitlines()]
+    assert [x["what"] for x in lines if x["evt"] == "llm_gateway_error"] == ["call_log_write_failed"]
+    assert gw.spend_unreadable_flag_active() is False         # offline stage: no counter write
 
 
 class SpendLedgerDb:

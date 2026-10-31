@@ -633,7 +633,20 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `TP_DAILY_SPEND_CAP_USD`, counted in `tripplanner.llm_spend_daily` by the gateway — the role
   cannot read `shared.llm_call_log`). Offline stages (`tp_extract`, `tp_component_embed`) are
   logged but neither counted nor capped here, so a backfill never takes search/narration down.
-  Over the cap narration falls back to AA text + neutral day lines and search answers 503.
+  Over the cap narration falls back to AA text + neutral day lines (`ai_budget_exhausted`) and search
+  answers the keyword ranking (200, `ai_budget_exhausted`; it was a 503 before AA-642 S0).
+- **Fail closed + degrade mode (AA-642 S0, root ADR 0009 decisions 5 and 6)**: the gateway never calls a
+  model it cannot account for. Spend counter unreadable (or a counter write failed in the last 60 s,
+  `SPEND_UNREADABLE_HOLD_SECONDS`, per container) → `budget_status` is `exhausted` with reason
+  `spend_unreadable`; route config unreadable → `load_route` raises `AiPaused("route_unreadable")` (the
+  hard-coded `BUILTIN_ROUTES` models are never called any more); every model of the route failed
+  (provider outage, e.g. acc3 refusing) → degrade too. Narration then answers 200 `basic` /
+  `master_basic` with `"ai_paused": true` (never cached; a defect that is not a provider error still
+  answers 502), search answers the keyword ranking with `"ai_paused": true`. Each degraded narration
+  prints `{"evt":"narration_degraded","reason":…}`; each gateway failure that changes what travellers
+  get prints `{"evt":"llm_gateway_error","level":"error","what":…}` (route_unreadable,
+  spend_unreadable, spend_write_failed, call_log_write_failed). The planner shows one calm line under
+  the narration (`lib/aiNotices.ts`, English by default, Vietnamese when `<html lang="vi">`).
   `/narrate` is limited to the session that created the trip and reuses
   `tripplanner.narration_cache` for an identical itinerary (the key includes the AA master day
   text, so CIS edits miss the cache). Search embeds the query as `search_query` and ranks only

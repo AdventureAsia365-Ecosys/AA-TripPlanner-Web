@@ -23,6 +23,8 @@ def _fresh_search_embed_state():
 
     llm_gateway.query_embed_cache.clear()
     search_mod._throttled_until = 0.0
+    llm_gateway._spend_unreadable_until = 0.0  # AA-642 S0: the per-container "spend unreadable" hold
     yield
     llm_gateway.query_embed_cache.clear()
     search_mod._throttled_until = 0.0
+    llm_gateway._spend_unreadable_until = 0.0

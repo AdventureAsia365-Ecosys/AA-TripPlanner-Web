@@ -107,7 +107,10 @@ Read them in the database, read-only, through the usual ECS exec pattern of the 
 - **Daily spend vs the cap** — `tripplanner.llm_spend_daily` (UTC `day` x `stage`: `cost_usd`,
   `calls`, `unpriced_calls`). The cap compares today's sum over `tp_compose` + `tp_search_embed`
   with `TP_DAILY_SPEND_CAP_USD` (code default 5.0 when the Lambda env does not set it). Over the
-  cap, `/narrate` answers with `"ai_budget_exhausted": true` and `/browse/search` with 503.
+  cap, `/narrate` answers with `"ai_budget_exhausted": true` and `/browse/search` with the keyword
+  ranking (200, `"ai_budget_exhausted": true`). When the counter or the route config cannot be read,
+  or the model provider fails, both degrade the same way with `"ai_paused": true` (AA-642 S0, fail
+  closed).
 - **Throttling** — API Gateway route settings (AA-CIS-Infra): `POST /trip/{trip_id}/narrate`
   2 rps / burst 5, `GET /browse/search` 10 / 20. A throttled call gets 429 before the Lambda runs.
 - **Search on inactive tours** — `backend/tests/fixtures/search_labelled_30.json` is the labelled

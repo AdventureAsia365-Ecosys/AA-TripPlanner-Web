@@ -1,4 +1,5 @@
 // Thin client that talks to the BFF routes (never the Lambdas directly).
+import { narrationNotice, type AiNoticeKey } from "./aiNotices";
 import type {
   BrowseFilters,
   CountryOption,
@@ -218,18 +219,25 @@ export async function narrate(
   tripId: string,
   sessionId: string,
   mode: "compose" | "renarrate" = "compose",
-): Promise<{ ok: boolean; narration: string; source: string }> {
-  const { ok, data } = await postTrip<{ narration?: string; source?: string }>({
+): Promise<{ ok: boolean; narration: string; source: string; notice: AiNoticeKey | null }> {
+  const { ok, data } = await postTrip<{
+    narration?: string;
+    source?: string;
+    ai_paused?: boolean;
+    ai_budget_exhausted?: boolean;
+  }>({
     op: "narrate",
     trip_id: tripId,
     session_id: sessionId,
     mode,
   });
-  if (!ok) return { ok: false, narration: "", source: "" };
+  if (!ok) return { ok: false, narration: "", source: "", notice: null };
   return {
     ok: true,
     narration: data.narration ?? "",
     source: data.source ?? "",
+    // AA-642 S0: AI paused / daily budget spent -> the basic narration plus a calm notice.
+    notice: narrationNotice(data),
   };
 }
 
