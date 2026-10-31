@@ -663,7 +663,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   the narration (`lib/aiNotices.ts`, English by default, Vietnamese when `<html lang="vi">`).
   `/narrate` is limited to the session that created the trip and reuses
   `tripplanner.narration_cache` for an identical itinerary (the key includes the AA master day
-  text, so CIS edits miss the cache). Search embeds the query as `search_query` and ranks only
+  text, so CIS edits miss the cache). A trip whose every day has AA master text is answered first
+  (`source: master`, `cached: false`): no model, cache, spend counter, route config or limit is touched, and it
+  never carries `ai_budget_exhausted` / `ai_paused` (AA-1015, S262); only model text (`llm`, `mixed`) is cached. Search embeds the query as `search_query` and ranks only
   components of active, not soft-deleted tours.
 - **AI labels (AA-819, AUP 2026-11)**: every AI-written text block a traveller sees carries a label
   (`components/AiLabel.tsx`, a button with an aria-expanded explanation, not a `title` tooltip):

@@ -290,9 +290,20 @@ async def route(
             return _resp(400, {"error": "empty_trip",
                                "detail": "pin at least one component before narrating"})
 
+        day_texts = await _load_master_texts(conn, itinerary)
+        # AA-1015 (S262): every day has AA's own master text -> answer it at once. No model call can happen, so the
+        # spend counter, the route config, the per-session limit and the narration cache are not touched (the cache
+        # would save nothing: building this text is in memory from the day texts just loaded, which the cache key
+        # needs anyway). Such an answer is never `cached` and never flagged `ai_budget_exhausted` / `ai_paused`:
+        # nothing was degraded, and the planner must not show "days without Adventure Asia's own text" notices.
+        master_narr, missing = master_content.build_narration(itinerary, day_texts)
+        if not missing:
+            return _resp(200, {"trip_id": trip_id, "mode": mode, "source": "master",
+                               "ai_generated": "master" in _AI_SOURCES, "cached": False,
+                               "narration": master_narr, "itinerary": itinerary})
+
         # AA-805: an identical itinerary reuses its narration (no model call, no log row). The
         # master day text is part of the key, so a CIS edit to a tour never serves stale text.
-        day_texts = await _load_master_texts(conn, itinerary)
         cache_key = narration_cache.itinerary_hash(itinerary, mode, day_texts)
         cached = await narration_cache.get(conn, cache_key)
         if cached is not None:
@@ -310,8 +321,8 @@ async def route(
         paused: Optional[str] = budget.get("reason") if budget.get("reason") != llm_gateway.REASON_CAP else None
         narrate_fn = None
         # AA-1015: 10 model narrations per hour per session (twice that signed in). Counted only when this request
-        # would call the model: a cached answer, an all-AA-text trip or a stopped budget costs nothing.
-        if not budget["exhausted"] and master_content.build_narration(itinerary, day_texts)[1]:
+        # would call the model: a cached answer, an all-AA-text trip (answered above) or a stopped budget costs nothing.
+        if not budget["exhausted"]:
             decision = await ratelimit.hit(conn, ratelimit.SCOPE_NARRATE, ratelimit.KIND_SESSION, session_id,
                                            signed_in=caller.signed_in)
             if not decision.allowed:
