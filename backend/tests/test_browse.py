@@ -198,18 +198,24 @@ async def test_route_search_no_store_and_uses_embedder(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_route_search_over_the_daily_cap_is_503_without_a_model_call(monkeypatch):
+async def test_route_search_over_the_daily_cap_is_a_keyword_ranking_without_a_model_call(monkeypatch):
+    """AA-805 cap, AA-642 S0: no embed over the cap, and the answer is the keyword ranking (200), not 503."""
     from backend import config
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 1.0)
     pool = FakePool(fetchrow_row={"spent": 1.5})
 
+    async def fake_load_route(db, stage):
+        return llm_gateway.builtin_route(stage)
+
     def boom(*args, **kwargs):
         raise AssertionError("no embed over the cap")
 
+    monkeypatch.setattr(search_mod.llm_gateway, "load_route", fake_load_route)
     monkeypatch.setattr(search_mod.llm_gateway, "embed_texts", boom)
     resp = await h.route("GET", "/browse/search", {"q": "beach"}, pool=pool)
-    assert resp["statusCode"] == 503
-    assert json.loads(resp["body"])["error"] == "search_unavailable"
+    assert resp["statusCode"] == 200
+    body = json.loads(resp["body"])
+    assert body["ranking"] == "keyword" and body["ai_budget_exhausted"] is True
 
 
 @pytest.mark.asyncio

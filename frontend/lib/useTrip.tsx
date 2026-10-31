@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import * as api from "./api";
+import type { AiNoticeKey } from "./aiNotices";
 import { STORAGE_KEY, isUuid, randomUuid } from "./guestIds";
 import type {
   BrowseFilters,
@@ -38,6 +39,8 @@ interface TripState {
   // when the daily AI budget is spent — AA-805), 'basic' (plain day lines only,
   // no AI text), or "" before any call.
   narrationSource: string;
+  // AA-642 S0: the notice shown with a narration made without AI (AI paused, daily budget spent).
+  narrationNotice: AiNoticeKey | null;
   // Semantic search: when searchResults is non-null the map shows this
   // ranked set instead of tiles-by-bounds; null means "browse mode".
   searchQuery: string;
@@ -153,6 +156,7 @@ export function TripProvider({
   const [previewCountry, setPreviewCountry] = useState<string | null>(null);
   const [narration, setNarration] = useState<string>("");
   const [narrationSource, setNarrationSource] = useState<string>("");
+  const [narrationNotice, setNarrationNotice] = useState<AiNoticeKey | null>(null);
   const [narrating, setNarrating] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [searchResults, setSearchResults] = useState<DestinationPin[] | null>(
@@ -340,6 +344,7 @@ export function TripProvider({
         if (res.ok) {
           setNarration(res.narration);
           setNarrationSource(res.source ?? "");
+          setNarrationNotice(res.notice);
         }
       } finally {
         setNarrating(false);
@@ -378,6 +383,7 @@ export function TripProvider({
     narration,
     narrating,
     narrationSource,
+    narrationNotice,
     searchQuery,
     searchResults,
     searching,

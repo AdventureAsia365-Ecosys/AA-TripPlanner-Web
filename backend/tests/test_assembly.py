@@ -1307,7 +1307,9 @@ async def test_narrate_over_the_cap_with_master_days_is_labelled_master_basic():
 
 
 @pytest.mark.asyncio
-async def test_narrate_logs_failed_attempts_even_when_it_returns_502(monkeypatch):
+async def test_narrate_degrades_to_basic_when_every_model_fails(monkeypatch):
+    """AA-642 S0 (root ADR 0009 decision 5): a provider outage is 200 basic narration with ai_paused,
+    not a 502; every failed attempt is still logged, and the fallback is never cached."""
     from backend.shared import llm_gateway
 
     conn = AiConn()
@@ -1329,5 +1331,101 @@ async def test_narrate_logs_failed_attempts_even_when_it_returns_502(monkeypatch
     monkeypatch.setattr(agent.llm_gateway, "generate_text", failing_generate_text)
     monkeypatch.setattr(handler.llm_gateway, "record", fake_record)
     resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn)
-    assert resp["statusCode"] == 502
+    assert resp["statusCode"] == 200
+    body = json.loads(resp["body"])
+    assert body["source"] == "basic" and body["ai_paused"] is True and body["ai_generated"] is False
+    assert "ai_budget_exhausted" not in body
+    assert body["narration"] == "Day 1: Hanoi."
     assert recorded == [("acc3", True, "error"), ("acc3", True, "error")]
+    assert conn.cache == {}
+
+
+@pytest.mark.asyncio
+async def test_narrate_pauses_ai_when_the_spend_counter_is_unreadable(monkeypatch):
+    """AA-642 S0 (root ADR 0009 decision 6): spend unreadable = no model call, 200 basic + ai_paused."""
+    class UnreadableSpend(AiConn):
+        async def fetchrow(self, query, *args):
+            if "FROM tripplanner.llm_spend_daily" in " ".join(query.split()):
+                raise RuntimeError("permission denied for table llm_spend_daily")
+            return await super().fetchrow(query, *args)
+
+    conn = UnreadableSpend()
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    calls: list = []
+    body = json.loads((await call("POST", f"/trip/{T1}/narrate", {"session_id": S1},
+                                  conn=conn, narrator=_counting_narrator(calls)))["body"])
+    assert calls == []
+    assert body["source"] == "basic" and body["ai_paused"] is True
+    assert "ai_budget_exhausted" not in body and conn.cache == {}
+
+
+@pytest.mark.asyncio
+async def test_narrate_pauses_ai_when_the_route_is_unreadable(monkeypatch, capsys):
+    from backend.shared import llm_gateway
+
+    async def paused(db, stage):
+        raise llm_gateway.AiPaused("route_unreadable", "permission denied")
+
+    def no_model(*a, **kw):
+        raise AssertionError("no model call when the route is unreadable")
+
+    monkeypatch.setattr(handler.llm_gateway, "load_route", paused)
+    monkeypatch.setattr(agent.llm_gateway, "generate_text", no_model)
+    conn = AiConn()
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn)
+    body = json.loads(resp["body"])
+    assert resp["statusCode"] == 200 and body["source"] == "basic" and body["ai_paused"] is True
+    evt = [json.loads(x) for x in capsys.readouterr().out.splitlines()
+           if x.startswith('{"evt": "narration_degraded"')]
+    assert evt and evt[-1]["reason"] == "route_unreadable"
+
+
+@pytest.mark.asyncio
+async def test_narrate_paused_with_master_days_is_master_basic(monkeypatch):
+    """AA-642 S0: the degrade keeps AA master days (AI-assisted label) and fills the rest by name."""
+    from backend.shared import llm_gateway
+
+    async def paused(db, stage):
+        raise llm_gateway.AiPaused("route_unreadable")
+
+    def build(itinerary, day_texts):
+        # day 1 from AA master text, the other stop has none and needs the (paused) model
+        return "Day 1: Old town walk.", [e for e in itinerary if e["day"] != 1]
+
+    monkeypatch.setattr(handler.llm_gateway, "load_route", paused)
+    monkeypatch.setattr(handler.master_content, "build_narration", build)
+    conn = AiConn()
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c3"})
+    itinerary = await events.current_itinerary(conn, T1)
+    assert {e["day"] for e in itinerary} != {1}               # the fixture spans 2 days
+    body = json.loads((await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn))["body"])
+    assert body["source"] == "master_basic" and body["ai_paused"] is True
+
+
+@pytest.mark.asyncio
+async def test_narrate_logs_failed_attempts_of_a_defect_and_returns_502(monkeypatch):
+    """A non-provider error (a defect, not an outage) is still a 502, with failed attempts logged."""
+    from backend.shared import llm_gateway
+
+    conn = AiConn()
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    recorded = []
+
+    async def fake_load_route(db, stage):
+        return llm_gateway.builtin_route(stage)
+
+    def broken_generate_text(route, system, user, max_tokens, failures=None):
+        failures.append(llm_gateway._failed(route, route.models[0], "acc3", 0, "throttled"))
+        raise KeyError("output")
+
+    async def fake_record(db, call, quality_signal, **kw):
+        recorded.append((call.account, call.failed))
+
+    monkeypatch.setattr(handler.llm_gateway, "load_route", fake_load_route)
+    monkeypatch.setattr(agent.llm_gateway, "generate_text", broken_generate_text)
+    monkeypatch.setattr(handler.llm_gateway, "record", fake_record)
+    resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn)
+    assert resp["statusCode"] == 502
+    assert recorded == [("acc3", True)]

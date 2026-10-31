@@ -11,8 +11,8 @@ relevant places surface first.
 
 AA-805: the query is embedded with input_type "search_query" (components were embedded as
 "search_document" — Cohere's asymmetric retrieval pair); only components of LIVE tours are ranked (the
-catalog views hold nothing else); the daily TripPlanner spend cap stops the embed call
-(SearchUnavailable -> 503); failed embed attempts are logged.
+catalog views hold nothing else); the daily TripPlanner spend cap stops the embed call; failed embed
+attempts are logged.
 
 AA-712: ranking goes through backend.shared.vector_topk — the nearest components come from the HNSW
 index (ORDER BY embedding <=> q LIMIT k) and are grouped per destination afterwards, instead of
@@ -31,8 +31,10 @@ AA-856 (Cohere Embed V4 on acc2: 20 requests per minute, S239 burst test = searc
   * when the embed fails (throttle or any Bedrock error, every attempt still logged as a failed
     llm_call_log row), search answers 200 with a keyword ranking over the same catalog and filters
     (``ranking: "keyword"``) instead of a 500. After a throttle this container skips the model call
-    for ``THROTTLE_COOLDOWN_SECONDS`` and ranks by keyword directly. The daily spend cap still answers
-    503 (AA-805), unchanged;
+    for ``THROTTLE_COOLDOWN_SECONDS`` and ranks by keyword directly;
+  * AA-642 S0 (root ADR 0009 decisions 5 and 6): a refused model call is a keyword ranking too (200),
+    never a 503: over the daily spend cap (``ai_budget_exhausted: true``), and when the spend counter
+    or the route config cannot be read (``ai_paused: true``, fail closed: no embed call);
   * every search prints one ``{"evt": "search_embed", ...}`` line (outcome hit / miss / fallback,
     reason, the container's cache hit and miss counters); never the query text.
 """
@@ -64,10 +66,6 @@ Embedder = Callable[[str], list[float]]
 
 SEARCH_LIMIT = 60
 QUERY_INPUT_TYPE = "search_query"
-
-
-class SearchUnavailable(Exception):
-    """The model call needed for free-text search is refused (daily spend cap reached)."""
 
 
 # AA-856: after a Bedrock throttle this container ranks by keyword without trying the model for this
@@ -111,12 +109,21 @@ def _log_embed(outcome: str, reason: Optional[str] = None) -> None:
     observability.emit(**evt)  # AA-871: + request_id when bound
 
 
+# AA-642 S0: keyword-fallback reasons where the model call was refused before it was made.
+REASON_BUDGET_CAP = "budget_cap"
+PAUSED_REASONS = (llm_gateway.REASON_SPEND_UNREADABLE, "route_unreadable")
+
+
 async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Optional[str]]:
     """(vector, None) from the cache or one Bedrock call, or (None, reason) when search must fall
-    back to keyword ranking. Raises SearchUnavailable over the daily spend cap (AA-805)."""
+    back to keyword ranking: over the daily spend cap (AA-805, reason "budget_cap"), spend counter
+    or route config unreadable (AA-642 S0, PAUSED_REASONS), throttle or embed error (AA-856)."""
     global _throttled_until
-    # AA-685: model from the gateway route (cached 60 s, never raises).
-    route = await llm_gateway.load_route(pool, STAGE)
+    # AA-685: model from the gateway route (cached 60 s). AA-642 S0: unreadable -> AiPaused.
+    try:
+        route = await llm_gateway.load_route(pool, STAGE)
+    except llm_gateway.AiPaused as e:
+        return None, e.reason
     key = llm_gateway.embed_cache_key(route, QUERY_INPUT_TYPE, q)
     cached = llm_gateway.query_embed_cache.get(key)
     if cached is not None:
@@ -124,8 +131,11 @@ async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Opt
         return cached, None
     if time.monotonic() < _throttled_until:
         return None, "throttle_cooldown"
-    if (await llm_gateway.budget_status(pool))["exhausted"]:
-        raise SearchUnavailable("daily AI spend cap reached")
+    budget = await llm_gateway.budget_status(pool)
+    if budget["exhausted"]:
+        if budget.get("reason") == llm_gateway.REASON_SPEND_UNREADABLE:
+            return None, llm_gateway.REASON_SPEND_UNREADABLE
+        return None, REASON_BUDGET_CAP
     text = llm_gateway.normalise_query(q)
     # One llm_call_log row per real embed (AA-805: and one per failed attempt).
     signal = {"texts": 1, "query_len_chars": len(text)}
@@ -166,7 +176,12 @@ async def search(
     else:
         vec, reason = await _query_vector(q, pool)
         if vec is None:
-            return await keyword_search(q, filters, pool=pool, limit=limit, reason=reason)
+            out = await keyword_search(q, filters, pool=pool, limit=limit, reason=reason)
+            if reason in PAUSED_REASONS:
+                out["ai_paused"] = True
+            elif reason == REASON_BUDGET_CAP:
+                out["ai_budget_exhausted"] = True
+            return out
     vec_literal = _vector_literal(vec)
 
     scan_where, keep_where, filter_params = search_where(filters)

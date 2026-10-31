@@ -20,8 +20,12 @@ Embeddings (AA-862): acc2 first, then satellite rows by route. acc2's Cohere Emb
 `cohere-embed-v4-acc3`), same model and dimension, so vectors stay comparable. Satellite embed clients are cached per container (one AssumeRole until 5 minutes
 before the creds expire) and make a single attempt, like the acc2 one.
 
-If the tables cannot be read, BUILTIN_ROUTES keeps the models this app used before AA-685, so a
-DB problem never stops narration or search.
+AA-642 S0 (root ADR 0009 decisions 5 and 6): the gateway fails CLOSED. When the route tables cannot be
+read, `load_route` raises `AiPaused` ("route_unreadable") instead of calling hard-coded models; when the
+daily spend counter cannot be read (or a counter write failed in the last SPEND_UNREADABLE_HOLD_SECONDS),
+`budget_status` reports `exhausted` with reason "spend_unreadable". Callers then degrade: narration
+answers the basic / master_basic text with an `ai_paused` flag, search answers the keyword ranking.
+BUILTIN_ROUTES only documents the expected routes now (tests, the online-stage list); no call uses it.
 
 AA-805 (fork defects vs. the CIS client):
   - Failed attempts are logged too: `generate_text` / `embed_texts` append one failed `Call` per
@@ -116,6 +120,15 @@ BUILTIN_ROUTES = {
 _cache: dict[str, tuple[Route, float]] = {}
 
 
+class AiPaused(BedrockError):
+    """AI is paused for this request (AA-642 S0): the route config or the spend counter cannot be
+    read, so no model is called. `reason` is a short code for the log and the response."""
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        super().__init__(f"AI paused ({reason}){': ' + detail if detail else ''}")
+        self.reason = reason
+
+
 def builtin_route(stage: str) -> Route:
     try:
         return BUILTIN_ROUTES[stage]
@@ -128,7 +141,9 @@ def _num(v: Any) -> Optional[float]:
 
 
 async def load_route(db: Any, stage: str) -> Route:
-    """`db` is an asyncpg pool or connection. Never raises for a known stage."""
+    """`db` is an asyncpg pool or connection. Raises AiPaused("route_unreadable") when the route
+    tables cannot be read (AA-642 S0: fail closed, never the hard-coded BUILTIN_ROUTES models); the
+    failure is not cached, so the next request reads again."""
     cached = _cache.get(stage)
     now = time.monotonic()
     if cached and now - cached[1] < _CACHE_TTL_SECONDS:
@@ -164,9 +179,9 @@ async def load_route(db: Any, stage: str) -> Route:
                                detail=f"shadow {shadow!r} is configured but TripPlanner does not "
                                       "run shadows (AA-805); only the primary route is called")
         route = Route(stage, cfg["role"], models, cfg["account_route"], shadow)
-    except Exception as e:  # noqa: BLE001 — a DB problem must not stop the call
-        observability.emit("llm_gateway_note", detail=f"route for {stage} unreadable ({e}); using builtin")
-        route = builtin_route(stage)
+    except Exception as e:  # noqa: BLE001 — AA-642 S0: an unreadable route pauses AI (fail closed)
+        _error("route_unreadable", stage, e)
+        raise AiPaused("route_unreadable", str(e)[:200]) from None
     _cache[stage] = (route, now)
     return route
 
@@ -540,8 +555,8 @@ async def record(db: Any, call: Call, quality_signal: dict, *,
             tenant_id, call.stage, call.role, call.model, call.tokens_in, call.tokens_out,
             call.cost_usd, json.dumps(signal), call.stop_reason, call.account,
             call.fallback_used, call.provider)
-    except Exception as e:  # noqa: BLE001
-        observability.emit("llm_gateway_note", detail=f"llm_call_log write failed for {call.stage}: {e}")
+    except Exception as e:  # noqa: BLE001 — AA-642 S0: logged as an ERROR (unlogged spend)
+        _error("call_log_write_failed", call.stage, e)
     if call.stage in ONLINE_STAGES:
         await _add_spend(db, call)
 
@@ -567,25 +582,56 @@ _SPEND_TODAY_SQL = """
 """
 
 
+# AA-642 S0: after a failed counter write the counter undercounts, so the cap could never be
+# reached. For this long (per container) budget_status reports "spend_unreadable" and AI pauses.
+SPEND_UNREADABLE_HOLD_SECONDS = 60.0
+_spend_unreadable_until = 0.0
+
+# budget_status reasons when `exhausted` is True.
+REASON_CAP = "cap_reached"
+REASON_SPEND_UNREADABLE = "spend_unreadable"
+
+
+def _error(what: str, stage: Optional[str], e: BaseException) -> None:
+    """One ERROR line for a gateway failure that changes what customers get (AA-642 S0)."""
+    observability.emit("llm_gateway_error", level="error", what=what, stage=stage,
+                       error=type(e).__name__, detail=str(e)[:200])
+
+
+def spend_unreadable_flag_active() -> bool:
+    return time.monotonic() < _spend_unreadable_until
+
+
 async def _add_spend(db: Any, call: Call) -> None:
+    global _spend_unreadable_until
     unpriced = 1 if call.cost_usd is None else 0
     try:
         await db.execute(_SPEND_UPSERT_SQL, call.stage, call.cost_usd or 0.0, unpriced)
-    except Exception as e:  # noqa: BLE001 — e.g. tp-010 not applied yet
-        observability.emit("llm_gateway_note", detail=f"llm_spend_daily update failed for {call.stage}: {e}")
+    except Exception as e:  # noqa: BLE001 — e.g. tp-010 not applied, permission, DB down
+        _error("spend_write_failed", call.stage, e)
+        _spend_unreadable_until = time.monotonic() + SPEND_UNREADABLE_HOLD_SECONDS
 
 
 async def budget_status(db: Any) -> dict:
     """Today's (UTC) customer-facing (ONLINE_STAGES) model spend against TP_DAILY_SPEND_CAP_USD.
 
-    Returns {"spent_usd", "cap_usd", "exhausted"}. Fails OPEN when the counter cannot be read
-    (tp-010 not applied, permission): `exhausted` False and `spent_usd` None, with a warning —
-    the cap must never take narration down by itself. Calls with no catalog price add nothing."""
+    Returns {"spent_usd", "cap_usd", "exhausted", "reason"}. Fails CLOSED (AA-642 S0, root ADR 0009
+    decision 6): when the counter cannot be read (tp-010 missing, permission, DB error), or a counter
+    write failed in the last SPEND_UNREADABLE_HOLD_SECONDS, `exhausted` is True with reason
+    "spend_unreadable" and `spent_usd` None, so no model is called and callers degrade (basic
+    narration, keyword search). Over the cap the reason is "cap_reached"; under it, None.
+    Calls with no catalog price add nothing."""
     cap = float(config.TP_DAILY_SPEND_CAP_USD)
+    unreadable = {"spent_usd": None, "cap_usd": cap, "exhausted": True,
+                  "reason": REASON_SPEND_UNREADABLE}
+    if spend_unreadable_flag_active():
+        return unreadable
     try:
         row = await db.fetchrow(_SPEND_TODAY_SQL, list(ONLINE_STAGES))
         spent = float(row["spent"]) if row and row["spent"] is not None else 0.0
     except Exception as e:  # noqa: BLE001
-        observability.emit("llm_gateway_note", detail=f"daily spend unreadable ({e}); TripPlanner spend cap NOT enforced")
-        return {"spent_usd": None, "cap_usd": cap, "exhausted": False}
-    return {"spent_usd": round(spent, 6), "cap_usd": cap, "exhausted": spent >= cap}
+        _error("spend_unreadable", None, e)
+        return unreadable
+    exhausted = spent >= cap
+    return {"spent_usd": round(spent, 6), "cap_usd": cap, "exhausted": exhausted,
+            "reason": REASON_CAP if exhausted else None}

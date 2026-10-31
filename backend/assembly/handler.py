@@ -302,13 +302,28 @@ async def route(
 
         # AA-805: daily spend hard stop. Exhausted -> no model call; days without AA text get a
         # neutral line built from the components' names.
+        # AA-642 S0 (root ADR 0009 decisions 5 and 6): the same degrade mode when AI is paused: the spend
+        # counter or the route config cannot be read (fail closed, no model call), or every model of the
+        # route failed (provider outage). The answer is 200 basic / master_basic with `ai_paused`, never 502.
         budget = await llm_gateway.budget_status(conn)
         calls: list = []
-        narrate_fn = None if budget["exhausted"] else await _resolve_narrator(mode, narrator, conn, calls)
+        paused: Optional[str] = budget.get("reason") if budget.get("reason") != llm_gateway.REASON_CAP else None
+        narrate_fn = None
+        if not budget["exhausted"]:
+            try:
+                narrate_fn = await _resolve_narrator(mode, narrator, conn, calls)
+            except llm_gateway.AiPaused as e:
+                paused = e.reason
         try:
             narration, source, ungrounded = await _narrate(conn, itinerary, narrate_fn,
                                                            day_texts=day_texts)
-        except Exception as e:  # noqa: BLE001 — surface Bedrock failure as 502
+        except llm_gateway.BedrockError:
+            # Every attempt failed (each is in `calls` as a failed row): degrade, do not cache.
+            await _record_calls(conn, calls, {"mode": mode, "days": len(itinerary), "degraded": True})
+            calls = []
+            paused = "provider_unavailable"
+            narration, source, ungrounded = await _narrate(conn, itinerary, None, day_texts=day_texts)
+        except Exception as e:  # noqa: BLE001 — anything else is a defect: surface it as 502
             await _record_calls(conn, calls, {"mode": mode, "days": len(itinerary)})
             return _resp(502, {"error": "narration_failed", "detail": str(e)})
         signal = {"mode": mode, "source": source, "days": len(itinerary),
@@ -316,13 +331,17 @@ async def route(
         if ungrounded:  # AA-731: invented figures removed before the customer saw them
             signal["ungrounded_lines"] = len(ungrounded)
         await _record_calls(conn, calls, signal)  # AA-685: one llm_call_log row per model call
+        # A degraded answer is basic / master_basic, never cached (narration_cache.CACHEABLE_SOURCES).
         await narration_cache.put(conn, cache_key, mode, narration, source, len(itinerary))
 
         out = {"trip_id": trip_id, "mode": mode, "source": source,
                "ai_generated": source in _AI_SOURCES, "cached": False,
                "narration": narration, "itinerary": itinerary}
-        if budget["exhausted"]:
+        if budget["exhausted"] and not paused:
             out["ai_budget_exhausted"] = True
+        if paused and source in ("basic", "master_basic"):
+            out["ai_paused"] = True
+            observability.emit("narration_degraded", reason=paused, source=source, days=len(itinerary))
         return _resp(200, out)
 
     m = _SUGGEST_RE.match(path)
