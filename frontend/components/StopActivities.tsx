@@ -10,6 +10,8 @@ import { useTrip } from "@/lib/useTrip";
 import { fetchStopActivities } from "@/lib/api";
 import type { StopActivity } from "@/lib/types";
 import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "@/components/AiLabel";
+import { AiNotice } from "@/ui/AiNotice";
+import { TERMS_AI_PATH } from "@/lib/legal";
 
 const LABEL: Record<string, string> = {
   trekking: "Trekking",
@@ -75,13 +77,18 @@ export default function StopActivities({ destinationId }: { destinationId: strin
         ))}
       </ul>
       {/* AA-819: the activity snippets are the same CIS writer-model text as the map popup. */}
+      {/* AA-1033: and the traveller notice (mistakes possible, the official quote confirms), as the planner has no
+          site footer. Only one stop's activity list is open at a time, so it shows once. */}
       {items.some((a) => a.text_extract) && (
-        <AiLabel
-          className="mt-1.5"
-          placement="inline"
-          label={AI_CATALOG_LABEL} shortLabel={AI_BRAND_SHORT}
-          explanation={AI_CATALOG_EXPLANATION}
-        />
+        <>
+          <AiLabel
+            className="mt-1.5"
+            placement="inline"
+            label={AI_CATALOG_LABEL} shortLabel={AI_BRAND_SHORT}
+            explanation={AI_CATALOG_EXPLANATION}
+          />
+          <AiNotice size="sm" termsHref={TERMS_AI_PATH} className="mt-1" testId="stop-activities-ai-notice" />
+        </>
       )}
     </>
   );

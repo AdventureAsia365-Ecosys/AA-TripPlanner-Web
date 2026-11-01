@@ -713,8 +713,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   with the help of AI and may contain mistakes. Prices, itineraries and visa conditions are confirmed in your official
   quote.") — `ui/AiNotice.tsx` (TripPlanner's own B2C look, `role="note"`) renders the sentence from the kit core copy
   `ui/core/aiNotice.messages.ts` (the CIS kit `tokens` profile carries it with `i18n.ts`; never a local copy of the
-  text): under the tour page's day-by-day itinerary, under the planner narration (`TripPanel`), and in the site footer
-  with a "Use of AI" link to `/terms#ai` (terms §3 "Use of AI": what AI writes, that it can be wrong, for
+  text): under the tour page's day-by-day itinerary; in the planner (`/plan` has no site footer), under each surface
+  with AI-written text — the map popup's experience list (`DestinationPopup`), a stop's activity list
+  (`StopActivities`) and the narration (`TripPanel`), each with a "Use of AI" link (`termsHref`, new tab); and in the
+  site footer with a "Use of AI" link to `/terms#ai` (terms §3 "Use of AI": what AI writes, that it can be wrong, for
   information, the confirmed quote and booking conditions bind; no liability waiver). Tests: `lib/aiNoticeKit.test.ts`.
   Narration day choice (`master_content.resolve_days`), because a component row's tour day can be
   wrong: per trip day, the own tour day text of any entry whose text names its stop (component or

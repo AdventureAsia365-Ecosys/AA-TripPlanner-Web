@@ -50,7 +50,7 @@ test("the notice shows on the tour page, in the planner narration and in the sit
   const notice = tour.indexOf('<AiNotice className="mt-5 max-w-[72ch]" testId="tour-ai-notice"');
   assert.ok(notice > tour.indexOf('id="itinerary-days"'), "under the day-by-day timeline");
   assert.ok(notice < tour.indexOf('aria-labelledby="route-map"'), "inside the itinerary section");
-  assert.match(src("components/TripPanel.tsx"), /<AiNotice size="sm" testId="narration-ai-notice" \/>/);
+  assert.match(src("components/TripPanel.tsx"), /<AiNotice size="sm" termsHref=\{TERMS_AI_PATH\} testId="narration-ai-notice" \/>/);
   const footer = src("components/site/SiteFooter.tsx");
   assert.match(footer, /<AiNotice tone="band" testId="footer-ai-notice"/);
   assert.match(footer, /href=\{TERMS_AI_PATH\}/);
@@ -73,4 +73,20 @@ test("terms §3 'Use of AI': what AI writes, that it can be wrong, for informati
     assert.ok(ai.includes(phrase), `terms §3 must say: ${phrase}`);
   }
   assert.doesNotMatch(ai, /liab|not responsible|disclaim|\[to be confirmed\]/i);
+});
+
+test("the planner (no site footer) shows the notice and the 'Use of AI' link under its AI-written experience text", () => {
+  // /plan renders no SiteFooter, so each planner surface with CIS writer-model text carries its own notice.
+  assert.doesNotMatch(src("app/plan/page.tsx") + src("app/plan/PlannerApp.tsx") + src("app/plan/layout.tsx"), /SiteFooter/);
+  const popup = src("components/DestinationPopup.tsx");
+  const popupNotice = popup.indexOf('<AiNotice size="sm" termsHref={TERMS_AI_PATH} className="mt-2" testId="popup-ai-notice" />');
+  assert.ok(popupNotice > popup.indexOf("</ul>"), "map popup: under the experience list, outside its scroll area");
+  assert.match(popup, /detail\?\.components\.some\(\(c\) => c\.text_extract\) && \(\s*<AiNotice/, "only when a description shows");
+  const stop = src("components/StopActivities.tsx");
+  const stopNotice = stop.indexOf('<AiNotice size="sm" termsHref={TERMS_AI_PATH} className="mt-1" testId="stop-activities-ai-notice" />');
+  assert.ok(stopNotice > stop.indexOf("<AiLabel"), "stop activities: next to the AI label of the snippets");
+  for (const f of [popup, stop]) assert.match(f, /import \{ TERMS_AI_PATH \} from "@\/lib\/legal"/);
+  const ui = src("ui/AiNotice.tsx");
+  assert.match(ui, /href=\{termsHref\}\s+target="_blank"\s+rel="noopener noreferrer"/, "a new tab keeps the trip");
+  assert.match(ui, />\s*Use of AI\s*</);
 });
