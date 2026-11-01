@@ -135,6 +135,16 @@ TP_DAILY_SPEND_CAP_COMPOSE_USD = _optional_usd("TP_DAILY_SPEND_CAP_COMPOSE_USD")
 # AA-1015: share of a cap at which the gateway prints the "near cap" alert line (and budget_status says near_cap).
 SPEND_NEAR_CAP_RATIO = 0.8
 
+# --- Route deadline (AA-642 S263 E1) ---
+# Wall-time budget of one text-generation request across every model / account of its route
+# (llm_gateway.generate_text). The route's own `route_deadline_s` (CIS migration 320) is used when the config view
+# carries it; otherwise the default. Either way it is capped at the MAX: the API Gateway HTTP API answers 504 after
+# 30 s, so a slow attempt must leave time to degrade to the basic narration and write the ledger rows.
+LLM_ROUTE_DEADLINE_DEFAULT_S = 20.0
+LLM_ROUTE_DEADLINE_MAX_S = 25.0
+# Below this many seconds left no new attempt starts (the request's 'deadline' ledger row is written instead).
+LLM_ROUTE_DEADLINE_MIN_ATTEMPT_S = 1.0
+
 # --- AI route limits (AA-1015, migration tp-023) ---
 # Fixed windows counted in tripplanner.ai_rate_counter (backend/shared/ratelimit.py). Capacity plan S261 §2.5:
 # 10 narrations per hour per session, 30 searches per minute per traveller IP, a signed-in traveller gets

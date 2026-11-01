@@ -336,11 +336,13 @@ async def route(
         try:
             narration, source, ungrounded = await _narrate(conn, itinerary, narrate_fn,
                                                            day_texts=day_texts)
-        except llm_gateway.BedrockError:
-            # Every attempt failed (each is in `calls` as a failed row): degrade, do not cache.
+        except llm_gateway.BedrockError as e:
+            # Every attempt failed (each is in `calls` as a failed row), or the route deadline passed (its 'deadline'
+            # row too) or every reply was cut at its token limit ('truncated' rows, AA-642 S263 E1): degrade, do not
+            # cache.
             await _record_calls(conn, calls, {"mode": mode, "days": len(itinerary), "degraded": True})
             calls = []
-            paused = "provider_unavailable"
+            paused = getattr(e, "reason", None) or "provider_unavailable"
             narration, source, ungrounded = await _narrate(conn, itinerary, None, day_texts=day_texts)
         except Exception as e:  # noqa: BLE001 — anything else is a defect: surface it as 502
             await _record_calls(conn, calls, {"mode": mode, "days": len(itinerary)})

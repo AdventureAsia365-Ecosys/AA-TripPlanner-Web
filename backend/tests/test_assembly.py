@@ -1342,6 +1342,50 @@ async def test_narrate_degrades_to_basic_when_every_model_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_narrate_degrades_on_a_truncated_reply_then_the_route_deadline(monkeypatch, capsys):
+    """AA-642 S263 E1: the first model's reply is cut at its token limit after a slow call, so the route deadline
+    stops the second model before it starts. The answer is 200 basic narration with ai_paused (never the cut text,
+    never a 502), and both attempts reach the ledger: the billed 'truncated' one and the 0 USD 'deadline' one."""
+    from backend.shared import llm_gateway
+
+    conn = AiConn()
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    clock = [500.0]
+    monkeypatch.setattr(llm_gateway.time, "monotonic", lambda: clock[0])
+    zz_a = llm_gateway.Model("zz-writer-a", "anthropic", "anthropic_native", {"acc3": "zz.a"}, 3.0, 15.0)
+    zz_b = llm_gateway.Model("zz-writer-b", "anthropic", "converse", {"acc3": "zz.b"}, 2.0, 10.0)
+    route = llm_gateway.Route("tp_compose", "writer", (zz_a, zz_b), "acc3")
+    sent: list = []
+    recorded: list = []
+
+    async def fake_load_route(db, stage):
+        return route
+
+    def slow_cut_text_call(model, account, system, user, max_tokens, client_factory, *, timeout_s=None):
+        sent.append((model.key, timeout_s))
+        clock[0] += 19.5
+        return "Day 1: The road to Zedp", {"in": 900, "out": 1200, "cache_read": 0, "cache_write": 0}, "max_tokens"
+
+    async def fake_record(db, call, quality_signal, **kw):
+        recorded.append((call.model, call.status, call.error_class, call.cost_usd, quality_signal.get("degraded")))
+
+    monkeypatch.setattr(handler.llm_gateway, "load_route", fake_load_route)
+    monkeypatch.setattr(llm_gateway, "_text_call", slow_cut_text_call)
+    monkeypatch.setattr(handler.llm_gateway, "record", fake_record)
+    resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn)
+    assert resp["statusCode"] == 200
+    body = json.loads(resp["body"])
+    assert body["source"] == "basic" and body["ai_paused"] is True and body["ai_generated"] is False
+    assert body["narration"] == "Day 1: Hanoi." and "Zedp" not in resp["body"]
+    assert sent == [("zz-writer-a", 20.0)]                       # the second model never started
+    assert recorded == [("zz-writer-a", "truncated", "truncated", pytest.approx(0.0207), True),
+                        ("zz-writer-b", "error", "deadline", 0.0, True)]
+    assert conn.cache == {}
+    degraded = [json.loads(x) for x in capsys.readouterr().out.splitlines() if '"narration_degraded"' in x]
+    assert degraded and degraded[-1]["reason"] == "route_deadline"
+
+
+@pytest.mark.asyncio
 async def test_narrate_pauses_ai_when_the_spend_counter_is_unreadable(monkeypatch):
     """AA-642 S0 (root ADR 0009 decision 6): spend unreadable = no model call, 200 basic + ai_paused."""
     class UnreadableSpend(AiConn):

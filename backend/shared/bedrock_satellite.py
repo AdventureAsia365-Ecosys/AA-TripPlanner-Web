@@ -67,7 +67,10 @@ ClientFactory = Callable[..., Any]
 
 
 def default_client_factory(service: str, *, creds: Optional[Credentials] = None,
-                            region: Optional[str] = None) -> Any:
+                            region: Optional[str] = None, timeout_s: Optional[float] = None) -> Any:
+    """A boto3 client. `timeout_s` (AA-642 S263 E1, the time left of a route deadline) bounds the client: connect
+    and read timeouts of at most that many seconds and a single attempt (the gateway fails over to the next
+    account / model itself), so one slow call cannot outlast the request's budget. None: boto3's defaults."""
     import boto3  # imported lazily so tests never need boto3 installed
 
     kwargs: dict[str, Any] = {"region_name": region or config.BEDROCK_REGION}
@@ -77,6 +80,12 @@ def default_client_factory(service: str, *, creds: Optional[Credentials] = None,
             aws_secret_access_key=creds.secret_access_key,
             aws_session_token=creds.session_token,
         )
+    if timeout_s is not None:
+        from botocore.config import Config
+
+        seconds = max(float(timeout_s), 1.0)
+        kwargs["config"] = Config(connect_timeout=min(seconds, 5.0), read_timeout=seconds,
+                                  retries={"total_max_attempts": 1, "mode": "standard"})
     return boto3.client(service, **kwargs)
 
 
