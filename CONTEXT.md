@@ -619,6 +619,13 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   view is missing or not granted the read falls back to the two tables / `tripplanner.llm_spend_daily`. Each attempt
   writes the ledger v2 row (`app = 'tripplanner'`, `status`, `error_class`, `latency_ms`, `attempt_no`, connection,
   wire id, cache tokens, `pricing_mode`). The grandfathered SELECTs of CIS 173 are revoked by a later CIS migration.
+  **AA-642 S263 E2:** each row also carries `request_id` (Bedrock RequestId of the reply or of the provider's error),
+  and each text-generation row `prompt_hash` (sha256 of the system prompt sent) and `prompt_version` (the stage's
+  newest version in the prompt manifest `backend/shared/prompt_versions.json` while the deployed source still matches
+  it; `backend/shared/prompt_registry.py`, same hash as the CIS AA-900 register). The CI test
+  `tests/test_prompt_registry_gate.py` fails when a prompt (`_COMPOSE_SYSTEM`, `_RENARRATE_SYSTEM`, `_build_body` in
+  `backend/assembly/agent.py`) changes without `python3 backend/scripts/prompt_registry_check.py --bump`; AA-CIS-App registers the manifest rows in
+  `shared.prompt_version` (the `tripplanner` role cannot read that table).
   Stages:
   - `tp_compose`: assembly narration (Claude Sonnet 4.6 via the satellite role);
   - `tp_search_embed`: browse free-text search, one Cohere Embed v4 call per distinct query (acc2
