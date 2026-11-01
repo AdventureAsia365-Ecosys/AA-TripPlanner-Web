@@ -1,13 +1,13 @@
 ---
 id: ARCH-06-tripplanner
 title: "AA-TripPlanner-Web — Repo Context"
-description: Stack, boundaries, ownership, domain terms and working rules of AA-TripPlanner-Web (Next.js frontend and its two backend Lambdas); read it before designing or changing code in this repo.
+description: Stack, boundaries, ownership, domain terms and working rules of AA-TripPlanner-Web (Next.js frontend and its three backend Lambdas); read it before designing or changing code in this repo.
 type: explanation
 status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-10-28
+last_reviewed: 2026-11-01
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -54,7 +54,7 @@ Next.js 16 frontend  ──(Mapbox GL)──►  interactive map UI
 API Gateway HTTP v2  (ANY /browse/{proxy+}, ANY /trip/{proxy+}; edge shared secret
       │               X-TripPlanner-Key; guest token on trip mutations, AA-827, and reads, AA-909)
       ▼
-Two Python 3.12 Lambda functions
+Two HTTP Python 3.12 Lambda functions
   ├─ browse      → stateless, cacheable reads (destinations, suggestions); embeds search text
   └─ assembly    → stateful writes (trip mutations) + Bedrock (AI narrative/plan)
 (+ jobs Lambda, no HTTP route: daily EventBridge tick → tripplanner.job worker, AA-861)
@@ -63,17 +63,18 @@ Two Python 3.12 Lambda functions
 Postgres (the shared RDS in acc2)
   ├─ tripplanner.*        (owned here — customers, sessions, trip_events, trip_drafts, outbox,
   │                        narration_cache, llm_spend_daily, component_id_map, job, ai_rate_counter)
-  ├─ shared.llm_*         (CIS Model Gateway: read config, write llm_call_log)
+  ├─ catalog.v_llm_*      (CIS AI gateway contract views, CIS 323: route config + today's spend)
+  ├─ shared.llm_call_log  (INSERT only: one ledger v2 row per attempt, app = 'tripplanner')
   └─ read-only: catalog.* views (CIS-owned: tours, places, tour graph, embeddings)
       │
       ▼
 Amazon Bedrock  — Cohere Embed v4: acc2 first, then acc3 via the satellite role (AA-862);
-                  Claude via the cross-account role on acc3 (the only LLM satellite, AA-998)
+                  Claude via the cross-account role on acc3 (the main chat account, root ADR 0009)
 ```
 
 The journey ends with a **draft trip + customer** sent to an advisor ("Send to advisor" +
-sign-up), not a completed booking — booking belongs to the future AA-Booking (AAA) product
-(see `docs/tripplanner-to-aaa-handoff.md` in the root docs repo).
+sign-up), not a completed booking — booking belongs to AA-Booking (live on Dev since 2026-10-14), which pulls the
+`inquiry.submitted` outbox row (see "Contracts with other apps").
 TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Booking when it processes the
 `inquiry.submitted` outbox row (job `bk_notify_email`, AA-811); `backend/assembly/notify.py` only logs the hand-off.
 
@@ -601,16 +602,15 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 
 ### AI (Bedrock)
 
-- **Every model call goes through the ecosystem Model Gateway** (AA-685,
-  `backend/shared/llm_gateway.py`). The model, fallback order and price for each stage come
-  from the gateway tables that AA-CIS-App owns in the shared RDS (`shared.llm_role_config`,
-  `shared.llm_model_catalog`). Every call attempt writes one `shared.llm_call_log` row (failed
-  attempts too, with `stop_reason = 'error'`; a model with no catalog price logs `cost_usd` NULL),
-  tagged `quality_signal.app = "tripplanner"`, so it shows on the CIS External Spend page. The
-  `tripplanner` DB role has SELECT on the two config tables and INSERT on the log (CIS
-  migration 173). `backend/tests/test_no_gateway_bypass.py` (AA-642 L6) fails CI on any Bedrock / vendor SDK call,
-  vendor SDK import or vendor endpoint string outside `llm_gateway.py` / `bedrock_satellite.py` (backend and
-  `tools/`), and on a vendor AI SDK import or endpoint in `frontend/`. If the tables cannot be read, built-in routes keep the previous models.
+- **Every model call goes through the ecosystem AI gateway** (AA-685, root ADR 0009; as built: root
+  `docs/architecture/ai-gateway.md`), in `backend/shared/llm_gateway.py`. The model, fallback order and price of each
+  stage come from AA-CIS-App's control plane, read through the CIS 323 contract view (below). Every call attempt writes
+  one ledger v2 row in `shared.llm_call_log` (failed attempts too; a model with no catalog price logs `cost_usd`
+  NULL) with `app = 'tripplanner'`, so it shows on the CIS Cost Operations page, tab "AI & data spend". If the
+  route cannot be read, AI pauses (`AiPaused("route_unreadable")`, fail closed since AA-642 S0) and the caller
+  degrades; the built-in routes are never called. `backend/tests/test_no_gateway_bypass.py` (AA-642 L6) fails CI on
+  any Bedrock / vendor SDK call, vendor SDK import or vendor endpoint string outside `llm_gateway.py` /
+  `bedrock_satellite.py` (backend and `tools/`), and on a vendor AI SDK import or endpoint in `frontend/`.
   **AA-642 S8 (root ADR 0009 decision 13):** the gateway uses the shared core `backend/aa_llm/`, a byte copy of
   AA-CIS-App `shared/aa_llm/` pinned by `backend/aa_llm.lock.json` (synced by CIS `.github/scripts/llm-core-sync.sh`
   / the Llm Core Sync bot; never edit it here; `tests/test_vendored_copies.py` checks it offline,
@@ -640,13 +640,14 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   - `tp_extract` / `tp_component_embed`: the former offline extraction pipeline; no caller since
     AA-712 slice 6a (the frozen tables it filled are dropped by tp-018; the built-in routes can go next).
 
-  An admin can change a stage's model on the CIS admin Settings page (TripPlanner group) without
+  An admin can change a stage's model in the CIS admin, AI providers › Routing, without
   a TripPlanner deploy; the Lambdas pick the change up within 60 s. Shadow config on a tp_* stage
   is not run here (a warning is printed): a consumer app does not pay for shadows.
 - **AI guards (AA-805, migration tp-010)**: a daily hard stop on **customer-facing** model spend
   only — stages `tp_compose` + `tp_search_embed` (`llm_gateway.ONLINE_STAGES`,
-  `TP_DAILY_SPEND_CAP_USD`, counted in `tripplanner.llm_spend_daily` by the gateway — the role
-  cannot read `shared.llm_call_log`). Offline stages (`tp_extract`, `tp_component_embed`) are
+  `TP_DAILY_SPEND_CAP_USD`, 5 USD on Dev, set by AA-CIS-Infra; today's spend is read through
+  `catalog.v_llm_app_spend_today_v1` (CIS 323), with `tripplanner.llm_spend_daily` as the fallback while the view
+  cannot be read; the role cannot read `shared.llm_call_log` itself; an unreadable spend fails closed). Offline stages (`tp_extract`, `tp_component_embed`) are
   logged but neither counted nor capped here, so a backfill never takes search/narration down.
   Over the cap narration falls back to AA text + neutral day lines (`ai_budget_exhausted`) and search
   answers the keyword ranking (200, `ai_budget_exhausted`; it was a 503 before AA-642 S0).
@@ -817,7 +818,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 | AA-CIS-App (catalog, AA-812) | `catalog.v_tour`, `v_tour_day`, `v_tour_place`, `v_tour_photo`, `v_destination`, `v_destination_photo` (contract `catalog.tour.v1`); photo URLs = `CIS_PUBLIC_API_BASE` + path | — | CIS migration 225 |
 | AA-CIS-App (tour liveness, AA-986) | `catalog.v_tour_retired` (tombstone: `source_system`, `source_id`, `state`, `reason`; contract `catalog.tour.v1.3`) for the saved-trip reasons and the tour page 410 | — | CIS migration 274 (until applied every read degrades to the pre-L6 answer) |
 | AA-CIS-App (places / tour graph, AA-712) | `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`, `v_destination` (+ `located_by`, `precision`; 256: shape kind / status / length / bbox / `shape_lo`), `v_component_embedding` (HNSW top-k, AA-847), `v_destination_shape` (line geometry by id, slice 6d), `v_destination_redirect` (merged destination id → keeper: `/browse/destinations/{id}` answers 301, AA-847 Problem 2), `v_component_redirect` (dropped component id → the component of the same place, followed by every assembly reader, AA-990) — contract `catalog.graph.v1.2` / `catalog.tour.v1.2` | — | CIS migrations 228, 253 (`v_component_embedding`), 256 (`v_destination_shape`): SELECT to `tripplanner` only; 257 (`v_destination_redirect`); 285 (`v_component_redirect`, `tripplanner` only) |
-| AA-CIS-App (Model Gateway) | `catalog.v_llm_gateway_config_v1`, `catalog.v_llm_app_spend_today_v1` (AA-642 S8); until they are applied `shared.llm_role_config`, `shared.llm_model_catalog` | `shared.llm_call_log` (ledger v2, `app = 'tripplanner'`) | CIS 173, 323 |
+| AA-CIS-App (AI gateway) | `catalog.v_llm_gateway_config_v1`, `catalog.v_llm_app_spend_today_v1` (AA-642 S8, CIS 323, applied); the grandfathered `shared.llm_role_config`, `shared.llm_model_catalog` only as a fallback until a later CIS migration revokes them | `shared.llm_call_log` (ledger v2, `app = 'tripplanner'`) | CIS 173, 323 |
 | AA-Booking (My Payments, AA-682 S5) | HTTP `GET /booking/customer/v1/payments` with the traveller's own EXTERNAL access token (contract `booking.customer.v1`, from the BFF `/api/me/payments`) | — | Booking accepts the `tripplanner` client on its customer routes (`app.auth.customer`) |
 | AA-Booking | — | `tripplanner.outbox` row `inquiry.submitted` v1 … v1.4 (customer + consent, days, leg chain, custom days), written in the same transaction as the `sent` event (AA-676, migration tp-008). AA-Booking reads `tripplanner.v_inquiry_outbox` and keeps its own inbox by `idempotency_key`; it never writes here. Contract: `AA-Ecosys/docs/contracts/inquiry.submitted.v1.4.json` (payload `version` 1.4 since AA-908: `customer.identity` = `{iss, sub}` of a signed-in traveller, else null, and `verified` true only with it; AA-Booking accepts 1.4 since bk-024 / Booking #90 and links the identity to one customer; 1.3 since AA-986 L6: every leg and day adds `available`, `reason`, `reason_detail`, and stops whose tour AA no longer serves follow the served ones with `available: false`; 1.2 since AA-830: each leg also carries the catalog tour key `source_system` + `source_id`, resolved against `catalog.v_tour` at send time — or, for a stop that left, from the tombstone — both null when unresolvable; outbox column `schema_version` = major 1) | ecosystem ADR 0001 decision 6 (outbox); migration tp-009 grants role `booking` USAGE on schema `tripplanner` + SELECT on the view only (AA-681) |
 | AA-CIS-App (admin overview, AA-858) | — | — (it **reads** `tripplanner.v_ops_traffic_daily`: per UTC day `planner_session_started`, `trip_started`, `trip_edited`, `inquiry_sent`, aggregates only, last 400 days; contract `ops.overview.v1`, metric names append-only) | migration tp-015 grants role `cis_app` (the CIS runtime from X1 S18; until then the CIS runtime `aa_cis_admin` reads it through its `tp_owner` membership) USAGE on schema `tripplanner` + SELECT on the view only |
@@ -833,8 +834,8 @@ Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
   AA-CIS-App's domain entirely.
 - It does not own the `shared` schema (CIS does). It created `shared.destinations` (migrations
   002 / 005), but since ADR 0002 / CIS migration 201 the table is CIS-owned, and since AA-712 X4 (CIS 270) this
-  repo cannot read it either (it reads `catalog.v_destination`); the only `shared` tables it touches are the
-  Model Gateway's (`llm_call_log` written, config read).
+  repo cannot read it either (it reads `catalog.v_destination`); the only `shared` table it writes is the AI
+  gateway ledger `llm_call_log` (INSERT), and it still holds the grandfathered SELECT on two gateway config tables.
 - It does not provision its own AWS resources or OIDC roles — those live in AA-CIS-Infra.
 - **Agents must not merge to the production branch directly.** Ship via PR and let the human
   merge (matches this repo's stated policy and the ecosystem program rules). This repo has no
