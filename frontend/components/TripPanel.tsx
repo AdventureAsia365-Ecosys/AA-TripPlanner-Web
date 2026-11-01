@@ -8,6 +8,7 @@ import { COUNTRY_GATEWAY } from "@/lib/types";
 import RoutePlanner from "@/components/RoutePlanner";
 import StopActivities from "@/components/StopActivities";
 import { Icon } from "@/ui/Icon";
+import { AiNotice } from "@/ui/AiNotice";
 import AiLabel from "@/components/AiLabel";
 import { aiNotice } from "@/lib/aiNotices";
 import { parseNarration } from "@/lib/narration";
@@ -647,6 +648,8 @@ export default function TripPanel() {
                       </div>
                     </div>
                   ))}
+                  {/* AA-1033: the traveller notice under the narration (AI-written or AI-assisted day text). */}
+                  <AiNotice size="sm" testId="narration-ai-notice" />
                 </div>
               ) : (
                 <p className="mt-2 text-[11px] text-k-muted">

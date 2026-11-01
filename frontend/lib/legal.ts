@@ -4,6 +4,8 @@
 
 export const PRIVACY_PATH = "/privacy";
 export const TERMS_PATH = "/terms";
+/** AA-1033: the "Use of AI" section of the terms (linked from the footer AI notice). */
+export const TERMS_AI_PATH = "/terms#ai";
 
 /** The banner title on every legal page while the text is not approved. */
 export const LEGAL_DRAFT_LABEL = "Draft — pending legal review";

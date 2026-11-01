@@ -1,5 +1,6 @@
 // AA-886 — /terms: DRAFT terms of use of the Trip Planner. Product facts only (a free planning tool;
-// a sent trip is an enquiry, not a booking; AI-assisted descriptions); liability, governing law and
+// a sent trip is an enquiry, not a booking; AA-1033 §3 "Use of AI": what AI writes, that it can be wrong, that the
+// confirmed quote and booking conditions bind); liability, governing law and
 // booking conditions are left [to be confirmed] for counsel. Not indexed while it is a draft.
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -47,12 +48,24 @@ export default function TermsPage() {
         </ul>
       </LegalSection>
 
-      <LegalSection id="ai" title="3. AI-assisted content">
-        <p>
-          Some descriptions on the site, including the day-by-day text of your trip, are written with the help of AI and
-          are labelled as such. They can contain mistakes. Do not rely on them for travel, visa, health or safety
-          decisions; your advisor confirms the details before anything is booked.
-        </p>
+      <LegalSection id="ai" title="3. Use of AI">
+        <ul>
+          <li>
+            AI helps write some of the text on this site: tour descriptions and their day-by-day itineraries (written by
+            AI from Adventure Asia&apos;s own tour notes and checked by automated quality checks), and the day-by-day
+            narration of a trip you build. The place search and the &ldquo;You might also like&rdquo; suggestions use AI
+            to match your words and the places you picked. AI-written text is labelled as such.
+          </li>
+          <li>
+            AI can make mistakes, so this text can contain errors. It is there for information, to help you explore and
+            shape a trip idea. Do not rely on it for travel, visa, health or safety decisions.
+          </li>
+          <li>
+            Prices, itineraries and visa conditions are confirmed in your official quote. What binds you and Adventure
+            Asia is that confirmed quote and the booking conditions you accept, not the text on this site; your advisor
+            confirms the details before anything is booked.
+          </li>
+        </ul>
       </LegalSection>
 
       <LegalSection id="your-use" title="4. Using the site">

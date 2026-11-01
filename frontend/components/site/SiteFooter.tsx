@@ -2,9 +2,11 @@
 // page ends with its own section padding) and a light hairline on top, so a navy CTA band right above it reads apart.
 // Legal links (and every footer link) use prefetch={false}: four RSC prefetches per view were measured
 // on every page (research §2.6) and Vercel challenged them. The bottom row carries the "Reduce motion" toggle and,
-// until go-live, the "Preview site" line (TL-24, S262: shown unless SITE_INDEXING=on, lib/siteMode.ts).
+// until go-live, the "Preview site" line (TL-24, S262: shown unless SITE_INDEXING=on, lib/siteMode.ts), and (AA-1033)
+// the traveller AI notice with a link to the terms' "Use of AI" section.
 import Link from "next/link";
-import { LEGAL_LINKS } from "@/lib/legal";
+import { LEGAL_LINKS, TERMS_AI_PATH } from "@/lib/legal";
+import { AiNotice } from "@/ui/AiNotice";
 import TrustStrip from "./TrustStrip";
 import MotionToggle from "./MotionToggle";
 import { isLiveSite, PREVIEW_SITE_NOTE } from "@/lib/siteMode";
@@ -55,6 +57,9 @@ export default function SiteFooter() {
         <div className="mt-10 flex flex-col-reverse gap-4 border-t border-k-band-line pt-6 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
             <p className="text-caption font-normal">© Adventure Asia</p>
+            {/* AA-1033: the ecosystem's traveller AI notice on every site page, with the terms' "Use of AI" section. */}
+            <AiNotice tone="band" testId="footer-ai-notice" className="max-w-[72ch]" />
+            <Link href={TERMS_AI_PATH} prefetch={false} className={`${link} min-h-0`}>Use of AI</Link>
             {preview && (
               <p data-testid="preview-site-note" className="text-caption font-normal text-k-band-accent">
                 {PREVIEW_SITE_NOTE}

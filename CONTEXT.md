@@ -709,6 +709,13 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   narrate API's `ai_generated` is true for every source but `basic`. Place search and "You might
   also like" suggestions both rank by Cohere embeddings (suggestions: route-constrained, ranked by
   the pinned components' taste vector), and the site pill names both.
+- **AI notice (AA-1033)**: beside the labels, the ecosystem's one traveller notice ("Some descriptions are written
+  with the help of AI and may contain mistakes. Prices, itineraries and visa conditions are confirmed in your official
+  quote.") — `ui/AiNotice.tsx` (TripPlanner's own B2C look, `role="note"`) renders the sentence from the kit core copy
+  `ui/core/aiNotice.messages.ts` (the CIS kit `tokens` profile carries it with `i18n.ts`; never a local copy of the
+  text): under the tour page's day-by-day itinerary, under the planner narration (`TripPanel`), and in the site footer
+  with a "Use of AI" link to `/terms#ai` (terms §3 "Use of AI": what AI writes, that it can be wrong, for
+  information, the confirmed quote and booking conditions bind; no liability waiver). Tests: `lib/aiNoticeKit.test.ts`.
   Narration day choice (`master_content.resolve_days`), because a component row's tour day can be
   wrong: per trip day, the own tour day text of any entry whose text names its stop (component or
   place name, accent-insensitive, generic suffixes such as "Temple" dropped); else the nearest other
