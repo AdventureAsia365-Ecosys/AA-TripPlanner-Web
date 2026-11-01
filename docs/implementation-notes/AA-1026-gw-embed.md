@@ -1,9 +1,9 @@
 # AA-1026 (slice D5, lane gw-embed) — search stays in one embedding space
 
 ## Decisions
-- The space of the searched column comes from CIS (`catalog.v_embedding_space_v1`, CIS migration 341), not from this
+- The space of the searched column comes from CIS (`catalog.v_embedding_space_v1`, CIS migration 329), not from this
   repo: CIS owns the vectors (`geo.tour_place.embedding`) and changes their space only by a re-embed + swap.
-- Missing or ungranted view (CIS 341 not applied yet) = today's behaviour (one space). Any other read error pauses
+- Missing or ungranted view (CIS 329 not applied yet) = today's behaviour (one space). Any other read error pauses
   vector search for the request (keyword ranking, reason `space_unreadable`): never compare two spaces.
 - The route is filtered to the space's models (`restrict`), so a fallback model of another space can never answer.
   When TripPlanner cannot embed in the column's space (no route model in it, or a dimension other than `EMBED_DIM`),
@@ -20,5 +20,5 @@
 - The suggestions path compares stored vectors with stored vectors only (same column), so it needs no guard.
 
 ## Should know
-- No migration here; merge after CIS 341 is applied (works before too: the view is optional).
+- No migration here; merge after CIS 329 is applied (works before too: the view is optional).
 - Local runs: 8 modules need `jwt` and `test_handoff_contract.py` has 5 failures without this change too (env).

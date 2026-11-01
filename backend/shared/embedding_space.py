@@ -1,4 +1,4 @@
-"""AA-1026 D5: the embedding space of the column TripPlanner searches (CIS migration 341,
+"""AA-1026 D5: the embedding space of the column TripPlanner searches (CIS migration 329,
 ``catalog.v_embedding_space_v1``).
 
 Browse search compares a query vector with ``geo.tour_place.embedding`` (through ``catalog.v_component_embedding``).
@@ -7,7 +7,7 @@ embedded in the space the column is in, one space per query. CIS records that sp
 (``shared.embedding_column``) and changes it only by a re-embed + swap; this module reads it.
 
 - ``load_search_space(db)``: the column's space (cached 60 s), ``None`` while the view is missing or not granted (CIS
-  341 not applied yet: today's single space, the behaviour before this module) or has no row. Any other read error
+  329 not applied yet: today's single space, the behaviour before this module) or has no row. Any other read error
   raises ``llm_gateway.AiPaused("space_unreadable")``: search then falls back to keyword ranking (fail closed).
 - ``restrict(route, space)``: the route's models of that space only (a fallback model can never answer in another
   space), or ``None`` when TripPlanner cannot embed in it: no route model is in the space, or the dimension is not

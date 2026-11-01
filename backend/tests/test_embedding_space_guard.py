@@ -1,4 +1,4 @@
-"""AA-1026 D5: browse search embeds the query only in the space of geo.tour_place.embedding (CIS 341,
+"""AA-1026 D5: browse search embeds the query only in the space of geo.tour_place.embedding (CIS 329,
 catalog.v_embedding_space_v1). No DB, no Bedrock."""
 from __future__ import annotations
 
