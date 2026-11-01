@@ -4,8 +4,8 @@ AA-CIS-App `tests/unit/test_aa685_no_raw_model_calls.py`).
 
 Python (every backend module except tests, plus `tools/`) is parsed with `ast`, so comments and docstrings that name
 these methods do not count. What counts as a bypass:
-- a Bedrock runtime or batch method: invoke_model(_with_response_stream), converse(_stream), apply_guardrail,
-  create_model_invocation_job;
+- a Bedrock runtime or batch method, called or passed uncalled (asyncio.to_thread(rt.converse, ...)):
+  invoke_model(_with_response_stream), converse(_stream), apply_guardrail, create_model_invocation_job;
 - a vendor SDK call: <x>.completions / .messages / .responses / .embeddings .create/.stream/.parse;
 - importing the vendor SDK (`openai`, `anthropic`) or the gateway's AWS helper `bedrock_satellite`;
 - a vendor endpoint in a string: api.anthropic.com, api.openai.com, bedrock-runtime (an httpx / requests / urllib URL,
@@ -81,12 +81,12 @@ def find_bypasses(source: str) -> list[tuple[int, str]]:
                 names = [a.name for a in node.names if a.name in GATEWAY_INTERNAL_MODULES]
                 if names:
                     hits.append((node.lineno, "import " + ", ".join(names)))
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            func = node.func
-            if func.attr in RAW_BEDROCK_METHODS:
-                hits.append((node.lineno, f".{func.attr}()"))
-            elif func.attr in SDK_VERBS and isinstance(func.value, ast.Attribute) and func.value.attr in SDK_RESOURCES:
-                hits.append((node.lineno, f".{func.value.attr}.{func.attr}()"))
+        elif isinstance(node, ast.Attribute):
+            # The attribute, not only the call: `asyncio.to_thread(rt.converse, ...)` passes the method uncalled.
+            if node.attr in RAW_BEDROCK_METHODS:
+                hits.append((node.lineno, f".{node.attr}"))
+            elif node.attr in SDK_VERBS and isinstance(node.value, ast.Attribute) and node.value.attr in SDK_RESOURCES:
+                hits.append((node.lineno, f".{node.value.attr}.{node.attr}"))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs:
             for host in VENDOR_HOSTS:
                 if host in node.value:
@@ -139,15 +139,16 @@ def test_frontend_never_calls_a_model():
 
 # The detectors themselves, on invented snippets.
 _BYPASSES = {
-    "rt.converse(modelId=m, messages=[])": ".converse()",
-    "rt.converse_stream(modelId=m)": ".converse_stream()",
-    "rt.invoke_model(body=b, modelId=m)": ".invoke_model()",
-    "rt.apply_guardrail(guardrailIdentifier=g, source='INPUT', content=[])": ".apply_guardrail()",
-    "bedrock.create_model_invocation_job(jobName=j)": ".create_model_invocation_job()",
-    "client.chat.completions.create(model=m, messages=[])": ".completions.create()",
-    "client.messages.create(model=m, max_tokens=5, messages=[])": ".messages.create()",
-    "client.responses.create(model=m, input='hi')": ".responses.create()",
-    "client.embeddings.create(model=m, input=['hi'])": ".embeddings.create()",
+    "rt.converse(modelId=m, messages=[])": ".converse",
+    "asyncio.to_thread(rt.converse, modelId=m, messages=[])": ".converse",
+    "rt.converse_stream(modelId=m)": ".converse_stream",
+    "rt.invoke_model(body=b, modelId=m)": ".invoke_model",
+    "rt.apply_guardrail(guardrailIdentifier=g, source='INPUT', content=[])": ".apply_guardrail",
+    "bedrock.create_model_invocation_job(jobName=j)": ".create_model_invocation_job",
+    "client.chat.completions.create(model=m, messages=[])": ".completions.create",
+    "client.messages.create(model=m, max_tokens=5, messages=[])": ".messages.create",
+    "client.responses.create(model=m, input='hi')": ".responses.create",
+    "client.embeddings.create(model=m, input=['hi'])": ".embeddings.create",
     "import openai": "import openai",
     "from anthropic import Anthropic": "import anthropic",
     "from backend.shared import bedrock_satellite": "import bedrock_satellite",
