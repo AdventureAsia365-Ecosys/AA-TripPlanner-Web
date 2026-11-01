@@ -1,0 +1,16 @@
+{
+  "_about": "AA-642 S263 E2 TripPlanner prompt register manifest (same format and hash as AA-CIS-App shared/llm_client/prompt_versions.json). One entry per (stage, version), newest last. prompt_sha256 = sha256 of the source text of the symbols (backend/shared/prompt_registry.prompt_hash_of). Changing a prompt: run python3 backend/scripts/prompt_registry_check.py --bump; AA-CIS-App registers the rows in its prompt register. Never edit an existing entry.",
+  "prompts": [
+    {
+      "stage": "tp_compose",
+      "version": "v1",
+      "source_path": "backend/assembly/agent.py",
+      "symbols": [
+        "_COMPOSE_SYSTEM",
+        "_RENARRATE_SYSTEM",
+        "_build_body"
+      ],
+      "prompt_sha256": "4c5616fee2c563eaad5dc3fb8fbf85375af7339012b0bdaa0d500e96e6a65255"
+    }
+  ]
+}

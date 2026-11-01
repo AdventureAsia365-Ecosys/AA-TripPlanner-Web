@@ -45,3 +45,39 @@ Both slices edit `backend/shared/llm_gateway.py`, so they ship as two stacked PR
   per attempt and answers basic narration; truncation and deadline paths are proven by unit tests only until an LLM
   is back.
 - `RouteDeadlineExceeded.reason` is a class attribute; `AiPaused` keeps its own `reason`.
+
+## E2 — prompt_version, prompt_hash, request_id on the ledger + CI gate
+
+### Decisions
+- Mirror the CIS AA-900 register, self-contained in TripPlanner: `backend/shared/prompt_registry.py` (the same
+  `prompt_hash_of` algorithm, byte for byte: sha256 of the symbols' source text joined by a NUL line, read with `ast`),
+  manifest `backend/shared/prompt_versions.json` (same JSON shape), gate script `backend/scripts/prompt_registry_check.py`
+  (check / `--bump`, same rules; no `--sql`: the TP read guard forbids SQL naming CIS tables in backend code, and the
+  manifest fields are already the register's columns) and the CI test `backend/tests/test_prompt_registry_gate.py` (runs in the
+  required "Backend (pytest)" job).
+- One manifest entry: `tp_compose` `v1`, source `backend/assembly/agent.py`, symbols `_COMPOSE_SYSTEM`,
+  `_RENARRATE_SYSTEM`, `_build_body` (both narration prompts and the user-prompt template share one stage).
+- `prompt_hash` = sha256 of the system prompt sent (the CIS gateway's definition since AA-1018 part 2), so every call
+  of one prompt version shares a hash whatever the trip.
+- `prompt_version` = the newest manifest version while the deployed source still matches it (checked once per
+  container); a drift prints one `llm_gateway_note` and writes NULL. Stamped on every attempt of the request (success,
+  refused / error, truncated, deadline).
+- `request_id` = Bedrock `ResponseMetadata.RequestId` of the reply, or of a botocore `ClientError` (`e.response`);
+  None for an error with no provider answer (STS failure, timeout) and for the deadline row. Embedding rows get it too.
+
+### Changed
+- CIS writes `prompt_version` only when `shared.prompt_version` also holds the (stage, version, hash) row. TripPlanner
+  cannot read that table (no grant), so it writes the manifest version as soon as the source matches. The CIS rows for
+  the `tp_*` stages come later (plan lane L1), built from `backend/shared/prompt_versions.json` (stage, version,
+  prompt_sha256, source_path; source paths are TripPlanner repository paths).
+- No migration in this lane.
+
+### Tradeoffs
+- Reading `agent.py` at run time (ast, once per container) instead of hashing a constant at build time: it proves
+  the deployed bytes match the manifest, the same guarantee as CIS, at the cost of one file read per cold start.
+
+### Should know
+- A prompt edit in `agent.py` now fails CI until the manifest is bumped. Bump, then ask AA-CIS-App to register the
+  new row.
+- Live check needs no LLM: an acc3-refused compose attempt writes a `refused` row with `prompt_hash` and
+  `prompt_version='v1'` (request_id is set when Bedrock answered the refusal).

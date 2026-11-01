@@ -60,6 +60,12 @@ LLM_ROUTE_DEADLINE_MAX_S under the HTTP API's 30 s): every attempt's client gets
 when too little is left the next attempt is not started: one 0 USD row with status 'error', error_class 'deadline'
 names it and `RouteDeadlineExceeded` is raised. Callers degrade like any route failure (basic narration).
 
+AA-642 S263 E2: every attempt row also carries `request_id` (the provider's request id: Bedrock ResponseMetadata
+RequestId of the reply, or of the error when the provider answered one) and, for text generation, `prompt_hash`
+(sha256 of the system prompt sent, as the CIS gateway writes it) and `prompt_version` (the stage's version in the
+prompt manifest `backend/shared/prompt_versions.json` when the deployed source still matches it, see
+`prompt_registry`; a CI gate fails when a prompt changes without a version bump).
+
 AA-856: `EmbeddingCache` / `query_embed_cache` keep query embeddings in the Lambda container
 (bounded LRU + TTL, keyed by stage, route models, input type and the normalised text). A cache hit
 is not a model call: no llm_call_log row, no spend.
@@ -80,7 +86,7 @@ from backend import config
 from backend.aa_llm import budget as core_budget
 from backend.aa_llm import contract, ledger
 from backend.aa_llm import errors as core_errors
-from backend.shared import bedrock_satellite, observability
+from backend.shared import bedrock_satellite, observability, prompt_registry
 from backend.shared.bedrock_satellite import BedrockError, ClientFactory
 
 APP = "tripplanner"
@@ -135,6 +141,10 @@ class Call:
     wire_id: Optional[str] = None
     status: Optional[str] = None
     error_class: Optional[str] = None
+    # AA-642 S263 E2: the provider's request id, and the prompt sent (hash of the system prompt, manifest version).
+    request_id: Optional[str] = None
+    prompt_hash: Optional[str] = None
+    prompt_version: Optional[str] = None
 
     @property
     def provider(self) -> str:
@@ -355,14 +365,31 @@ def _cost(model: Model, tin: int, tout: int, cache_read: int = 0,
 
 
 def _failed(route: Route, model: Model, account: str, position: int, error: str, *,
-            latency_ms: Optional[int] = None, attempt_no: Optional[int] = None) -> Call:
+            latency_ms: Optional[int] = None, attempt_no: Optional[int] = None,
+            request_id: Optional[str] = None) -> Call:
     """A failed attempt: nothing billed, the error kept for the log row, its ledger outcome
     ('refused' for an access / credit / rate-limit refusal, else 'error') from the shared core."""
     status, error_class = ledger.failed_outcome(error)
     return Call(route.stage, route.role, model.key, account, 0, 0, 0.0, fallback_used=position > 0,
                 stop_reason="error", extra={"error": error[:500]}, failed=True,
                 latency_ms=latency_ms, attempt_no=attempt_no, wire_id=model.profiles.get(account),
-                status=status, error_class=error_class)
+                status=status, error_class=error_class, request_id=request_id)
+
+
+def _request_id(source: Any) -> Optional[str]:
+    """AA-642 S263 E2: the Bedrock RequestId of a reply dict, or of a botocore ClientError (its `response`)."""
+    meta = source.get("ResponseMetadata") if isinstance(source, dict) else None
+    if meta is None:
+        resp = getattr(source, "response", None)
+        meta = resp.get("ResponseMetadata") if isinstance(resp, dict) else None
+    rid = meta.get("RequestId") if isinstance(meta, dict) else None
+    return rid[:200] if isinstance(rid, str) and rid else None
+
+
+def _with_prompt(call: Call, prompt: tuple[Optional[str], Optional[str]]) -> Call:
+    """The attempt stamped with (prompt_hash, prompt_version) of the request (AA-642 S263 E2)."""
+    call.prompt_hash, call.prompt_version = prompt
+    return call
 
 
 def _truncated(route: Route, model: Model, account: str, position: int, usage: dict, stop: str, *,
@@ -376,7 +403,7 @@ def _truncated(route: Route, model: Model, account: str, position: int, usage: d
                 latency_ms=latency_ms, attempt_no=attempt_no,
                 cache_read_tokens=int(usage["cache_read"] or 0), cache_write_tokens=int(usage["cache_write"] or 0),
                 wire_id=model.profiles.get(account), status=ledger.STATUS_TRUNCATED,
-                error_class=core_errors.TRUNCATED)
+                error_class=core_errors.TRUNCATED, request_id=usage.get("request_id"))
 
 
 def _deadline_passed(route: Route, model: Model, account: str, position: int, seconds: float, *,
@@ -405,13 +432,15 @@ def _text_call(model: Model, account: str, system: str, user: str, max_tokens: i
     if model.api_style == "anthropic_native":
         body = {"anthropic_version": "bedrock-2023-05-31", "max_tokens": max_tokens,
                 "system": system, "messages": [{"role": "user", "content": user}]}
-        payload = _read_body(rt.invoke_model(modelId=profile, body=json.dumps(body)))
+        resp = rt.invoke_model(modelId=profile, body=json.dumps(body))
+        payload = _read_body(resp)
         text = "".join(p.get("text", "") for p in payload.get("content", [])
                        if isinstance(p, dict) and p.get("type") == "text")
         u = payload.get("usage", {}) or {}
         usage = {"in": u.get("input_tokens", 0), "out": u.get("output_tokens", 0),
                  "cache_read": u.get("cache_read_input_tokens", 0) or 0,
-                 "cache_write": u.get("cache_creation_input_tokens", 0) or 0}
+                 "cache_write": u.get("cache_creation_input_tokens", 0) or 0,
+                 "request_id": _request_id(resp)}
         return text, usage, payload.get("stop_reason")
     if model.api_style == "converse":
         resp = rt.converse(modelId=profile, system=[{"text": system}],
@@ -421,7 +450,8 @@ def _text_call(model: Model, account: str, system: str, user: str, max_tokens: i
         u = resp.get("usage", {}) or {}
         usage = {"in": u.get("inputTokens", 0), "out": u.get("outputTokens", 0),
                  "cache_read": u.get("cacheReadInputTokens", 0) or 0,
-                 "cache_write": u.get("cacheWriteInputTokens", 0) or 0}
+                 "cache_write": u.get("cacheWriteInputTokens", 0) or 0,
+                 "request_id": _request_id(resp)}
         return text, usage, resp.get("stopReason")
     raise BedrockError(f"{model.key}: api_style {model.api_style!r} is not supported here")
 
@@ -437,6 +467,7 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
     (`route_deadline_s`) bounds every attempt's client and stops the loop with RouteDeadlineExceeded."""
     attempt_errors = []
     attempt = 0
+    prompt = (prompt_registry.system_prompt_hash(system), prompt_registry.version_for(route.stage))
     deadline = route_deadline_s(route)
     ends = time.monotonic() + deadline
     for position, model in enumerate(route.models):
@@ -451,7 +482,8 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
             left = ends - time.monotonic()
             if left < config.LLM_ROUTE_DEADLINE_MIN_ATTEMPT_S:
                 if failures is not None:
-                    failures.append(_deadline_passed(route, model, account, position, deadline, attempt_no=attempt))
+                    failures.append(_with_prompt(
+                        _deadline_passed(route, model, account, position, deadline, attempt_no=attempt), prompt))
                 observability.emit("llm_route_deadline_passed", level="warning", stage=route.stage,
                                    model=model.key, account=account, deadline_s=deadline)
                 tried = "; ".join(attempt_errors)[:600]
@@ -465,28 +497,31 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
             except Exception as e:  # noqa: BLE001 — fail over to the next account/model
                 attempt_errors.append(f"{model.key}@{account}: {str(e)[:200]}")
                 if failures is not None:
-                    failures.append(_failed(route, model, account, position, str(e),
-                                            latency_ms=_ms(started), attempt_no=attempt))
+                    failures.append(_with_prompt(_failed(route, model, account, position, str(e),
+                                                         latency_ms=_ms(started), attempt_no=attempt,
+                                                         request_id=_request_id(e)), prompt))
                 continue
             if stop in ledger.TRUNCATED_STOP_REASONS:
                 # AA-642 S263 E1: billed but cut short; logged as 'truncated' and never returned.
                 attempt_errors.append(f"{model.key}@{account}: reply cut at its token limit ({stop})")
                 if failures is not None:
-                    failures.append(_truncated(route, model, account, position, usage, stop,
-                                               latency_ms=_ms(started), attempt_no=attempt))
+                    failures.append(_with_prompt(_truncated(route, model, account, position, usage, stop,
+                                                            latency_ms=_ms(started), attempt_no=attempt), prompt))
                 continue
             if not text:
                 attempt_errors.append(f"{model.key}@{account}: empty response")
                 if failures is not None:
-                    failures.append(_failed(route, model, account, position, "empty response",
-                                            latency_ms=_ms(started), attempt_no=attempt))
+                    failures.append(_with_prompt(_failed(route, model, account, position, "empty response",
+                                                         latency_ms=_ms(started), attempt_no=attempt,
+                                                         request_id=usage.get("request_id")), prompt))
                 continue
-            return text, Call(
+            return text, _with_prompt(Call(
                 route.stage, route.role, model.key, account, usage["in"], usage["out"],
                 _cost(model, usage["in"], usage["out"], usage["cache_read"], usage["cache_write"]),
                 fallback_used=position > 0, stop_reason=stop, latency_ms=_ms(started),
                 attempt_no=attempt, cache_read_tokens=int(usage["cache_read"] or 0),
-                cache_write_tokens=int(usage["cache_write"] or 0), wire_id=model.profiles.get(account))
+                cache_write_tokens=int(usage["cache_write"] or 0), wire_id=model.profiles.get(account),
+                request_id=usage.get("request_id")), prompt)
     raise BedrockError(f"All models failed for stage {route.stage!r}: " + "; ".join(attempt_errors))
 
 
@@ -612,7 +647,8 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
                 errors.append(f"{model.key}@{account}: {str(e)[:200]}")
                 if failures is not None:
                     failures.append(_failed(route, model, account, position, str(e),
-                                            latency_ms=_ms(started), attempt_no=attempt))
+                                            latency_ms=_ms(started), attempt_no=attempt,
+                                            request_id=_request_id(e)))
                 continue
             header = (resp.get("ResponseMetadata", {}).get("HTTPHeaders", {})
                       .get("x-amzn-bedrock-input-token-count"))
@@ -620,7 +656,8 @@ def embed_texts(route: Route, texts: list[str], *, input_type: str = "search_doc
             return [[float(x) for x in v] for v in vectors], Call(
                 route.stage, route.role, model.key, account, tokens, 0, _cost(model, tokens, 0),
                 fallback_used=position > 0, extra={"tokens_estimated": header is None},
-                latency_ms=_ms(started), attempt_no=attempt, wire_id=model.profiles.get(account))
+                latency_ms=_ms(started), attempt_no=attempt, wire_id=model.profiles.get(account),
+                request_id=_request_id(resp))
     raise BedrockError(f"All models failed for stage {route.stage!r}: " + "; ".join(errors))
 
 
@@ -748,7 +785,8 @@ def ledger_row(call: Call, signal: dict, tenant_id: Optional[str] = None) -> led
         pricing_mode="catalog" if call.cost_usd is not None and _billed(call) else None,
         status=call.status if call.failed else None, error_class=call.error_class if call.failed else None,
         latency_ms=call.latency_ms, connection_key=call.account, deployment_wire_id=call.wire_id,
-        attempt_no=call.attempt_no)
+        attempt_no=call.attempt_no, request_id=call.request_id, prompt_hash=call.prompt_hash,
+        prompt_version=call.prompt_version)
 
 
 async def record(db: Any, call: Call, quality_signal: dict, *,
