@@ -180,9 +180,13 @@ async def test_route_search_no_store_and_uses_embedder(monkeypatch):
     async def fake_record(db, call, quality_signal, **kw):
         recorded.append((call.stage, quality_signal))
 
+    async def fake_space(db):
+        return None  # AA-1026: space view not modelled by this fake pool (covered in test_embedding_space_guard)
+
     monkeypatch.setattr(search_mod.llm_gateway, "load_route", fake_load_route)
     monkeypatch.setattr(search_mod.llm_gateway, "embed_texts", fake_embed_texts)
     monkeypatch.setattr(search_mod.llm_gateway, "record", fake_record)
+    monkeypatch.setattr(search_mod.embedding_space, "load_search_space", fake_space)
     resp = await h.route("GET", "/browse/search", {"q": "beach town"}, pool=pool)
     assert resp["statusCode"] == 200
     assert resp["headers"]["cache-control"] == "no-store"
