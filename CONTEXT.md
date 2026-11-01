@@ -608,7 +608,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   attempts too, with `stop_reason = 'error'`; a model with no catalog price logs `cost_usd` NULL),
   tagged `quality_signal.app = "tripplanner"`, so it shows on the CIS External Spend page. The
   `tripplanner` DB role has SELECT on the two config tables and INSERT on the log (CIS
-  migration 173). If the tables cannot be read, built-in routes keep the previous models.
+  migration 173). `backend/tests/test_no_gateway_bypass.py` (AA-642 L6) fails CI on any Bedrock / vendor SDK call,
+  vendor SDK import or vendor endpoint string outside `llm_gateway.py` / `bedrock_satellite.py` (backend and
+  `tools/`), and on a vendor AI SDK import or endpoint in `frontend/`. If the tables cannot be read, built-in routes keep the previous models.
   **AA-642 S8 (root ADR 0009 decision 13):** the gateway uses the shared core `backend/aa_llm/`, a byte copy of
   AA-CIS-App `shared/aa_llm/` pinned by `backend/aa_llm.lock.json` (synced by CIS `.github/scripts/llm-core-sync.sh`
   / the Llm Core Sync bot; never edit it here; `tests/test_vendored_copies.py` checks it offline,
