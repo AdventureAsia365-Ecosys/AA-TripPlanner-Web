@@ -51,12 +51,22 @@ status, error_class, latency_ms, attempt_no, connection, cache tokens, pricing_m
 the v2 columns are missing (SQLSTATE 42703). A failed ledger write of an online stage pauses AI like a failed
 counter write: the spend view sums the ledger, so a lost row undercounts.
 
+AA-642 S263 E1 (root ADR 0009 decision 6, plan 1.E): `generate_text` treats a reply cut at its token limit
+(stop_reason max_tokens / length, `ledger.TRUNCATED_STOP_REASONS`) as a failed attempt: it is billed, so it is logged
+with its tokens and cost and status / error_class 'truncated', and the route moves on to the next account or model;
+truncated text is never returned. Each request also has a route deadline (`route_deadline_s`: the route's
+`route_deadline_s` when the config view carries it, else config.LLM_ROUTE_DEADLINE_DEFAULT_S, capped at
+LLM_ROUTE_DEADLINE_MAX_S under the HTTP API's 30 s): every attempt's client gets the time left as its timeout, and
+when too little is left the next attempt is not started: one 0 USD row with status 'error', error_class 'deadline'
+names it and `RouteDeadlineExceeded` is raised. Callers degrade like any route failure (basic narration).
+
 AA-856: `EmbeddingCache` / `query_embed_cache` keep query embeddings in the Lambda container
 (bounded LRU + TTL, keyed by stage, route models, input type and the normalised text). A cache hit
 is not a model call: no llm_call_log row, no spend.
 """
 from __future__ import annotations
 
+import functools
 import json
 import re
 import time
@@ -69,6 +79,7 @@ from typing import Any, Callable, Optional
 from backend import config
 from backend.aa_llm import budget as core_budget
 from backend.aa_llm import contract, ledger
+from backend.aa_llm import errors as core_errors
 from backend.shared import bedrock_satellite, observability
 from backend.shared.bedrock_satellite import BedrockError, ClientFactory
 
@@ -96,6 +107,8 @@ class Route:
     models: tuple
     account_route: Optional[str] = None
     shadow_model: Optional[str] = None
+    # AA-642 S263 E1: llm_role_config.route_deadline_s (CIS 320) when the config read carries it, else None.
+    deadline_s: Optional[int] = None
 
 
 @dataclass
@@ -140,6 +153,13 @@ BUILTIN_ROUTES = {
 }
 
 _cache: dict[str, tuple[Route, float]] = {}
+
+
+class RouteDeadlineExceeded(BedrockError):
+    """AA-642 S263 E1: the route deadline passed before the next model / account could be tried. No provider call
+    was made for that attempt; its 0 USD 'deadline' row is in `failures`. `reason` is the degrade code."""
+
+    reason = "route_deadline"
 
 
 class AiPaused(BedrockError):
@@ -213,7 +233,7 @@ async def _route_from_tables(db: Any, stage: str) -> tuple[Any, tuple]:
     """The pre-323 read: shared.llm_role_config + shared.llm_model_catalog (grandfathered SELECT, CIS 173)."""
     rows = await db.fetch(
         "SELECT role, model_id, fallback_model_ids, account_route, shadow_model_id, "
-        "shadow_sample_pct FROM shared.llm_role_config WHERE stage = $1 AND is_active", stage)
+        "shadow_sample_pct, route_deadline_s FROM shared.llm_role_config WHERE stage = $1 AND is_active", stage)
     if not rows:
         raise LookupError(f"no active llm_role_config row for {stage!r}")
     cfg = rows[0]
@@ -256,12 +276,26 @@ async def load_route(db: Any, stage: str) -> Route:
             observability.emit("llm_gateway_note", stage=stage,
                                detail=f"shadow {shadow!r} is configured but TripPlanner does not "
                                       "run shadows (AA-805); only the primary route is called")
-        route = Route(stage, cfg["role"], models, cfg["account_route"], shadow)
+        route = Route(stage, cfg["role"], models, cfg["account_route"], shadow,
+                      _deadline_value(cfg.get("route_deadline_s")))
     except Exception as e:  # noqa: BLE001 — AA-642 S0: an unreadable route pauses AI (fail closed)
         _error("route_unreadable", stage, e)
         raise AiPaused("route_unreadable", str(e)[:200]) from None
     _cache[stage] = (route, now)
     return route
+
+
+def _deadline_value(raw: Any) -> Optional[int]:
+    """A route_deadline_s the migration 320 CHECK allows (1..3600 s), else None (the default applies)."""
+    if isinstance(raw, int) and not isinstance(raw, bool) and 1 <= raw <= 3600:
+        return raw
+    return None
+
+
+def route_deadline_s(route: Route) -> float:
+    """The wall-time budget of one generate_text request on `route` (module docstring, AA-642 S263 E1)."""
+    seconds = float(route.deadline_s) if route.deadline_s else float(config.LLM_ROUTE_DEADLINE_DEFAULT_S)
+    return min(seconds, float(config.LLM_ROUTE_DEADLINE_MAX_S))
 
 
 # AA-998: the only accounts this app calls. A stale catalog profile or `account_route` for any
@@ -292,7 +326,11 @@ def _satellite_target(account: str) -> tuple[str, str, str]:
     return target
 
 
-def _runtime(account: str, client_factory: ClientFactory) -> Any:
+def _runtime(account: str, client_factory: ClientFactory, timeout_s: Optional[float] = None) -> Any:
+    """The account's bedrock-runtime client. `timeout_s` (the time left of the route deadline) bounds the
+    production clients, the satellite's STS call included; an injected factory (tests, scripts) is used as is."""
+    if timeout_s is not None and client_factory is bedrock_satellite.default_client_factory:
+        client_factory = functools.partial(bedrock_satellite.default_client_factory, timeout_s=timeout_s)
     if account == "acc2":
         return client_factory("bedrock-runtime", region=config.BEDROCK_REGION)
     return bedrock_satellite.bedrock_for_account(*_satellite_target(account), client_factory)
@@ -327,6 +365,29 @@ def _failed(route: Route, model: Model, account: str, position: int, error: str,
                 status=status, error_class=error_class)
 
 
+def _truncated(route: Route, model: Model, account: str, position: int, usage: dict, stop: str, *,
+               latency_ms: int, attempt_no: int) -> Call:
+    """AA-642 S263 E1: a reply cut at its token limit. Billed (tokens and catalog cost kept, so it counts against
+    the spend cap) but unusable: a failed attempt with status / error_class 'truncated'."""
+    return Call(route.stage, route.role, model.key, account, usage["in"], usage["out"],
+                _cost(model, usage["in"], usage["out"], usage["cache_read"], usage["cache_write"]),
+                fallback_used=position > 0, stop_reason=stop,
+                extra={"error": f"reply cut at its token limit ({stop})"}, failed=True,
+                latency_ms=latency_ms, attempt_no=attempt_no,
+                cache_read_tokens=int(usage["cache_read"] or 0), cache_write_tokens=int(usage["cache_write"] or 0),
+                wire_id=model.profiles.get(account), status=ledger.STATUS_TRUNCATED,
+                error_class=core_errors.TRUNCATED)
+
+
+def _deadline_passed(route: Route, model: Model, account: str, position: int, seconds: float, *,
+                     attempt_no: int) -> Call:
+    """AA-642 S263 E1: the attempt the route deadline stopped before it started: 0 USD, no provider call."""
+    return Call(route.stage, route.role, model.key, account, 0, 0, 0.0, fallback_used=position > 0,
+                stop_reason="error", extra={"error": f"route deadline of {seconds:g} s passed before this attempt"},
+                failed=True, latency_ms=0, attempt_no=attempt_no, wire_id=model.profiles.get(account),
+                status=ledger.STATUS_ERROR, error_class=core_errors.DEADLINE)
+
+
 def _ms(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
 
@@ -337,8 +398,9 @@ def _read_body(resp: dict) -> dict:
 
 
 def _text_call(model: Model, account: str, system: str, user: str, max_tokens: int,
-               client_factory: ClientFactory) -> tuple[str, dict, Optional[str]]:
-    rt = _runtime(account, client_factory)
+               client_factory: ClientFactory, *, timeout_s: Optional[float] = None,
+               ) -> tuple[str, dict, Optional[str]]:
+    rt = _runtime(account, client_factory, timeout_s)
     profile = model.profiles[account]
     if model.api_style == "anthropic_native":
         body = {"anthropic_version": "bedrock-2023-05-31", "max_tokens": max_tokens,
@@ -369,30 +431,52 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
                   failures: Optional[list] = None,
                   ) -> tuple[str, Call]:
     """Runs the route: each enabled model in order, each of its accounts in order.
-    Every failed attempt is appended to `failures` (when given) so the caller logs it too."""
-    errors = []
+    Every failed attempt is appended to `failures` (when given) so the caller logs it too.
+
+    AA-642 S263 E1: a reply cut at its token limit is a failed (billed) attempt, never returned; the route deadline
+    (`route_deadline_s`) bounds every attempt's client and stops the loop with RouteDeadlineExceeded."""
+    attempt_errors = []
     attempt = 0
+    deadline = route_deadline_s(route)
+    ends = time.monotonic() + deadline
     for position, model in enumerate(route.models):
         if not model.enabled or model.api_style == "embed":
-            errors.append(f"{model.key}: skipped")
+            attempt_errors.append(f"{model.key}: skipped")
             continue
         accounts = _accounts(model, route.account_route)
         if not accounts:
-            errors.append(_no_account(model))
+            attempt_errors.append(_no_account(model))
         for account in accounts:
             attempt += 1
+            left = ends - time.monotonic()
+            if left < config.LLM_ROUTE_DEADLINE_MIN_ATTEMPT_S:
+                if failures is not None:
+                    failures.append(_deadline_passed(route, model, account, position, deadline, attempt_no=attempt))
+                observability.emit("llm_route_deadline_passed", level="warning", stage=route.stage,
+                                   model=model.key, account=account, deadline_s=deadline)
+                tried = "; ".join(attempt_errors)[:600]
+                raise RouteDeadlineExceeded(
+                    f"Route deadline of {deadline:g} s for stage {route.stage!r} passed before "
+                    f"{model.key}@{account}" + (f"; tried: {tried}" if tried else ""))
             started = time.monotonic()
             try:
                 text, usage, stop = _text_call(model, account, system, user, max_tokens,
-                                               client_factory)
+                                               client_factory, timeout_s=left)
             except Exception as e:  # noqa: BLE001 — fail over to the next account/model
-                errors.append(f"{model.key}@{account}: {str(e)[:200]}")
+                attempt_errors.append(f"{model.key}@{account}: {str(e)[:200]}")
                 if failures is not None:
                     failures.append(_failed(route, model, account, position, str(e),
                                             latency_ms=_ms(started), attempt_no=attempt))
                 continue
+            if stop in ledger.TRUNCATED_STOP_REASONS:
+                # AA-642 S263 E1: billed but cut short; logged as 'truncated' and never returned.
+                attempt_errors.append(f"{model.key}@{account}: reply cut at its token limit ({stop})")
+                if failures is not None:
+                    failures.append(_truncated(route, model, account, position, usage, stop,
+                                               latency_ms=_ms(started), attempt_no=attempt))
+                continue
             if not text:
-                errors.append(f"{model.key}@{account}: empty response")
+                attempt_errors.append(f"{model.key}@{account}: empty response")
                 if failures is not None:
                     failures.append(_failed(route, model, account, position, "empty response",
                                             latency_ms=_ms(started), attempt_no=attempt))
@@ -403,7 +487,7 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
                 fallback_used=position > 0, stop_reason=stop, latency_ms=_ms(started),
                 attempt_no=attempt, cache_read_tokens=int(usage["cache_read"] or 0),
                 cache_write_tokens=int(usage["cache_write"] or 0), wire_id=model.profiles.get(account))
-    raise BedrockError(f"All models failed for stage {route.stage!r}: " + "; ".join(errors))
+    raise BedrockError(f"All models failed for stage {route.stage!r}: " + "; ".join(attempt_errors))
 
 
 _acc2_embed: Any = None
@@ -647,6 +731,11 @@ _LEGACY_INSERT_SQL = (
 _UNDEFINED_COLUMN = "42703"
 
 
+def _billed(call: Call) -> bool:
+    """A success, or a failed attempt the provider still billed (a reply cut at its token limit, AA-642 S263 E1)."""
+    return not call.failed or call.status == ledger.STATUS_TRUNCATED
+
+
 def ledger_row(call: Call, signal: dict, tenant_id: Optional[str] = None) -> ledger.LedgerRow:
     """The ledger v2 row of one attempt (AA-642 S8). A priced success says how it was priced
     ('catalog': the route's catalog prices); a failed attempt carries its status and error class."""
@@ -656,7 +745,7 @@ def ledger_row(call: Call, signal: dict, tenant_id: Optional[str] = None) -> led
         stop_reason=call.stop_reason, account=call.account, fallback_used=call.fallback_used,
         provider=call.provider, cache_read_tokens=call.cache_read_tokens or None,
         cache_write_tokens=call.cache_write_tokens or None,
-        pricing_mode="catalog" if call.cost_usd is not None and not call.failed else None,
+        pricing_mode="catalog" if call.cost_usd is not None and _billed(call) else None,
         status=call.status if call.failed else None, error_class=call.error_class if call.failed else None,
         latency_ms=call.latency_ms, connection_key=call.account, deployment_wire_id=call.wire_id,
         attempt_no=call.attempt_no)

@@ -673,7 +673,13 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `SPEND_UNREADABLE_HOLD_SECONDS`, per container) → `budget_status` is `exhausted` with reason
   `spend_unreadable`; route config unreadable → `load_route` raises `AiPaused("route_unreadable")` (the
   hard-coded `BUILTIN_ROUTES` models are never called any more); every model of the route failed
-  (provider outage, e.g. acc3 refusing) → degrade too. Narration then answers 200 `basic` /
+  (provider outage, e.g. acc3 refusing) → degrade too. **AA-642 S263 E1:** a reply cut at its token limit
+  (`stop_reason` max_tokens / length) is never returned: it is a billed failed attempt (ledger `status` /
+  `error_class` `truncated`, tokens and cost kept, counted in the spend) and the route moves on. Each narration request
+  has a route deadline (`route_deadline_s` of the route when the config view carries it, else 20 s, capped at 25 s
+  under the HTTP API's 30 s): every attempt's boto client gets the time left as its timeout (one attempt, no boto
+  retry; the satellite AssumeRole too), and when less than 1 s is left the next attempt is not started (one 0 USD
+  row, `error_class` `deadline`) and narration degrades with reason `route_deadline`. Narration then answers 200 `basic` /
   `master_basic` with `"ai_paused": true` (never cached; a defect that is not a provider error still
   answers 502), search answers the keyword ranking with `"ai_paused": true`. Each degraded narration
   prints `{"evt":"narration_degraded","reason":…}`; each gateway failure that changes what travellers
