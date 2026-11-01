@@ -47,7 +47,7 @@ from typing import Any, Callable, Optional, Protocol
 
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import LINE_COLS, LINE_COLS_SQL, geo_fields
-from backend.shared import llm_gateway, observability, vector_topk
+from backend.shared import embedding_space, llm_gateway, observability, vector_topk
 
 STAGE = "tp_search_embed"
 log = logging.getLogger(__name__)
@@ -111,19 +111,25 @@ def _log_embed(outcome: str, reason: Optional[str] = None) -> None:
 
 # AA-642 S0: keyword-fallback reasons where the model call was refused before it was made.
 REASON_BUDGET_CAP = "budget_cap"
-PAUSED_REASONS = (llm_gateway.REASON_SPEND_UNREADABLE, "route_unreadable")
+PAUSED_REASONS = (llm_gateway.REASON_SPEND_UNREADABLE, "route_unreadable", embedding_space.REASON_UNREADABLE)
 
 
 async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Optional[str]]:
     """(vector, None) from the cache or one Bedrock call, or (None, reason) when search must fall
     back to keyword ranking: over the daily spend cap (AA-805, reason "budget_cap"), spend counter
-    or route config unreadable (AA-642 S0, PAUSED_REASONS), throttle or embed error (AA-856)."""
+    or route config unreadable (AA-642 S0, PAUSED_REASONS), throttle or embed error (AA-856).
+    AA-1026 D5: the query is embedded only in the space geo.tour_place.embedding is in (CIS 329); a route that
+    cannot embed in that space gives reason "embedding_space_mismatch", an unreadable space "space_unreadable"."""
     global _throttled_until
     # AA-685: model from the gateway route (cached 60 s). AA-642 S0: unreadable -> AiPaused.
     try:
         route = await llm_gateway.load_route(pool, STAGE)
+        space = await embedding_space.load_search_space(pool)
     except llm_gateway.AiPaused as e:
         return None, e.reason
+    route = embedding_space.restrict(route, space)
+    if route is None:
+        return None, embedding_space.REASON_MISMATCH
     key = llm_gateway.embed_cache_key(route, QUERY_INPUT_TYPE, q)
     cached = llm_gateway.query_embed_cache.get(key)
     if cached is not None:
@@ -138,7 +144,7 @@ async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Opt
         return None, REASON_BUDGET_CAP
     text = llm_gateway.normalise_query(q)
     # One llm_call_log row per real embed (AA-805: and one per failed attempt).
-    signal = {"texts": 1, "query_len_chars": len(text)}
+    signal = {"texts": 1, "query_len_chars": len(text), **embedding_space.ledger_signal(space)}
     failures: list = []
     try:
         vectors, call = llm_gateway.embed_texts(route, [text], input_type=QUERY_INPUT_TYPE,
