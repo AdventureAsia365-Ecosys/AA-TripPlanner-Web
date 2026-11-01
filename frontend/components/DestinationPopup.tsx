@@ -7,6 +7,8 @@ import { useTrip } from "@/lib/useTrip";
 import ActivityIcon from "./ActivityIcon";
 import GeocodeAttribution from "./GeocodeAttribution";
 import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "./AiLabel";
+import { AiNotice } from "@/ui/AiNotice";
+import { TERMS_AI_PATH } from "@/lib/legal";
 
 interface Props {
   destinationId: string;
@@ -169,6 +171,11 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
             );
           })}
         </ul>
+        {/* AA-1033: the planner has no site footer, so the traveller notice sits under the AI-written experience text
+            (outside the scrolling list, so it stays in view). */}
+        {!loading && detail?.components.some((c) => c.text_extract) && (
+          <AiNotice size="sm" termsHref={TERMS_AI_PATH} className="mt-2" testId="popup-ai-notice" />
+        )}
         {detail?.located_by === "geoapify" && <GeocodeAttribution className="mt-2 px-0" />}
       </div>
     </div>

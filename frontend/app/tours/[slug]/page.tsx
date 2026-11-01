@@ -29,7 +29,7 @@ import { RIBBON_MIN_ANIMATED, uniqueRibbonItems, type RibbonItem } from "@/lib/p
 import { cvSize } from "@/lib/contentVisibility";
 import { clip, coverAlt, daysText, splitLines, titleCase } from "@/lib/text";
 import { routeLines, routePoints } from "@/lib/tourMap";
-import { Badge, ButtonLink, Icon } from "@/ui";
+import { AiNotice, Badge, ButtonLink, Icon } from "@/ui";
 
 // Route segment config must be a literal (Next 15 reads it statically and fails the build on an
 // imported constant). Keep it equal to CATALOG_REVALIDATE_S (lib/segmentConfig.test.ts checks).
@@ -445,6 +445,8 @@ export default async function TourPage({ params }: Props) {
                   ))}
                 </ol>
               )}
+              {/* AA-1033: the ecosystem's traveller notice under the AI-written tour text (summary, highlights, days). */}
+              <AiNotice className="mt-5 max-w-[72ch]" testId="tour-ai-notice" />
             </section>
 
             {(points.length > 0 || lines.length > 0) && (
