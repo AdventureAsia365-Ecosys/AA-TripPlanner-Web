@@ -22,7 +22,7 @@ ACC3 = gw.Model("cohere-embed-v4-acc3", "cohere", "embed", {"acc3": "global.cohe
                 0.12, 0.0)
 ACC3_OFF = gw.Model("cohere-embed-v4-acc3b", "cohere", "embed", {"acc3": "global.cohere.embed-v4:0"},
                     0.12, 0.0, enabled=False)
-# The pre-AA-998 acc1 row, enabled: must never be called (acc1 is not a supported account).
+# The pre-AA-998 acc1 row, enabled: must never be called (no TripPlanner connection is described for acc1).
 ACC1_STALE = gw.Model("cohere-embed-v4-acc1", "cohere", "embed", {"acc1": "global.cohere.embed-v4:0"},
                       0.12, 0.0)
 ROUTE = gw.Route("tp_search_embed", "embed", (ACC2, ACC3))
@@ -35,9 +35,10 @@ def _setup(monkeypatch):
     monkeypatch.setattr(config, "BEDROCK_ACCT_PRIMARY", "111111111111")
     monkeypatch.setattr(config, "BEDROCK_EXTERNAL_ID_PRIMARY", "ext-acc3")
     monkeypatch.setattr(config, "EMBED_DIM", 3)
-    monkeypatch.setattr(gw, "_acc2_embed", None)
+    gw._task_embed.clear()
     gw._sat_embed.clear()
     yield
+    gw._task_embed.clear()
     gw._sat_embed.clear()
 
 
@@ -124,7 +125,7 @@ def test_disabled_and_acc1_rows_are_skipped_and_the_chain_error_still_reads_as_t
             StubEmbed(THROTTLE), StubEmbed(THROTTLE), acc1, seen=seen), failures=failures)
     assert acc1.calls == []
     assert "cohere-embed-v4-acc3b: skipped" in str(e.value)
-    assert "cohere-embed-v4-acc1: no profile on a supported account" in str(e.value)
+    assert "cohere-embed-v4-acc1@acc1: connection not described" in str(e.value)
     assert [f.account for f in failures] == ["acc2", "acc3"]
     assert [s["RoleArn"].split(":")[4] for s in seen] == ["111111111111"]  # never acc1
     # search.py starts its keyword cooldown when any attempt in the failed chain was a throttle
@@ -147,7 +148,7 @@ def prod(monkeypatch):
             exp = datetime.fromtimestamp(state["now"] + 3600, tz=timezone.utc)
         return bs.Credentials(f"AKIA-{account_id}-{len(state['assumes'])}", "s", "t", exp)
 
-    def new_client(creds=None):
+    def new_client(creds=None, region=None):
         if creds is None:
             return state["acc2"]
         acct = creds.access_key_id.split("-")[1]
@@ -213,7 +214,7 @@ def test_a_satellite_throttle_keeps_the_cached_client(prod):
 def test_acc2_client_is_built_once_per_container(prod, monkeypatch):
     built = []
 
-    def new_client(creds=None):
+    def new_client(creds=None, region=None):
         built.append(creds)
         return prod["acc2"]
 

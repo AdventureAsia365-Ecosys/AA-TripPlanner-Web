@@ -22,8 +22,7 @@ Browser → Next.js (Vercel) → BFF /api/* (holds TRIPPLANNER_API_KEY)
         → RDS Postgres on acc2, shared with AA-CIS-App:
             tripplanner.*  (owned here)   ·   reads CIS: published_tours, v_active_tour_atoms,
             shared.destinations (read-only), photo views   ·   writes shared.llm_call_log
-        → Bedrock through the ecosystem Model Gateway (stages tp_compose, tp_search_embed,
-          tp_extract, tp_component_embed)
+        → Bedrock through the ecosystem Model Gateway (stages tp_compose, tp_search_embed)
 ```
 
 | Path | What |

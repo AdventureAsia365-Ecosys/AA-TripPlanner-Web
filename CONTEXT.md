@@ -605,8 +605,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - **Every model call goes through the ecosystem AI gateway** (AA-685, root ADR 0009; as built: root
   `docs/architecture/ai-gateway.md`), in `backend/shared/llm_gateway.py`. The model, fallback order and price of each
   stage come from AA-CIS-App's control plane, read through the CIS 323 contract view (below). Every call attempt writes
-  one ledger v2 row in `shared.llm_call_log` (failed attempts too; a model with no catalog price logs `cost_usd`
-  NULL) with `app = 'tripplanner'`, so it shows on the CIS Cost Operations page, tab "AI & data spend". If the
+  one ledger v2 row in `shared.llm_call_log` (failed attempts too; since AA-1027 E3 the cost and `pricing_mode` come
+  from the shared core `aa_llm.pricing.quote`: catalog prices, the deployment's price overrides on top, a model with
+  no catalog price charged the core's flagged `estimate` rates, never NULL or 0) with `app = 'tripplanner'`, so it shows on the CIS Cost Operations page, tab "AI & data spend". If the
   route cannot be read, AI pauses (`AiPaused("route_unreadable")`, fail closed since AA-642 S0) and the caller
   degrades; the built-in routes are never called. `backend/tests/test_no_gateway_bypass.py` (AA-642 L6) fails CI on
   any Bedrock / vendor SDK call, vendor SDK import or vendor endpoint string outside `llm_gateway.py` /
@@ -644,8 +645,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
     and satellite embed clients make one attempt each (no boto retry); the satellite AssumeRole uses
     STS timeouts of 3 s connect / 5 s read, at most 2 attempts. Each search prints one `{"evt":"search_embed","outcome":hit|miss|fallback,...}` line
     with the container's cache counters (never the query text);
-  - `tp_extract` / `tp_component_embed`: the former offline extraction pipeline; no caller since
-    AA-712 slice 6a (the frozen tables it filled are dropped by tp-018; the built-in routes can go next).
+  - `tp_extract` / `tp_component_embed` are gone (the former offline extraction pipeline, no caller since AA-712
+    slice 6a; CIS migration 336 switches their routes off and the gateway's route table no longer names them,
+    AA-1024 D8).
 
   An admin can change a stage's model in the CIS admin, AI providers › Routing, without
   a TripPlanner deploy; the Lambdas pick the change up within 60 s. Shadow config on a tp_* stage
@@ -654,8 +656,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   only — stages `tp_compose` + `tp_search_embed` (`llm_gateway.ONLINE_STAGES`,
   `TP_DAILY_SPEND_CAP_USD`, 5 USD on Dev, set by AA-CIS-Infra; today's spend is read through
   `catalog.v_llm_app_spend_today_v1` (CIS 323), with `tripplanner.llm_spend_daily` as the fallback while the view
-  cannot be read; the role cannot read `shared.llm_call_log` itself; an unreadable spend fails closed). Offline stages (`tp_extract`, `tp_component_embed`) are
-  logged but neither counted nor capped here, so a backfill never takes search/narration down.
+  cannot be read; the role cannot read `shared.llm_call_log` itself; an unreadable spend fails closed). Any other
+  stage would be logged but neither counted nor capped here, so a backfill never takes search/narration down.
   Over the cap narration falls back to AA text + neutral day lines (`ai_budget_exhausted`) and search
   answers the keyword ranking (200, `ai_budget_exhausted`; it was a 503 before AA-642 S0).
 - **Per-visitor AI limits (AA-1015, migration tp-023)**: `backend/shared/ratelimit.py` counts each request that would
@@ -723,12 +725,28 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   place name, accent-insensitive, generic suffixes such as "Temple" dropped); else the nearest other
   day of the same tour that names it and that no other entry of the itinerary owns or already took;
   else the own day text as it is; only a day with no AA text goes to the LLM.
-- Cross-account Claude access follows the ecosystem Bedrock routing: **acc3 only** (the same
-  account the CIS side uses; see `docs/ecosystem-architecture.md`). AA-998 retired the former acc1
-  fallback and accepted the loss of a cross-account fallback: `llm_gateway.SUPPORTED_ACCOUNTS` is
-  `acc3`, `acc2`, so a catalog profile or `account_route` naming any other account is never called;
-  when acc3 fails the route's next model is tried, then the call fails (narration falls back to AA
-  text, search to keyword ranking).
+- **Dispatch by deployment + circuit breakers (AA-1027 E3, root plan S263):** each model of a route is called on its
+  deployments (`shared.llm_model_deployment` via the view's `deployments`: connection, wire id, priority, price
+  overrides), in priority order, like CIS `vendor_route.deployment_plan`. `llm_gateway.deployment_plan` leaves out a
+  disabled deployment or connection, a connection whose `served_roles` exclude the stage's role (acc2 never serves a
+  writer), a data scope the stage's `allowed_scopes` exclude, a connection TripPlanner cannot call (Bedrock only, T-11:
+  the Lambda role for a `task_role` connection in its region, the satellite role from the Lambda env for an
+  `assume_role` connection whose account comes from `BEDROCK_ACCT_PRIMARY`), and anything behind an open circuit
+  (`backend/shared/llm_breaker.py`): the CIS breaker state (`shared.llm_provider_health`) that CIS migration 341
+  appends to the view as `deployment_routing` — a tripped **connection** circuit (account-wide refusal, e.g. Bedrock
+  "Error 002" on acc3) skips every deployment of the connection, open or half-open (TripPlanner takes no probe lease:
+  a CIS call that answers clears it), a deployment circuit skips while open or while another caller holds its probe —
+  plus the Lambda container's own breaker over its own attempts (CIS rules: an account refusal opens at once,
+  throttling after 3, anything else after 5; a content refusal is not counted). A model with nothing left to call
+  gets one 0 USD `refused` ledger row with no connection (never a provider attempt), and a request where nothing was
+  attempted degrades at once with reason `circuit_open` (narration `basic` + `ai_paused`, search keyword ranking).
+  Before CIS 341 is applied (SQLSTATE 42703 on the appended columns, retried after 5 minutes), on the pre-323 table
+  read or for a model without deployment rows, the deployments are the catalog's `bedrock_profile_ids` on the two
+  connections TripPlanner always called (acc3 by the satellite role, acc2 by the Lambda role, `account_route` first);
+  a profile naming any other account (the retired acc1, AA-998) is never called. Cross-account Claude access is
+  **acc3 only** (the same account the CIS side uses; see `docs/ecosystem-architecture.md`); when acc3 fails or is
+  skipped the route's next model is tried, then the call degrades (narration falls back to AA text, search to
+  keyword ranking). The route view also carries `route_deadline_s` since CIS 341 (the E1 deadline reads it).
   Cohere embeddings run on acc2 first; the route's satellite row (`cohere-embed-v4-acc3`, CIS
   migration 240) takes over on an acc2 throttle (acc2 has 20 rpm, acc3 2,000 rpm). Each
   container caches one no-retry satellite embed client per account (one AssumeRole until 5 minutes

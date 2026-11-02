@@ -1386,6 +1386,47 @@ async def test_narrate_degrades_on_a_truncated_reply_then_the_route_deadline(mon
 
 
 @pytest.mark.asyncio
+async def test_narrate_skips_a_connection_behind_an_open_circuit_and_degrades_at_once(monkeypatch, capsys):
+    """AA-1027 E3: the LLM account refuses every call and CIS tripped its connection circuit (the view's
+    deployment_routing). Narration makes no provider attempt there: 200 basic + ai_paused, reason circuit_open, and
+    the one ledger row is the 0 USD 'refused' row of the model, with no connection."""
+    from backend.shared import llm_gateway
+
+    conn = AiConn()
+    await events.append_event(conn, T1, S1, "add_component", {"component_id": "c1"})
+    blocked = llm_gateway.Deployment("acc3", "zz.wire", 10, kind="bedrock", auth_mode="assume_role",
+                                     account_id_env="BEDROCK_ACCT_PRIMARY", data_scope="aws_only",
+                                     connection_circuit_class="access_denied")
+    zz = llm_gateway.Model("zz-writer", "anthropic", "anthropic_native", {"acc3": "zz.p"}, 3.0, 15.0,
+                           deployments=(blocked,))
+    route = llm_gateway.Route("tp_compose", "writer", (zz,), "acc3")
+    sent: list = []
+    recorded: list = []
+
+    async def fake_load_route(db, stage):
+        return route
+
+    def never_called(*args, **kwargs):
+        sent.append(args)
+        raise AssertionError("no provider call behind an open circuit")
+
+    async def fake_record(db, call, quality_signal, **kw):
+        recorded.append((call.model, call.account, call.status, call.error_class, call.cost_usd))
+
+    monkeypatch.setattr(handler.llm_gateway, "load_route", fake_load_route)
+    monkeypatch.setattr(llm_gateway, "_text_call", never_called)
+    monkeypatch.setattr(handler.llm_gateway, "record", fake_record)
+    resp = await call("POST", f"/trip/{T1}/narrate", {"session_id": S1}, conn=conn)
+    assert resp["statusCode"] == 200
+    body = json.loads(resp["body"])
+    assert body["source"] == "basic" and body["ai_paused"] is True
+    assert sent == []
+    assert recorded == [("zz-writer", None, "refused", "access_denied", 0.0)]
+    degraded = [json.loads(x) for x in capsys.readouterr().out.splitlines() if '"narration_degraded"' in x]
+    assert degraded and degraded[-1]["reason"] == "circuit_open"
+
+
+@pytest.mark.asyncio
 async def test_narrate_pauses_ai_when_the_spend_counter_is_unreadable(monkeypatch):
     """AA-642 S0 (root ADR 0009 decision 6): spend unreadable = no model call, 200 basic + ai_paused."""
     class UnreadableSpend(AiConn):

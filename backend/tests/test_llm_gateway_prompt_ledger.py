@@ -64,7 +64,7 @@ def test_every_attempt_carries_the_prompt_and_request_ids():
 
 
 def test_a_stage_outside_the_manifest_has_a_hash_but_no_version():
-    route = gw.Route("tp_extract", "writer", (WRITER_A,), "acc3")
+    route = gw.Route("tp_zz_unlisted", "writer", (WRITER_A,), "acc3")
     _, call = gw.generate_text(route, SYS, "user", 50,
                                client_factory=make_factory({"acc3": RequestIdStub(response=_native())}, []))
     assert (call.prompt_hash, call.prompt_version) == (SYS_HASH, None)
