@@ -117,7 +117,8 @@ PAUSED_REASONS = (llm_gateway.REASON_SPEND_UNREADABLE, "route_unreadable", embed
 async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Optional[str]]:
     """(vector, None) from the cache or one Bedrock call, or (None, reason) when search must fall
     back to keyword ranking: over the daily spend cap (AA-805, reason "budget_cap"), spend counter
-    or route config unreadable (AA-642 S0, PAUSED_REASONS), throttle or embed error (AA-856).
+    or route config unreadable (AA-642 S0, PAUSED_REASONS), throttle or embed error (AA-856), every deployment
+    behind an open circuit (AA-1027 E3, reason "circuit_open").
     AA-1026 D5: the query is embedded only in the space geo.tour_place.embedding is in (CIS 329); a route that
     cannot embed in that space gives reason "embedding_space_mismatch", an unreadable space "space_unreadable"."""
     global _throttled_until
@@ -150,6 +151,10 @@ async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Opt
         vectors, call = llm_gateway.embed_texts(route, [text], input_type=QUERY_INPUT_TYPE,
                                                 failures=failures)
     except llm_gateway.BedrockError as e:
+        if isinstance(e, llm_gateway.CircuitOpen):
+            # AA-1027 E3: no embed was attempted, every deployment is behind an open circuit (e.g. acc2 throttled,
+            # acc3 refusing): keyword ranking at once, no cooldown needed (the breaker holds the circuits).
+            return None, e.reason
         throttled = llm_gateway.is_throttle(str(e))
         if throttled:
             _throttled_until = time.monotonic() + THROTTLE_COOLDOWN_SECONDS

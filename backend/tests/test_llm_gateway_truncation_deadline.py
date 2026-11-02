@@ -195,7 +195,7 @@ def test_the_production_client_is_bounded_by_the_time_left(monkeypatch):
     fake_boto3 = types.SimpleNamespace(client=lambda service, **kw: seen.setdefault("client", (service, kw)))
     monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
     monkeypatch.setitem(sys.modules, "botocore.config", types.SimpleNamespace(Config=FakeConfig))
-    gw._runtime("acc2", bs.default_client_factory, 7.5)
+    gw._runtime(gw._legacy_deployment(connection_key="acc2", wire_id="w"), bs.default_client_factory, 7.5)
     assert seen["client"][0] == "bedrock-runtime"
     assert seen["config"] == {"connect_timeout": 5.0, "read_timeout": 7.5,
                               "retries": {"total_max_attempts": 1, "mode": "standard"}}
@@ -221,7 +221,7 @@ def test_the_satellite_sts_call_is_bounded_too(monkeypatch):
         return object()
 
     monkeypatch.setattr(bs, "default_client_factory", fake_default)
-    gw._runtime("acc3", fake_default, 4.0)
+    gw._runtime(gw._legacy_deployment(connection_key="acc3", wire_id="w"), fake_default, 4.0)
     assert built == [("sts", 4.0), ("bedrock-runtime", 4.0)]
 
 

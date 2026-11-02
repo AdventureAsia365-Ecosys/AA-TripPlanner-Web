@@ -25,8 +25,10 @@ def _fresh_search_embed_state():
     search_mod._throttled_until = 0.0
     llm_gateway._spend_unreadable_until = 0.0  # AA-642 S0: the per-container "spend unreadable" hold
     llm_gateway._alerted.clear()                # AA-1015: the once-per-day spend alert lines
+    llm_gateway.llm_breaker.local.clear()       # AA-1027 E3: the container's circuits
     yield
     llm_gateway.query_embed_cache.clear()
     search_mod._throttled_until = 0.0
     llm_gateway._spend_unreadable_until = 0.0
     llm_gateway._alerted.clear()
+    llm_gateway.llm_breaker.local.clear()

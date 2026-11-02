@@ -231,6 +231,23 @@ async def test_other_bedrock_error_falls_back_without_cooldown(gateway, capsys):
     assert search_mod._throttled_until == 0.0
 
 
+async def test_every_deployment_behind_an_open_circuit_ranks_by_keyword_at_once(gateway, monkeypatch, capsys):
+    """AA-1027 E3: no embed attempt (acc2 throttled in this container, acc3 refusing): reason circuit_open, the
+    refused row still logged, and no throttle cooldown (the breaker holds the circuits) even though the class that
+    opened one is 'throttled'."""
+    def circuit(route, texts, *, input_type, failures=None):
+        failures.append(llm_gateway._not_called(route, route.models[0], 0, [("acc2", "throttled")]))
+        raise llm_gateway.CircuitOpen("No model called for stage 'tp_search_embed': circuit open (throttled)",
+                                      "throttled")
+
+    monkeypatch.setattr(search_mod.llm_gateway, "embed_texts", circuit)
+    out = await search_mod.search("beach", BrowseFilters(), pool=Pool())
+    assert out["ranking"] == "keyword"
+    assert _evts(capsys)[-1]["reason"] == "circuit_open"
+    assert search_mod._throttled_until == 0.0
+    assert gateway["recorded"] == [("tp_search_embed", True)]
+
+
 async def test_keyword_fallback_reads_the_catalog_views_only(gateway):
     gateway["fail"] = "ThrottlingException"
     row = HOI_AN | {"located_by": "geoapify", "precision": "point", "best_score": 2}

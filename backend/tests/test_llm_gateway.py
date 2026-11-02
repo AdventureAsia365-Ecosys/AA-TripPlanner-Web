@@ -141,22 +141,24 @@ def test_account_route_acc1_from_the_db_is_ignored():
     _, call = gw.generate_text(route, "s", "u", 50,
                                client_factory=make_factory({"acc3": acc3, "acc1": acc1}, []))
     assert call.account == "acc3" and acc1.calls == []
-    assert gw._accounts(SONNET_STALE, "acc1") == ["acc3"]
+    assert [d.connection_key for d in gw.deployment_plan(route, SONNET_STALE).items] == ["acc3"]
 
 
 def test_a_model_with_only_an_acc1_profile_is_reported_not_called():
     acc1_only = gw.Model("old", "anthropic", "anthropic_native", {"acc1": "global.old"}, 3.0, 15.0)
     acc1 = StubBedrock(response=_claude_reply())
-    with pytest.raises(bs.BedrockError, match="old: no profile on a supported account"):
+    with pytest.raises(bs.BedrockError, match="old@acc1: connection not described"):
         gw.generate_text(gw.Route("tp_compose", "writer", (acc1_only,), "acc3"), "s", "u", 50,
                          client_factory=make_factory({"acc1": acc1}, []))
     assert acc1.calls == []
 
 
 def test_acc1_is_not_a_known_satellite_and_has_no_config():
-    with pytest.raises(bs.BedrockError, match="Unknown account 'acc1'"):
-        gw._satellite_target("acc1")
-    assert gw.SUPPORTED_ACCOUNTS == ("acc3", "acc2")
+    with pytest.raises(bs.BedrockError, match="acc1: no TripPlanner credentials"):
+        gw._satellite_target(gw._legacy_deployment(connection_key="acc1", wire_id="g"))
+    # AA-1027 E3: no account list any more; only the two legacy connection facts (acc3, acc2) remain.
+    assert not hasattr(gw, "SUPPORTED_ACCOUNTS")
+    assert set(gw._LEGACY_CONNECTIONS) == {"acc3", "acc2"}
     for name in ("BEDROCK_ACCT_FALLBACK", "BEDROCK_ROLE_NAME_FALLBACK",
                  "BEDROCK_EXTERNAL_ID_FALLBACK"):
         assert not hasattr(config, name), name
@@ -220,7 +222,7 @@ def test_unset_satellite_account_fails_without_an_sts_call(monkeypatch):
         gw.generate_text(ROUTE, "s", "u", 50, client_factory=factory)
     assert arns == []
     with pytest.raises(bs.BedrockError, match="BEDROCK_ACCT_PRIMARY is unset"):
-        gw._satellite_target("acc3")
+        gw._satellite_target(gw.as_deployment(SONNET, "acc3"))
 
 # --- embed_texts ----------------------------------------------------------------
 
@@ -378,15 +380,17 @@ def test_embed_failed_attempt_is_reported():
     assert len(failures) == 1 and failures[0].stage == "tp_search_embed"
 
 
-def test_missing_catalog_price_is_null_not_zero():
+def test_missing_catalog_price_is_the_cores_flagged_estimate_never_zero():
+    """AA-1027 E3: the shared core prices the call; a model with no catalog price is charged the estimate rates
+    (Sonnet 4.x list, high on purpose) and flagged 'estimate', never NULL or 0."""
     unpriced = gw.Model("new", "anthropic", "anthropic_native", {"acc3": "g.new"}, None, None)
     acc3 = StubBedrock(response=_claude_reply(tin=100, tout=20))
     _, call = gw.generate_text(gw.Route("tp_compose", "writer", (unpriced,), "acc3"), "s", "u", 50,
                                client_factory=make_factory({"acc3": acc3}, []))
-    assert call.cost_usd is None
-    # an embedding needs no output price
-    emb = gw.Model("e", "cohere", "embed", {"acc2": "e"}, 0.12, None)
-    assert gw._cost(emb, 1000, 0) == pytest.approx(0.00012)
+    assert call.cost_usd == pytest.approx(0.0006) and call.pricing_mode == "estimate"
+    # an embedding's zero output price is a price (catalog), not a missing one
+    emb = gw.Model("e", "cohere", "embed", {"acc2": "e"}, 0.12, 0.0)
+    assert gw._quote(emb, gw.as_deployment(emb, "acc2"), 1000, 0) == (pytest.approx(0.00012), "catalog")
 
 
 async def test_load_route_keeps_a_null_price_and_notes_a_shadow(capsys):
@@ -468,10 +472,10 @@ async def test_a_failed_spend_write_pauses_ai_for_the_hold_window(monkeypatch):
 async def test_a_failed_ledger_write_is_logged_as_an_error(capsys):
     """AA-642 S0: an unlogged paid call is an ERROR line, never a quiet note."""
     db = FakeDb(fail_execute=True)
-    await gw.record(db, gw.Call("tp_extract", "writer", "sonnet", "acc3", 1, 1, 0.01, False), {})
+    await gw.record(db, gw.Call("tp_zz_offline", "writer", "sonnet", "acc3", 1, 1, 0.01, False), {})
     lines = [json.loads(x) for x in capsys.readouterr().out.strip().splitlines()]
     assert [x["what"] for x in lines if x["evt"] == "llm_gateway_error"] == ["call_log_write_failed"]
-    assert gw.spend_unreadable_flag_active() is False         # offline stage: no counter write
+    assert gw.spend_unreadable_flag_active() is False         # not an online stage: no counter write
 
 
 class SpendLedgerDb:
@@ -495,13 +499,13 @@ class SpendLedgerDb:
 
 
 async def test_offline_stages_never_exhaust_the_customer_budget(monkeypatch):
-    """AA-805 review: an extraction/embedding backfill over the cap must not 503 search or drop
-    narration to 'basic' — only ONLINE_STAGES count."""
+    """AA-805 review: a stage outside ONLINE_STAGES (the retired backfill stages, any future offline one) over the
+    cap must not 503 search or drop narration to 'basic' — only ONLINE_STAGES count."""
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
     db = SpendLedgerDb()
-    await gw.record(db, gw.Call("tp_extract", "writer", "sonnet", "acc3", 1, 1, 40.0, False), {})
-    await gw.record(db, gw.Call("tp_component_embed", "embed", "cohere", None, 1, 0, 9.0, False), {})
-    assert db.logged == ["tp_extract", "tp_component_embed"]   # still in llm_call_log
+    await gw.record(db, gw.Call("tp_zz_offline", "writer", "sonnet", "acc3", 1, 1, 40.0, False), {})
+    await gw.record(db, gw.Call("tp_zz_backfill_embed", "embed", "cohere", None, 1, 0, 9.0, False), {})
+    assert db.logged == ["tp_zz_offline", "tp_zz_backfill_embed"]   # still in llm_call_log
     assert db.by_stage == {}                                    # but not in the spend counter
     status = await gw.budget_status(db)
     assert status["exhausted"] is False and status["spent_usd"] == 0.0
@@ -722,7 +726,7 @@ def test_cache_tokens_reach_the_call():
 async def test_record_writes_the_ledger_v2_columns():
     db = FakeDb()
     call = gw.Call("tp_search_embed", "embed", "cohere-embed-v4", "acc2", 12, 0, 0.0000014, False,
-                   latency_ms=38, attempt_no=1, cache_read_tokens=0, wire_id="us.zz-embed")
+                   latency_ms=38, attempt_no=1, cache_read_tokens=0, wire_id="us.zz-embed", pricing_mode="catalog")
     await gw.record(db, call, {"cache": "miss"})
     row = _row(db.executed[0][1])
     assert (row["app"], row["status"], row["error_class"]) == ("tripplanner", "ok", None)
