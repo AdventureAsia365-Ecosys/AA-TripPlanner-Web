@@ -380,7 +380,7 @@ async def test_before_341_the_323_columns_run_on_the_legacy_connection_facts(mon
     monkeypatch.setattr(gw.time, "monotonic", lambda: now[0])
     db = ViewDb([_view_row(0, "zz-writer", deployments=DEPLOYMENTS)], routing_columns=False)
     r = await gw.load_route(db, "tp_compose")
-    # the 349 set, then the 341 set (both 42703), then the 323 contract columns (AA-1027 E4 column sets)
+    # the 350 set, then the 341 set (both 42703), then the 323 contract columns (AA-1027 E4 column sets)
     assert db.sql == [gw.GATEWAY_PARAMS_SQL, gw.GATEWAY_ROUTING_SQL, contract.GATEWAY_CONFIG_SQL]
     assert "CIS migration 341" in capsys.readouterr().out
     acc3, acc2, vendor = r.models[0].deployments

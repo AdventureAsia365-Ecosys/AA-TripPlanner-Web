@@ -6,7 +6,7 @@ AA-CIS-App owns the gateway tables in the shared RDS:
   shared.llm_call_log      one row per model call (cost reporting, External Spend page)
 
 This module reads the route of a stage through the CIS contract view `catalog.v_llm_gateway_config_v1` (never the
-two config tables: AA-1027 E5, CIS 350 revokes the grandfathered SELECT of CIS 173), calls Bedrock itself (no
+two config tables: AA-1027 E5, CIS 351 revokes the grandfathered SELECT of CIS 173), calls Bedrock itself (no
 dependency on the CIS API, which is often scaled to zero), and writes the log row (INSERT on the log, CIS 173).
 
 Deployments (AA-1027 E3, root plan S263; gaps PC-2, TP-2, TP-3): each model of the route is called on its
@@ -80,7 +80,7 @@ prompt manifest `backend/shared/prompt_versions.json` when the deployed source s
 `prompt_registry`; a CI gate fails when a prompt changes without a version bump).
 
 AA-1027 E4 (TP-5, root ADR 0009 §4): the stage x model request parameters (`shared.stage_model_params`, read as
-the `stage_params` column CIS 349 appends to the config view, with the catalog's `supports_temperature`) are applied
+the `stage_params` column CIS 350 appends to the config view, with the catalog's `supports_temperature`) are applied
 to each text attempt's request body by `request_params`, with CIS's precedence (shared/llm_client/stage_params.py):
 the call site's explicit value, then the stage x model row, then the protocol default (nothing sent). TripPlanner's
 call sites always pass max_tokens and never a temperature or effort, so the row's `max_tokens` / `min_output_tokens`
@@ -175,7 +175,7 @@ class Model:
     # AA-1027 E3: the deployments from the config view, by priority; empty = derive them from `profiles`.
     deployments: tuple = ()
     # AA-1027 E4: the catalog's supports_temperature (None = not stated: no temperature is ever sent) and the route
-    # stage's `shared.stage_model_params` row for this model (CIS 349 `stage_params`; None = no row).
+    # stage's `shared.stage_model_params` row for this model (CIS 350 `stage_params`; None = no row).
     supports_temperature: Optional[bool] = None
     params: Optional["StageParams"] = None
 
@@ -183,7 +183,7 @@ class Model:
 @dataclass(frozen=True)
 class StageParams:
     """AA-1027 E4 (TP-5, root ADR 0009 §4): one `shared.stage_model_params` row (stage x model) as the config view
-    carries it (CIS 349). Every field None = not set. See `request_params` for what is sent and the precedence."""
+    carries it (CIS 350). Every field None = not set. See `request_params` for what is sent and the precedence."""
     max_tokens: Optional[int] = None
     min_output_tokens: Optional[int] = None
     temperature: Optional[float] = None
@@ -304,7 +304,7 @@ def _num(v: Any) -> Optional[float]:
 
 
 # AA-1027 E5 (TP-1): the route and today's spend are read from the CIS contract views only. The pre-323 table
-# fallback is gone (CIS 350 revokes the grandfathered SELECT on shared.llm_role_config / shared.llm_model_catalog):
+# fallback is gone (CIS 351 revokes the grandfathered SELECT on shared.llm_role_config / shared.llm_model_catalog):
 # a view that is missing, not granted or failing raises, and AI pauses (fail closed, AA-642 S0). The only fallback
 # left is between column sets of the one view: an appended column that is not there yet (SQLSTATE 42703) moves the
 # read to the next narrower column set for VIEW_RETRY_SECONDS.
@@ -375,7 +375,7 @@ def _int_or_none(raw: Any) -> Optional[int]:
 
 
 def _stage_params(raw: Any) -> Optional[StageParams]:
-    """AA-1027 E4: the view's `stage_params` object (CIS 349; NULL = no row) as StageParams. A value outside the
+    """AA-1027 E4: the view's `stage_params` object (CIS 350; NULL = no row) as StageParams. A value outside the
     table's CHECKs (never expected) is dropped, never sent."""
     if isinstance(raw, str):
         try:
@@ -428,13 +428,13 @@ def _legacy_deployment(**base: Any) -> Deployment:
 
 
 # The column sets of the config view, widest first: the 323 contract columns, + CIS 341 (route deadline, deployment
-# routing facts and circuits, AA-1027 E3), + CIS 349 (the model's supports_temperature and the stage x model params,
+# routing facts and circuits, AA-1027 E3), + CIS 350 (the model's supports_temperature and the stage x model params,
 # AA-1027 E4). A set whose appended columns are missing (SQLSTATE 42703: the migration is not applied yet) is skipped
 # for VIEW_RETRY_SECONDS and the next narrower one is read. Any other error raises (fail closed).
 ROUTING_COLUMNS = ("route_deadline_s", "deployment_routing")     # CIS 341
-PARAMS_COLUMNS = ("supports_temperature", "stage_params")         # CIS 349
+PARAMS_COLUMNS = ("supports_temperature", "stage_params")         # CIS 350
 _COLUMN_SETS = (
-    ("349", contract.GATEWAY_CONFIG_COLUMNS + ROUTING_COLUMNS + PARAMS_COLUMNS, "the stage x model params"),
+    ("350", contract.GATEWAY_CONFIG_COLUMNS + ROUTING_COLUMNS + PARAMS_COLUMNS, "the stage x model params"),
     ("341", contract.GATEWAY_CONFIG_COLUMNS + ROUTING_COLUMNS, "the legacy connection facts"),
 )
 

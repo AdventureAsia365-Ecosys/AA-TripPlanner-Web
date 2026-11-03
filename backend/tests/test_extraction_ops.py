@@ -50,7 +50,7 @@ def test_no_backend_module_writes_place_data():
 _QUALIFIED = re.compile(r"\b(shared|gold_aa_internal|silver_aa_internal|acp_\w+|geo|tripplanner|catalog|booking|public)"
                         r"\.(\w+)\b", re.IGNORECASE)
 # AA-1027 E5 (TP-1): the gateway reads its route and spend through the catalog contract views only, so the
-# grandfathered shared.llm_role_config / shared.llm_model_catalog reads (CIS 173, revoked by CIS 350) and the tp-010
+# grandfathered shared.llm_role_config / shared.llm_model_catalog reads (CIS 173, revoked by CIS 351) and the tp-010
 # counter tripplanner.llm_spend_daily (dropped by tp-025) are no longer allowed; the ledger INSERT stays.
 _ALLOWED_TRIPPLANNER = {"sessions", "customers", "trip_events", "trip_drafts", "outbox", "narration_cache",
                         "component_id_map", "traveller_accounts",   # tp-019, AA-908

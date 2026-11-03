@@ -148,7 +148,7 @@ LLM_ROUTE_DEADLINE_MIN_ATTEMPT_S = 1.0
 
 # --- Stage x model request parameters (AA-1027 E4) ---
 # Kill switch for llm_gateway.request_params (the shared.stage_model_params row of a stage and model, read through
-# the CIS config view, CIS 349): "off" sends none of them (the request bodies of before E4). Same name as the CIS
+# the CIS config view, CIS 350): "off" sends none of them (the request bodies of before E4). Same name as the CIS
 # gateway's switch. Unset = on; with no params row (Dev today) nothing changes either way.
 LLM_STAGE_PARAMS = (_get("LLM_STAGE_PARAMS", "on") or "on").strip().lower() not in ("off", "0", "false", "no")
 

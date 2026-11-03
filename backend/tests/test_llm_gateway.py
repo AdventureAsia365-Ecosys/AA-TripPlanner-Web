@@ -617,7 +617,7 @@ async def test_a_view_error_other_than_missing_pauses_ai_without_the_tables():
 
 @pytest.mark.parametrize("sqlstate", ["42P01", "42501"])
 async def test_a_missing_or_ungranted_view_pauses_ai_without_the_tables(capsys, sqlstate):
-    """AA-1027 E5 (TP-1): no fallback to shared.llm_role_config / shared.llm_model_catalog any more (CIS 350 revokes
+    """AA-1027 E5 (TP-1): no fallback to shared.llm_role_config / shared.llm_model_catalog any more (CIS 351 revokes
     them): a missing or ungranted view fails closed, and the next request reads the view again."""
     db = FakeDb(view_error=PgError(sqlstate),
                 role_rows=[{"role": "writer", "model_id": "sonnet", "fallback_model_ids": [], "account_route": "acc3"}])

@@ -1,5 +1,5 @@
 """AA-1027 E4 (root plan S263, gap TP-5; root ADR 0009 §4): the gateway applies the stage x model parameters
-(`shared.stage_model_params`, read as the `stage_params` column CIS 349 appends to the config view, with the catalog's
+(`shared.stage_model_params`, read as the `stage_params` column CIS 350 appends to the config view, with the catalog's
 `supports_temperature`) to each text attempt's request body, with CIS's precedence. A stub bedrock-runtime client
 logs every body it is sent. Fully stubbed: no AWS, no DB. Invented model keys, wire ids and text only."""
 from __future__ import annotations
@@ -154,15 +154,15 @@ def test_each_model_of_the_route_uses_its_own_row():
     assert stub.calls[0][2]["temperature"] == 0.9 and "temperature" not in stub.calls[1][2]
 
 
-# --- the config read (CIS 349 columns) ----------------------------------------------------------------------------
+# --- the config read (CIS 350 columns) ----------------------------------------------------------------------------
 
-def _row349(**over):
+def _row350(**over):
     return {**_view_row(0, "zz-writer", api_style="anthropic_native"), "route_deadline_s": None,
             "deployment_routing": [], **over}
 
 
-async def test_the_349_columns_give_the_params_and_supports_temperature():
-    db = FakeDb(view_rows=[_row349(supports_temperature=True, stage_params=json.dumps(
+async def test_the_350_columns_give_the_params_and_supports_temperature():
+    db = FakeDb(view_rows=[_row350(supports_temperature=True, stage_params=json.dumps(
         {"max_tokens": None, "min_output_tokens": None, "temperature": 0.25, "effort": "high",
          "reasoning_mode": None}))])
     route = await gw.load_route(db, "tp_compose")
@@ -172,32 +172,32 @@ async def test_the_349_columns_give_the_params_and_supports_temperature():
 
 
 async def test_a_null_stage_params_is_no_row():
-    db = FakeDb(view_rows=[_row349(supports_temperature=False, stage_params=None)])
+    db = FakeDb(view_rows=[_row350(supports_temperature=False, stage_params=None)])
     (m,) = (await gw.load_route(db, "tp_compose")).models
     assert (m.supports_temperature, m.params) == (False, None)
     assert gw.request_params("tp_compose", m) == {}
 
 
 async def test_values_outside_the_table_checks_are_dropped():
-    db = FakeDb(view_rows=[_row349(supports_temperature=True, stage_params={
+    db = FakeDb(view_rows=[_row350(supports_temperature=True, stage_params={
         "temperature": 7, "effort": "turbo", "reasoning_mode": "always", "max_tokens": 0, "min_output_tokens": True})])
     (m,) = (await gw.load_route(db, "tp_compose")).models
     assert m.params is None
 
 
-async def test_before_349_the_341_columns_are_read_and_no_params_apply(capsys):
-    class Before349(FakeDb):
+async def test_before_350_the_341_columns_are_read_and_no_params_apply(capsys):
+    class Before350(FakeDb):
         async def fetch(self, sql, *args):
             self.sql.append(sql)
             if "stage_params" in sql:
                 raise PgError("42703", 'column "stage_params" does not exist')
             return self.view_rows
 
-    db = Before349(view_rows=[_row349()])
+    db = Before350(view_rows=[_row350()])
     (m,) = (await gw.load_route(db, "tp_compose")).models
     assert db.sql == [gw.GATEWAY_PARAMS_SQL, gw.GATEWAY_ROUTING_SQL]
     assert (m.supports_temperature, m.params) == (None, None)
-    assert "CIS migration 349" in capsys.readouterr().out
+    assert "CIS migration 350" in capsys.readouterr().out
     gw._cache.clear()
     await gw.load_route(db, "tp_compose")                                # within VIEW_RETRY_SECONDS
     assert db.sql[2:] == [gw.GATEWAY_ROUTING_SQL]
