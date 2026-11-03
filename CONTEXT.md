@@ -63,7 +63,7 @@ Two HTTP Python 3.12 Lambda functions
 Postgres (the shared RDS in acc2)
   ├─ tripplanner.*        (owned here — customers, sessions, trip_events, trip_drafts, outbox,
   │                        narration_cache, component_id_map, job, ai_rate_counter; llm_spend_daily dropped by tp-024)
-  ├─ catalog.v_llm_*      (CIS AI gateway contract views, CIS 323: route config + today's spend)
+  ├─ catalog.v_llm_*      (CIS AI gateway contract views, CIS 323: route config + today's spend; CIS 347: app profile)
   ├─ shared.llm_call_log  (INSERT only: one ledger v2 row per attempt, app = 'tripplanner')
   └─ read-only: catalog.* views (CIS-owned: tours, places, tour graph, embeddings)
       │
