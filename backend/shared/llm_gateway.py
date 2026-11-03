@@ -5,9 +5,9 @@ AA-CIS-App owns the gateway tables in the shared RDS:
   shared.llm_model_catalog model -> Bedrock profile per account, API style, price
   shared.llm_call_log      one row per model call (cost reporting, External Spend page)
 
-This module reads the first two for a stage, calls Bedrock itself (no dependency on the CIS API,
-which is often scaled to zero), and writes the log row. The `tripplanner` DB role has SELECT on
-the two config tables and INSERT on the log (CIS migration 173).
+This module reads the route of a stage through the CIS contract view `catalog.v_llm_gateway_config_v1` (never the
+two config tables: AA-1027 E5, CIS 350 revokes the grandfathered SELECT of CIS 173), calls Bedrock itself (no
+dependency on the CIS API, which is often scaled to zero), and writes the log row (INSERT on the log, CIS 173).
 
 Deployments (AA-1027 E3, root plan S263; gaps PC-2, TP-2, TP-3): each model of the route is called on its
 deployments (`shared.llm_model_deployment`: connection, wire id, priority, price overrides) in priority order, as
@@ -48,18 +48,18 @@ AA-805 (fork defects vs. the CIS client):
   - Shadow config (`shadow_model_id` / `shadow_sample_pct`) is read but NOT run here: a shadow
     would double the spend of a consumer app and needs INSERT on shared.llm_shadow_log, which the
     `tripplanner` role does not have. `load_route` prints a warning when one is configured.
-  - Daily spend hard stop: `record()` adds each customer-facing call (ONLINE_STAGES: tp_compose,
-    tp_search_embed) to tripplanner.llm_spend_daily (migration tp-010); `budget_status()` compares
-    today's total of those stages with TP_DAILY_SPEND_CAP_USD. The offline stages (tp_extract,
-    tp_component_embed) are gone: no caller since AA-712, their routes retired by CIS migration 336 (AA-1024 D8).
+  - Daily spend hard stop: `budget_status()` compares today's ledger spend of the customer-facing stages
+    (ONLINE_STAGES: tp_compose, tp_search_embed), read through `catalog.v_llm_app_spend_today_v1`, with
+    TP_DAILY_SPEND_CAP_USD. (The tp-010 counter tripplanner.llm_spend_daily is no longer written since AA-1027 E5;
+    tp-025 drops it.) The offline stages (tp_extract, tp_component_embed) are gone: no caller since AA-712, their
+    routes retired by CIS migration 336 (AA-1024 D8).
 
 AA-642 S8 (root ADR 0009 decision 13): the shared core `backend/aa_llm` (a byte copy of AA-CIS-App
 `shared/aa_llm`, pinned by `backend/aa_llm.lock.json`; never edit it here) gives the ledger row, the error
 classes and the spend decision. The route is read from the CIS contract view `catalog.v_llm_gateway_config_v1`
-and today's spend from `catalog.v_llm_app_spend_today_v1` (CIS migration 323). Until that migration is applied
-(the view is missing or not granted: SQLSTATE 42P01 / 42501), each read falls back to the old source
-(`shared.llm_role_config` + `shared.llm_model_catalog`, `tripplanner.llm_spend_daily`) and does not try the
-view again for VIEW_RETRY_SECONDS. `record()` writes the ledger v2 row (`aa_llm.ledger.LedgerRow`: app,
+and today's spend from `catalog.v_llm_app_spend_today_v1` (CIS migration 323). AA-1027 E5 (TP-1): these views are
+the only sources; there is no table fallback any more, so a view that is missing, not granted or failing pauses AI
+(route_unreadable / spend_unreadable) and callers degrade. `record()` writes the ledger v2 row (`aa_llm.ledger.LedgerRow`: app,
 status, error_class, latency_ms, attempt_no, connection, cache tokens, pricing_mode), or the pre-319 row when
 the v2 columns are missing (SQLSTATE 42703). A failed ledger write of an online stage pauses AI like a failed
 counter write: the spend view sums the ledger, so a lost row undercounts.
@@ -78,6 +78,16 @@ RequestId of the reply, or of the error when the provider answered one) and, for
 (sha256 of the system prompt sent, as the CIS gateway writes it) and `prompt_version` (the stage's version in the
 prompt manifest `backend/shared/prompt_versions.json` when the deployed source still matches it, see
 `prompt_registry`; a CI gate fails when a prompt changes without a version bump).
+
+AA-1027 E4 (TP-5, root ADR 0009 §4): the stage x model request parameters (`shared.stage_model_params`, read as
+the `stage_params` column CIS 349 appends to the config view, with the catalog's `supports_temperature`) are applied
+to each text attempt's request body by `request_params`, with CIS's precedence (shared/llm_client/stage_params.py):
+the call site's explicit value, then the stage x model row, then the protocol default (nothing sent). TripPlanner's
+call sites always pass max_tokens and never a temperature or effort, so the row's `max_tokens` / `min_output_tokens`
+never apply here (said once per stage and model) and its `temperature` / `effort` do: temperature on both wire styles
+when the catalog says the model takes one, effort (`output_config.effort`) on the Anthropic-native body only (on
+Converse it is not sent and said once, as in CIS), `reasoning_mode` never. No row (the Dev state) = the request body
+is byte-identical to before.
 
 AA-856: `EmbeddingCache` / `query_embed_cache` keep query embeddings in the Lambda container
 (bounded LRU + TTL, keyed by stage, route models, input type and the normalised text). A cache hit
@@ -164,6 +174,21 @@ class Model:
     enabled: bool = True
     # AA-1027 E3: the deployments from the config view, by priority; empty = derive them from `profiles`.
     deployments: tuple = ()
+    # AA-1027 E4: the catalog's supports_temperature (None = not stated: no temperature is ever sent) and the route
+    # stage's `shared.stage_model_params` row for this model (CIS 349 `stage_params`; None = no row).
+    supports_temperature: Optional[bool] = None
+    params: Optional["StageParams"] = None
+
+
+@dataclass(frozen=True)
+class StageParams:
+    """AA-1027 E4 (TP-5, root ADR 0009 §4): one `shared.stage_model_params` row (stage x model) as the config view
+    carries it (CIS 349). Every field None = not set. See `request_params` for what is sent and the precedence."""
+    max_tokens: Optional[int] = None
+    min_output_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    effort: Optional[str] = None
+    reasoning_mode: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -210,6 +235,8 @@ class Call:
     # AA-1027 E3: how the core priced a billed attempt (aa_llm.pricing.quote), and the connection's auth mode.
     pricing_mode: Optional[str] = None
     auth_mode: Optional[str] = None
+    # AA-1027 E4: the effort the request body carried (the stage x model row), for the ledger's effort column.
+    effort: Optional[str] = None
 
     @property
     def provider(self) -> Optional[str]:
@@ -276,25 +303,26 @@ def _num(v: Any) -> Optional[float]:
     return float(v) if v is not None else None
 
 
-# AA-642 S8: a contract view (CIS 323) that is missing or not granted yet: SQLSTATE undefined_table /
-# insufficient_privilege. The read falls back to the old source and skips the view for VIEW_RETRY_SECONDS.
-_MISSING_VIEW_STATES = ("42P01", "42501")
+# AA-1027 E5 (TP-1): the route and today's spend are read from the CIS contract views only. The pre-323 table
+# fallback is gone (CIS 350 revokes the grandfathered SELECT on shared.llm_role_config / shared.llm_model_catalog):
+# a view that is missing, not granted or failing raises, and AI pauses (fail closed, AA-642 S0). The only fallback
+# left is between column sets of the one view: an appended column that is not there yet (SQLSTATE 42703) moves the
+# read to the next narrower column set for VIEW_RETRY_SECONDS.
 VIEW_RETRY_SECONDS = 300.0
 _view_missing_until: dict[str, float] = {}
-
-
-def _is_missing_object(e: BaseException) -> bool:
-    return getattr(e, "sqlstate", None) in _MISSING_VIEW_STATES
 
 
 def _view_usable(view: str) -> bool:
     return time.monotonic() >= _view_missing_until.get(view, 0.0)
 
 
-def _mark_view_missing(view: str, e: BaseException) -> None:
-    _view_missing_until[view] = time.monotonic() + VIEW_RETRY_SECONDS
-    observability.emit("llm_gateway_note", view=view, error=type(e).__name__,
-                       detail=f"{view} is not readable yet (CIS migration 323); reading the old source")
+# A contract view that is missing or not granted: SQLSTATE undefined_table / insufficient_privilege. The gateway
+# config and spend reads fail closed on it; `embedding_space` (CIS 329) reads it as "no embedding-space row yet".
+_MISSING_VIEW_STATES = ("42P01", "42501")
+
+
+def _is_missing_object(e: BaseException) -> bool:
+    return getattr(e, "sqlstate", None) in _MISSING_VIEW_STATES
 
 
 def _profiles(raw: Any) -> dict:
@@ -303,11 +331,13 @@ def _profiles(raw: Any) -> dict:
     return dict(raw or {})
 
 
-def _model(r: Any, enabled_key: str) -> Model:
+def _model(r: Any) -> Model:
+    supports = _get(r, "supports_temperature")
     return Model(r["model_key"], r["vendor"], r["api_style"], _profiles(r["bedrock_profile_ids"]),
                  _num(r["price_in_per_mtok"]), _num(r["price_out_per_mtok"]),
                  _num(r["price_cache_read_per_mtok"]), _num(r["price_cache_write_per_mtok"]),
-                 bool(r[enabled_key]), _deployments(r))
+                 bool(r["model_enabled"]), _deployments(r),
+                 supports if isinstance(supports, bool) else None, _stage_params(_get(r, "stage_params")))
 
 
 def _get(r: Any, key: str) -> Any:
@@ -334,6 +364,33 @@ def _epoch(raw: Any) -> Optional[float]:
         return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
+
+
+_EFFORTS = ("low", "medium", "high", "xhigh", "max")          # shared.stage_model_params effort CHECK (CIS 320)
+_REASONING_MODES = ("off", "adaptive")                       # its reasoning_mode CHECK
+
+
+def _int_or_none(raw: Any) -> Optional[int]:
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1 else None
+
+
+def _stage_params(raw: Any) -> Optional[StageParams]:
+    """AA-1027 E4: the view's `stage_params` object (CIS 349; NULL = no row) as StageParams. A value outside the
+    table's CHECKs (never expected) is dropped, never sent."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    t = raw.get("temperature")
+    temperature = float(t) if isinstance(t, (int, float)) and not isinstance(t, bool) and 0 <= t <= 2 else None
+    effort = raw.get("effort") if raw.get("effort") in _EFFORTS else None
+    mode = raw.get("reasoning_mode") if raw.get("reasoning_mode") in _REASONING_MODES else None
+    p = StageParams(_int_or_none(raw.get("max_tokens")), _int_or_none(raw.get("min_output_tokens")), temperature,
+                    effort, mode)
+    return None if p == StageParams() else p
 
 
 def _deployments(r: Any) -> tuple:
@@ -370,72 +427,54 @@ def _legacy_deployment(**base: Any) -> Deployment:
     return Deployment(**base, **facts) if facts else Deployment(**base, facts=False)
 
 
-# AA-1027 E3: the 341 columns, appended to the 323 contract SELECT. Missing (SQLSTATE 42703 before 341 is applied):
-# the 323 columns only, and the next VIEW_RETRY_SECONDS skip the wider read.
-ROUTING_COLUMNS = ("route_deadline_s", "deployment_routing")
-_ROUTING_VIEW = f"{contract.GATEWAY_CONFIG_VIEW}#routing"
-GATEWAY_ROUTING_SQL = (
-    f"SELECT {', '.join(contract.GATEWAY_CONFIG_COLUMNS + ROUTING_COLUMNS)} "
-    f"FROM {contract.GATEWAY_CONFIG_VIEW} WHERE stage = $1 AND is_active ORDER BY position")
+# The column sets of the config view, widest first: the 323 contract columns, + CIS 341 (route deadline, deployment
+# routing facts and circuits, AA-1027 E3), + CIS 349 (the model's supports_temperature and the stage x model params,
+# AA-1027 E4). A set whose appended columns are missing (SQLSTATE 42703: the migration is not applied yet) is skipped
+# for VIEW_RETRY_SECONDS and the next narrower one is read. Any other error raises (fail closed).
+ROUTING_COLUMNS = ("route_deadline_s", "deployment_routing")     # CIS 341
+PARAMS_COLUMNS = ("supports_temperature", "stage_params")         # CIS 349
+_COLUMN_SETS = (
+    ("349", contract.GATEWAY_CONFIG_COLUMNS + ROUTING_COLUMNS + PARAMS_COLUMNS, "the stage x model params"),
+    ("341", contract.GATEWAY_CONFIG_COLUMNS + ROUTING_COLUMNS, "the legacy connection facts"),
+)
+
+
+def _config_sql(columns: tuple) -> str:
+    return (f"SELECT {', '.join(columns)} FROM {contract.GATEWAY_CONFIG_VIEW} "  # noqa: S608 — fixed identifiers
+            "WHERE stage = $1 AND is_active ORDER BY position")
+
+
+GATEWAY_PARAMS_SQL = _config_sql(_COLUMN_SETS[0][1])
+GATEWAY_ROUTING_SQL = _config_sql(_COLUMN_SETS[1][1])
 
 
 async def _view_rows(db: Any, stage: str) -> list:
-    if _view_usable(_ROUTING_VIEW):
+    for migration, columns, without in _COLUMN_SETS:
+        key = f"{contract.GATEWAY_CONFIG_VIEW}#{migration}"
+        if not _view_usable(key):
+            continue
         try:
-            return await db.fetch(GATEWAY_ROUTING_SQL, stage)
-        except Exception as e:  # noqa: BLE001 — only the missing 341 columns fall back to the 323 columns
+            return await db.fetch(_config_sql(columns), stage)
+        except Exception as e:  # noqa: BLE001 — only missing appended columns narrow the read
             if getattr(e, "sqlstate", None) != _UNDEFINED_COLUMN:
                 raise
-            _view_missing_until[_ROUTING_VIEW] = time.monotonic() + VIEW_RETRY_SECONDS
+            _view_missing_until[key] = time.monotonic() + VIEW_RETRY_SECONDS
             observability.emit("llm_gateway_note", view=contract.GATEWAY_CONFIG_VIEW,
-                               detail="deployment_routing is not readable yet (CIS migration 341); "
-                                      "the deployments run on the legacy connection facts")
+                               detail=f"the CIS migration {migration} columns are not readable yet; "
+                                      f"the route runs without {without}")
     return await db.fetch(contract.GATEWAY_CONFIG_SQL, stage)
 
 
-async def _route_from_view(db: Any, stage: str) -> tuple[Any, tuple]:
-    """(route config row, models in chain order) from catalog.v_llm_gateway_config_v1. A chain key that is
-    not in the catalog (in_catalog false) is skipped, as before."""
+async def _read_route(db: Any, stage: str) -> tuple[Any, tuple]:
+    """(route config row, models in chain order) from catalog.v_llm_gateway_config_v1, the only config source since
+    AA-1027 E5. A chain key that is not in the catalog (in_catalog false) is skipped, as before."""
     rows = await _view_rows(db, stage)
     if not rows:
         raise LookupError(f"no active route for {stage!r} in {contract.GATEWAY_CONFIG_VIEW}")
-    models = tuple(_model(r, "model_enabled") for r in sorted(rows, key=lambda r: r["position"])
-                   if r["in_catalog"])
+    models = tuple(_model(r) for r in sorted(rows, key=lambda r: r["position"]) if r["in_catalog"])
     if not models:
         raise LookupError(f"none of the {stage!r} route models is in the catalog")
     return rows[0], models
-
-
-async def _route_from_tables(db: Any, stage: str) -> tuple[Any, tuple]:
-    """The pre-323 read: shared.llm_role_config + shared.llm_model_catalog (grandfathered SELECT, CIS 173)."""
-    rows = await db.fetch(
-        "SELECT role, model_id, fallback_model_ids, account_route, shadow_model_id, "
-        "shadow_sample_pct, route_deadline_s FROM shared.llm_role_config WHERE stage = $1 AND is_active", stage)
-    if not rows:
-        raise LookupError(f"no active llm_role_config row for {stage!r}")
-    cfg = rows[0]
-    keys = [cfg["model_id"], *(cfg["fallback_model_ids"] or [])]
-    cat = await db.fetch(
-        "SELECT model_key, vendor, api_style, bedrock_profile_ids, price_in_per_mtok, "
-        "price_out_per_mtok, price_cache_read_per_mtok, price_cache_write_per_mtok, enabled "
-        "FROM shared.llm_model_catalog WHERE model_key = ANY($1::text[])", keys)
-    by_key = {r["model_key"]: _model(r, "enabled") for r in cat}
-    models = tuple(by_key[k] for k in keys if k in by_key)
-    if not models:
-        raise LookupError(f"none of {keys} is in llm_model_catalog")
-    return cfg, models
-
-
-async def _read_route(db: Any, stage: str) -> tuple[Any, tuple]:
-    view = contract.GATEWAY_CONFIG_VIEW
-    if _view_usable(view):
-        try:
-            return await _route_from_view(db, stage)
-        except Exception as e:  # noqa: BLE001 — only a missing / ungranted view falls back
-            if not _is_missing_object(e):
-                raise
-            _mark_view_missing(view, e)
-    return await _route_from_tables(db, stage)
 
 
 async def load_route(db: Any, stage: str) -> Route:
@@ -696,13 +735,83 @@ def _read_body(resp: dict) -> dict:
     return json.loads(raw)
 
 
+# --- Stage x model request parameters (AA-1027 E4) ---------------------------------------------------------------
+
+# (stage, model, field) already announced as not applied by this container (one line each).
+_PARAMS_NOT_APPLIED: set[tuple[str, str, str]] = set()
+
+
+def _not_applied(stage: str, model: Model, name: str, reason: str) -> None:
+    key = (stage, model.key, name)
+    if key in _PARAMS_NOT_APPLIED:
+        return
+    _PARAMS_NOT_APPLIED.add(key)
+    observability.emit("llm_stage_params_not_applied", level="warning", stage=stage, model=model.key, field=name,
+                       api_style=model.api_style, reason=reason)
+
+
+def request_params(stage: str, model: Model) -> dict:
+    """AA-1027 E4 — the stage x model parameters to put in the request body of `model` on `stage`: {"temperature":
+    t, "effort": e} for the fields its `shared.stage_model_params` row sets and this path sends; {} when there is no
+    row (the request is then exactly as before E4) or the switch is off (config.LLM_STAGE_PARAMS).
+
+    Precedence (CIS shared/llm_client/stage_params.py): 1. the call site's explicit value; 2. the stage x model row;
+    3. the protocol default (nothing sent). TripPlanner's call sites (assembly narration) always pass max_tokens and
+    never set a temperature or effort, so:
+      * max_tokens / min_output_tokens: the call site's max_tokens wins (min_output_tokens only ever raises a
+        max_tokens that came from the row or the default, never a call site's): not applied, said once;
+      * temperature: sent when the catalog says the model takes one (`supports_temperature` true; unknown = not
+        sent), on both wire styles;
+      * effort: sent as `output_config.effort` on the Anthropic-native body; on Converse no effort field is sent
+        (as in CIS, until a probe has shown the provider's field), said once;
+      * reasoning_mode: never sent (no TripPlanner path has a reasoning field), said once.
+    Never raises."""
+    p = model.params
+    if p is None or not config.LLM_STAGE_PARAMS:
+        return {}
+    out: dict = {}
+    if p.max_tokens is not None or p.min_output_tokens is not None:
+        _not_applied(stage, model, "max_tokens", "the call site sets max_tokens, which wins over the row")
+    if p.temperature is not None:
+        if model.supports_temperature is True:
+            out["temperature"] = p.temperature
+        else:
+            _not_applied(stage, model, "temperature", "the catalog does not say this model takes a temperature")
+    if p.effort is not None:
+        if model.api_style == "anthropic_native":
+            out["effort"] = p.effort
+        else:
+            _not_applied(stage, model, "effort", f"no effort field is sent on {model.api_style}")
+    if p.reasoning_mode is not None:
+        _not_applied(stage, model, "reasoning_mode", "TripPlanner sends no reasoning field")
+    if out:
+        observability.emit("llm_stage_params_applied", stage=stage, model=model.key, fields=sorted(out))
+    return out
+
+
+def _with_params(call: Call, params: dict) -> Call:
+    """The attempt stamped with the stage x model parameters its request body carried (ledger `effort`, and the
+    applied fields in quality_signal)."""
+    if params:
+        call.effort = params.get("effort")
+        call.extra = {**call.extra, "stage_params": dict(params)}
+    return call
+
+
 def _text_call(model: Model, d: Deployment, system: str, user: str, max_tokens: int,
                client_factory: ClientFactory, *, timeout_s: Optional[float] = None,
+               params: Optional[dict] = None,
                ) -> tuple[str, dict, Optional[str]]:
+    """One text attempt. `params` (request_params) adds the stage x model temperature / effort to the body."""
     rt = _runtime(d, client_factory, timeout_s)
+    params = params or {}
     if model.api_style == "anthropic_native":
         body = {"anthropic_version": "bedrock-2023-05-31", "max_tokens": max_tokens,
                 "system": system, "messages": [{"role": "user", "content": user}]}
+        if "temperature" in params:
+            body["temperature"] = params["temperature"]
+        if "effort" in params:
+            body["output_config"] = {"effort": params["effort"]}
         resp = rt.invoke_model(modelId=d.wire_id, body=json.dumps(body))
         payload = _read_body(resp)
         text = "".join(p.get("text", "") for p in payload.get("content", [])
@@ -714,9 +823,12 @@ def _text_call(model: Model, d: Deployment, system: str, user: str, max_tokens: 
                  "request_id": _request_id(resp)}
         return text, usage, payload.get("stop_reason")
     if model.api_style == "converse":
+        inference: dict = {"maxTokens": max_tokens}
+        if "temperature" in params:
+            inference["temperature"] = params["temperature"]
         resp = rt.converse(modelId=d.wire_id, system=[{"text": system}],
                            messages=[{"role": "user", "content": [{"text": user}]}],
-                           inferenceConfig={"maxTokens": max_tokens})
+                           inferenceConfig=inference)
         text = "".join(b.get("text", "") for b in resp["output"]["message"]["content"])
         u = resp.get("usage", {}) or {}
         usage = {"in": u.get("inputTokens", 0), "out": u.get("outputTokens", 0),
@@ -759,7 +871,8 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
     AA-642 S263 E1: a reply cut at its token limit is a failed (billed) attempt, never returned; the route deadline
     (`route_deadline_s`) bounds every attempt's client and stops the loop with RouteDeadlineExceeded.
     AA-1027 E3: a deployment behind an open circuit is not called (a model with nothing left gets one 'refused' row);
-    nothing attempted because of circuits raises CircuitOpen."""
+    nothing attempted because of circuits raises CircuitOpen. AA-1027 E4: each model's request body carries its stage
+    x model parameters (`request_params`), and every attempt row says which."""
     attempt_errors: list = []
     skips: list = []
     attempt = 0
@@ -774,6 +887,7 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
         if not plan.items:
             skips += _no_usable(route, model, position, plan, attempt_errors, failures, prompt)
             continue
+        params = request_params(route.stage, model)      # AA-1027 E4: the stage x model row ({} = none)
         for d in plan.items:
             attempt += 1
             left = ends - time.monotonic()
@@ -790,13 +904,13 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
             started = time.monotonic()
             try:
                 text, usage, stop = _text_call(model, d, system, user, max_tokens,
-                                               client_factory, timeout_s=left)
+                                               client_factory, timeout_s=left, params=params)
             except Exception as e:  # noqa: BLE001 — fail over to the next deployment/model
                 attempt_errors.append(f"{model.key}@{d.connection_key}: {str(e)[:200]}")
                 failed = _failed(route, model, d, position, str(e), latency_ms=_ms(started), attempt_no=attempt,
                                  request_id=_request_id(e))
                 if failures is not None:
-                    failures.append(_with_prompt(failed, prompt))
+                    failures.append(_with_params(_with_prompt(failed, prompt), params))
                 continue
             if stop in ledger.TRUNCATED_STOP_REASONS:
                 # AA-642 S263 E1: billed but cut short; logged as 'truncated' and never returned.
@@ -804,23 +918,23 @@ def generate_text(route: Route, system: str, user: str, max_tokens: int, *,
                 cut = _truncated(route, model, d, position, usage, stop, latency_ms=_ms(started),
                                  attempt_no=attempt)
                 if failures is not None:
-                    failures.append(_with_prompt(cut, prompt))
+                    failures.append(_with_params(_with_prompt(cut, prompt), params))
                 continue
             if not text:
                 attempt_errors.append(f"{model.key}@{d.connection_key}: empty response")
                 empty = _failed(route, model, d, position, "empty response", latency_ms=_ms(started),
                                 attempt_no=attempt, request_id=usage.get("request_id"))
                 if failures is not None:
-                    failures.append(_with_prompt(empty, prompt))
+                    failures.append(_with_params(_with_prompt(empty, prompt), params))
                 continue
             llm_breaker.local.record_success(d.connection_key, model.key)
             cost, mode = _quote(model, d, usage["in"], usage["out"], usage["cache_read"], usage["cache_write"])
-            return text, _with_prompt(Call(
+            return text, _with_params(_with_prompt(Call(
                 route.stage, route.role, model.key, d.connection_key, usage["in"], usage["out"], cost,
                 fallback_used=position > 0, stop_reason=stop, latency_ms=_ms(started),
                 attempt_no=attempt, cache_read_tokens=int(usage["cache_read"] or 0),
                 cache_write_tokens=int(usage["cache_write"] or 0), wire_id=d.wire_id,
-                request_id=usage.get("request_id"), pricing_mode=mode, auth_mode=d.auth_mode), prompt)
+                request_id=usage.get("request_id"), pricing_mode=mode, auth_mode=d.auth_mode), prompt), params)
     raise _all_failed(route, attempt_errors, attempt, skips)
 
 
@@ -1094,15 +1208,15 @@ def ledger_row(call: Call, signal: dict, tenant_id: Optional[str] = None) -> led
         status=call.status if call.failed else None, error_class=call.error_class if call.failed else None,
         latency_ms=call.latency_ms, connection_key=call.account, deployment_wire_id=call.wire_id,
         attempt_no=call.attempt_no, request_id=call.request_id, prompt_hash=call.prompt_hash,
-        prompt_version=call.prompt_version)
+        prompt_version=call.prompt_version, effort=call.effort)
 
 
 async def record(db: Any, call: Call, quality_signal: dict, *,
                  tenant_id: Optional[str] = None) -> None:
-    """Writes the shared.llm_call_log row (ledger v2; the pre-319 row when its columns are missing)
-    and, for ONLINE_STAGES, today's spend counter. Never raises: a lost log row must not fail a
-    request, but it is an ERROR line and, for an online stage, pauses AI for the hold window (the
-    spend view sums the ledger, so the day would undercount)."""
+    """Writes the shared.llm_call_log row (ledger v2; the pre-319 row when its columns are missing). Never raises:
+    a lost log row must not fail a request, but it is an ERROR line and, for an online stage, pauses AI for the hold
+    window (the spend view sums the ledger, so the day would undercount). AA-1027 E5: the ledger is the only spend
+    record; the tp-010 counter (tripplanner.llm_spend_daily) is no longer written."""
     global _spend_unreadable_until
     signal = {"app": APP, **call.extra, **quality_signal}
     if call.failed:
@@ -1120,8 +1234,6 @@ async def record(db: Any, call: Call, quality_signal: dict, *,
         _error("call_log_write_failed", call.stage, e)
         if call.stage in ONLINE_STAGES:
             _spend_unreadable_until = time.monotonic() + SPEND_UNREADABLE_HOLD_SECONDS
-    if call.stage in ONLINE_STAGES:
-        await _add_spend(db, call)
 
 
 # --- Daily spend hard stop (AA-805) -------------------------------------------------------------
@@ -1129,23 +1241,7 @@ async def record(db: Any, call: Call, quality_signal: dict, *,
 # Customer-facing stages: the only ones counted against, and stopped by, the daily cap.
 ONLINE_STAGES: tuple[str, ...] = ("tp_compose", "tp_search_embed")
 
-_SPEND_UPSERT_SQL = """
-    INSERT INTO tripplanner.llm_spend_daily (day, stage, cost_usd, calls, unpriced_calls)
-    VALUES ((now() AT TIME ZONE 'UTC')::date, $1, $2, 1, $3)
-    ON CONFLICT (day, stage) DO UPDATE
-       SET cost_usd = tripplanner.llm_spend_daily.cost_usd + EXCLUDED.cost_usd,
-           calls = tripplanner.llm_spend_daily.calls + 1,
-           unpriced_calls = tripplanner.llm_spend_daily.unpriced_calls + EXCLUDED.unpriced_calls,
-           updated_at = now()
-"""
-
-_SPEND_TODAY_SQL = """
-    SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM tripplanner.llm_spend_daily
-    WHERE day = (now() AT TIME ZONE 'UTC')::date AND stage = ANY($1::text[])
-"""
-
-
-# AA-642 S0: after a failed counter write the counter undercounts, so the cap could never be
+# AA-642 S0: after a failed ledger write of an online stage the spend view undercounts, so the cap could never be
 # reached. For this long (per container) budget_status reports "spend_unreadable" and AI pauses.
 SPEND_UNREADABLE_HOLD_SECONDS = 60.0
 _spend_unreadable_until = 0.0
@@ -1163,16 +1259,6 @@ def _error(what: str, stage: Optional[str], e: BaseException) -> None:
 
 def spend_unreadable_flag_active() -> bool:
     return time.monotonic() < _spend_unreadable_until
-
-
-async def _add_spend(db: Any, call: Call) -> None:
-    global _spend_unreadable_until
-    unpriced = 1 if call.cost_usd is None else 0
-    try:
-        await db.execute(_SPEND_UPSERT_SQL, call.stage, call.cost_usd or 0.0, unpriced)
-    except Exception as e:  # noqa: BLE001 — e.g. tp-010 not applied, permission, DB down
-        _error("spend_write_failed", call.stage, e)
-        _spend_unreadable_until = time.monotonic() + SPEND_UNREADABLE_HOLD_SECONDS
 
 
 # AA-1015: the stage caps (config, unset = none) and the once-per-day alert lines.
@@ -1203,20 +1289,9 @@ def _alert(scope: str, spent: float, cap: float) -> None:
 
 
 async def _spent(db: Any, stages: list) -> float:
-    """Today's (UTC) spend of `stages`: the CIS contract view over the ledger (CIS 323), else the
-    tp-010 counter while the view is missing or not granted. Any other error raises (fail closed)."""
-    row = None
-    view = contract.APP_SPEND_VIEW
-    if _view_usable(view):
-        try:
-            row = await db.fetchrow(contract.APP_SPEND_SQL, stages)
-        except Exception as e:  # noqa: BLE001 — only a missing / ungranted view falls back
-            if not _is_missing_object(e):
-                raise
-            _mark_view_missing(view, e)
-            row = await db.fetchrow(_SPEND_TODAY_SQL, stages)
-    else:
-        row = await db.fetchrow(_SPEND_TODAY_SQL, stages)
+    """Today's (UTC) spend of `stages` from the CIS contract view over the ledger (CIS 323), the only spend source
+    since AA-1027 E5. Any error raises (fail closed: budget_status reports spend_unreadable)."""
+    row = await db.fetchrow(contract.APP_SPEND_SQL, stages)
     return float(row["spent"]) if row and row["spent"] is not None else 0.0
 
 
@@ -1228,8 +1303,8 @@ async def budget_status(db: Any, stage: Optional[str] = None) -> dict:
     Returns {"spent_usd", "cap_usd", "exhausted", "reason", "near_cap"} (+ "stage", "stage_spent_usd",
     "stage_cap_usd" when a stage cap applies). `near_cap` is True from SPEND_NEAR_CAP_RATIO (80 %) of
     either cap, and the first time a container sees 80 % or 100 % of a cap on a UTC day it prints one
-    `llm_spend_alert` line. Fails CLOSED (AA-642 S0, root ADR 0009 decision 6): when the counter cannot
-    be read, or a counter write failed in the last SPEND_UNREADABLE_HOLD_SECONDS, `exhausted` is True
+    `llm_spend_alert` line. Fails CLOSED (AA-642 S0, root ADR 0009 decision 6): when the spend view cannot
+    be read, or a ledger write failed in the last SPEND_UNREADABLE_HOLD_SECONDS, `exhausted` is True
     with reason "spend_unreadable" and `spent_usd` None, so no model is called and callers degrade
     (basic narration, keyword search). Over a cap the reason is "cap_reached"; under it, None.
     Calls with no catalog price add nothing."""

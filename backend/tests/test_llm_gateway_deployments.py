@@ -380,7 +380,8 @@ async def test_before_341_the_323_columns_run_on_the_legacy_connection_facts(mon
     monkeypatch.setattr(gw.time, "monotonic", lambda: now[0])
     db = ViewDb([_view_row(0, "zz-writer", deployments=DEPLOYMENTS)], routing_columns=False)
     r = await gw.load_route(db, "tp_compose")
-    assert "deployment_routing" in db.sql[0] and db.sql[1] == contract.GATEWAY_CONFIG_SQL
+    # the 349 set, then the 341 set (both 42703), then the 323 contract columns (AA-1027 E4 column sets)
+    assert db.sql == [gw.GATEWAY_PARAMS_SQL, gw.GATEWAY_ROUTING_SQL, contract.GATEWAY_CONFIG_SQL]
     assert "CIS migration 341" in capsys.readouterr().out
     acc3, acc2, vendor = r.models[0].deployments
     assert (acc3.wire_id, acc3.auth_mode, acc3.circuit_open_until) == ("wire.acc3", "assume_role", None)
@@ -388,7 +389,7 @@ async def test_before_341_the_323_columns_run_on_the_legacy_connection_facts(mon
     assert [d.connection_key for d in gw.deployment_plan(r, r.models[0]).items] == ["acc3"]
     gw._cache.clear()
     await gw.load_route(db, "tp_compose")                                    # within VIEW_RETRY_SECONDS
-    assert db.sql[2] == contract.GATEWAY_CONFIG_SQL
+    assert db.sql[3:] == [contract.GATEWAY_CONFIG_SQL]
 
 
 async def test_a_model_with_no_deployment_row_runs_on_its_catalog_profiles():

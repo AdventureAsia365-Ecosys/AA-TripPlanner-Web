@@ -97,7 +97,7 @@ def test_a_complete_reply_is_unchanged():
     assert text.startswith("Day 1:") and call.stop_reason == "end_turn" and failures == []
 
 
-async def test_a_truncated_attempt_is_ledgered_as_billed_and_counts_spend():
+async def test_a_truncated_attempt_is_ledgered_as_billed():
     stub = TwoStyleStub(_native(stop="max_tokens"), _converse())
     failures: list = []
     gw.generate_text(ROUTE, "s", "u", 50, client_factory=make_factory({"acc3": stub}, []), failures=failures)
@@ -108,8 +108,7 @@ async def test_a_truncated_attempt_is_ledgered_as_billed_and_counts_spend():
     assert (row["tokens_in"], row["tokens_out"]) == (1000, 200)
     assert row["cost_usd"] == pytest.approx(0.006) and row["pricing_mode"] == "catalog"
     assert json.loads(row["quality_signal"])["failed"] is True
-    spend_sql, spend_args = db.executed[1]
-    assert "tripplanner.llm_spend_daily" in spend_sql and spend_args[1] == pytest.approx(0.006)
+    assert len(db.executed) == 1          # AA-1027 E5: the billed row counts through the spend view, no counter
 
 
 # --- route deadline -----------------------------------------------------------------------------------------------
@@ -174,7 +173,7 @@ def test_each_attempt_gets_the_time_left_as_its_timeout(monkeypatch):
     monkeypatch.setattr(gw.time, "monotonic", lambda: clock[0])
     seen: list = []
 
-    def fake_text_call(model, account, system, user, max_tokens, client_factory, *, timeout_s=None):
+    def fake_text_call(model, account, system, user, max_tokens, client_factory, *, timeout_s=None, params=None):
         seen.append(timeout_s)
         clock[0] += 6.0
         raise bs.BedrockError("simulated outage")
@@ -227,17 +226,14 @@ def test_the_satellite_sts_call_is_bounded_too(monkeypatch):
 
 # --- route_deadline_s from the config read ------------------------------------------------------------------------
 
-async def test_load_route_reads_route_deadline_from_the_tables():
-    db = FakeDb(
-        role_rows=[{"role": "writer", "model_id": "zz-writer-a", "fallback_model_ids": [], "account_route": "acc3",
-                    "route_deadline_s": 9}],
-        catalog_rows=[{"model_key": "zz-writer-a", "vendor": "anthropic", "api_style": "anthropic_native",
-                       "bedrock_profile_ids": {"acc3": "zz.writer-a"}, "price_in_per_mtok": 3,
-                       "price_out_per_mtok": 15, "price_cache_read_per_mtok": None,
-                       "price_cache_write_per_mtok": None, "enabled": True}])
+async def test_load_route_reads_route_deadline_from_the_view():
+    from backend.tests.test_llm_gateway import _view_row
+
+    row = {**_view_row(0, "zz-writer-a", api_style="anthropic_native"), "route_deadline_s": 9}
+    db = FakeDb(view_rows=[row])
     route = await gw.load_route(db, "tp_compose")
     assert route.deadline_s == 9 and gw.route_deadline_s(route) == 9.0
-    assert any("route_deadline_s" in q for q in db.sql if "llm_role_config" in q)
+    assert "route_deadline_s" in db.sql[0] and not any("llm_role_config" in q for q in db.sql)
 
 
 async def test_load_route_from_the_view_without_the_column_uses_the_default():

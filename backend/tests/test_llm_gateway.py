@@ -299,25 +299,15 @@ class FakeDb:
         self.executed.append((sql, args))
 
 
-async def test_load_route_reads_config_and_catalog_and_caches():
-    db = FakeDb(
-        role_rows=[{"role": "writer", "model_id": "sonnet-5", "fallback_model_ids": ["sonnet"],
-                    "account_route": "acc3"}],
-        catalog_rows=[
-            {"model_key": "sonnet", "vendor": "anthropic", "api_style": "anthropic_native",
-             "bedrock_profile_ids": json.dumps({"acc3": "g.s"}), "price_in_per_mtok": 3,
-             "price_out_per_mtok": 15, "price_cache_read_per_mtok": None,
-             "price_cache_write_per_mtok": None, "enabled": True},
-            {"model_key": "sonnet-5", "vendor": "anthropic", "api_style": "converse",
-             "bedrock_profile_ids": {"acc3": "g.s5"}, "price_in_per_mtok": 2,
-             "price_out_per_mtok": 10, "price_cache_read_per_mtok": 0.2,
-             "price_cache_write_per_mtok": 2.5, "enabled": True},
-        ])
+async def test_load_route_reads_the_view_and_caches():
+    db = FakeDb(view_rows=[_view_row(1, "sonnet", api_style="anthropic_native", profiles=json.dumps({"acc3": "g.s"})),
+                           _view_row(0, "sonnet-5", profiles={"acc3": "g.s5"})])
     route = await gw.load_route(db, "tp_compose")
     assert [m.key for m in route.models] == ["sonnet-5", "sonnet"]  # route order, not row order
     assert route.models[1].profiles == {"acc3": "g.s"}
     await gw.load_route(db, "tp_compose")
-    assert db.fetches == 3  # the missing view, then the two tables; the second call served from the cache
+    assert db.fetches == 1  # the view once; the second call served from the cache
+    assert not any("llm_role_config" in q or "llm_model_catalog" in q for q in db.sql)   # AA-1027 E5
 
 
 async def test_load_route_pauses_ai_when_db_is_unreadable(capsys):
@@ -394,20 +384,15 @@ def test_missing_catalog_price_is_the_cores_flagged_estimate_never_zero():
 
 
 async def test_load_route_keeps_a_null_price_and_notes_a_shadow(capsys):
-    db = FakeDb(
-        role_rows=[{"role": "writer", "model_id": "sonnet", "fallback_model_ids": [],
-                    "account_route": "acc3", "shadow_model_id": "sonnet-5", "shadow_sample_pct": 10}],
-        catalog_rows=[{"model_key": "sonnet", "vendor": "anthropic", "api_style": "anthropic_native",
-                       "bedrock_profile_ids": {"acc3": "g.s"}, "price_in_per_mtok": None,
-                       "price_out_per_mtok": 15, "price_cache_read_per_mtok": None,
-                       "price_cache_write_per_mtok": None, "enabled": True}])
+    db = FakeDb(view_rows=[_view_row(0, "sonnet", api_style="anthropic_native", price_in=None,
+                                     shadow="sonnet-5", shadow_pct=10)])
     route = await gw.load_route(db, "tp_compose")
-    assert route.models[0].price_in is None and route.models[0].price_out == 15.0
+    assert route.models[0].price_in is None and route.models[0].price_out == 10.0
     assert route.shadow_model == "sonnet-5"
     assert "does not run shadows" in capsys.readouterr().out
 
 
-async def test_record_logs_null_cost_and_failed_flag_and_counts_spend():
+async def test_record_logs_null_cost_and_failed_flag_and_writes_the_ledger_only():
     db = FakeDb()
     failed = gw._failed(ROUTE, SONNET, "acc3", 0, "AccessDenied")
     await gw.record(db, failed, {"mode": "compose"})
@@ -417,13 +402,13 @@ async def test_record_logs_null_cost_and_failed_flag_and_counts_spend():
     assert (row["status"], row["error_class"], row["pricing_mode"]) == ("error", "other", None)
     signal = json.loads(row["quality_signal"])
     assert signal["failed"] is True and signal["error"] == "AccessDenied"
-    assert "tripplanner.llm_spend_daily" in db.executed[1][0]
+    assert len(db.executed) == 1                              # AA-1027 E5: no tp-010 counter write
 
     db = FakeDb()
     await gw.record(db, gw.Call("tp_compose", "writer", "new", "acc3", 10, 5, None, False), {})
     assert _row(db.executed[0][1])["cost_usd"] is None        # NULL, not 0
     assert _row(db.executed[0][1])["pricing_mode"] is None    # nothing priced it
-    assert db.executed[1][1] == ("tp_compose", 0.0, 1)        # adds nothing, counted as unpriced
+    assert not any("llm_spend_daily" in sql for sql, _ in db.executed)
 
 
 class SpendDb:
@@ -431,8 +416,9 @@ class SpendDb:
         self.spent, self.fail = spent, fail
 
     async def fetchrow(self, sql, *args):
+        assert sql == contract.APP_SPEND_SQL                  # AA-1027 E5: the spend view is the only source
         if self.fail:
-            raise RuntimeError('relation "tripplanner.llm_spend_daily" does not exist')
+            raise RuntimeError("permission denied for view v_llm_app_spend_today_v1")
         return {"spent": self.spent}
 
 
@@ -454,9 +440,9 @@ async def test_budget_status_fails_closed_when_the_counter_is_unreadable(monkeyp
     assert line["evt"] == "llm_gateway_error" and line["level"] == "error"
 
 
-async def test_a_failed_spend_write_pauses_ai_for_the_hold_window(monkeypatch):
-    """AA-642 S0: a lost counter write undercounts, so AI pauses for SPEND_UNREADABLE_HOLD_SECONDS
-    even though the counter itself reads fine, then recovers."""
+async def test_a_failed_ledger_write_pauses_ai_for_the_hold_window(monkeypatch):
+    """AA-642 S0: a lost ledger row undercounts the spend view, so AI pauses for SPEND_UNREADABLE_HOLD_SECONDS
+    even though the view itself reads fine, then recovers."""
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
     now = [1000.0]
     monkeypatch.setattr(gw.time, "monotonic", lambda: now[0])
@@ -479,22 +465,21 @@ async def test_a_failed_ledger_write_is_logged_as_an_error(capsys):
 
 
 class SpendLedgerDb:
-    """In-memory llm_call_log + llm_spend_daily: upserts add per stage, the read sums the
-    stages passed as $1 (mirrors _SPEND_UPSERT_SQL / _SPEND_TODAY_SQL)."""
+    """In-memory llm_call_log and the spend view over it (CIS 323): each ledger row adds its cost to its stage, the
+    view read sums the stages passed as $1 (contract.APP_SPEND_SQL)."""
 
     def __init__(self):
         self.by_stage: dict[str, float] = {}
         self.logged: list[str] = []
 
     async def execute(self, sql, *args):
-        if "shared.llm_call_log" in sql:
-            self.logged.append(args[1])
-        elif "tripplanner.llm_spend_daily" in sql:
-            stage, cost, _unpriced = args
-            self.by_stage[stage] = self.by_stage.get(stage, 0.0) + cost
+        assert "shared.llm_call_log" in sql, sql              # AA-1027 E5: the ledger is the only write
+        row = _row(args)
+        self.logged.append(row["stage"])
+        self.by_stage[row["stage"]] = self.by_stage.get(row["stage"], 0.0) + (row["cost_usd"] or 0.0)
 
     async def fetchrow(self, sql, *args):
-        assert "stage = ANY($1" in sql
+        assert sql == contract.APP_SPEND_SQL
         return {"spent": sum(v for k, v in self.by_stage.items() if k in args[0])}
 
 
@@ -505,9 +490,8 @@ async def test_offline_stages_never_exhaust_the_customer_budget(monkeypatch):
     db = SpendLedgerDb()
     await gw.record(db, gw.Call("tp_zz_offline", "writer", "sonnet", "acc3", 1, 1, 40.0, False), {})
     await gw.record(db, gw.Call("tp_zz_backfill_embed", "embed", "cohere", None, 1, 0, 9.0, False), {})
-    assert db.logged == ["tp_zz_offline", "tp_zz_backfill_embed"]   # still in llm_call_log
-    assert db.by_stage == {}                                    # but not in the spend counter
-    status = await gw.budget_status(db)
+    assert db.logged == ["tp_zz_offline", "tp_zz_backfill_embed"]   # in llm_call_log
+    status = await gw.budget_status(db)                          # but the read sums ONLINE_STAGES only
     assert status["exhausted"] is False and status["spent_usd"] == 0.0
 
     await gw.record(db, gw.Call("tp_compose", "writer", "sonnet", "acc3", 1, 1, 3.0, False), {})
@@ -632,65 +616,60 @@ async def test_a_view_error_other_than_missing_pauses_ai_without_the_tables():
 
 
 @pytest.mark.parametrize("sqlstate", ["42P01", "42501"])
-async def test_a_missing_or_ungranted_view_falls_back_and_is_not_retried_for_a_while(monkeypatch, capsys, sqlstate):
-    now = [500.0]
-    monkeypatch.setattr(gw.time, "monotonic", lambda: now[0])
+async def test_a_missing_or_ungranted_view_pauses_ai_without_the_tables(capsys, sqlstate):
+    """AA-1027 E5 (TP-1): no fallback to shared.llm_role_config / shared.llm_model_catalog any more (CIS 350 revokes
+    them): a missing or ungranted view fails closed, and the next request reads the view again."""
     db = FakeDb(view_error=PgError(sqlstate),
-                role_rows=[{"role": "writer", "model_id": "sonnet", "fallback_model_ids": [], "account_route": "acc3"}],
-                catalog_rows=[{"model_key": "sonnet", "vendor": "anthropic", "api_style": "anthropic_native",
-                               "bedrock_profile_ids": {"acc3": "g.s"}, "price_in_per_mtok": 3,
-                               "price_out_per_mtok": 15, "price_cache_read_per_mtok": None,
-                               "price_cache_write_per_mtok": None, "enabled": True}])
-    assert [m.key for m in (await gw.load_route(db, "tp_compose")).models] == ["sonnet"]
-    assert db.fetches == 3 and "not readable yet" in capsys.readouterr().out
-    gw._cache.clear()
-    await gw.load_route(db, "tp_compose")
-    assert db.fetches == 5                                    # the tables only: the view waits VIEW_RETRY_SECONDS
-    gw._cache.clear()
-    now[0] += gw.VIEW_RETRY_SECONDS + 1
-    await gw.load_route(db, "tp_compose")
-    assert db.fetches == 8 and contract.GATEWAY_CONFIG_VIEW in db.sql[5]
+                role_rows=[{"role": "writer", "model_id": "sonnet", "fallback_model_ids": [], "account_route": "acc3"}])
+    for _ in range(2):
+        with pytest.raises(gw.AiPaused) as e:
+            await gw.load_route(db, "tp_compose")
+        assert e.value.reason == "route_unreadable"
+    assert db.fetches == 2 and all(contract.GATEWAY_CONFIG_VIEW in q for q in db.sql)
+    assert not any("llm_role_config" in q or "llm_model_catalog" in q for q in db.sql)
+    assert "route_unreadable" in capsys.readouterr().out
 
 
 class ViewSpendDb:
-    """The spend read: the contract view when `view` holds a value, a missing view (42P01) when None."""
+    """The spend read: the contract view when `view` holds a value, a missing view (42P01) when None. Any other
+    source fails the test (AA-1027 E5: no tp-010 counter read)."""
 
-    def __init__(self, view=None, counter=0.0, view_error=None):
-        self.view, self.counter, self.view_error = view, counter, view_error
+    def __init__(self, view=None, view_error=None):
+        self.view, self.view_error = view, view_error
         self.sql: list = []
 
     async def fetchrow(self, sql, *args):
         self.sql.append(sql)
-        if contract.APP_SPEND_VIEW in sql:
-            if self.view_error is not None:
-                raise self.view_error
-            if self.view is None:
-                raise PgError("42P01")
-            return {"spent": self.view}
-        assert "tripplanner.llm_spend_daily" in sql
-        return {"spent": self.counter}
+        assert contract.APP_SPEND_VIEW in sql and "llm_spend_daily" not in sql, sql
+        if self.view_error is not None:
+            raise self.view_error
+        if self.view is None:
+            raise PgError("42P01")
+        return {"spent": self.view}
 
 
 async def test_budget_reads_the_spend_view(monkeypatch):
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
-    db = ViewSpendDb(view=5.5, counter=0.0)
+    db = ViewSpendDb(view=5.5)
     status = await gw.budget_status(db)
     assert status["exhausted"] is True and status["spent_usd"] == 5.5
     assert db.sql == [contract.APP_SPEND_SQL]
 
 
-async def test_budget_falls_back_to_the_counter_while_the_view_is_missing(monkeypatch):
+@pytest.mark.parametrize("sqlstate", ["42P01", "42501"])
+async def test_budget_fails_closed_while_the_spend_view_is_missing_or_ungranted(monkeypatch, sqlstate):
+    """AA-1027 E5: the tp-010 counter is no fallback any more; a missing / ungranted view is spend_unreadable."""
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
-    db = ViewSpendDb(view=None, counter=1.0)
+    db = ViewSpendDb(view_error=PgError(sqlstate))
     status = await gw.budget_status(db)
-    assert status["spent_usd"] == 1.0 and status["exhausted"] is False
+    assert (status["reason"], status["exhausted"], status["spent_usd"]) == ("spend_unreadable", True, None)
     await gw.budget_status(db)
-    assert sum(contract.APP_SPEND_VIEW in q for q in db.sql) == 1          # not retried within the window
+    assert db.sql == [contract.APP_SPEND_SQL] * 2                           # read again on the next request
 
 
 async def test_budget_fails_closed_on_another_view_error(monkeypatch):
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
-    status = await gw.budget_status(ViewSpendDb(view_error=PgError("08006", "connection failure"), counter=0.0))
+    status = await gw.budget_status(ViewSpendDb(view_error=PgError("08006", "connection failure")))
     assert status["reason"] == "spend_unreadable" and status["spent_usd"] is None
 
 
@@ -757,8 +736,7 @@ async def test_record_falls_back_to_the_pre_319_row():
 
 
 async def test_a_lost_ledger_row_of_an_online_stage_pauses_ai(monkeypatch):
-    """The spend view sums the ledger: a lost online row undercounts, so AI pauses for the hold window even when
-    the tp-010 counter write succeeded."""
+    """The spend view sums the ledger: a lost online row undercounts, so AI pauses for the hold window."""
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
     now = [2000.0]
     monkeypatch.setattr(gw.time, "monotonic", lambda: now[0])
@@ -771,5 +749,5 @@ async def test_a_lost_ledger_row_of_an_online_stage_pauses_ai(monkeypatch):
 
     db = LedgerDown()
     await gw.record(db, gw.Call("tp_search_embed", "embed", "cohere-embed-v4", "acc2", 1, 0, 0.001, False), {})
-    assert "tripplanner.llm_spend_daily" in db.executed[0][0]              # the counter write still happened
+    assert db.executed == []                                               # AA-1027 E5: no counter write either
     assert (await gw.budget_status(ViewSpendDb(view=0.0)))["reason"] == "spend_unreadable"

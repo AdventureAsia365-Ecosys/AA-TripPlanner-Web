@@ -1,6 +1,6 @@
 """AA-712 slice 6a (ADR 0007): the place pipeline is CIS's; AA-712 X4: this repo reads CIS content only through the
 catalog views. Every extraction op answers 410, no module writes place data, and no module reads anything of
-CIS but catalog.* (plus the model gateway tables) or a frozen tripplanner place table (dropped by tp-018)."""
+CIS but catalog.* (plus the gateway ledger INSERT) or a frozen tripplanner place table (dropped by tp-018)."""
 from __future__ import annotations
 
 import ast
@@ -49,11 +49,14 @@ def test_no_backend_module_writes_place_data():
 # schema-qualified objects a backend SQL string may name are these.
 _QUALIFIED = re.compile(r"\b(shared|gold_aa_internal|silver_aa_internal|acp_\w+|geo|tripplanner|catalog|booking|public)"
                         r"\.(\w+)\b", re.IGNORECASE)
+# AA-1027 E5 (TP-1): the gateway reads its route and spend through the catalog contract views only, so the
+# grandfathered shared.llm_role_config / shared.llm_model_catalog reads (CIS 173, revoked by CIS 350) and the tp-010
+# counter tripplanner.llm_spend_daily (dropped by tp-025) are no longer allowed; the ledger INSERT stays.
 _ALLOWED_TRIPPLANNER = {"sessions", "customers", "trip_events", "trip_drafts", "outbox", "narration_cache",
-                        "llm_spend_daily", "component_id_map", "traveller_accounts",   # tp-019, AA-908
+                        "component_id_map", "traveller_accounts",   # tp-019, AA-908
                         "job",   # tp-021, AA-861
                         "ai_rate_counter"}   # tp-023, AA-1015
-_ALLOWED_SHARED = {"llm_role_config", "llm_model_catalog", "llm_call_log"}   # CIS 173, the model gateway
+_ALLOWED_SHARED = {"llm_call_log"}   # CIS 173: the ledger INSERT of the model gateway
 
 
 def _allowed(schema: str, name: str) -> bool:

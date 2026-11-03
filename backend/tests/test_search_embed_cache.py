@@ -161,7 +161,7 @@ async def test_cache_hit_is_served_over_the_daily_cap(gateway, monkeypatch):
 class UnreadableSpendPool(Pool):
     async def fetchrow(self, query, *args):
         self.calls.append((query, args))
-        raise RuntimeError("permission denied for table llm_spend_daily")
+        raise RuntimeError("permission denied for view v_llm_app_spend_today_v1")
 
 
 async def test_unreadable_spend_counter_pauses_the_embed_and_ranks_by_keyword(gateway, capsys):

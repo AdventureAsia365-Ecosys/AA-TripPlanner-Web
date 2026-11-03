@@ -22,8 +22,8 @@ def _get(name: str, default: str | None = None, required: bool = False) -> str |
 # Full DSN, e.g. postgresql://user:pass@host:5432/dbname
 DATABASE_URL = _get("TRIPPLANNER_DATABASE_URL")
 
-# Schemas this service touches. tripplanner is owned (user state written here). In shared it reads
-# the gateway config and writes llm_call_log only. CIS content is read only through the catalog views
+# Schemas this service touches. tripplanner is owned (user state written here). In shared it writes llm_call_log
+# only (the gateway config is read through the catalog contract view since AA-1027 E5). CIS content is read only through the catalog views
 # (ADR 0001); since AA-712 X4 nothing else of CIS (gold_aa_internal, acp_contract, shared.destinations)
 # and no frozen tripplanner place table is read, and the PLACES_SOURCE switch is gone.
 SCHEMA_TRIPPLANNER = "tripplanner"
@@ -116,8 +116,9 @@ REQUIRE_REGISTRATION_BEFORE_HANDOFF = (
 )
 
 # --- AI Phase 0 guards (AA-805) ---
-# Daily hard stop on TripPlanner model spend (the customer-facing stages together, UTC day), counted in
-# tripplanner.llm_spend_daily (migration tp-010). Infra sets it explicitly on both Lambdas (AA-1015); the code
+# Daily hard stop on TripPlanner model spend (the customer-facing stages together, UTC day), read from the shared
+# ledger through catalog.v_llm_app_spend_today_v1 (CIS 323; tripplanner.llm_spend_daily, tp-010, is no longer
+# written since AA-1027 E5). Infra sets it explicitly on both Lambdas (AA-1015); the code
 # default is the same 5.0. When reached, narration falls back to AA text + neutral day lines and free-text search
 # to the keyword ranking (AA-642 S0).
 TP_DAILY_SPEND_CAP_USD = float(_get("TP_DAILY_SPEND_CAP_USD", "5.0"))
@@ -144,6 +145,12 @@ LLM_ROUTE_DEADLINE_DEFAULT_S = 20.0
 LLM_ROUTE_DEADLINE_MAX_S = 25.0
 # Below this many seconds left no new attempt starts (the request's 'deadline' ledger row is written instead).
 LLM_ROUTE_DEADLINE_MIN_ATTEMPT_S = 1.0
+
+# --- Stage x model request parameters (AA-1027 E4) ---
+# Kill switch for llm_gateway.request_params (the shared.stage_model_params row of a stage and model, read through
+# the CIS config view, CIS 349): "off" sends none of them (the request bodies of before E4). Same name as the CIS
+# gateway's switch. Unset = on; with no params row (Dev today) nothing changes either way.
+LLM_STAGE_PARAMS = (_get("LLM_STAGE_PARAMS", "on") or "on").strip().lower() not in ("off", "0", "false", "no")
 
 # --- AI route limits (AA-1015, migration tp-023) ---
 # Fixed windows counted in tripplanner.ai_rate_counter (backend/shared/ratelimit.py). Capacity plan S261 §2.5:

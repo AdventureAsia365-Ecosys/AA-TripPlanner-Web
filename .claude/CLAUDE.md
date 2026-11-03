@@ -40,13 +40,14 @@ Browser (Next.js, Vercel) → BFF /api/* (server-side, giữ TRIPPLANNER_API_KEY
   attrs → `deploy-lambdas.yml` (`lambda:UpdateFunctionCode`) không bị Terraform ghi đè.
 
 ## MODEL — qua Model Gateway (AA-685, 28/09/2026)
-- KHÔNG hardcode model id. Model mỗi stage lấy từ bảng gateway của AA-CIS-App trong RDS dùng chung
-  (`shared.llm_role_config` + `shared.llm_model_catalog`), client ở `backend/shared/llm_gateway.py`;
+- KHÔNG hardcode model id. Model mỗi stage lấy từ control plane gateway của AA-CIS-App, đọc qua view hợp đồng
+  `catalog.v_llm_gateway_config_v1` (CIS 323/341/349; từ AA-1027 E5 không còn đọc thẳng `shared.llm_role_config` /
+  `shared.llm_model_catalog`), client ở `backend/shared/llm_gateway.py`;
   mỗi lần gọi ghi 1 dòng `shared.llm_call_log` (`quality_signal.app = "tripplanner"`).
 - Stage: `tp_compose` (narration, Sonnet 4.6 qua satellite acc3; không còn dự phòng chéo account — acc1 đã gỡ, AA-998), `tp_search_embed` (search,
   Cohere Embed v4: cache → acc2 → satellite acc3 → tìm theo từ khoá (AA-862, CIS mig 240), 1536-dim), `tp_extract` / `tp_component_embed` (extraction offline cũ — không còn caller từ AA-712 slice 6a).
 - Đổi model: trang admin CIS → Settings → nhóm TripPlanner (không cần deploy, cache 60s).
-- Role DB `tripplanner` chỉ có SELECT 2 bảng config + INSERT log (CIS migration 173).
+- Role DB `tripplanner`: SELECT các view `catalog.*` + INSERT log (CIS 173); SELECT 2 bảng config bị CIS 350 thu hồi (AA-1027 E5).
 
 ## DEFERRED (tracked)
 (Mapbox token URL restriction: xong 16/10/2026, S239.)
