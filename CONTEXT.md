@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-03
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -883,9 +883,12 @@ Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
   repo cannot read it either (it reads `catalog.v_destination`); the only `shared` table it writes is the AI
   gateway ledger `llm_call_log` (INSERT), and it still holds the grandfathered SELECT on two gateway config tables.
 - It does not provision its own AWS resources or OIDC roles — those live in AA-CIS-Infra.
-- **Agents must not merge to the production branch directly.** Ship via PR and let the human
-  merge (matches this repo's stated policy and the ecosystem program rules). This repo has no
-  branch protection like AA-CIS-App; a squash merge works as soon as CI is green.
+- **No direct push to `main`.** Every change ships as a PR. The merge rule is the ecosystem's (root data standards
+  DM-11.5): during the dev phase the orchestrating agent squash-merges its own PR once the required checks are green
+  (the tech lead settled in S262 that this repo follows that rule too); subagents never merge. From the first prod or
+  paying tenant, Terraform / IAM, migration, auth / security and data-deletion PRs wait for the tech lead's approval.
+  `main` is protected: deletion and force push are blocked, and the checks Backend (pytest), Frontend (lint + build),
+  Migrations (lint, PG 15 replay), Security Audit and gitleaks are required.
 
 ## Known gaps (deferred)
 
