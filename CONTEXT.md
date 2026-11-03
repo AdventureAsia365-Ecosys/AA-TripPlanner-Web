@@ -758,6 +758,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   this request) the notice takes the kit `narration` variant ("This text was written by AI when you asked for it…",
   `lib/aiNotices.ts` `narrationNoticeVariant`); `master` / `master_basic` keep the traveller sentence. The narration
   block carries `data-ai-generated="true"` and `data-ai-source` (machine-readable mark in the page).
+  On tour pages (`app/tours/[slug]`) the catalog text blocks (summary, highlights, legacy itinerary text, each
+  day body) carry `data-ai-generated="true" data-ai-source="catalog" data-ai-generated-at=<updated_at>`
+  (`catalogTextMark`); never a page-wide mark, since the page also shows prices, photos and facts.
   Narration day choice (`master_content.resolve_days`), because a component row's tour day can be
   wrong: per trip day, the own tour day text of any entry whose text names its stop (component or
   place name, accent-insensitive, generic suffixes such as "Temple" dropped); else the nearest other
