@@ -88,3 +88,13 @@ export function catalogTextMark(updatedAt?: string | null, publishedAt?: string 
     ? { "data-ai-generated": "true", "data-ai-source": "catalog", "data-ai-generated-at": at }
     : { "data-ai-generated": "true", "data-ai-source": "catalog" };
 }
+
+// AA-1040: the mark of a tour's text blocks from the browse answer. The Lambda's `ai.generated_at` wins (the same value
+// the CIS tour reads carry); without it (an older Lambda answer) the tour's updated_at, else published_at.
+export function tourTextMark(tour: {
+  ai?: { generated_at: string | null } | null;
+  updated_at?: string | null;
+  published_at?: string | null;
+}): AiMarkAttrs {
+  return catalogTextMark(tour.ai?.generated_at ?? tour.updated_at, tour.published_at);
+}

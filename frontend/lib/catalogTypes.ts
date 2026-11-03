@@ -9,6 +9,17 @@ import type { RouteProposal } from "./types";
 // a destination photo and must be labelled so; it never shows the tour itself.
 export type CoverSource = "tour" | "destination" | "country" | null;
 
+// AA-1040 (EU AI Act Art. 50(2)): the machine-readable mark of the AI-written CIS Master text, added by the browse
+// Lambda (backend/browse/catalog.py catalog_ai_mark) to every card and tour detail; the same object as the CIS tour
+// reads. Optional: an older Lambda answer has none (the page then marks from updated_at / published_at).
+export interface CatalogAiMark {
+  ai_generated: boolean;
+  generator: string;
+  model: string | null;
+  generated_at: string | null;
+  human_edited: boolean | null;
+}
+
 export interface TourCard {
   source_id: string;
   tour_id: string;
@@ -30,6 +41,7 @@ export interface TourCard {
   lifecycle_stage: string | null;
   published_at: string | null;
   updated_at: string | null;
+  ai?: CatalogAiMark;
 }
 
 export type TourSort = "featured" | "duration_asc" | "duration_desc" | "recent" | "title";
@@ -106,6 +118,7 @@ export interface TourDetail {
   photo_count: number;
   published_at: string | null;
   updated_at: string | null;
+  ai?: CatalogAiMark;
   days: TourDay[];
   places: TourPlace[];
   photos: (CatalogPhoto & { position: number })[];

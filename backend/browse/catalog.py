@@ -341,6 +341,25 @@ def months_from_text(text: Optional[str]) -> Optional[set[int]]:
     return months or None
 
 
+# AA-1040 (EU AI Act Art. 50(2), root ADR 0019 d19): the machine-readable mark of the AI-written catalog text. Every
+# catalog.v_tour title, subtitle, summary, description, highlight and day body is the CIS Master text, written by the
+# CIS catalog writer model and reviewed by AA staff before it is served. Same object, same generator name as the CIS
+# tour reads (tenant pool and catalog.http.v1 1.3 `Tour.ai`, CIS services/acp_content_writing/ai_marking.tour_mark):
+# `generated_at` = the last Master publish (`updated_at`), else the first (`published_at`); `model` and
+# `human_edited` are not known from the catalog views (both recorded admin-side in CIS), so null.
+CATALOG_AI_GENERATOR = "Adventure Asia catalog writer"
+
+
+def catalog_ai_mark(updated_at: Any, published_at: Any = None) -> dict:
+    return {
+        "ai_generated": True,
+        "generator": CATALOG_AI_GENERATOR,
+        "model": None,
+        "generated_at": _iso(updated_at) or _iso(published_at),
+        "human_edited": None,
+    }
+
+
 def _card(r: Any) -> dict:
     return {
         "source_id": r["source_id"],
@@ -365,6 +384,7 @@ def _card(r: Any) -> dict:
         "lifecycle_stage": r["lifecycle_stage"],
         "published_at": _iso(r["published_at"]),
         "updated_at": _iso(r["updated_at"]),
+        "ai": catalog_ai_mark(r["updated_at"], r["published_at"]),
     }
 
 
@@ -578,6 +598,7 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
         "published_at": _iso(t["published_at"]),
         "updated_at": _iso(t["updated_at"]),
         "content_hash": t["content_hash"],
+        "ai": catalog_ai_mark(t["updated_at"], t["published_at"]),
         "days": [
             {"day_number": d["day_number"], "title": d["title"], "body": d["body"],
              "places": list(d["places"] or [])}

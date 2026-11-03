@@ -761,6 +761,11 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   On tour pages (`app/tours/[slug]`) the catalog text blocks (summary, highlights, legacy itinerary text, each
   day body) carry `data-ai-generated="true" data-ai-source="catalog" data-ai-generated-at=<updated_at>`
   (`catalogTextMark`); never a page-wide mark, since the page also shows prices, photos and facts.
+  The browse Lambda's catalog JSON carries the same mark as data (AA-1040 lane l10): every tour card and the tour
+  detail have `ai` = `{ai_generated: true, generator: "Adventure Asia catalog writer", model: null, generated_at:
+  <updated_at, else published_at>, human_edited: null}` (`backend/browse/catalog.py` `catalog_ai_mark`, the object of
+  the CIS tour reads and catalog.http.v1 1.3 `Tour.ai`); the page's attributes take `ai.generated_at` first
+  (`tourTextMark`). `ai` is a Lambda helper, not a `catalog.tour` view column.
   Narration day choice (`master_content.resolve_days`), because a component row's tour day can be
   wrong: per trip day, the own tour day text of any entry whose text names its stop (component or
   place name, accent-insensitive, generic suffixes such as "Temple" dropped); else the nearest other

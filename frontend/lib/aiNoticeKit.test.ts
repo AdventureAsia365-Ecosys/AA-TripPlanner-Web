@@ -115,6 +115,14 @@ test("AA-1040: catalog tour text blocks carry the machine mark, never the whole 
   });
   assert.equal(catalogTextMark(null, "2026-09-01T03:00:00+00:00")["data-ai-generated-at"], "2026-09-01T03:00:00+00:00");
   assert.equal("data-ai-generated-at" in catalogTextMark(null, null), false);
+  // the browse answer's `ai` mark wins; an answer without it falls back to updated_at / published_at
+  const { tourTextMark } = await import("./aiNotices.ts");
+  const ai = { ai_generated: true, generator: "Adventure Asia catalog writer", model: null,
+    generated_at: "2026-10-05T03:00:00+00:00", human_edited: null };
+  assert.equal(tourTextMark({ ai, updated_at: "2026-10-02T03:00:00+00:00" })["data-ai-generated-at"],
+    "2026-10-05T03:00:00+00:00");
+  assert.equal(tourTextMark({ updated_at: null, published_at: "2026-09-01T03:00:00+00:00" })["data-ai-generated-at"],
+    "2026-09-01T03:00:00+00:00");
   const page = src("app/tours/[slug]/page.tsx");
   // summary, highlights, legacy itinerary text and each day body: four marked blocks, no page-level meta tag
   assert.equal((page.match(/\{\.\.\.aiMark\}/g) ?? []).length, 4);

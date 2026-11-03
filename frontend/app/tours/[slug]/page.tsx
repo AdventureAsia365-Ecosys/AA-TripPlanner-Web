@@ -27,7 +27,7 @@ import type { CatalogPhoto, TourDetail } from "@/lib/catalogTypes";
 import { resolveHeroPhoto, type HeroPhoto } from "@/lib/photoResolve";
 import { RIBBON_MIN_ANIMATED, uniqueRibbonItems, type RibbonItem } from "@/lib/photos";
 import { cvSize } from "@/lib/contentVisibility";
-import { catalogTextMark } from "@/lib/aiNotices";
+import { tourTextMark } from "@/lib/aiNotices";
 import { clip, coverAlt, daysText, splitLines, titleCase } from "@/lib/text";
 import { routeLines, routePoints } from "@/lib/tourMap";
 import { AiNotice, Badge, ButtonLink, Icon } from "@/ui";
@@ -310,7 +310,7 @@ export default async function TourPage({ params }: Props) {
   const inclusions = splitLines(t.inclusions);
   const exclusions = splitLines(t.exclusions);
   // AA-1040 (Art. 50(2)): machine-readable mark on the AI-written text blocks only (summary, highlights, days).
-  const aiMark = catalogTextMark(t.updated_at, t.published_at);
+  const aiMark = tourTextMark(t);
   const days = daysText(t.duration_days, t.duration_raw);
   const placeCount = new Set([...points.map((p) => p.name), ...lines.map((l) => l.name ?? "")].filter(Boolean)).size;
   const facts = [
