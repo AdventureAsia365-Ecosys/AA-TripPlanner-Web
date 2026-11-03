@@ -15,8 +15,9 @@
 -- read from the ledger through catalog.v_llm_app_spend_today_v1 and the counter was only the fallback while that view
 -- was missing, plus a second write. AA-1027 E5 removed both from the gateway (AA-TripPlanner-Web "gateway reads the CIS
 -- views only (fail closed)"): nothing reads or writes the table any more (guard backend/tests/test_extraction_ops.py
--- fails on any SQL string naming it), and no other repo reads it (CIS cannot: no grant; the AA-CIS-Infra script
--- aa805_ai_guards_read.py skips it once it is gone). Billing truth is shared.llm_call_log, so the rows are derived data.
+-- fails on any SQL string naming it), and no other app reads it (CIS cannot: no grant; the AA-CIS-Infra evidence
+-- script aa805_ai_guards_read.py of the closed AA-805 already reads tables tp-018 dropped and is not run any more).
+-- Billing truth is shared.llm_call_log, so the rows are derived data.
 --
 -- What.
 --   1. Guards (RAISE, nothing changes):
