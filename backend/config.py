@@ -110,6 +110,18 @@ TILE_DEGREES = 1.0
 LONG_TRIP_WARN_DAYS = 25
 GUEST_SESSION_DAYS = 90
 
+# AA-1034 R0 (root ADR 0019 d8/d11, B2B-only model): Adventure Asia sells to partner agencies only and keeps no
+# end-traveller record of its own. While this is on (the default), POST /trip/{id}/send-to-advisor answers 410
+# `b2b_only` before any write: no `sent` event, no registration (tripplanner.customers), no inquiry.submitted outbox
+# row, so no Booking case. The planner shows a demo notice instead. A code default (not set on the Lambdas); `false`
+# turns the frozen hand-off back on. Leads go to the tenant's CRM later (lead.submitted.v1, R2+).
+def demo_flag(raw: Optional[str]) -> bool:
+    """On unless the value is exactly ``false`` (any case): an unset or mistyped value keeps the demo."""
+    return (raw or "true").strip().lower() != "false"
+
+
+ADVISOR_HANDOFF_DEMO = demo_flag(_get("ADVISOR_HANDOFF_DEMO"))
+
 # Feature flag: require registration before send-to-advisor.
 REQUIRE_REGISTRATION_BEFORE_HANDOFF = (
     _get("REQUIRE_REGISTRATION_BEFORE_HANDOFF", "true").lower() == "true"

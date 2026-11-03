@@ -16,6 +16,7 @@ import { LEGAL_LINKS, TERMS_AI_PATH } from "@/lib/legal";
 import { formatDays } from "@/lib/text";
 import { reasonText, stopLabel, unavailableBanner } from "@/lib/availability";
 import { useAccount } from "@/lib/useAccount";
+import { ADVISOR_HANDOFF_DEMO, DEMO_NOTICE } from "@/lib/advisorDemo";
 
 const DAY_KIND_LABEL: Record<string, string> = {
   extra_night: "Extra night",
@@ -111,6 +112,7 @@ export default function TripPanel() {
   const account = useAccount();
   const accountEmail = account.signedIn ? account.email : null;
   const [sentMsg, setSentMsg] = useState<string | null>(null);
+  const [demoNotice, setDemoNotice] = useState(false);
   // Per-leg travel estimates between consecutive stops, keyed by the component the leg leaves from. AA-847 slice
   // 6d: a river / road / trail day is a "feature" leg along the line between its two stops (lib/lines.ts planTrip).
   const [legs, setLegs] = useState<Map<string, RouteLeg>>(new Map());
@@ -209,8 +211,17 @@ export default function TripPanel() {
 
   const handleSend = async (withCustomer: boolean) => {
     setSentMsg(null);
+    // AA-1034 R0 (B2B-only model): the hand-off is a demo; nothing is sent and no contact details are asked for.
+    if (ADVISOR_HANDOFF_DEMO) {
+      setShowReg(false);
+      setDemoNotice(true);
+      return;
+    }
     const res = await send(withCustomer ? { ...reg, email: accountEmail ?? reg.email } : undefined);
-    if (res.ok) {
+    if (res.demo) {
+      setShowReg(false);
+      setDemoNotice(true);
+    } else if (res.ok) {
       setShowReg(false);
       setSentMsg("Sent to an advisor. They'll be in touch shortly.");
     } else if (res.needsRegistration) {
@@ -662,6 +673,19 @@ export default function TripPanel() {
 
           {/* Sticky CTA footer */}
           <div className="border-t border-k-line bg-k-card px-4 py-3">
+            {demoNotice && (
+              <div
+                role="status"
+                data-testid="advisor-demo-notice"
+                className="mb-2 flex gap-2 rounded-lg border border-k-accent-border bg-k-accent-tint px-2.5 py-2 text-xs text-k-accent-deep"
+              >
+                <Icon name="info" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <div>
+                  <p className="font-semibold">{DEMO_NOTICE.title}</p>
+                  <p className="mt-0.5 text-k-body">{DEMO_NOTICE.body}</p>
+                </div>
+              </div>
+            )}
             {sentMsg && (
               <p
                 className={`mb-2 rounded-lg px-2.5 py-1.5 text-xs font-medium ${

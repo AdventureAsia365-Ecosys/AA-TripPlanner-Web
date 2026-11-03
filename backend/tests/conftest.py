@@ -15,6 +15,15 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _advisor_handoff_live(monkeypatch):
+    """AA-1034 R0: send-to-advisor answers 410 b2b_only by default (config.ADVISOR_HANDOFF_DEMO). The frozen hand-off
+    code stays tested with the demo off; tests/test_aa1034_b2b_only.py turns it on."""
+    from backend import config
+
+    monkeypatch.setattr(config, "ADVISOR_HANDOFF_DEMO", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_app_profile(monkeypatch):
     """AA-1025 H1b: no test reads the CIS app profile view unless it says so (the fake DBs answer any SQL); the default
     profile (AI on, no budget) is what every older test expects. Tests of the profile patch ``app_profile.read``."""
