@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { LEGAL_DRAFT_LABEL, LEGAL_LINKS, PRIVACY_PATH, TERMS_PATH } from "./legal.ts";
+import { ANTHROPIC_USAGE_POLICY_URL, LEGAL_DRAFT_LABEL, LEGAL_LINKS, PRIVACY_PATH, TERMS_PATH } from "./legal.ts";
 
 const src = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
 
@@ -39,4 +39,17 @@ test("the site footer and the contact form link the legal pages", () => {
   for (const file of ["components/site/SiteFooter.tsx", "components/TripPanel.tsx"]) {
     assert.match(src(file), /LEGAL_LINKS\.map\(/, `${file} must render LEGAL_LINKS`);
   }
+});
+
+// AA-820 (S266): the "Use of AI" section names the model that writes the narration and links the Anthropic Usage
+// Policy (root docs/legal/tenant-ai-schedule.md §2 (c)); travellers are end users, not tenants.
+test("the terms' AI section names the writer and links the Anthropic Usage Policy", () => {
+  assert.equal(ANTHROPIC_USAGE_POLICY_URL, "https://www.anthropic.com/legal/aup");
+  const s = src("app/terms/page.tsx");
+  const ai = s.slice(s.indexOf('<LegalSection id="ai"'), s.indexOf("</LegalSection>", s.indexOf('<LegalSection id="ai"')));
+  const flat = ai.replace(/\s+/g, " ");
+  assert.match(flat, /href=\{ANTHROPIC_USAGE_POLICY_URL\}/);
+  assert.match(flat, /Anthropic&apos;s Claude, through Amazon Bedrock/);
+  assert.match(flat, /Adventure Asia&apos;s own account/);
+  assert.match(flat, /AI-written text is labelled as such/);
 });

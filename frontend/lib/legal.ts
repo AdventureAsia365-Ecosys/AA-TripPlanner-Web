@@ -11,8 +11,15 @@ export const TERMS_AI_PATH = "/terms#ai";
 export const LEGAL_DRAFT_LABEL = "Draft — pending legal review";
 
 /** Draft version and date shown under the page title. */
-export const LEGAL_VERSION = "Draft v0.1";
-export const LEGAL_UPDATED = "20 October 2026";
+export const LEGAL_VERSION = "Draft v0.2";
+export const LEGAL_UPDATED = "3 November 2026";
+
+/**
+ * AA-820 (S266): the usage policy of the provider whose model writes the site's AI text (Claude through Amazon Bedrock,
+ * root docs/architecture/ai-use-register.md row `tp_compose`). Travellers are end users of a product that integrates
+ * Claude, so the terms link it (root docs/legal/tenant-ai-schedule.md §2 (c)).
+ */
+export const ANTHROPIC_USAGE_POLICY_URL = "https://www.anthropic.com/legal/aup";
 
 /** The contact address adventure.asia itself publishes (same as the CIS portal's SUPPORT_EMAIL). */
 export const LEGAL_CONTACT_EMAIL = "info@adventure.asia";

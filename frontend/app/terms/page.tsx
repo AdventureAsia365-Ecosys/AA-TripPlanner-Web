@@ -2,10 +2,12 @@
 // a sent trip is an enquiry, not a booking; AA-1033 §3 "Use of AI": what AI writes, that it can be wrong, that the
 // confirmed quote and booking conditions bind); liability, governing law and
 // booking conditions are left [to be confirmed] for counsel. Not indexed while it is a draft.
+// AA-820 (S266, Draft v0.2): §3 says which model writes the AI text (Claude through Amazon Bedrock, AI Use Register
+// row tp_compose) and links the Anthropic Usage Policy, which reaches travellers as end users of a product built on it.
 import type { Metadata } from "next";
 import Link from "next/link";
 import LegalPage, { LegalSection } from "@/components/site/LegalPage";
-import { LEGAL_CONTACT_EMAIL, PRIVACY_PATH } from "@/lib/legal";
+import { ANTHROPIC_USAGE_POLICY_URL, LEGAL_CONTACT_EMAIL, PRIVACY_PATH } from "@/lib/legal";
 
 export const metadata: Metadata = {
   title: "Terms of use (draft)",
@@ -55,6 +57,19 @@ export default function TermsPage() {
             AI from Adventure Asia&apos;s own tour notes and checked by automated quality checks), and the day-by-day
             narration of a trip you build. The place search and the &ldquo;You might also like&rdquo; suggestions use AI
             to match your words and the places you picked. AI-written text is labelled as such.
+          </li>
+          <li>
+            The trip narration is written by Anthropic&apos;s Claude, through Amazon Bedrock (Amazon Web Services), on
+            Adventure Asia&apos;s own account. When you use the site&apos;s AI features, the{" "}
+            <a
+              href={ANTHROPIC_USAGE_POLICY_URL}
+              className="font-semibold text-k-accent-deep hover:underline"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Anthropic Usage Policy
+            </a>{" "}
+            applies to you too: for example, do not use them to create fake reviews or misleading content.
           </li>
           <li>
             AI can make mistakes, so this text can contain errors. It is there for information, to help you explore and
