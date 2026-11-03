@@ -103,13 +103,14 @@ Read them in the database, read-only, through the usual ECS exec pattern of the 
   the next model narration overwrites it with `hits = 0`, so `sum(hits)` is a recent-window figure,
   not a lifetime total. Expired rows stay in the table until then, so filter on `created_at` for the
   live entries.
-- **Daily spend vs the cap** — `tripplanner.llm_spend_daily` (UTC `day` x `stage`: `cost_usd`,
-  `calls`, `unpriced_calls`). The cap compares today's sum over `tp_compose` + `tp_search_embed`
-  with `TP_DAILY_SPEND_CAP_USD` (code default 5.0 when the Lambda env does not set it). Over the
-  cap, `/narrate` answers with `"ai_budget_exhausted": true` and `/browse/search` with the keyword
-  ranking (200, `"ai_budget_exhausted": true`). When the counter or the route config cannot be read,
-  or the model provider fails, both degrade the same way with `"ai_paused": true` (AA-642 S0, fail
-  closed).
+- **Daily spend vs the cap** — the CIS contract view `catalog.v_llm_app_spend_today_v1` over the ledger
+  `shared.llm_call_log` (today, UTC, per `stage`: `cost_usd`, `calls`, `unpriced_calls`). The cap compares today's
+  sum over `tp_compose` + `tp_search_embed` with `TP_DAILY_SPEND_CAP_USD` (code default 5.0 when the Lambda env does
+  not set it), or, when the app profile sets `default_daily_budget_usd` (AA-1025 H1b), today's sum over every `tp_*`
+  stage with that budget. Over the cap, `/narrate` answers with `"ai_budget_exhausted": true` and `/browse/search`
+  with the keyword ranking (200, `"ai_budget_exhausted": true`). When the spend view or the route config cannot be
+  read, or the model provider fails, both degrade the same way with `"ai_paused": true` (AA-642 S0, AA-1027 E5: fail
+  closed; the tp-010 counter `tripplanner.llm_spend_daily` is dropped by tp-024).
 - **Throttling** — API Gateway route settings (AA-CIS-Infra): `POST /trip/{trip_id}/narrate`
   2 rps / burst 5, `GET /browse/search` 10 / 20. A throttled call gets 429 before the Lambda runs.
 - **Per-visitor AI limits (AA-1015, tp-023)** — the Lambdas count each request that would call a model in
