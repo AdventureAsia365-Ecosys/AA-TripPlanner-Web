@@ -622,13 +622,14 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   or failing pauses AI (`route_unreadable` / `spend_unreadable`) and the caller degrades; CIS 351 revokes the
   grandfathered SELECT of CIS 173 on the two tables and tp-025 drops the tp-010 counter. Each attempt
   writes the ledger v2 row (`app = 'tripplanner'`, `status`, `error_class`, `latency_ms`, `attempt_no`, connection,
-  wire id, cache tokens, `pricing_mode`, and `effort` when the body carried one).
+  wire id, cache tokens, `pricing_mode`, and `effort` when the body carried one: always NULL today, see E4).
   **AA-1027 E4 (stage x model params):** CIS 350 appends `supports_temperature` (catalog) and `stage_params` (the
   `shared.stage_model_params` row of the stage and model, NULL = none) to the config view. `llm_gateway.request_params`
   applies them with CIS's precedence (call site, then the row, then the protocol default): the call sites always pass
   max_tokens, so the row's `max_tokens` / `min_output_tokens` never apply; `temperature` is sent when the catalog says
-  the model takes one (both wire styles); `effort` as `output_config.effort` on the Anthropic-native body only (not on
-  Converse); `reasoning_mode` never. What is not applied is said once per container (`llm_stage_params_not_applied`).
+  the model takes one (both wire styles); `effort` and `reasoning_mode` never: every TripPlanner attempt is a Bedrock
+  call (InvokeModel or Converse) and CIS sends effort only on the Anthropic Messages API, so the field comes back only
+  after a probe shows Bedrock takes it for the catalog model (or behind a catalog capability flag). What is not applied is said once per container (`llm_stage_params_not_applied`).
   No row (Dev today) = byte-identical request bodies. Kill switch `LLM_STAGE_PARAMS=off`. Before 350 is applied the
   read narrows to the 341 columns (SQLSTATE 42703) and no params apply.
   **AA-642 S263 E2:** each row also carries `request_id` (Bedrock RequestId of the reply or of the provider's error),

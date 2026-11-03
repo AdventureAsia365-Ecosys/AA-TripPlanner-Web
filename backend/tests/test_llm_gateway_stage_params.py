@@ -60,24 +60,40 @@ def test_no_params_row_keeps_the_request_body_exactly_as_before():
     assert call.effort is None and "stage_params" not in call.extra
 
 
-def test_temperature_and_effort_go_into_the_anthropic_native_body(capsys):
+def test_temperature_goes_into_the_anthropic_native_body_but_no_effort(capsys):
+    # Bedrock InvokeModel: CIS sends effort only on the Anthropic Messages API, never on Bedrock, until a probe has
+    # shown the field; so the row's effort is said once and not sent, and the ledger effort stays NULL.
     stub, call = _run(_model(temperature=0.3, effort="low"))
     (_, _, body), = stub.calls
-    assert body["temperature"] == 0.3 and body["output_config"] == {"effort": "low"}
+    assert body["temperature"] == 0.3 and "output_config" not in body
+    assert set(body) == {"anthropic_version", "max_tokens", "system", "messages", "temperature"}
     assert body["max_tokens"] == 900                                     # the call site's, untouched
-    assert call.effort == "low" and call.extra["stage_params"] == {"temperature": 0.3, "effort": "low"}
+    assert call.effort is None and call.extra["stage_params"] == {"temperature": 0.3}
     [applied] = _events(capsys, "llm_stage_params_applied")
-    assert (applied["stage"], applied["model"], applied["fields"]) == ("tp_compose", "zz-writer",
-                                                                       ["effort", "temperature"])
+    assert (applied["stage"], applied["model"], applied["fields"]) == ("tp_compose", "zz-writer", ["temperature"])
 
 
-async def test_the_ledger_row_carries_the_effort_and_the_applied_fields():
+def test_an_effort_only_row_leaves_the_body_unchanged_and_is_said_once(capsys):
+    model = _model(effort="high")
+    stub, call = _run(model)
+    _run(model)
+    (_, _, body), = stub.calls[:1]
+    assert body == {"anthropic_version": "bedrock-2023-05-31", "max_tokens": 900, "system": "zz system",
+                    "messages": [{"role": "user", "content": "zz user"}]}
+    assert call.effort is None and "stage_params" not in call.extra
+    out = capsys.readouterr().out
+    assert '"llm_stage_params_applied"' not in out
+    notes = [json.loads(x) for x in out.splitlines() if '"llm_stage_params_not_applied"' in x]
+    assert [(n["field"], n["api_style"]) for n in notes] == [("effort", "anthropic_native")]   # once per container
+
+
+async def test_the_ledger_row_carries_the_applied_fields_and_no_effort():
     _, call = _run(_model(temperature=0.3, effort="medium"))
     db = FakeDb()
     await gw.record(db, call, {"mode": "compose"})
     row = _row(db.executed[0][1])
-    assert row["effort"] == "medium"
-    assert json.loads(row["quality_signal"])["stage_params"] == {"temperature": 0.3, "effort": "medium"}
+    assert row["effort"] is None
+    assert json.loads(row["quality_signal"])["stage_params"] == {"temperature": 0.3}
 
 
 def test_a_model_that_takes_no_temperature_never_gets_one(capsys):
@@ -131,8 +147,8 @@ def test_failed_attempts_say_which_params_their_body_carried():
         gw.generate_text(route, "s", "u", 100, client_factory=make_factory({"acc3": fail_then}, []),
                          failures=failures)
     (failed,) = failures
-    assert failed.effort == "low" and failed.extra["stage_params"] == {"temperature": 0.4, "effort": "low"}
-    assert fail_then.calls[0][2]["temperature"] == 0.4
+    assert failed.effort is None and failed.extra["stage_params"] == {"temperature": 0.4}
+    assert fail_then.calls[0][2]["temperature"] == 0.4 and "output_config" not in fail_then.calls[0][2]
 
 
 def test_each_model_of_the_route_uses_its_own_row():

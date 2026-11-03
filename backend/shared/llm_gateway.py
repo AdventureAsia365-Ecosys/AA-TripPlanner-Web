@@ -84,10 +84,11 @@ the `stage_params` column CIS 350 appends to the config view, with the catalog's
 to each text attempt's request body by `request_params`, with CIS's precedence (shared/llm_client/stage_params.py):
 the call site's explicit value, then the stage x model row, then the protocol default (nothing sent). TripPlanner's
 call sites always pass max_tokens and never a temperature or effort, so the row's `max_tokens` / `min_output_tokens`
-never apply here (said once per stage and model) and its `temperature` / `effort` do: temperature on both wire styles
-when the catalog says the model takes one, effort (`output_config.effort`) on the Anthropic-native body only (on
-Converse it is not sent and said once, as in CIS), `reasoning_mode` never. No row (the Dev state) = the request body
-is byte-identical to before.
+never apply here (said once per stage and model) and its `temperature` does, on both wire styles when the catalog
+says the model takes one. `effort` and `reasoning_mode` are never sent (said once): every TripPlanner attempt goes to
+Bedrock (InvokeModel or Converse), and CIS sends effort only on the Anthropic Messages API, never on Bedrock, until a
+probe has shown that Bedrock takes the field for the catalog model. No row (the Dev state) = the request body is
+byte-identical to before.
 
 AA-856: `EmbeddingCache` / `query_embed_cache` keep query embeddings in the Lambda container
 (bounded LRU + TTL, keyed by stage, route models, input type and the normalised text). A cache hit
@@ -235,7 +236,7 @@ class Call:
     # AA-1027 E3: how the core priced a billed attempt (aa_llm.pricing.quote), and the connection's auth mode.
     pricing_mode: Optional[str] = None
     auth_mode: Optional[str] = None
-    # AA-1027 E4: the effort the request body carried (the stage x model row), for the ledger's effort column.
+    # AA-1027 E4: the effort the request body carried, for the ledger's effort column (None: no Bedrock path sends one).
     effort: Optional[str] = None
 
     @property
@@ -752,7 +753,7 @@ def _not_applied(stage: str, model: Model, name: str, reason: str) -> None:
 
 def request_params(stage: str, model: Model) -> dict:
     """AA-1027 E4 — the stage x model parameters to put in the request body of `model` on `stage`: {"temperature":
-    t, "effort": e} for the fields its `shared.stage_model_params` row sets and this path sends; {} when there is no
+    t} for the fields its `shared.stage_model_params` row sets and this path sends; {} when there is no
     row (the request is then exactly as before E4) or the switch is off (config.LLM_STAGE_PARAMS).
 
     Precedence (CIS shared/llm_client/stage_params.py): 1. the call site's explicit value; 2. the stage x model row;
@@ -762,8 +763,9 @@ def request_params(stage: str, model: Model) -> dict:
         max_tokens that came from the row or the default, never a call site's): not applied, said once;
       * temperature: sent when the catalog says the model takes one (`supports_temperature` true; unknown = not
         sent), on both wire styles;
-      * effort: sent as `output_config.effort` on the Anthropic-native body; on Converse no effort field is sent
-        (as in CIS, until a probe has shown the provider's field), said once;
+      * effort: never sent, said once. Every attempt here is a Bedrock call (InvokeModel or Converse) and CIS sends
+        effort only on the Anthropic Messages API, never on Bedrock, until a probe has shown that Bedrock accepts the
+        field for the catalog model; add it back only after such a probe (or behind a catalog capability flag);
       * reasoning_mode: never sent (no TripPlanner path has a reasoning field), said once.
     Never raises."""
     p = model.params
@@ -778,10 +780,7 @@ def request_params(stage: str, model: Model) -> dict:
         else:
             _not_applied(stage, model, "temperature", "the catalog does not say this model takes a temperature")
     if p.effort is not None:
-        if model.api_style == "anthropic_native":
-            out["effort"] = p.effort
-        else:
-            _not_applied(stage, model, "effort", f"no effort field is sent on {model.api_style}")
+        _not_applied(stage, model, "effort", f"no effort field is sent on Bedrock {model.api_style} yet")
     if p.reasoning_mode is not None:
         _not_applied(stage, model, "reasoning_mode", "TripPlanner sends no reasoning field")
     if out:
@@ -790,8 +789,8 @@ def request_params(stage: str, model: Model) -> dict:
 
 
 def _with_params(call: Call, params: dict) -> Call:
-    """The attempt stamped with the stage x model parameters its request body carried (ledger `effort`, and the
-    applied fields in quality_signal)."""
+    """The attempt stamped with the stage x model parameters its request body carried (the applied fields in
+    quality_signal; ledger `effort` only once request_params sends one, which it does not on Bedrock today)."""
     if params:
         call.effort = params.get("effort")
         call.extra = {**call.extra, "stage_params": dict(params)}
@@ -802,7 +801,7 @@ def _text_call(model: Model, d: Deployment, system: str, user: str, max_tokens: 
                client_factory: ClientFactory, *, timeout_s: Optional[float] = None,
                params: Optional[dict] = None,
                ) -> tuple[str, dict, Optional[str]]:
-    """One text attempt. `params` (request_params) adds the stage x model temperature / effort to the body."""
+    """One text attempt. `params` (request_params) adds the stage x model temperature to the body."""
     rt = _runtime(d, client_factory, timeout_s)
     params = params or {}
     if model.api_style == "anthropic_native":
@@ -810,8 +809,6 @@ def _text_call(model: Model, d: Deployment, system: str, user: str, max_tokens: 
                 "system": system, "messages": [{"role": "user", "content": user}]}
         if "temperature" in params:
             body["temperature"] = params["temperature"]
-        if "effort" in params:
-            body["output_config"] = {"effort": params["effort"]}
         resp = rt.invoke_model(modelId=d.wire_id, body=json.dumps(body))
         payload = _read_body(resp)
         text = "".join(p.get("text", "") for p in payload.get("content", [])
