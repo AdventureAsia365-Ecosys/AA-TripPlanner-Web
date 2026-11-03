@@ -51,7 +51,7 @@ AA-805 (fork defects vs. the CIS client):
   - Daily spend hard stop: `budget_status()` compares today's ledger spend of the customer-facing stages
     (ONLINE_STAGES: tp_compose, tp_search_embed), read through `catalog.v_llm_app_spend_today_v1`, with
     TP_DAILY_SPEND_CAP_USD. (The tp-010 counter tripplanner.llm_spend_daily is no longer written since AA-1027 E5;
-    tp-025 drops it.) The offline stages (tp_extract, tp_component_embed) are gone: no caller since AA-712, their
+    tp-024 drops it.) The offline stages (tp_extract, tp_component_embed) are gone: no caller since AA-712, their
     routes retired by CIS migration 336 (AA-1024 D8).
 
 AA-642 S8 (root ADR 0009 decision 13): the shared core `backend/aa_llm` (a byte copy of AA-CIS-App
