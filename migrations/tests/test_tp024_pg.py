@@ -1,9 +1,9 @@
-"""tp-025 replay (AA-1027 E5): tripplanner.llm_spend_daily (the tp-010 spend counter) dropped, applied the way DB
-Migrate applies it (as tp_owner, after tp-013 … tp-024).
+"""tp-024 replay (AA-1027 E5): tripplanner.llm_spend_daily (the tp-010 spend counter) dropped, applied the way DB
+Migrate applies it (as tp_owner, after tp-013 … tp-023).
 
 Runs only with ``--pg-dsn`` (a SUPERUSER DSN of a throwaway LOCAL Postgres), on the stand-in of test_tp013_pg.py:
-tp-001…012 replayed as files, the CIS 243 grants, tp-013 as the master, tp-014 … tp-024 with ``SET ROLE tp_owner``,
-then tp-025 the same way. Each guard case runs in its own database.
+tp-001…012 replayed as files, the CIS 243 grants, tp-013 as the master, tp-014 … tp-023 with ``SET ROLE tp_owner``,
+then tp-024 the same way. Each guard case runs in its own database.
 
 Checks: the destructive header (MIG-12) in one BEGIN … COMMIT; the table is gone, every other live table stays with
 its runtime grants; the guards refuse a row written less than an hour ago, an object that depends on the table and a
@@ -32,8 +32,8 @@ from test_tp015_pg import CIS_READER
 
 asyncpg = pytest.importorskip("asyncpg")
 
-BEFORE_TP025 = sorted(f for f in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql") if 13 < int(f.name[:3]) < 25)
-TP025 = MIGRATIONS / "025_drop_llm_spend_daily.sql"
+BEFORE_TP024 = sorted(f for f in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql") if 13 < int(f.name[:3]) < 24)
+TP024 = MIGRATIONS / "024_drop_llm_spend_daily.sql"
 DROPPED = "llm_spend_daily"
 LIVE = ("customers", "sessions", "trip_events", "trip_drafts", "outbox", "narration_cache", "component_id_map",
         "traveller_accounts", "job", "ai_rate_counter")
@@ -49,8 +49,8 @@ async def _as_owner(admin, path) -> None:
 
 
 def _database(pg_dsn, *, written: str = "2 days", extra_sql: str = "", role: str = "tp_owner"):  # noqa: F811
-    """Builds a database up to tp-024, seeds two counter rows (the newer written `written` ago), runs `extra_sql` as
-    the superuser, then tp-025 as `role`. Returns (context, the tp-025 error or None); the caller drops it."""
+    """Builds a database up to tp-023, seeds two counter rows (the newer written `written` ago), runs `extra_sql` as
+    the superuser, then tp-024 as `role`. Returns (context, the tp-024 error or None); the caller drops it."""
     name = f"tp_aa1027_{uuid.uuid4().hex[:8]}"
     password = secrets.token_urlsafe(16)
 
@@ -78,7 +78,7 @@ def _database(pg_dsn, *, written: str = "2 days", extra_sql: str = "", role: str
                 await admin.execute(_replay_text(f, vector))
             await admin.execute(CIS_243_GRANTS)
             await admin.execute(TP013.read_text(encoding="utf-8"))
-            for f in BEFORE_TP025:
+            for f in BEFORE_TP024:
                 await _as_owner(admin, f)
         finally:
             await admin.close()
@@ -98,7 +98,7 @@ def _database(pg_dsn, *, written: str = "2 days", extra_sql: str = "", role: str
             if role != "aa_cis_admin":
                 await admin.execute(f"SET ROLE {role}")
             try:
-                await admin.execute(TP025.read_text(encoding="utf-8"))
+                await admin.execute(TP024.read_text(encoding="utf-8"))
             except asyncpg.PostgresError as e:
                 error = f"{type(e).__name__}: {e}"
                 if admin.is_in_transaction():
@@ -130,14 +130,14 @@ def db(pg_dsn):  # noqa: F811
         _drop(pg_dsn, ctx["name"])
 
 
-def test_files_before_tp025_run_from_tp014_without_a_gap():
-    numbers = [int(f.name[:3]) for f in BEFORE_TP025]
+def test_files_before_tp024_run_from_tp014_without_a_gap():
+    numbers = [int(f.name[:3]) for f in BEFORE_TP024]
     assert numbers == list(range(14, 14 + len(numbers))) and numbers[-1] >= 23, numbers
 
 
 def test_file_is_destructive_in_one_transaction_block():
     """MIG-12: the destructive header (DB Migrate takes a snapshot first); one BEGIN … COMMIT."""
-    text = TP025.read_text(encoding="utf-8")
+    text = TP024.read_text(encoding="utf-8")
     assert text.splitlines()[1] == "-- migrate: destructive"
     code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("--"))
     assert code.count("BEGIN;") == 1 and code.count("COMMIT;") == 1
@@ -151,7 +151,7 @@ def test_the_counter_is_gone_and_the_live_tables_stay_with_their_grants(db):
             tables = {r[0] for r in await su.fetch(TABLES_SQL)}
             grants = {t: await su.fetchval("SELECT has_table_privilege('tripplanner', $1, 'SELECT') AS ok",
                                            f"tripplanner.{t}") for t in LIVE if t in tables}
-            registered = await su.fetchval("SELECT count(*) AS n FROM shared.schema_versions WHERE version = 'tp-025'")
+            registered = await su.fetchval("SELECT count(*) AS n FROM shared.schema_versions WHERE version = 'tp-024'")
             return tables, grants, registered
         finally:
             await su.close()
@@ -167,9 +167,9 @@ def test_rerun_as_tp_owner_is_a_no_op(db):
     async def check():
         admin = await asyncpg.connect(db["admin_dsn"])
         try:
-            first = await admin.fetchval("SELECT applied_at FROM shared.schema_versions WHERE version = 'tp-025'")
-            await _as_owner(admin, TP025)
-            rows = await admin.fetch("SELECT applied_at FROM shared.schema_versions WHERE version = 'tp-025'")
+            first = await admin.fetchval("SELECT applied_at FROM shared.schema_versions WHERE version = 'tp-024'")
+            await _as_owner(admin, TP024)
+            rows = await admin.fetch("SELECT applied_at FROM shared.schema_versions WHERE version = 'tp-024'")
             return first, [r["applied_at"] for r in rows]
         finally:
             await admin.close()
@@ -188,7 +188,7 @@ def _refused(pg_dsn, **kw) -> tuple:  # noqa: F811
                 rows = await su.fetchval("SELECT count(*) AS n FROM tripplanner.llm_spend_daily") \
                     if DROPPED in tables else None
                 registered = await su.fetchval(
-                    "SELECT count(*) AS n FROM shared.schema_versions WHERE version = 'tp-025'")
+                    "SELECT count(*) AS n FROM shared.schema_versions WHERE version = 'tp-024'")
                 return tables, rows, registered
             finally:
                 await su.close()

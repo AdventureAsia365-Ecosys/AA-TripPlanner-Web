@@ -1,4 +1,4 @@
-# AA-1027 E5 step 4 — tp-025 drops tripplanner.llm_spend_daily (lane l3-e4e5-tp, S265)
+# AA-1027 E5 step 4 — tp-024 drops tripplanner.llm_spend_daily (lane l3-e4e5-tp, S265)
 
 Root plan: `docs/audits/2026-11-01-S263-gateway-gap-audit/plan.md` row E5, step 4. Comes after the TripPlanner PR
 "gateway reads the CIS views only (fail closed)" (no reader or writer of the table left, deployed on both Lambdas) and
@@ -18,7 +18,7 @@ after AA-CIS-App migrations 350 / 351.
 
 ## Changed
 
-- `migrations/025_drop_llm_spend_daily.sql` (new), `migrations/tests/test_tp025_pg.py` (new: drop, guards, re-run).
+- `migrations/024_drop_llm_spend_daily.sql` (new), `migrations/tests/test_tp024_pg.py` (new: drop, guards, re-run).
 - `migrations/tests/test_replay_twice_pg.py`: tp-010 joins `SUPERSEDED_BY_DROP` (a re-run would recreate the table).
 - `CONTEXT.md` diagram line.
 
@@ -29,9 +29,6 @@ after AA-CIS-App migrations 350 / 351.
 
 ## Should know
 
-- **Number tp-025:** tp-024 is held by another S265 lane. `test_replay_twice_pg.py::test_file_numbers_are_contiguous_from_001`
-  fails until tp-024 is on main (locally: 106 passed, only that test red). If tp-024 does not land first, rename to
-  `024_drop_llm_spend_daily.sql` and replace `tp-025` / `025_` / `< 25` in the file, the test, the replay reason, this
-  note and the root docs.
+- **Number tp-024:** the lane first took tp-025 for a reserved tp-024 that no other lane used; renumbered to tp-024 by the orchestrator (S265) on the latest main (main max tp-023).
 - Merge only after the TripPlanner E5 PR is deployed: before that, the Lambdas write the counter on every online call,
   and a drop would make each write fail and pause AI for 60 s per container.

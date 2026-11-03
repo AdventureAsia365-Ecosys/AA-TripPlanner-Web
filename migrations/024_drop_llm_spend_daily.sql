@@ -1,4 +1,4 @@
--- Migration tp-025: AA-1027 E5 (AI gateway v2, gap TP-1) — drop tripplanner.llm_spend_daily, the tp-010 counter.
+-- Migration tp-024: AA-1027 E5 (AI gateway v2, gap TP-1) — drop tripplanner.llm_spend_daily, the tp-010 counter.
 -- migrate: destructive
 --
 -- NEEDS APPROVAL AFTER THE DRY RUN (skill aa-cis-schema references/destructive-ops.md): apply only after the tech lead
@@ -6,7 +6,7 @@
 -- dependents, the ledger totals of the same days) and said go.
 --
 -- Owner: AA-TripPlanner-Web (key tp-NNN). A byte-identical copy goes to AA-CIS-Infra
--- db/migrations/tripplanner/025_drop_llm_spend_daily.sql and is applied to Dev by the DB Migrate workflow (check, then
+-- db/migrations/tripplanner/024_drop_llm_spend_daily.sql and is applied to Dev by the DB Migrate workflow (check, then
 -- apply), as tp_owner (the live owner of schema tripplanner since tp-013, XD8). The `destructive` header makes DB
 -- Migrate take a manual RDS snapshot first and refuse to apply without it (MIG-12).
 --
@@ -27,7 +27,7 @@
 --        the counter is live on a Lambda; deploy the E5 build first.
 --   2. DROP TABLE IF EXISTS tripplanner.llm_spend_daily (RESTRICT, the default: its primary key index goes with it;
 --      it has no foreign key).
---   3. Register tp-025.
+--   3. Register tp-024.
 --
 -- Undo: none in SQL (the rows are gone). Restore from the RDS snapshot DB Migrate takes before the apply (restore to a
 -- new instance, then pg_dump/pg_restore the table as tp_owner); the same sums can be recomputed from shared.llm_call_log
@@ -54,7 +54,7 @@ DECLARE
     last_at  timestamptz;
 BEGIN
     IF current_user <> 'tp_owner' THEN
-        RAISE EXCEPTION 'tp-025: expected to run as tp_owner (live owner of schema tripplanner), running as %', current_user;
+        RAISE EXCEPTION 'tp-024: expected to run as tp_owner (live owner of schema tripplanner), running as %', current_user;
     END IF;
     IF to_regclass(rel) IS NULL THEN
         RETURN;                                                     -- already dropped
@@ -74,13 +74,13 @@ BEGIN
          WHERE c.contype = 'f' AND c.confrelid = to_regclass(rel) AND c.conrelid <> to_regclass(rel)
       ) x;
     IF deps IS NOT NULL THEN
-        RAISE EXCEPTION 'tp-025: objects depend on %: %', rel, deps;
+        RAISE EXCEPTION 'tp-024: objects depend on %: %', rel, deps;
     END IF;
 
     -- no write in the last hour (the counter's writer is gone since AA-1027 E5)
     EXECUTE 'SELECT max(updated_at) FROM tripplanner.llm_spend_daily' INTO last_at;
     IF last_at > now() - interval '1 hour' THEN
-        RAISE EXCEPTION 'tp-025: % has a row written at % (less than an hour ago): a build that writes it is still live',
+        RAISE EXCEPTION 'tp-024: % has a row written at % (less than an hour ago): a build that writes it is still live',
             rel, last_at;
     END IF;
 END $$;
@@ -88,7 +88,7 @@ END $$;
 DROP TABLE IF EXISTS tripplanner.llm_spend_daily;
 
 INSERT INTO shared.schema_versions (version, applied_at, description)
-VALUES ('tp-025', now(), 'AA-1027 E5: drop tripplanner.llm_spend_daily (the tp-010 spend counter; the ledger view is the only spend source)')
+VALUES ('tp-024', now(), 'AA-1027 E5: drop tripplanner.llm_spend_daily (the tp-010 spend counter; the ledger view is the only spend source)')
 ON CONFLICT (version) DO NOTHING;
 
 COMMIT;

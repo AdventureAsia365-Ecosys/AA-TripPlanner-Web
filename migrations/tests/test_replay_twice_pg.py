@@ -48,8 +48,8 @@ NOT_RERUNNABLE = {
 SUPERSEDED_BY_DROP = {
     "003": "creates tripplanner.tour_day, which tp-018 dropped (AA-712 X4); a re-run would bring the table back",
     "004": "creates the Tour Graph tables (tour_stop, tour_graph_*, tour_leg, tour_junction), which tp-018 dropped",
-    "010": "creates tripplanner.llm_spend_daily, which tp-025 dropped (AA-1027 E5); a re-run would bring the table back "
-           "(its other table, narration_cache, is CREATE TABLE IF NOT EXISTS and was re-run safely before tp-025)",
+    "010": "creates tripplanner.llm_spend_daily, which tp-024 dropped (AA-1027 E5); a re-run would bring the table back "
+           "(its other table, narration_cache, is CREATE TABLE IF NOT EXISTS and was re-run safely before tp-024)",
     "013": "transfers ownership of tripplanner.itinerary_components / tour_*, which tp-018 dropped (tp-001, the only "
            "file creating itinerary_components, is NOT_RERUNNABLE); its own re-run as the master is covered by "
            "test_tp013_pg.py::test_rerun_as_the_master_is_a_no_op",

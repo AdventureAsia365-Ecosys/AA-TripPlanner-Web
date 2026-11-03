@@ -63,7 +63,7 @@ Two HTTP Python 3.12 Lambda functions
 Postgres (the shared RDS in acc2)
   ├─ tripplanner.*        (owned here — customers, sessions, trip_events, trip_drafts, outbox,
   │                        narration_cache, component_id_map, job, ai_rate_counter; llm_spend_daily dropped by tp-024)
-  ├─ catalog.v_llm_*      (CIS AI gateway contract views, CIS 323: route config + today's spend; CIS 347: app profile)
+  ├─ catalog.v_llm_*      (CIS AI gateway contract views, CIS 323: route config + today's spend)
   ├─ shared.llm_call_log  (INSERT only: one ledger v2 row per attempt, app = 'tripplanner')
   └─ read-only: catalog.* views (CIS-owned: tours, places, tour graph, embeddings)
       │
@@ -620,7 +620,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `catalog.v_llm_gateway_config_v1` and today's spend from `catalog.v_llm_app_spend_today_v1` (CIS 323), the only
   config and spend sources since **AA-1027 E5**: there is no table fallback, so a view that is missing, not granted
   or failing pauses AI (`route_unreadable` / `spend_unreadable`) and the caller degrades; CIS 351 revokes the
-  grandfathered SELECT of CIS 173 on the two tables and tp-025 drops the tp-010 counter. Each attempt
+  grandfathered SELECT of CIS 173 on the two tables and tp-024 drops the tp-010 counter. Each attempt
   writes the ledger v2 row (`app = 'tripplanner'`, `status`, `error_class`, `latency_ms`, `attempt_no`, connection,
   wire id, cache tokens, `pricing_mode`, and `effort` when the body carried one: always NULL today, see E4).
   **AA-1027 E4 (stage x model params):** CIS 350 appends `supports_temperature` (catalog) and `stage_params` (the
