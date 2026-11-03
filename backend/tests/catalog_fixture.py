@@ -52,7 +52,7 @@ for sid, tid, title, country, days, best, stage, nphotos, pub in _T:
         "exclusions": "International flights\nVisa fees", "best_time_to_go": best, "group_size": "2-12",
         "lifecycle_stage": stage,
         "cover_photo_path": f"/content/photos/{tid[:8]}-0000-4000-8000-000000000001" if nphotos else None,
-        "photo_count": nphotos, "published_at": _ts(pub), "updated_at": _ts(pub),
+        "photo_count": nphotos, "published_at": _ts(pub), "updated_at": _ts(pub), "text_updated_at": _ts(pub),
         "content_hash": "9e107d9d372bb6826bd81d3542a419d6",
     })
 
@@ -185,6 +185,7 @@ class FakeCatalogPool:
         self.components = PLANNER_COMPONENTS if components is None else components
         self.dest_photos = DEST_PHOTOS if dest_photos is None else dest_photos
         self.calls: list[tuple[str, tuple]] = []
+        self.has_text_updated_at = True     # CIS 359 applied (False: catalog.v_tour without text_updated_at)
 
     def _dest_cover(self, did: str) -> str | None:
         return next((p["path"] for p in sorted(self.dest_photos, key=lambda p: p["position"])
@@ -196,12 +197,15 @@ class FakeCatalogPool:
     async def fetch(self, query: str, *args: Any) -> list[dict]:
         self.calls.append((query, args))
         q = _norm(query)
-        if q == _norm(cat.TOUR_CARDS_SQL):
+        if q in (_norm(cat.TOUR_CARDS_SQL), _norm(cat.TOUR_CARDS_SQL_PRE_359)):
             country, lo, hi = args
-            return [t for t in self.tours if _visible(t)
+            rows = [t for t in self.tours if _visible(t)
                     and (country is None or _cslug(t) == country)
                     and (lo is None or (t["duration_days"] or 0) >= lo)
                     and (hi is None or (t["duration_days"] or 0) <= hi)]
+            if q == _norm(cat.TOUR_CARDS_SQL_PRE_359):
+                rows = [{**t, "text_updated_at": None} for t in rows]
+            return rows
         if q == _norm(cat.TOUR_DAYS_SQL):
             return sorted([d for d in DAYS if d["tour_id"] == args[0]], key=lambda d: d["day_number"])
         if q == _norm(cat.TOUR_PLACES_SQL):
@@ -280,17 +284,21 @@ class FakeCatalogPool:
                     for d in sorted(DAYS, key=lambda d: d["day_number"]) if d["tour_id"] == t["tour_id"]]
             return {"title": t["title"], "country": t["country"], "duration_days": t["duration_days"],
                     "days": json.dumps(days)}
-        if _norm(query) == _norm(cat.TOUR_BY_SLUG_SQL):
+        if _norm(query) in (_norm(cat.TOUR_BY_SLUG_SQL), _norm(cat.TOUR_BY_SLUG_SQL_PRE_359)):
             slug, suffix = args
             hit = next((t for t in self.tours if t["slug"] == slug), None)
             hit = hit or next((t for t in self.tours
                                if suffix and t["source_id"].replace("-", "")[:8] == suffix), None)
+            if hit is not None and _norm(query) == _norm(cat.TOUR_BY_SLUG_SQL_PRE_359):
+                hit = {**hit, "text_updated_at": None}
             return hit
         rows = await self.fetch(query, *args)
         return rows[0] if rows else None
 
     async def fetchval(self, query: str, *args: Any) -> Any:
         self.calls.append((query, args))
+        if _norm(query) == _norm(cat.TEXT_UPDATED_AT_SQL):
+            return self.has_text_updated_at
         if _norm(query) == _norm(routes_mod.TOUR_TITLE_SQL):
             t = self._by_id(args[0])
             return t["title"] if t else None
