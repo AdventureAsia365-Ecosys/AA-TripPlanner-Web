@@ -90,6 +90,15 @@ Bedrock (InvokeModel or Converse), and CIS sends effort only on the Anthropic Me
 probe has shown that Bedrock takes the field for the catalog model. No row (the Dev state) = the request body is
 byte-identical to before.
 
+AA-1025 H1b (root ADR 0009 decision 4): the app profile (`app_profile`, the CIS view `catalog.v_llm_app_profile_v1`,
+CIS 347). AI switched off for app `tripplanner` in the CIS admin: `load_route` writes one 0 USD row (status 'refused',
+error_class 'disabled', no connection, no provider attempt) and raises `AiPaused("ai_off")`, so narration answers the
+basic / master_basic text with `ai_paused` and search the keyword ranking. The profile's `default_daily_budget_usd`,
+when set, is the daily cap over every tp_* stage (online and offline) in `budget_status`, in place of
+TP_DAILY_SPEND_CAP_USD (online stages only, the fallback). Both read the same 20 s cache; the profile read
+fails open (no view = AI on, env cap), the whole-app spend read (`_APP_SPEND_ALL_SQL`, the same spend view
+summed over every stage) fails closed like the per-stage read (spend_unreadable).
+
 AA-856: `EmbeddingCache` / `query_embed_cache` keep query embeddings in the Lambda container
 (bounded LRU + TTL, keyed by stage, route models, input type and the normalised text). A cache hit
 is not a model call: no llm_call_log row, no spend.
@@ -111,7 +120,7 @@ from backend import config
 from backend.aa_llm import budget as core_budget
 from backend.aa_llm import contract, ledger, pricing
 from backend.aa_llm import errors as core_errors
-from backend.shared import bedrock_satellite, llm_breaker, observability, prompt_registry
+from backend.shared import app_profile, bedrock_satellite, llm_breaker, observability, prompt_registry
 from backend.shared.bedrock_satellite import BedrockError, ClientFactory
 
 APP = "tripplanner"
@@ -286,7 +295,8 @@ class CircuitOpen(BedrockError):
 
 class AiPaused(BedrockError):
     """AI is paused for this request (AA-642 S0): the route config or the spend counter cannot be
-    read, so no model is called. `reason` is a short code for the log and the response."""
+    read, so no model is called. `reason` is a short code for the log and the response. AA-1025 H1b: also
+    `ai_off`, the app profile's AI switch is off (`load_route`)."""
 
     def __init__(self, reason: str, detail: str = "") -> None:
         super().__init__(f"AI paused ({reason}){': ' + detail if detail else ''}")
@@ -481,7 +491,41 @@ async def _read_route(db: Any, stage: str) -> tuple[Any, tuple]:
 async def load_route(db: Any, stage: str) -> Route:
     """`db` is an asyncpg pool or connection. Raises AiPaused("route_unreadable") when the route
     cannot be read (AA-642 S0: fail closed, never the hard-coded BUILTIN_ROUTES models); the
-    failure is not cached, so the next request reads again."""
+    failure is not cached, so the next request reads again. AA-1025 H1b: every model call starts here, so the app
+    profile's AI switch is checked here too (`refuse_if_ai_off`): AI off raises AiPaused("ai_off") after its 0 USD
+    refused row."""
+    route = await _load_route(db, stage)
+    await refuse_if_ai_off(db, route)
+    return route
+
+
+REASON_AI_OFF = "ai_off"
+
+
+def ai_off_call(route: Route) -> Call:
+    """AA-1025 H1b: the 0 USD 'refused' row of a request the app profile refused (AI switched off for app
+    'tripplanner'). No connection, no attempt; the text names the stage the way the CIS stage kill switch does, so the
+    core classifies it 'disabled' too (`aa_llm.errors`)."""
+    text = (f"stage {route.stage!r} is switched off by an admin: AI is off for app {APP!r} in its app profile "
+            "(nothing was sent to the provider)")
+    return Call(route.stage, route.role, route.models[0].key if route.models else "none", None, 0, 0, 0.0,
+                fallback_used=False, stop_reason="error", extra={"error": text, "not_called": REASON_AI_OFF},
+                failed=True, latency_ms=0, status=ledger.STATUS_REFUSED, error_class=core_errors.DISABLED)
+
+
+async def refuse_if_ai_off(db: Any, route: Route) -> None:
+    """AA-1025 H1b: when the app profile has AI off, record the refused row and raise AiPaused("ai_off"). The read
+    fails open (`app_profile.current`)."""
+    profile = await app_profile.current(db)
+    if profile.ai_enabled:
+        return
+    observability.emit("llm_app_ai_off_refused", level="warning", stage=route.stage,
+                       degrade_mode=profile.degrade_mode)
+    await record(db, ai_off_call(route), {"refused": REASON_AI_OFF})
+    raise AiPaused(REASON_AI_OFF, f"AI is off for app {APP!r} in its app profile")
+
+
+async def _load_route(db: Any, stage: str) -> Route:
     cached = _cache.get(stage)
     now = time.monotonic()
     if cached and now - cached[1] < _CACHE_TTL_SECONDS:
@@ -1270,9 +1314,11 @@ def _stage_cap(stage: Optional[str]) -> Optional[float]:
 _alerted: set[tuple[str, str, str]] = set()
 
 
-def _alert(scope: str, spent: float, cap: float) -> None:
+def _alert(scope: str, spent: float, cap: float, cap_source: str = "env") -> None:
     """One `llm_spend_alert` line per container, UTC day, scope and threshold: 'near' at
-    SPEND_NEAR_CAP_RATIO of the cap (level warning), 'cap' when reached (level error)."""
+    SPEND_NEAR_CAP_RATIO of the cap (level warning), 'cap' when reached (level error). `cap_source`: 'app_profile'
+    (scope 'app': every stage against the profile's budget; the CIS ops check alerts on the same numbers, bell +
+    e-mail) or 'env' (scope 'total': the online stages against TP_DAILY_SPEND_CAP_USD; a stage scope)."""
     threshold = core_budget.threshold(spent, cap, config.SPEND_NEAR_CAP_RATIO)
     if threshold is None:
         return
@@ -1282,13 +1328,23 @@ def _alert(scope: str, spent: float, cap: float) -> None:
         return
     _alerted.add(key)
     observability.emit("llm_spend_alert", level=level, threshold=threshold, scope=scope,
-                       spent_usd=round(spent, 6), cap_usd=cap, ratio=config.SPEND_NEAR_CAP_RATIO)
+                       spent_usd=round(spent, 6), cap_usd=cap, ratio=config.SPEND_NEAR_CAP_RATIO,
+                       cap_source=cap_source)
 
 
-async def _spent(db: Any, stages: list) -> float:
+# AA-1025 H1b: the whole app's spend today (every tp_* stage, offline ones included), for the app profile's cap: the
+# same contract view as `contract.APP_SPEND_SQL` (already app 'tripplanner' and today, UTC), with no stage filter.
+_APP_SPEND_ALL_SQL = f"SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM {contract.APP_SPEND_VIEW}"  # noqa: S608
+
+
+async def _spent(db: Any, stages: Optional[list]) -> float:
     """Today's (UTC) spend of `stages` from the CIS contract view over the ledger (CIS 323), the only spend source
-    since AA-1027 E5. Any error raises (fail closed: budget_status reports spend_unreadable)."""
-    row = await db.fetchrow(contract.APP_SPEND_SQL, stages)
+    since AA-1027 E5; `stages` None = every stage of the app (AA-1025 H1b, the app profile's cap). Any error raises
+    (fail closed: budget_status reports spend_unreadable)."""
+    if stages is None:
+        row = await db.fetchrow(_APP_SPEND_ALL_SQL)
+    else:
+        row = await db.fetchrow(contract.APP_SPEND_SQL, stages)
     return float(row["spent"]) if row and row["spent"] is not None else 0.0
 
 
@@ -1304,18 +1360,26 @@ async def budget_status(db: Any, stage: Optional[str] = None) -> dict:
     be read, or a ledger write failed in the last SPEND_UNREADABLE_HOLD_SECONDS, `exhausted` is True
     with reason "spend_unreadable" and `spent_usd` None, so no model is called and callers degrade
     (basic narration, keyword search). Over a cap the reason is "cap_reached"; under it, None.
-    Calls with no catalog price add nothing."""
-    cap = float(config.TP_DAILY_SPEND_CAP_USD)
+    Calls with no catalog price add nothing.
+
+    AA-1025 H1b: when the app profile (CIS 347) sets `default_daily_budget_usd`, that budget is the cap and the spend
+    is the whole app's today (every tp_* stage, offline ones included: an offline stage is capped too), alert scope
+    'app'; otherwise the cap is TP_DAILY_SPEND_CAP_USD over ONLINE_STAGES as before. The stage caps apply either way."""
+    profile = await app_profile.current(db)
+    if profile.default_daily_budget_usd is not None:
+        cap, stages, scope, source = profile.default_daily_budget_usd, None, "app", "app_profile"
+    else:
+        cap, stages, scope, source = float(config.TP_DAILY_SPEND_CAP_USD), list(ONLINE_STAGES), "total", "env"
     stage_cap = _stage_cap(stage)
     if spend_unreadable_flag_active():
         return core_budget.unreadable(cap).as_dict()
     try:
-        spent = await _spent(db, list(ONLINE_STAGES))
+        spent = await _spent(db, stages)
         stage_spent = await _spent(db, [stage]) if stage_cap is not None else None
     except Exception as e:  # noqa: BLE001
         _error("spend_unreadable", stage, e)
         return core_budget.unreadable(cap).as_dict()
-    _alert("total", spent, cap)
+    _alert(scope, spent, cap, source)
     if stage_cap is not None and stage_spent is not None:
         _alert(str(stage), stage_spent, stage_cap)
     decision = core_budget.decide(spent, cap, near_ratio=config.SPEND_NEAR_CAP_RATIO, stage=stage,

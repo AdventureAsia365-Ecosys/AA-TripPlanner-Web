@@ -111,7 +111,9 @@ def _log_embed(outcome: str, reason: Optional[str] = None) -> None:
 
 # AA-642 S0: keyword-fallback reasons where the model call was refused before it was made.
 REASON_BUDGET_CAP = "budget_cap"
-PAUSED_REASONS = (llm_gateway.REASON_SPEND_UNREADABLE, "route_unreadable", embedding_space.REASON_UNREADABLE)
+# AA-1025 H1b: + "ai_off", the app profile's AI switch is off (llm_gateway.load_route wrote the refused row).
+PAUSED_REASONS = (llm_gateway.REASON_SPEND_UNREADABLE, "route_unreadable", embedding_space.REASON_UNREADABLE,
+                  llm_gateway.REASON_AI_OFF)
 
 
 async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Optional[str]]:

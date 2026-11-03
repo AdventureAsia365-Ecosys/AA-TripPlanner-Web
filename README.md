@@ -135,6 +135,12 @@ Read them in the database, read-only, through the usual ECS exec pattern of the 
   (unset by default = only the combined `TP_DAILY_SPEND_CAP_USD`) stop one stage without touching the other. At 80 %
   and at 100 % of a cap each container prints one `llm_spend_alert` line a UTC day (`threshold` near / cap, `level`
   warning / error); `budget_status` also returns `near_cap`.
+- **App profile (AA-1025 H1b)** — the CIS admin's App profiles card switches TripPlanner's AI off (every model call
+  refused with a 0 USD `refused` / `disabled` ledger row; basic narration and keyword search with `ai_paused`) and
+  sets its daily budget (`default_daily_budget_usd`: the cap over every `tp_*` stage, in place of
+  `TP_DAILY_SPEND_CAP_USD`). Read through the CIS view `catalog.v_llm_app_profile_v1` (CIS 347), cached 20 s, fails
+  open; `TP_APP_PROFILE=off` skips it. With a profile budget, the CIS ops check `llm_spend_alert` mails and bells the
+  80 % / 100 % thresholds.
 - **Search on inactive tours** — `backend/tests/fixtures/search_labelled_30.json` is the labelled
   30-query set for live runs: every destination returned must have at least one embedded component
   of a tour with `published_tours.master_status = 'active'` and `deleted_at IS NULL`. Join exactly as
