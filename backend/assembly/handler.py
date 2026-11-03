@@ -60,6 +60,10 @@ _COMPONENTS_RE = re.compile(r"^/trip/([^/]+)/components$")
 _COMPONENT_ITEM_RE = re.compile(r"^/trip/([^/]+)/components/([^/]+)$")
 _REORDER_RE = re.compile(r"^/trip/([^/]+)/reorder$")
 _SEND_RE = re.compile(r"^/trip/([^/]+)/send-to-advisor$")
+# AA-1034 R0: the answer of send-to-advisor while config.ADVISOR_HANDOFF_DEMO is on (the planner shows its demo notice).
+B2B_ONLY_DETAIL = (
+    "This planner is a demo: Adventure Asia works with travel agencies, so trips are not sent to an advisor here."
+)
 _NARRATE_RE = re.compile(r"^/trip/([^/]+)/narrate$")
 _SUGGEST_RE = re.compile(r"^/trip/([^/]+)/suggestions$")
 _COVERAGE_RE = re.compile(r"^/trip/([^/]+)/coverage$")
@@ -193,6 +197,10 @@ async def route(
 
     m = _SEND_RE.match(path)
     if m and method == "POST":
+        # AA-1034 R0 (root ADR 0019): B2B-only, so no lead is stored and nothing goes to Booking. Before the guard and
+        # any SQL: the answer is the same for every caller and reveals nothing about the trip.
+        if config.ADVISOR_HANDOFF_DEMO:
+            return _resp(410, {"error": "b2b_only", "detail": B2B_ONLY_DETAIL})
         trip_id = m.group(1)
         session_id = body.get("session_id")
         if not session_id:

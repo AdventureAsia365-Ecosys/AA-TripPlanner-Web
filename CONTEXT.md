@@ -72,6 +72,14 @@ Amazon Bedrock  — Cohere Embed v4: acc2 first, then acc3 via the satellite rol
                   Claude via the cross-account role on acc3 (the main chat account, root ADR 0009)
 ```
 
+**B2B-only demo (AA-1034 R0, root ADR 0019 d8/d11, since 2026-11-03):** "Send to an advisor" is a demo. Adventure Asia
+sells to partner agencies only and keeps no traveller record of its own, so the button shows a demo notice
+(`frontend/lib/advisorDemo.ts`, build flag `NEXT_PUBLIC_ADVISOR_HANDOFF`, demo unless `live`) and
+`POST /trip/{id}/send-to-advisor` answers 410 `{"error": "b2b_only"}` before any SQL (`backend/config.py`
+`ADVISOR_HANDOFF_DEMO`, a code default, on unless `ADVISOR_HANDOFF_DEMO=false`): no registration, no `sent` event, no
+`inquiry.submitted` outbox row, so no Booking case. The hand-off described below is frozen until leads go to the
+tenant's CRM (`lead.submitted.v1`).
+
 The journey ends with a **draft trip + customer** sent to an advisor ("Send to advisor" +
 sign-up), not a completed booking — booking belongs to AA-Booking (live on Dev since 2026-10-14), which pulls the
 `inquiry.submitted` outbox row (see "Contracts with other apps").

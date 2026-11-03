@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import * as api from "./api";
+import { isB2bOnly } from "./advisorDemo";
 import type { AiNoticeKey } from "./aiNotices";
 import { STORAGE_KEY, isUuid, randomUuid } from "./guestIds";
 import type {
@@ -72,7 +73,7 @@ interface TripState {
   reorder: (orderedIds: string[]) => Promise<void>;
   narrate: (mode?: "compose" | "renarrate") => Promise<void>;
   send: (customer?: { name: string; phone: string; email: string; consent: boolean }) => Promise<
-    { ok: boolean; needsRegistration: boolean }
+    { ok: boolean; needsRegistration: boolean; demo?: boolean }
   >;
   // AA-674 / Jira PR-11: routes of real AA tours.
   coverage: Coverage | null;
@@ -377,6 +378,8 @@ export function TripProvider({
       if (code === 422 && body.error === "registration_required") {
         return { ok: false, needsRegistration: true };
       }
+      // AA-1034 R0: the Lambda refuses every hand-off while the B2B-only demo is on (an old bundle can still call it).
+      if (isB2bOnly(code, body)) return { ok: false, needsRegistration: false, demo: true };
       return { ok: false, needsRegistration: false };
     },
     [tripId, sessionId],
