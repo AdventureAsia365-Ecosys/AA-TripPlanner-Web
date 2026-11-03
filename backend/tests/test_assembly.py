@@ -1193,8 +1193,8 @@ class AiConn(FakeConn):
         q = " ".join(query.split())
         if q.startswith("UPDATE tripplanner.narration_cache"):
             return self.cache.get(args[0])
-        if "FROM tripplanner.llm_spend_daily" in q or "FROM catalog.v_llm_app_spend_today_v1" in q:
-            return {"spent": self.spent}   # AA-642 S8: the spend view (CIS 323), or the tp-010 counter
+        if "FROM catalog.v_llm_app_spend_today_v1" in q:
+            return {"spent": self.spent}   # AA-642 S8: the spend view (CIS 323), the only source (AA-1027 E5)
         return await super().fetchrow(query, *args)
 
 
@@ -1361,7 +1361,7 @@ async def test_narrate_degrades_on_a_truncated_reply_then_the_route_deadline(mon
     async def fake_load_route(db, stage):
         return route
 
-    def slow_cut_text_call(model, account, system, user, max_tokens, client_factory, *, timeout_s=None):
+    def slow_cut_text_call(model, account, system, user, max_tokens, client_factory, *, timeout_s=None, params=None):
         sent.append((model.key, timeout_s))
         clock[0] += 19.5
         return "Day 1: The road to Zedp", {"in": 900, "out": 1200, "cache_read": 0, "cache_write": 0}, "max_tokens"
@@ -1432,8 +1432,8 @@ async def test_narrate_pauses_ai_when_the_spend_counter_is_unreadable(monkeypatc
     class UnreadableSpend(AiConn):
         async def fetchrow(self, query, *args):
             q = " ".join(query.split())
-            if "FROM tripplanner.llm_spend_daily" in q or "FROM catalog.v_llm_app_spend_today_v1" in q:
-                raise RuntimeError("permission denied for table llm_spend_daily")
+            if "FROM catalog.v_llm_app_spend_today_v1" in q:
+                raise RuntimeError("permission denied for view v_llm_app_spend_today_v1")
             return await super().fetchrow(query, *args)
 
     conn = UnreadableSpend()
