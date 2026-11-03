@@ -6,12 +6,17 @@
 // the other apps. The look is TripPlanner's own (ADR 0016 decision 2: B2C components stay here): a quiet
 // `<p role="note">` with an info icon, muted on the page, light on the navy footer band. No state, no client code: a
 // server component renders it, and it takes its own line (no layout shift).
+// AA-1040: `variant="narration"` says the text was written by AI when the traveller asked for it (trip narration, EU AI
+// Act Art. 50(1)); the default `traveller` covers catalog text written earlier from Adventure Asia's tour notes.
 // `termsHref` appends a "Use of AI" link to the terms' section, opened in a new tab: the planner pages have no site
 // footer (where the site pages carry that link), and a new tab keeps the trip being built.
-import { aiNoticeText } from "./core/aiNotice.messages";
+import { aiNoticeText, type AiNoticeVariant } from "./core/aiNotice.messages";
 import { Icon } from "./Icon";
 
 export type AiNoticeTone = "page" | "band";
+
+/** The traveller variants of the kit wording (the staff / publisher ones are for the agency apps). */
+export type TravellerAiNoticeVariant = Extract<AiNoticeVariant, "traveller" | "narration">;
 
 const TONE: Record<AiNoticeTone, { text: string; icon: string }> = {
   page: { text: "text-k-muted", icon: "text-k-muted" },
@@ -19,12 +24,14 @@ const TONE: Record<AiNoticeTone, { text: string; icon: string }> = {
 };
 
 export function AiNotice({
+  variant = "traveller",
   tone = "page",
   size = "md",
   className = "",
   testId = "ai-notice",
   termsHref,
 }: {
+  variant?: TravellerAiNoticeVariant;
   tone?: AiNoticeTone;
   /** "sm": the planner panel's 11px text; "md": the caption size of the site pages. */
   size?: "sm" | "md";
@@ -35,10 +42,10 @@ export function AiNotice({
 }) {
   const text = size === "sm" ? "text-[11px] leading-snug" : "text-caption font-normal";
   return (
-    <p role="note" data-testid={testId} data-ai-notice="traveller" className={`flex items-start gap-1.5 ${text} ${TONE[tone].text} ${className}`}>
+    <p role="note" data-testid={testId} data-ai-notice={variant} className={`flex items-start gap-1.5 ${text} ${TONE[tone].text} ${className}`}>
       <Icon name="info" className={`mt-px h-3.5 w-3.5 shrink-0 ${TONE[tone].icon}`} />
       <span>
-        {aiNoticeText("traveller", "en")}
+        {aiNoticeText(variant, "en")}
         {termsHref && (
           <>
             {" "}

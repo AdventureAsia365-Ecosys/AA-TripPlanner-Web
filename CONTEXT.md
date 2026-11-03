@@ -754,6 +754,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   (`StopActivities`) and the narration (`TripPanel`), each with a "Use of AI" link (`termsHref`, new tab); and in the
   site footer with a "Use of AI" link to `/terms#ai` (terms §3 "Use of AI": what AI writes, that it can be wrong, for
   information, the confirmed quote and booking conditions bind; no liability waiver). Tests: `lib/aiNoticeKit.test.ts`.
+  **AA-1040 (EU AI Act Art. 50):** under a narration whose answer `source` is `llm` or `mixed` (days the AI wrote on
+  this request) the notice takes the kit `narration` variant ("This text was written by AI when you asked for it…",
+  `lib/aiNotices.ts` `narrationNoticeVariant`); `master` / `master_basic` keep the traveller sentence. The narration
+  block carries `data-ai-generated="true"` and `data-ai-source` (machine-readable mark in the page).
   Narration day choice (`master_content.resolve_days`), because a component row's tour day can be
   wrong: per trip day, the own tour day text of any entry whose text names its stop (component or
   place name, accent-insensitive, generic suffixes such as "Temple" dropped); else the nearest other

@@ -68,3 +68,10 @@ export function narrationNotice(body: { ai_paused?: boolean; ai_budget_exhausted
 export function limitNotice(scope: "narrate" | "search"): AiNoticeKey {
   return scope === "narrate" ? "narrationLimit" : "searchLimit";
 }
+
+// AA-1040 (EU AI Act Art. 50(1)): which kit notice sits under a narration. `llm` and `mixed` answers have days the AI
+// wrote on this request ("written by AI when you asked for it"); `master` / `master_basic` are Adventure Asia's own
+// itinerary text, written earlier by AI from the tour notes (the traveller sentence). Unknown or missing: traveller.
+export function narrationNoticeVariant(source: string | null | undefined): "narration" | "traveller" {
+  return source === "llm" || source === "mixed" ? "narration" : "traveller";
+}
