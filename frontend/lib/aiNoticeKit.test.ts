@@ -39,7 +39,8 @@ test("the kit core copy carries the traveller sentence: mistakes, and the offici
 test("ui/AiNotice renders the core sentence as a note (never its own copy of the text)", () => {
   const s = src("ui/AiNotice.tsx");
   assert.match(s, /from "\.\/core\/aiNotice\.messages"/);
-  assert.match(s, /aiNoticeText\("traveller"/);
+  assert.match(s, /aiNoticeText\(variant, "en"\)/);
+  assert.match(s, /variant = "traveller"/, "the traveller sentence stays the default (AA-1040 adds narration)");
   assert.match(s, /role="note"/);
   assert.doesNotMatch(s, /may contain mistakes/, "the sentence lives in the kit core copy only");
   assert.match(src("ui/index.ts"), /export \{ AiNotice\b/);
@@ -50,7 +51,8 @@ test("the notice shows on the tour page, in the planner narration and in the sit
   const notice = tour.indexOf('<AiNotice className="mt-5 max-w-[72ch]" testId="tour-ai-notice"');
   assert.ok(notice > tour.indexOf('id="itinerary-days"'), "under the day-by-day timeline");
   assert.ok(notice < tour.indexOf('aria-labelledby="route-map"'), "inside the itinerary section");
-  assert.match(src("components/TripPanel.tsx"), /<AiNotice size="sm" termsHref=\{TERMS_AI_PATH\} testId="narration-ai-notice" \/>/);
+  assert.match(src("components/TripPanel.tsx"),
+    /<AiNotice size="sm" variant=\{narrationNoticeVariant\(narrationSource\)\} termsHref=\{TERMS_AI_PATH\}\s+testId="narration-ai-notice" \/>/);
   const footer = src("components/site/SiteFooter.tsx");
   assert.match(footer, /<AiNotice tone="band" testId="footer-ai-notice"/);
   assert.match(footer, /href=\{TERMS_AI_PATH\}/);
@@ -89,4 +91,32 @@ test("the planner (no site footer) shows the notice and the 'Use of AI' link und
   const ui = src("ui/AiNotice.tsx");
   assert.match(ui, /href=\{termsHref\}\s+target="_blank"\s+rel="noopener noreferrer"/, "a new tab keeps the trip");
   assert.match(ui, />\s*Use of AI\s*</);
+});
+
+test("AA-1040: the narration sentence (written by AI on request) and which narration gets it", async () => {
+  const { aiNoticeText, AI_NOTICE_VARIANTS } = await loadCore();
+  assert.ok(AI_NOTICE_VARIANTS.includes("narration"));
+  const en = aiNoticeText("narration", "en");
+  assert.match(en, /written by AI when you asked for it/);
+  assert.match(en, /confirmed in your official quote/);
+  const { narrationNoticeVariant } = await import("./aiNotices.ts");
+  assert.equal(narrationNoticeVariant("llm"), "narration");
+  assert.equal(narrationNoticeVariant("mixed"), "narration");
+  for (const s of ["master", "master_basic", "basic", null, undefined]) assert.equal(narrationNoticeVariant(s), "traveller");
+  const panel = src("components/TripPanel.tsx");
+  assert.match(panel, /data-testid="narration-text" data-ai-generated="true"/, "the narration carries the machine mark");
+  assert.match(panel, /data-ai-source=\{narrationSource \?\? undefined\}/);
+});
+
+test("AA-1040: catalog tour text blocks carry the machine mark, never the whole page", async () => {
+  const { catalogTextMark } = await import("./aiNotices.ts");
+  assert.deepEqual(catalogTextMark("2026-10-02T03:00:00+00:00", "2026-09-01T03:00:00+00:00"), {
+    "data-ai-generated": "true", "data-ai-source": "catalog", "data-ai-generated-at": "2026-10-02T03:00:00+00:00",
+  });
+  assert.equal(catalogTextMark(null, "2026-09-01T03:00:00+00:00")["data-ai-generated-at"], "2026-09-01T03:00:00+00:00");
+  assert.equal("data-ai-generated-at" in catalogTextMark(null, null), false);
+  const page = src("app/tours/[slug]/page.tsx");
+  // summary, highlights, legacy itinerary text and each day body: four marked blocks, no page-level meta tag
+  assert.equal((page.match(/\{\.\.\.aiMark\}/g) ?? []).length, 4);
+  assert.doesNotMatch(page, /name="ai-generated"/);
 });

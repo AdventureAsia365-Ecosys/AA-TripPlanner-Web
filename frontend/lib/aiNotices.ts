@@ -68,3 +68,23 @@ export function narrationNotice(body: { ai_paused?: boolean; ai_budget_exhausted
 export function limitNotice(scope: "narrate" | "search"): AiNoticeKey {
   return scope === "narrate" ? "narrationLimit" : "searchLimit";
 }
+
+// AA-1040 (EU AI Act Art. 50(1)): which kit notice sits under a narration. `llm` and `mixed` answers have days the AI
+// wrote on this request ("written by AI when you asked for it"); `master` / `master_basic` are Adventure Asia's own
+// itinerary text, written earlier by AI from the tour notes (the traveller sentence). Unknown or missing: traveller.
+export function narrationNoticeVariant(source: string | null | undefined): "narration" | "traveller" {
+  return source === "llm" || source === "mixed" ? "narration" : "traveller";
+}
+
+// AA-1040 (EU AI Act Art. 50(2)): the machine-readable mark of a block of catalog tour text (summary, highlights,
+// itinerary days), written by the CIS catalog writer model. Put on the text blocks only, never page-wide: a tour page
+// also carries prices, photos and facts that are not AI output. `generatedAt` is the tour's last Master publish
+// (`updated_at`), else its first (`published_at`); omitted when neither is known.
+export type AiMarkAttrs = { "data-ai-generated": "true"; "data-ai-source": "catalog"; "data-ai-generated-at"?: string };
+
+export function catalogTextMark(updatedAt?: string | null, publishedAt?: string | null): AiMarkAttrs {
+  const at = updatedAt || publishedAt || null;
+  return at
+    ? { "data-ai-generated": "true", "data-ai-source": "catalog", "data-ai-generated-at": at }
+    : { "data-ai-generated": "true", "data-ai-source": "catalog" };
+}

@@ -10,7 +10,7 @@ import StopActivities from "@/components/StopActivities";
 import { Icon } from "@/ui/Icon";
 import { AiNotice } from "@/ui/AiNotice";
 import AiLabel from "@/components/AiLabel";
-import { aiNotice } from "@/lib/aiNotices";
+import { aiNotice, narrationNoticeVariant } from "@/lib/aiNotices";
 import { parseNarration } from "@/lib/narration";
 import { LEGAL_LINKS, TERMS_AI_PATH } from "@/lib/legal";
 import { formatDays } from "@/lib/text";
@@ -643,7 +643,10 @@ export default function TripPanel() {
                 </p>
               )}
               {narration ? (
-                <div className="mt-2.5 space-y-2.5">
+                // AA-1040: machine-readable mark of the narration (EU AI Act Art. 50(2)); `data-ai-source` is the
+                // narrate answer's `source` (master = AA itinerary text written earlier by AI, llm/mixed = on request).
+                <div className="mt-2.5 space-y-2.5" data-testid="narration-text" data-ai-generated="true"
+                  data-ai-source={narrationSource ?? undefined}>
                   {narrationBlocks.slice(0, revealCount).map((b, i) => (
                     <div key={i} className="flex gap-2.5">
                       {b.day !== null && (
@@ -659,8 +662,10 @@ export default function TripPanel() {
                       </div>
                     </div>
                   ))}
-                  {/* AA-1033: the traveller notice under the narration (AI-written or AI-assisted day text). */}
-                  <AiNotice size="sm" termsHref={TERMS_AI_PATH} testId="narration-ai-notice" />
+                  {/* AA-1033: the traveller notice under the narration (AI-written or AI-assisted day text). AA-1040:
+                      the narration variant when AI wrote days on this request (llm / mixed), Art. 50(1). */}
+                  <AiNotice size="sm" variant={narrationNoticeVariant(narrationSource)} termsHref={TERMS_AI_PATH}
+                    testId="narration-ai-notice" />
                 </div>
               ) : (
                 <p className="mt-2 text-[11px] text-k-muted">

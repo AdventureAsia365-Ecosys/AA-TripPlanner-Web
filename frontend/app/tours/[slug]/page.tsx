@@ -27,6 +27,7 @@ import type { CatalogPhoto, TourDetail } from "@/lib/catalogTypes";
 import { resolveHeroPhoto, type HeroPhoto } from "@/lib/photoResolve";
 import { RIBBON_MIN_ANIMATED, uniqueRibbonItems, type RibbonItem } from "@/lib/photos";
 import { cvSize } from "@/lib/contentVisibility";
+import { catalogTextMark } from "@/lib/aiNotices";
 import { clip, coverAlt, daysText, splitLines, titleCase } from "@/lib/text";
 import { routeLines, routePoints } from "@/lib/tourMap";
 import { AiNotice, Badge, ButtonLink, Icon } from "@/ui";
@@ -308,6 +309,8 @@ export default async function TourPage({ params }: Props) {
   const lines = routeLines(t);
   const inclusions = splitLines(t.inclusions);
   const exclusions = splitLines(t.exclusions);
+  // AA-1040 (Art. 50(2)): machine-readable mark on the AI-written text blocks only (summary, highlights, days).
+  const aiMark = catalogTextMark(t.updated_at, t.published_at);
   const days = daysText(t.duration_days, t.duration_raw);
   const placeCount = new Set([...points.map((p) => p.name), ...lines.map((l) => l.name ?? "")].filter(Boolean)).size;
   const facts = [
@@ -366,7 +369,7 @@ export default async function TourPage({ params }: Props) {
             </div>
             <h1 className="mt-3 text-h1 text-k-ink">{t.title}</h1>
             {t.subtitle && <p className="mt-2 text-lead text-k-muted">{t.subtitle}</p>}
-            {t.summary && <p className="mt-4 max-w-[72ch] text-body text-k-body">{t.summary}</p>}
+            {t.summary && <p className="mt-4 max-w-[72ch] text-body text-k-body" {...aiMark}>{t.summary}</p>}
             {/* AA-819 (D4): the tour text below is the CIS writer model's output (automated checks). */}
             {(t.summary || t.subtitle) && (
               <AiLabel tone="kit" className="mt-2" label={AI_CATALOG_LABEL} shortLabel={AI_BRAND_SHORT} explanation={AI_CATALOG_EXPLANATION} />
@@ -392,7 +395,7 @@ export default async function TourPage({ params }: Props) {
             {t.highlights.length > 0 && (
               <section className="mt-12" aria-labelledby="highlights">
                 <SectionHeading id="highlights" ai>Highlights</SectionHeading>
-                <ul className="mt-5 grid gap-3 md:grid-cols-2">
+                <ul className="mt-5 grid gap-3 md:grid-cols-2" {...aiMark}>
                   {t.highlights.map((h) => (
                     <li key={h} className="flex gap-3 text-body text-k-body">
                       <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-k-accent-tint">
@@ -413,7 +416,7 @@ export default async function TourPage({ params }: Props) {
               </div>
               {t.days.length === 0 && t.itinerary_text?.trim() ? (
                 // Legacy itinerary text that is not in "Day N — Title" blocks: show it as written.
-                <div className="mt-5 max-w-[72ch] whitespace-pre-line rounded-card border border-k-line bg-k-card p-5 text-body text-k-body">
+                <div className="mt-5 max-w-[72ch] whitespace-pre-line rounded-card border border-k-line bg-k-card p-5 text-body text-k-body" {...aiMark}>
                   {t.itinerary_text.trim()}
                 </div>
               ) : t.days.length === 0 ? (
@@ -439,7 +442,7 @@ export default async function TourPage({ params }: Props) {
                           </span>
                           <Icon name="chevron" className="h-5 w-5 shrink-0 text-k-muted transition-transform duration-base ease-std group-open:rotate-180" />
                         </summary>
-                        <div className="whitespace-pre-line px-4 pb-5 text-body text-k-body">{d.body}</div>
+                        <div className="whitespace-pre-line px-4 pb-5 text-body text-k-body" {...aiMark}>{d.body}</div>
                       </details>
                     </li>
                   ))}
