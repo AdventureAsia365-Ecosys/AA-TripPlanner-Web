@@ -763,9 +763,12 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   (`catalogTextMark`); never a page-wide mark, since the page also shows prices, photos and facts.
   The browse Lambda's catalog JSON carries the same mark as data (AA-1040 lane l10): every tour card and the tour
   detail have `ai` = `{ai_generated: true, generator: "Adventure Asia catalog writer", model: null, generated_at:
-  <updated_at, else published_at>, human_edited: null}` (`backend/browse/catalog.py` `catalog_ai_mark`, the object of
-  the CIS tour reads and catalog.http.v1 1.3 `Tour.ai`); the page's attributes take `ai.generated_at` first
-  (`tourTextMark`). `ai` is a Lambda helper, not a `catalog.tour` view column.
+  <text_updated_at, else published_at>, human_edited: null}` (`backend/browse/catalog.py` `catalog_ai_mark`, the
+  object of the CIS tour reads and catalog.http.v1 1.3 `Tour.ai`); the page's attributes take `ai.generated_at` first
+  (`tourTextMark`). `ai` is a Lambda helper, not a `catalog.tour` view field. `text_updated_at` (CIS 359) is when the
+  Master text was last published; `v_tour.updated_at` also moves with a photo change, so the mark uses it only while
+  359 is not applied (`has_text_updated_at` probes `pg_attribute` until the column is there; the `*_PRE_359` reads
+  select NULL in its place).
   Narration day choice (`master_content.resolve_days`), because a component row's tour day can be
   wrong: per trip day, the own tour day text of any entry whose text names its stop (component or
   place name, accent-insensitive, generic suffixes such as "Temple" dropped); else the nearest other

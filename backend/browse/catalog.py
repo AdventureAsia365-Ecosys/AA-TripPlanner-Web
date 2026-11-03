@@ -54,7 +54,7 @@ _COUNTRY_SLUG_SQL = "trim(BOTH '-' FROM regexp_replace(lower(t.country), '[^a-z0
 CARD_COLUMNS = """
     t.source_id, t.tour_id::text AS tour_id, t.slug, t.title, t.subtitle, t.summary, t.country,
     t.duration_days, t.duration_raw, t.best_time_to_go, t.highlights, t.cover_photo_path,
-    t.photo_count, t.lifecycle_stage, t.published_at, t.updated_at
+    t.photo_count, t.lifecycle_stage, t.published_at, t.updated_at, t.text_updated_at
 """
 
 TOUR_CARDS_SQL = f"""
@@ -71,12 +71,41 @@ TOUR_BY_SLUG_SQL = """
            t.title, t.subtitle, t.summary, t.description, t.highlights, t.country, t.duration_raw,
            t.duration_days, t.activities, t.inclusions, t.exclusions, t.best_time_to_go, t.group_size,
            t.lifecycle_stage, t.itinerary_text, t.cover_photo_path, t.photo_count, t.published_at,
-           t.updated_at, t.content_hash
+           t.updated_at, t.content_hash, t.text_updated_at
     FROM catalog.v_tour t
     WHERE t.slug = $1 OR left(replace(t.source_id, '-', ''), 8) = $2
     ORDER BY (t.slug = $1) DESC
     LIMIT 1
 """
+
+# AA-1040: catalog.v_tour.text_updated_at (CIS 359) is when the served Master text last changed (the Master row's
+# updated_at); v_tour.updated_at also moves with a photo change. The AI mark's generated_at reads the former. Until
+# CIS 359 is applied the column is absent: the *_PRE_359 reads select NULL in its place and the mark falls back to
+# updated_at (an upper bound). TEXT_UPDATED_AT_SQL is asked until it answers true, then never again in this process.
+_TEXT_TS = "t.text_updated_at"
+_TEXT_TS_PRE_359 = "NULL::timestamptz AS text_updated_at"
+TOUR_CARDS_SQL_PRE_359 = TOUR_CARDS_SQL.replace(_TEXT_TS, _TEXT_TS_PRE_359)
+TOUR_BY_SLUG_SQL_PRE_359 = TOUR_BY_SLUG_SQL.replace(_TEXT_TS, _TEXT_TS_PRE_359)
+TEXT_UPDATED_AT_SQL = """
+    SELECT EXISTS (SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('catalog.v_tour') AND attname = 'text_updated_at'
+                      AND attnum > 0 AND NOT attisdropped) AS ok
+"""
+_has_text_updated_at = False
+
+
+async def has_text_updated_at(pool: Any) -> bool:
+    """Whether catalog.v_tour has text_updated_at (CIS 359); a true answer is kept for the Lambda's lifetime."""
+    global _has_text_updated_at
+    if not _has_text_updated_at:
+        _has_text_updated_at = bool(await pool.fetchval(TEXT_UPDATED_AT_SQL))
+    return _has_text_updated_at
+
+
+def reset_text_updated_at_probe() -> None:
+    """Forget the probe answer (tests)."""
+    global _has_text_updated_at
+    _has_text_updated_at = False
 
 TOUR_DAYS_SQL = """
     SELECT day_number, title, body, places
@@ -345,8 +374,9 @@ def months_from_text(text: Optional[str]) -> Optional[set[int]]:
 # catalog.v_tour title, subtitle, summary, description, highlight and day body is the CIS Master text, written by the
 # CIS catalog writer model and reviewed by AA staff before it is served. Same object, same generator name as the CIS
 # tour reads (tenant pool and catalog.http.v1 1.3 `Tour.ai`, CIS services/acp_content_writing/ai_marking.tour_mark):
-# `generated_at` = the last Master publish (`updated_at`), else the first (`published_at`); `model` and
-# `human_edited` are not known from the catalog views (both recorded admin-side in CIS), so null.
+# `generated_at` = the last Master publish of the text (`text_updated_at`, CIS 359; `updated_at` before 359), else the
+# first (`published_at`); `model` and `human_edited` are not known from the catalog views (both recorded admin-side in
+# CIS), so null.
 CATALOG_AI_GENERATOR = "Adventure Asia catalog writer"
 
 
@@ -384,7 +414,7 @@ def _card(r: Any) -> dict:
         "lifecycle_stage": r["lifecycle_stage"],
         "published_at": _iso(r["published_at"]),
         "updated_at": _iso(r["updated_at"]),
-        "ai": catalog_ai_mark(r["updated_at"], r["published_at"]),
+        "ai": catalog_ai_mark(r["text_updated_at"] or r["updated_at"], r["published_at"]),
     }
 
 
@@ -532,7 +562,8 @@ async def fill_fallback_covers(items: list[dict], *, pool: Any,
 
 async def list_tours(q: dict, *, pool: Any) -> dict:
     """Tour cards, filtered (country, duration range, travel month) and sorted, one page."""
-    rows = await pool.fetch(TOUR_CARDS_SQL, q["country"], q["min_days"], q["max_days"])
+    cards_sql = TOUR_CARDS_SQL if await has_text_updated_at(pool) else TOUR_CARDS_SQL_PRE_359
+    rows = await pool.fetch(cards_sql, q["country"], q["min_days"], q["max_days"])
     cards = [_card(r) for r in rows]
     if q["month"]:
         # A tour whose best time names no month is not excluded: unknown is not "wrong season".
@@ -555,7 +586,8 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
     suffix (a title change moves the slug; `slug` in the answer is the current one, so the page
     can redirect). None when the tour is not in the catalog."""
     slug = (slug or "").strip().lower()
-    t = await pool.fetchrow(TOUR_BY_SLUG_SQL, slug, source_id_suffix(slug))
+    by_slug_sql = TOUR_BY_SLUG_SQL if await has_text_updated_at(pool) else TOUR_BY_SLUG_SQL_PRE_359
+    t = await pool.fetchrow(by_slug_sql, slug, source_id_suffix(slug))
     if t is None:
         return None
     tour_id = t["tour_id"]
@@ -598,7 +630,7 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
         "published_at": _iso(t["published_at"]),
         "updated_at": _iso(t["updated_at"]),
         "content_hash": t["content_hash"],
-        "ai": catalog_ai_mark(t["updated_at"], t["published_at"]),
+        "ai": catalog_ai_mark(t["text_updated_at"] or t["updated_at"], t["published_at"]),
         "days": [
             {"day_number": d["day_number"], "title": d["title"], "body": d["body"],
              "places": list(d["places"] or [])}
