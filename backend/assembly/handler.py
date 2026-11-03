@@ -320,19 +320,22 @@ async def route(
         calls: list = []
         paused: Optional[str] = budget.get("reason") if budget.get("reason") != llm_gateway.REASON_CAP else None
         narrate_fn = None
-        # AA-1015: 10 model narrations per hour per session (twice that signed in). Counted only when this request
-        # would call the model: a cached answer, an all-AA-text trip (answered above) or a stopped budget costs nothing.
-        if not budget["exhausted"]:
-            decision = await ratelimit.hit(conn, ratelimit.SCOPE_NARRATE, ratelimit.KIND_SESSION, session_id,
-                                           signed_in=caller.signed_in)
-            if not decision.allowed:
-                return {"statusCode": 429, "headers": ratelimit.limited_headers(decision, _HEADERS),
-                        "body": json.dumps(ratelimit.limited_body(decision))}
+        # AA-1025 H1b: the route (and with it the app profile's AI switch, `load_route`) is resolved before the limit,
+        # so a request AI-off or route-unreadable refuses is degraded and never counted.
         if not budget["exhausted"]:
             try:
                 narrate_fn = await _resolve_narrator(mode, narrator, conn, calls)
             except llm_gateway.AiPaused as e:
                 paused = e.reason
+        # AA-1015: 10 model narrations per hour per session (twice that signed in). Counted only when this request
+        # would call the model: a cached answer, an all-AA-text trip (answered above), a stopped budget or paused AI
+        # costs nothing.
+        if narrate_fn is not None:
+            decision = await ratelimit.hit(conn, ratelimit.SCOPE_NARRATE, ratelimit.KIND_SESSION, session_id,
+                                           signed_in=caller.signed_in)
+            if not decision.allowed:
+                return {"statusCode": 429, "headers": ratelimit.limited_headers(decision, _HEADERS),
+                        "body": json.dumps(ratelimit.limited_body(decision))}
         try:
             narration, source, ungrounded = await _narrate(conn, itinerary, narrate_fn,
                                                            day_texts=day_texts)

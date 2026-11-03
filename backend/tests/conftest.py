@@ -15,6 +15,21 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_app_profile(monkeypatch):
+    """AA-1025 H1b: no test reads the CIS app profile view unless it says so (the fake DBs answer any SQL); the default
+    profile (AI on, no budget) is what every older test expects. Tests of the profile patch ``app_profile.read``."""
+    from backend.shared import app_profile
+
+    async def _default(db):
+        return app_profile.DEFAULT
+
+    app_profile.invalidate()
+    monkeypatch.setattr(app_profile, "read", _default)
+    yield
+    app_profile.invalidate()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_search_embed_state():
     """AA-856: the query-embedding cache and the throttle cooldown are per container (module
     globals); every test starts with both empty."""
