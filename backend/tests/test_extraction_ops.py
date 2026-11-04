@@ -57,12 +57,15 @@ _ALLOWED_TRIPPLANNER = {"sessions", "customers", "trip_events", "trip_drafts", "
                         "job",   # tp-021, AA-861
                         "ai_rate_counter"}   # tp-023, AA-1015
 _ALLOWED_SHARED = {"llm_call_log"}   # CIS 173: the ledger INSERT of the model gateway
+# AA-1029: AA-Booking's contract view price.from.v1 (Booking bk-039 grants it to role tripplanner), nothing else of booking.
+_ALLOWED_BOOKING = {"v_from_prices"}
 
 
 def _allowed(schema: str, name: str) -> bool:
     schema, name = schema.lower(), name.lower()
     return (schema == "catalog" or (schema == "tripplanner" and name in _ALLOWED_TRIPPLANNER)
-            or (schema == "shared" and name in _ALLOWED_SHARED))
+            or (schema == "shared" and name in _ALLOWED_SHARED)
+            or (schema == "booking" and name in _ALLOWED_BOOKING))
 
 
 def _sql_strings(text: str):
@@ -98,8 +101,11 @@ def test_read_guard_catches_the_old_readers():
     ok = ('"""Docstring prose may name gold_aa_internal.published_tours."""\n# and so may tripplanner.tour_stop\n'
           'A = "SELECT * FROM catalog.v_tour_component c JOIN catalog.v_destination d USING (destination_id)"\n'
           'B = "INSERT INTO shared.llm_call_log (stage) VALUES ($1)"\n'
-          'C = "SELECT * FROM tripplanner.component_id_map"\n')
+          'C = "SELECT * FROM tripplanner.component_id_map"\n'
+          'D = "SELECT amount FROM booking.v_from_prices WHERE source_id = $1"\n')
     assert _foreign_reads(ok) == []
+    # AA-1029: only the price.from.v1 view of booking, never a Booking table.
+    assert _foreign_reads('E = "SELECT amount FROM booking.trip_plan_prices"\n') == ["booking.trip_plan_prices"]
 
 
 def test_guard_pattern_catches_the_old_writers():

@@ -1,6 +1,6 @@
 // AA-812 — tour page (PDP), SSR + ISR from the CIS catalog (contract catalog.tour v1) through the
-// browse Lambda. No price: there is no price source yet (prices belong to AA-Booking, ADR 0005), so
-// the "from" price is hidden rather than invented.
+// browse Lambda. AA-1029: the "from" price comes only from AA-Booking (contract price.from.v1, read by the browse
+// Lambda): the suggested retail price per person for 2 travellers. Without one no price is shown, never invented.
 // AA-995 "Golden Hour" (spec §4.3): solid navy header → breadcrumb → gallery (the LCP: a swipe strip below md, a
 // 1 + 2 mosaic from md; the first photo resolved to its CDN URL on the server) → title block, key facts, activity
 // chips → highlights → day-by-day timeline → where you go → included / not included, next to a sticky "Make it yours"
@@ -28,6 +28,7 @@ import { resolveHeroPhoto, type HeroPhoto } from "@/lib/photoResolve";
 import { RIBBON_MIN_ANIMATED, uniqueRibbonItems, type RibbonItem } from "@/lib/photos";
 import { cvSize } from "@/lib/contentVisibility";
 import { tourTextMark } from "@/lib/aiNotices";
+import { formatFromPrice, fromPriceOffer } from "@/lib/fromPrice";
 import { clip, coverAlt, daysText, splitLines, titleCase } from "@/lib/text";
 import { routeLines, routePoints } from "@/lib/tourMap";
 import { AiNotice, Badge, ButtonLink, Icon } from "@/ui";
@@ -89,6 +90,7 @@ function tripJsonLd(t: TourDetail, points: MapPoint[]) {
     // touristType is the audience; activities belong in keywords.
     keywords: t.activities.length ? t.activities.slice(0, 8).join(", ") : undefined,
     provider: { "@type": "TravelAgency", name: "Adventure Asia", url: "https://adventure.asia/" },
+    offers: fromPriceOffer(t.from_price, url),
     itinerary: {
       "@type": "ItemList",
       numberOfItems: t.days.length,
@@ -240,10 +242,24 @@ function Reassurances() {
   );
 }
 
+function FromPriceLine({ t }: { t: TourDetail }) {
+  const price = formatFromPrice(t.from_price);
+  if (!price) return null;
+  return (
+    <div className="mt-3" data-testid="from-price">
+      <p className="text-body text-k-ink">
+        From <span className="text-lead font-semibold">{price}</span> per person
+      </p>
+      <p className="text-caption text-k-muted">Suggested price for 2 travellers. Your advisor confirms the final price.</p>
+    </div>
+  );
+}
+
 function CtaCard({ t }: { t: TourDetail }) {
   return (
     <div className="rounded-panel border border-k-line bg-k-card p-6 shadow-e3">
       <p className="font-script text-script-sm text-k-ink">Make it yours</p>
+      <FromPriceLine t={t} />
       <p className="mt-3 text-small text-k-muted">
         Every Adventure Asia trip is tailor-made: start from this itinerary, change what you like, and an advisor
         prices and confirms it with you.
@@ -527,6 +543,12 @@ export default async function TourPage({ params }: Props) {
 
       {/* Mobile sticky CTA bar (after main in the DOM; the page keeps bottom padding so the footer is not covered). */}
       <div className="fixed inset-x-0 bottom-0 z-sticky-cta border-t border-k-line bg-k-card px-gutter pb-[calc(12px+env(safe-area-inset-bottom))] pt-3 shadow-e3 lg:hidden">
+        {formatFromPrice(t.from_price) && (
+          <p className="mx-auto mb-2 max-w-page text-small text-k-ink">
+            From <span className="font-semibold">{formatFromPrice(t.from_price)}</span> per person
+            <span className="text-k-muted"> · suggested, 2 travellers</span>
+          </p>
+        )}
         <div className="mx-auto flex max-w-page gap-2">
           <ButtonLink href={planHref(t)} variant="primary" size="md" className="min-h-12 flex-1 whitespace-nowrap !px-3 normal-case !tracking-normal">
             Customise this trip

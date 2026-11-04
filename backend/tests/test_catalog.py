@@ -184,8 +184,9 @@ async def test_list_empty_catalog():
 
 def _contract_view(tour: dict) -> dict:
     """The catalog.tour v1 part of the answer (the API adds display helpers next to it; AA-1040: and `ai`, the AI mark
-    it derives from updated_at / published_at, tests/test_browse_ai_mark.py)."""
-    extras = {"country_slug", "cover_url", "cover_source", "cover_place", "ai"}
+    it derives from updated_at / published_at, tests/test_browse_ai_mark.py; AA-1029: and `from_price`, read from the
+    Booking contract price.from.v1, tests/test_aa1029_from_price.py)."""
+    extras = {"country_slug", "cover_url", "cover_source", "cover_place", "ai", "from_price"}
     out = {k: v for k, v in tour.items() if k not in extras}
     out["photos"] = [{k: v for k, v in p.items() if k not in ("url", "url_small")} for p in tour["photos"]]
     return out
