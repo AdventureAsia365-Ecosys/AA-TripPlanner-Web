@@ -23,7 +23,10 @@ export function formatFromPrice(p: FromPrice | null | undefined): string | null 
   }
 }
 
-/** The schema.org Offer of the page's JSON-LD, or undefined without a price. */
+/** price.from.v1 marks a row without a known end (open-ended supplier rates) with valid_to 9999-12-31. */
+const OPEN_ENDED_FROM = "9999-01-01";
+
+/** The schema.org Offer of the page's JSON-LD, or undefined without a price (no priceValidUntil when open-ended). */
 export function fromPriceOffer(p: FromPrice | null | undefined, url: string): Record<string, unknown> | undefined {
   if (!formatFromPrice(p) || !p) return undefined;
   return {
@@ -31,7 +34,7 @@ export function fromPriceOffer(p: FromPrice | null | undefined, url: string): Re
     price: p.amount,
     priceCurrency: p.currency,
     url,
-    ...(p.valid_to ? { priceValidUntil: p.valid_to } : {}),
+    ...(p.valid_to && p.valid_to < OPEN_ENDED_FROM ? { priceValidUntil: p.valid_to } : {}),
     description: "Suggested price per person for 2 travellers; the advisor confirms the final price.",
   };
 }

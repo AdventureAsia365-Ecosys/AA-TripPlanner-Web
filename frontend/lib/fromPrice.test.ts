@@ -25,3 +25,10 @@ test("the JSON-LD offer carries the price and its validity", () => {
   assert.equal(offer?.priceValidUntil, "2027-03-31");
   assert.equal(fromPriceOffer(null, "u"), undefined);
 });
+
+test("an open-ended price has no priceValidUntil", () => {
+  const offer = fromPriceOffer({ ...P, valid_to: "9999-12-31" }, "https://example.test/tours/x");
+  assert.equal(offer?.price, "1235.00");
+  assert.equal("priceValidUntil" in (offer ?? {}), false);
+  assert.equal("priceValidUntil" in (fromPriceOffer({ ...P, valid_to: null }, "u") ?? {}), false);
+});
