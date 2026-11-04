@@ -581,6 +581,31 @@ async def list_tours(q: dict, *, pool: Any) -> dict:
     }
 
 
+# AA-1029 (root ADR 0005 Consequences, ADR 0019 b15): the public "from" price of a tour comes only from AA-Booking's
+# contract view booking.v_from_prices (price.from.v1, Booking bk-039, SELECT to role tripplanner): the suggested retail
+# price per person for 2 travellers. TripPlanner never computes a price. ADR 0019 d10 moves tour reads to the per-tenant
+# catalog.v_tenant_tour_v1; until that view exists this is the AA catalogue path. Unreadable (bk-039 not applied, no
+# grant) or no row: no price is shown.
+FROM_PRICE_SQL = """
+    SELECT amount::text AS amount, currency, basis, pax, season, valid_to
+    FROM booking.v_from_prices
+    WHERE source_system = $1 AND source_id = $2
+"""
+
+
+async def from_price(pool: Any, source_system: str, source_id: str) -> Optional[dict]:
+    """The tour's public from price ({amount, currency, basis, pax, season, valid_to}) or None; never raises."""
+    try:
+        row = await pool.fetchrow(FROM_PRICE_SQL, source_system, source_id)
+    except Exception as exc:  # noqa: BLE001 — degrade to "no price shown"
+        print(json.dumps({"evt": "from_price_unreadable", "error": type(exc).__name__}))
+        return None
+    if not row or row["amount"] is None:
+        return None
+    return {"amount": str(row["amount"]), "currency": str(row["currency"]).strip(), "basis": row["basis"],
+            "pax": row["pax"], "season": row["season"], "valid_to": _iso(row["valid_to"])}
+
+
 async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
     """One tour as catalog.tour v1 (+ photo URLs). Matches the slug, else the slug's source-id
     suffix (a title change moves the slug; `slug` in the answer is the current one, so the page
@@ -631,6 +656,7 @@ async def tour_detail(slug: str, *, pool: Any) -> Optional[dict]:
         "updated_at": _iso(t["updated_at"]),
         "content_hash": t["content_hash"],
         "ai": catalog_ai_mark(t["text_updated_at"] or t["updated_at"], t["published_at"]),
+        "from_price": await from_price(pool, t["source_system"], t["source_id"]),
         "days": [
             {"day_number": d["day_number"], "title": d["title"], "body": d["body"],
              "places": list(d["places"] or [])}

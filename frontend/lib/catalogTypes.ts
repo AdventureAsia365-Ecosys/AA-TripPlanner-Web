@@ -2,6 +2,7 @@
 // The tour detail is the CIS contract catalog.tour v1 plus display helpers (country_slug, cover_url,
 // photo url / url_small).
 
+import type { FromPrice } from "./fromPrice";
 import type { RouteProposal } from "./types";
 
 // Where a tour's cover comes from (AA-812 D4/D5): its own photo, or — when it has none — a photo
@@ -119,6 +120,8 @@ export interface TourDetail {
   published_at: string | null;
   updated_at: string | null;
   ai?: CatalogAiMark;
+  /** AA-1029: the suggested retail price per person for 2 from AA-Booking (price.from.v1); null = no price shown. */
+  from_price?: FromPrice | null;
   days: TourDay[];
   places: TourPlace[];
   photos: (CatalogPhoto & { position: number })[];

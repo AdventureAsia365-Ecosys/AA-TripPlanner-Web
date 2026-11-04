@@ -186,6 +186,8 @@ class FakeCatalogPool:
         self.dest_photos = DEST_PHOTOS if dest_photos is None else dest_photos
         self.calls: list[tuple[str, tuple]] = []
         self.has_text_updated_at = True     # CIS 359 applied (False: catalog.v_tour without text_updated_at)
+        # AA-1029: booking.v_from_prices rows by source_id; None = the view cannot be read (bk-039 not applied).
+        self.from_prices: dict[str, dict] | None = {}
 
     def _dest_cover(self, did: str) -> str | None:
         return next((p["path"] for p in sorted(self.dest_photos, key=lambda p: p["position"])
@@ -276,6 +278,10 @@ class FakeCatalogPool:
 
     async def fetchrow(self, query: str, *args: Any) -> dict | None:
         self.calls.append((query, args))
+        if _norm(query) == _norm(cat.FROM_PRICE_SQL):
+            if self.from_prices is None:
+                raise RuntimeError("relation booking.v_from_prices does not exist")
+            return self.from_prices.get(args[1])
         if _norm(query) == _norm(routes_mod.TOUR_FALLBACK_SQL):
             t = self._by_id(args[0])
             if not t:
