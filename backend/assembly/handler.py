@@ -54,7 +54,7 @@ from backend.assembly import account as account_mod
 from backend.assembly import activities as activities_mod
 from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
-from backend.shared import component_ids, llm_gateway, observability, ratelimit
+from backend.shared import component_ids, llm_gateway, observability, ratelimit, tenant
 
 _COMPONENTS_RE = re.compile(r"^/trip/([^/]+)/components$")
 _COMPONENT_ITEM_RE = re.compile(r"^/trip/([^/]+)/components/([^/]+)$")
@@ -702,13 +702,19 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
 
     AA-908: `access_token` is the raw `x-tripplanner-access` header; it is verified before any SQL
     (account.caller_from_header). The JWKS is fetched on the first signed-in request of a container
-    and kept (a failed refresh keeps the last good key set)."""
+    and kept (a failed refresh keeps the last good key set).
+
+    AA-1038 (R5 slice 1, tp-025 shadow RLS): the tenant context is bound right after acquire, before route(), and
+    unbound in a finally even when route() raises (tenant.bound). Every request is the demo tenant
+    (config.DEFAULT_TENANT_ID): no header or path picks a tenant yet. A tenant id that is not a uuid fails here,
+    before a connection is taken or any SQL runs."""
     try:
         caller = await account_mod.caller_from_header(access_token)
+        tenant_id = tenant.canonical(config.DEFAULT_TENANT_ID)
         if acquire is None:
             from backend.shared.db import get_pool
             acquire = (await get_pool()).acquire
-        async with acquire() as conn:
+        async with acquire() as conn, tenant.bound(conn, tenant_id, source=tenant.SOURCE_DEFAULT):
             return await route(method, path, body, conn=conn, guest_token=guest_token, caller=caller)
     except Exception as e:  # noqa: BLE001
         frames = traceback.extract_tb(e.__traceback__)

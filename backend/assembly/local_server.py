@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from backend import config
 from backend.assembly import handler as assembly_handler
+from backend.shared import tenant
 from backend.shared.db import get_pool
 
 PORT = 8002
@@ -44,7 +45,10 @@ class Handler(BaseHTTPRequestHandler):
 
         async def go():
             pool = await get_pool()
-            async with pool.acquire() as conn:
+            # AA-1038: the same tenant context as the Lambda (assembly_handler.serve): bound right after acquire,
+            # before route(), unbound in a finally.
+            async with pool.acquire() as conn, tenant.bound(conn, config.DEFAULT_TENANT_ID,
+                                                            source=tenant.SOURCE_DEFAULT):
                 return await assembly_handler.route(
                     self.command, parsed.path, body, conn=conn, guest_token=guest_token
                 )

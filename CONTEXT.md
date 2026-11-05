@@ -7,16 +7,16 @@ status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-11-03
+last_reviewed: 2026-11-05
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
 
 # AA-TripPlanner-Web — Repo Context
 
-B2C map-based trip planner in the Adventure Asia (AA) ecosystem. An end traveler explores
-destinations on an interactive map, assembles a personal multi-day trip, and gets AI-assisted
-suggestions and narrative. This repo is a self-contained product: its own frontend, its own
+Map-based trip planner in the Adventure Asia (AA) ecosystem, offered B2B as a white-label product of partner agencies
+(root ADR 0019). An end traveler explores destinations on an interactive map, assembles a personal multi-day trip,
+and gets AI-assisted suggestions and narrative. This repo is a self-contained product: its own frontend, its own
 serverless backend, and its own database schema — it does **not** share application code with
 AA-CIS-App. What it shares with the rest of the ecosystem is a small set of AWS-level resources
 (Bedrock access, OIDC deploy roles, the destinations reference data) provisioned by AA-CIS-Infra.
@@ -27,9 +27,13 @@ AA-CIS-App. What it shares with the rest of the ecosystem is a small set of AWS-
 
 ## What it is (role in the AA ecosystem)
 
-- **Product surface**: consumer-facing (B2C). The visitor is a traveler planning a trip, not an
-  AA admin or a marketplace tenant. This is the opposite audience from AA-CIS-App (admin +
-  tenant content pipeline).
+- **Product surface**: a B2B white-label planner (root ADR 0019 d10/d11). Adventure Asia sells to partner agencies
+  only; each agency tenant offers the planner to its own travellers under its brand, and a trip's lead goes to that
+  tenant's CRM (`lead.submitted.v1`), never to an Adventure Asia traveller record. The visitor is still a traveller
+  planning a trip, not an AA admin, but the planner is the tenant's product, not AA's consumer storefront. Today the
+  only tenant is the AA-hosted demo (`aa-tripplanner`, kind `demo`): "Send to an advisor" is a demo notice (AA-1034
+  R0), and every trip row belongs to the demo tenant (see "Tenancy (R5, AA-1038)"). The per-tenant path
+  (`/{slug}`), theme and lead route come in later R5 slices.
 - **Position**: a leaf product. It reads CIS content only through the `catalog.*` views (tours, places,
   tour graph) that the CIS side owns, and it calls Bedrock for AI assembly. Nothing in the CIS content pipeline
   depends on TripPlanner — the arrow points one way (TripPlanner → shared/Bedrock), never back.
@@ -608,6 +612,46 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `v_destination_photo`, `v_destination.cover_image_url`, set by CIS from the photo matched to a place on the
   tour's own itinerary). Image URL = CIS public API base + view `path` + `?size=large|small`. Cover matching runs
   in CIS after its place build (`geo.*`) — see `docs/ecosystem-architecture.md` §4.5.
+
+#### Tenancy (R5, AA-1038)
+
+Slice 1 of root ADR 0019 d10 (the "shadow" phase): the trip state has an owning tenant and the database can filter by
+it, while every request still runs as one tenant.
+
+- **Tables.** `tripplanner.sessions`, `trip_drafts`, `trip_events` and `outbox` have `tenant_id uuid NOT NULL`
+  (tp-025), a soft key to `shared.tenants.tenant_id` (no FK: `shared` is CIS's). Every row written before tp-025 was
+  backfilled to the demo tenant `00000000-0000-0000-0000-000000000002` (slug `aa-tripplanner`, kind `demo`).
+  Not tenant-scoped yet, on purpose: `narration_cache` and `ai_rate_counter` (keys change in the per-tenant AI cap
+  slice), `customers` and `traveller_accounts` (frozen since R0, retired later), `job` (system queue) and
+  `component_id_map` (global catalog ids).
+- **Column default** `COALESCE(NULLIF(current_setting('app.tenant_id', true), '')::uuid, <demo>)`: an INSERT
+  without `tenant_id` takes the bound tenant, or the demo tenant when none is bound. The code's INSERTs name no
+  `tenant_id`.
+- **Shadow policy.** Row security is ENABLED, not FORCED. One permissive policy `<table>_tenant_shadow` FOR ALL TO
+  `tripplanner`: no tenant context (GUC `app.tenant_id` unset or `''`) = every row; a context = that tenant's rows
+  only, for reads and writes (a row naming another tenant fails WITH CHECK). A context that is not a uuid fails the
+  statement; it never widens access.
+- **Binding (assembly Lambda).** `backend/shared/tenant.py`: `bound(conn, tenant_id)` runs
+  `SELECT set_config('app.tenant_id', $1, false)` right after the pooled connection is acquired, before `route()`,
+  and `RESET app.tenant_id` in a `finally`, also when `route()` raises (`handler.serve`, and `local_server.py` the
+  same way). Session level, not `SET LOCAL`, because the handler mostly runs in autocommit on one pooled connection;
+  asyncpg's `RESET ALL` on release is a second safety. An unbind that fails terminates the connection (log line
+  `tenant_unbind_failed`) instead of returning it to the pool. The tenant is `config.DEFAULT_TENANT_ID` (the demo
+  constant; env override `TP_DEFAULT_TENANT_ID`, validated as a uuid at import, so a bad value fails the cold start
+  and a non-uuid is never bound). There is no tenant header or path yet, so this adds no trust surface. Each request
+  logs one line `tenant_context` `{tenant_id, source: "default"}` (no request values).
+- **Owner-bypass views.** `tp_owner` owns the tables and the views, and row security is not forced, so the views
+  read by other apps (`v_inquiry_outbox` for `booking`; `v_ops_traffic_daily`, `v_ops_data_totals`,
+  `v_ops_pin_components`, `v_ops_inquiry_keys` for `cis_app`) keep every row whatever the context.
+- **Jobs path.** The jobs Lambda (same login role `tripplanner`) binds no tenant on purpose: the retention kinds work
+  across tenants through the policy's unset-GUC branch, and each invocation logs `tenant_context`
+  `{tenant_id: null, source: "system", op}`. The browse Lambda is unchanged (it reads no tenant-scoped table).
+- **What the FORCE slice changes (S276 in the plan).** FORCE ROW LEVEL SECURITY, strict policies (no unset branch),
+  the column default without the demo fallback, and a system path for the jobs Lambda (a per-tenant loop or a
+  system role / policy), else its redaction sees 0 rows. Before that, the `/{slug}` path slice resolves the tenant
+  from a signed BFF assertion once `catalog.v_tenant_tripplanner_v1` exists. Tests: `backend/tests/test_aa1038_tenant.py`
+  (bind order, unbind on error, invalid id runs no SQL) and `backend/tests/test_tenant_rls_pg.py` (on the tp-025
+  replay, as `tripplanner`: a demo trip is 200 under the demo tenant and 404 under a forged one).
 
 ### AI (Bedrock)
 

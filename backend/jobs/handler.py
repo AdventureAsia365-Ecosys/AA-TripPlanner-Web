@@ -32,7 +32,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
 from backend.jobs import outbox_redact, queue, rate_counter_purge, runner
-from backend.shared import observability
+from backend.shared import observability, tenant
 
 # kind -> handler(pool, job). Every kind matches '^tp_[a-z0-9_]+$' (tp-021 job_kind_chk, owners.yaml tp_).
 HANDLERS: dict[str, runner.Handler] = {
@@ -97,6 +97,12 @@ async def serve(event: dict[str, Any], *, pool: Any, worker: str, time_left: Cal
     if op not in OPS:
         return {"error": f"unknown op; one of {list(OPS)}"}
     emit = observability.emit
+    # AA-1038 (R5 slice 1): tenant-less ON PURPOSE. The retention kinds (outbox redaction, rate-counter purge) work
+    # across every tenant, so this Lambda binds no app.tenant_id and reads/writes tripplanner.outbox through the
+    # shadow policy's unset-GUC branch of tp-025 (ENABLE, not FORCE). The FORCE slice removes that branch: before it
+    # ships, this Lambda needs a per-tenant loop (bind each tenant in turn) or a system role / policy of its own,
+    # else the redaction sees 0 rows and silently does nothing.
+    tenant.system_context(op)
     if op == "status":
         async with pool.acquire() as conn:
             return {"op": op, "jobs": await queue.recent(conn, sorted(HANDLERS))}

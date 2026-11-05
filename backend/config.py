@@ -7,6 +7,7 @@ Secrets Manager (acc2); locally it comes from the environment / .env.
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -28,6 +29,28 @@ DATABASE_URL = _get("TRIPPLANNER_DATABASE_URL")
 # and no frozen tripplanner place table is read, and the PLACES_SOURCE switch is gone.
 SCHEMA_TRIPPLANNER = "tripplanner"
 SCHEMA_SHARED = "shared"
+
+# --- Tenancy (AA-1038 R5 slice 1, root ADR 0019 d10: the "one shadow deploy") ---
+# tp-025 gives sessions, trip_drafts, trip_events and outbox a tenant_id and a shadow RLS policy for the runtime role:
+# no tenant context = every row, a tenant context (GUC app.tenant_id) = that tenant's rows only. The assembly Lambda
+# binds DEFAULT_TENANT_ID on every request (backend/shared/tenant.py); there is no tenant header or path yet, so
+# every request is the demo tenant (slug aa-tripplanner, kind demo in shared.tenants). The same fixed id is the
+# backfill and the column-default fallback of tp-025.
+DEMO_TENANT_ID = "00000000-0000-0000-0000-000000000002"
+
+
+def tenant_uuid(raw: Optional[str], name: str) -> str:
+    """The canonical text form of a tenant uuid. Raises RuntimeError (the value is not echoed) when `raw` is not a
+    uuid, so a bad TP_DEFAULT_TENANT_ID fails the cold start instead of binding a non-uuid (lesson S254: a slug where
+    a uuid belongs was refused per call and the failure was swallowed)."""
+    try:
+        return str(uuid.UUID((raw or "").strip()))
+    except (ValueError, AttributeError, TypeError):
+        raise RuntimeError(f"{name} must be a uuid") from None
+
+
+# Override for a test or a second environment only (Lambda env TP_DEFAULT_TENANT_ID); unset or blank = the demo tenant.
+DEFAULT_TENANT_ID = tenant_uuid((_get("TP_DEFAULT_TENANT_ID") or "").strip() or DEMO_TENANT_ID, "TP_DEFAULT_TENANT_ID")
 
 # --- CIS public API (AA-812) ---
 # Base URL that catalog photo paths are relative to: {base}{path}?size=large|small (CIS
