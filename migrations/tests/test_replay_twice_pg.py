@@ -13,8 +13,9 @@ raises when it is missing), then:
   * pass 2: every file again, each as the role it ran as in pass 1, except ``NOT_RERUNNABLE`` (tp-001, which predates
     the registry convention and which DB Migrate never re-runs: tp-007 registered it) and ``SUPERSEDED_BY_DROP``
     (files about objects a later file dropped; DB Migrate never re-runs them either). Pass 2 must change nothing:
-    the catalog of schemas ``tripplanner`` and ``shared``, the row count of every table there and every
-    ``shared.schema_versions`` row (``applied_at`` included) are compared before and after.
+    the catalog of schemas ``tripplanner`` and ``shared`` (row-level security flags and policies included since
+    tp-025), the row count of every table there and every ``shared.schema_versions`` row (``applied_at`` included) are
+    compared before and after.
 
 Checks: the role rule equals ``migration_lint.migration_role``; the ``tp-%`` keys registered in
 ``shared.schema_versions`` are exactly the files' keys (after each pass); pass 2 is a no-op; the runtime role keeps
@@ -78,6 +79,17 @@ SELECT 'column ' || c.oid::regclass::text || '.' || a.attname || ' ' || format_t
 UNION ALL
 SELECT 'constraint ' || conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid)
   FROM pg_constraint WHERE connamespace IN (SELECT oid FROM ns)
+UNION ALL
+SELECT 'rls ' || c.oid::regclass::text || ' enabled=' || c.relrowsecurity || ' forced=' || c.relforcerowsecurity
+  FROM pg_class c WHERE c.relnamespace IN (SELECT oid FROM ns) AND c.relkind IN ('r', 'p')
+UNION ALL
+SELECT 'policy ' || c.oid::regclass::text || ' ' || p.polname || ' cmd=' || p.polcmd::text
+       || ' permissive=' || p.polpermissive
+       || ' roles=' || (SELECT string_agg(CASE WHEN r = 0 THEN 'public' ELSE pg_get_userbyid(r)::text END, ','
+                                          ORDER BY 1) FROM unnest(p.polroles) r)
+       || ' using=' || coalesce(pg_get_expr(p.polqual, p.polrelid), '-')
+       || ' check=' || coalesce(pg_get_expr(p.polwithcheck, p.polrelid), '-')
+  FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid WHERE c.relnamespace IN (SELECT oid FROM ns)
 UNION ALL
 SELECT 'index ' || pg_get_indexdef(i.indexrelid)
   FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relnamespace IN (SELECT oid FROM ns)
