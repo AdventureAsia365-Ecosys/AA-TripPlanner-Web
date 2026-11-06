@@ -5,6 +5,7 @@ import "../ui/core/tokens.css";
 import "../ui/tokens.css";
 import "./globals.css";
 import { RESTORE_THEME_SCRIPT } from "@/ui/restoreTheme";
+import RestoreThemeOnClientRender from "@/ui/RestoreThemeOnClientRender";
 import { siteUrl } from "@/lib/catalog";
 import { isLiveSite, layoutRobots } from "@/lib/siteMode";
 
@@ -59,7 +60,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: RESTORE_THEME_SCRIPT }} />
       </head>
-      <body>{children}</body>
+      <body>
+        {/* A page rendered in the browser (a dynamic notFound(), e.g. an unknown /{slug}) never runs the script above. */}
+        <RestoreThemeOnClientRender />
+        {children}
+      </body>
     </html>
   );
 }
