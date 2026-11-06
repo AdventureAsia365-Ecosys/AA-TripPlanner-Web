@@ -52,6 +52,15 @@ def tenant_uuid(raw: Optional[str], name: str) -> str:
 # Override for a test or a second environment only (Lambda env TP_DEFAULT_TENANT_ID); unset or blank = the demo tenant.
 DEFAULT_TENANT_ID = tenant_uuid((_get("TP_DEFAULT_TENANT_ID") or "").strip() or DEMO_TENANT_ID, "TP_DEFAULT_TENANT_ID")
 
+# AA-1038 R5 slice 2: the /{slug} path. The BFF resolves the slug through GET /browse/tenant/{slug} (CIS view
+# catalog.v_tenant_tripplanner_v1, CIS 379) and sends the assembly Lambda a signed tenant assertion in this header
+# (backend/shared/tenant_assertion.py). No header = the bare path = DEFAULT_TENANT_ID, as in slice 1.
+TENANT_ASSERTION_HEADER = "x-tp-tenant"
+# The longest life an assertion may claim (exp - iat) and the clock skew allowed on iat, in seconds. The BFF signs a
+# fresh one per request with a 120 s life.
+TENANT_ASSERTION_MAX_LIFETIME_S = 300
+TENANT_ASSERTION_SKEW_S = 30
+
 # --- CIS public API (AA-812) ---
 # Base URL that catalog photo paths are relative to: {base}{path}?size=large|small (CIS
 # migration 200). Browse responses carry absolute photo URLs built from it.
