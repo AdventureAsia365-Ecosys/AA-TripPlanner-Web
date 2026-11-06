@@ -32,8 +32,9 @@ AA-CIS-App. What it shares with the rest of the ecosystem is a small set of AWS-
   tenant's CRM (`lead.submitted.v1`), never to an Adventure Asia traveller record. The visitor is still a traveller
   planning a trip, not an AA admin, but the planner is the tenant's product, not AA's consumer storefront. Today the
   only tenant is the AA-hosted demo (`aa-tripplanner`, kind `demo`): "Send to an advisor" is a demo notice (AA-1034
-  R0), and every trip row belongs to the demo tenant (see "Tenancy (R5, AA-1038)"). The per-tenant path
-  (`/{slug}`), theme and lead route come in later R5 slices.
+  R0), and every trip row belongs to the demo tenant (see "Tenancy (R5, AA-1038)"). Since slice 2 a served agency
+  tenant has its planner on `/{slug}/plan` of the same host (signed BFF tenant assertion); theme, the tenant's own
+  tour text and the lead route come in later R5 slices.
 - **Position**: a leaf product. It reads CIS content only through the `catalog.*` views (tours, places,
   tour graph) that the CIS side owns, and it calls Bedrock for AI assembly. Nothing in the CIS content pipeline
   depends on TripPlanner — the arrow points one way (TripPlanner → shared/Bedrock), never back.
@@ -648,10 +649,45 @@ it, while every request still runs as one tenant.
   `{tenant_id: null, source: "system", op}`. The browse Lambda is unchanged (it reads no tenant-scoped table).
 - **What the FORCE slice changes (S276 in the plan).** FORCE ROW LEVEL SECURITY, strict policies (no unset branch),
   the column default without the demo fallback, and a system path for the jobs Lambda (a per-tenant loop or a
-  system role / policy), else its redaction sees 0 rows. Before that, the `/{slug}` path slice resolves the tenant
-  from a signed BFF assertion once `catalog.v_tenant_tripplanner_v1` exists. Tests: `backend/tests/test_aa1038_tenant.py`
+  system role / policy), else its redaction sees 0 rows. Tests: `backend/tests/test_aa1038_tenant.py`
   (bind order, unbind on error, invalid id runs no SQL) and `backend/tests/test_tenant_rls_pg.py` (on the tp-025
   replay, as `tripplanner`: a demo trip is 200 under the demo tenant and 404 under a forged one).
+
+#### The /{slug} path (R5 slice 2, AA-1038)
+
+- **Which tenant.** `app/[tenant]/plan/page.tsx` (and `app/[tenant]/page.tsx`, a redirect to `/{slug}/plan`) resolves
+  the slug on the server through the browse Lambda: `GET /browse/tenant/{slug}` (`backend/browse/tenant_site.py`)
+  reads the CIS contract view `catalog.v_tenant_tripplanner_v1` (CIS 379, contract `tenant.entitlements.v1` 1.4,
+  SELECT to `tripplanner`) and answers only a **served** tenant (in service and `tp.hosted` live): tenant id, slug,
+  trading name, kind, launcher, the BO-8 badge flag, theme (kit token -> `#rrggbb`, filtered again here) and locale.
+  Unknown, add-on-less, suspended and badly shaped slugs are the same 404 (no shared cache; the BFF keeps a per-
+  instance cache of 60 s, 30 s for a miss, `lib/tenantSite.ts`). Until CIS 379 is applied the view is unreadable:
+  every slug is a 404 (log `tenant_view_unreadable`), the bare paths are unaffected. Static routes (`/plan`, `/tours`,
+  `/destinations` …) win over the dynamic segment.
+- **The planner names its tenant, the BFF signs it.** `PlannerApp` sets the page's slug once
+  (`lib/plannerTenant.ts`): every `/api/trip` call carries `x-tp-tenant-slug`, and the guest ids live under
+  `aa-tripplanner:ids:<slug>` (the bare `/plan` keeps `aa-tripplanner:ids`), so one agency's trip is never sent to
+  another's planner. The BFF (`lib/tenantProxy.ts`) resolves the slug and sends the assembly Lambda a fresh **tenant
+  assertion** `x-tp-tenant: v1.<payload>.<sig>` (claims `exp`, `iat`, `slug`, `tid`, life 120 s), HMAC-SHA256 with a key
+  derived from the edge key (`HMAC(edge key, "aa-tripplanner tenant assertion v1")`, `lib/tenantAssertion.ts` and
+  `backend/shared/tenant_assertion.py`, pinned equal by one shared vector). No new secret: both sides already hold the
+  edge key. A slug that does not resolve is a 404 `unknown_tenant` from the BFF; no slug header = no assertion = the
+  default (demo) tenant, exactly as in slice 1.
+- **The Lambda trusts only the signature.** `assembly/handler.py` `tenant_assertion_answer` runs before any
+  connection or SQL: a forged, altered, expired (or `exp - iat` over 300 s, or `iat` more than 30 s ahead) assertion is
+  401 `tenant_assertion_invalid`, no bind; when the edge key cannot be read, 503 `tenant_assertion_unavailable`. Log
+  line `tenant_assertion_refused {reason}` (never the value). A valid one binds its `tid` with source `assertion`
+  (`tenant_context` line). The browse Lambda binds nothing (it reads catalog views only).
+- **What a tenant sees of the catalogue.** AA master rows only, whatever is bound: the tour views read
+  `catalog._live_tour`, whose WHERE keeps the AA master tenant (decided in the 379 view contract). The tenant's own
+  text comes with `catalog.v_tenant_tour_v1` (later slice).
+- **Isolation today (shadow mode).** Under tenant A's assertion only A's sessions and trips are visible (tp-025 policy):
+  another tenant's trip is the same 404 as an unknown one and a mutation is 401 with no write
+  (`backend/tests/test_aa1038_tenant_site_pg.py`, two synthetic agencies). A request without an assertion still sees
+  every row through the unset branch until the FORCE slice; the bare path binds the demo tenant, so it sees demo rows
+  only.
+- **Not in this slice.** Theme tokens on the page (the kit brand token slice), the launcher snippet, `lead.submitted.v1`,
+  per-tenant AI caps, FORCE RLS, the ECS + CloudFront hosting move.
 
 ### AI (Bedrock)
 
@@ -955,6 +991,7 @@ it, while every request still runs as one tenant.
 | Other side | This repo reads | This repo writes | Granted by |
 |---|---|---|---|
 | AA-CIS-App (catalog, AA-812) | `catalog.v_tour`, `v_tour_day`, `v_tour_place`, `v_tour_photo`, `v_destination`, `v_destination_photo` (contract `catalog.tour.v1`); photo URLs = `CIS_PUBLIC_API_BASE` + path | — | CIS migration 225 |
+| AA-CIS-App (tenants, AA-1038 R5 slice 2) | `catalog.v_tenant_tripplanner_v1` (contract `tenant.entitlements.v1` 1.4: `tenant_id`, `slug`, `name`, `kind`, `account_status`, `in_service`, `served`, `tp_launcher`, `tp_branding`, `theme`, `locale`), read by the browse Lambda's `/browse/tenant/{slug}` for the `/{slug}` path; unreadable = every slug 404 | — | CIS migration 379 (SELECT to `tripplanner` only) |
 | AA-CIS-App (tour liveness, AA-986) | `catalog.v_tour_retired` (tombstone: `source_system`, `source_id`, `state`, `reason`; contract `catalog.tour.v1.3`) for the saved-trip reasons and the tour page 410 | — | CIS migration 274 (until applied every read degrades to the pre-L6 answer) |
 | AA-CIS-App (places / tour graph, AA-712) | `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`, `v_destination` (+ `located_by`, `precision`; 256: shape kind / status / length / bbox / `shape_lo`), `v_component_embedding` (HNSW top-k, AA-847), `v_destination_shape` (line geometry by id, slice 6d), `v_destination_redirect` (merged destination id → keeper: `/browse/destinations/{id}` answers 301, AA-847 Problem 2), `v_component_redirect` (dropped component id → the component of the same place, followed by every assembly reader, AA-990) — contract `catalog.graph.v1.2` / `catalog.tour.v1.2` | — | CIS migrations 228, 253 (`v_component_embedding`), 256 (`v_destination_shape`): SELECT to `tripplanner` only; 257 (`v_destination_redirect`); 285 (`v_component_redirect`, `tripplanner` only) |
 | AA-CIS-App (AI gateway) | `catalog.v_llm_gateway_config_v1`, `catalog.v_llm_app_spend_today_v1` (AA-642 S8, CIS 323, applied); `catalog.v_embedding_space_v1` (AA-1026, CIS 329: the space of `geo.tour_place.embedding`); the view's 341 / 350 columns (deployment routing, stage x model params); `catalog.v_llm_app_profile_v1` (AA-1025 H1b, CIS 347: TripPlanner's app profile row). No read of `shared.llm_role_config` / `shared.llm_model_catalog` since AA-1027 E5 (CIS 351 revokes them) | `shared.llm_call_log` (ledger v2, `app = 'tripplanner'`) | CIS 173, 323, 329, 341, 347, 350, 351 |
