@@ -4,7 +4,7 @@
     "repo": "AdventureAsia365-Ecosys/AA-CIS-App",
     "path": "shared/aa_llm"
   },
-  "ref": "b9cb4989ba632a5e4b79179d2875868256982da8",
+  "ref": "f7d310db53ff4eb792c2131beae2d517f4fa007e",
   "dest": "backend/aa_llm",
-  "manifest_sha256": "89378673ac20a342893fa567395f43de40054d31a8c530cccc50fc78c9294c03"
+  "manifest_sha256": "7d1287713c31ce4eda3a812b903c35c22270a2c52abee5fa4972b9fc8033218b"
 }
