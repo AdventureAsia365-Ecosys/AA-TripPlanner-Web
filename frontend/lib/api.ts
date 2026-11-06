@@ -18,6 +18,8 @@ import type { TourList, TourSort } from "./catalogTypes";
 import { readTourRoute, type TourRouteResult } from "./tourRoute";
 import { COOKIES_NOTICE, COOKIES_REQUIRED, resetGuestIds, showGuestNotice } from "./guestIds";
 import { NARRATE_PATH, SEARCH_PATH, isBotRefusal } from "./botCheck";
+// AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
+import { tenantFetch } from "./plannerTenant";
 
 function filterParams(f: BrowseFilters): string {
   const p = new URLSearchParams();
@@ -137,7 +139,7 @@ interface TripResponse {
 }
 
 export async function fetchTrip(tripId: string): Promise<TripResponse | null> {
-  const res = await fetch(`/api/trip?trip_id=${encodeURIComponent(tripId)}`);
+  const res = await tenantFetch(`/api/trip?trip_id=${encodeURIComponent(tripId)}`);
   if (!res.ok) return null;
   return res.json();
 }
@@ -156,7 +158,7 @@ async function postTrip<T = Record<string, unknown>>(
   path: string = "/api/trip",
 ): Promise<{ ok: boolean; status: number; data: T & { error?: string } }> {
   const send = async () => {
-    const res = await fetch(path, {
+    const res = await tenantFetch(path, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -289,7 +291,7 @@ export async function fetchSuggestions(
   const p = new URLSearchParams({ resource: "suggestions", trip_id: tripId });
   if (filters.activity) p.set("activity", filters.activity);
   if (filters.intensity_level) p.set("intensity_level", filters.intensity_level);
-  const res = await fetch(`/api/trip?${p}`);
+  const res = await tenantFetch(`/api/trip?${p}`);
   if (!res.ok) return [];
   const data = await res.json();
   return data.suggestions ?? [];
@@ -308,7 +310,7 @@ export async function fetchRoutes(country: string, days: number): Promise<RouteP
 
 // The leg chain of real tours that covers the trip, plus added days.
 export async function fetchCoverage(tripId: string): Promise<Coverage | null> {
-  const res = await fetch(`/api/trip?resource=coverage&trip_id=${encodeURIComponent(tripId)}`);
+  const res = await tenantFetch(`/api/trip?resource=coverage&trip_id=${encodeURIComponent(tripId)}`);
   if (!res.ok) return null;
   return res.json();
 }
@@ -316,7 +318,7 @@ export async function fetchCoverage(tripId: string): Promise<Coverage | null> {
 // What AA tours do at a stop; selecting one pins its component.
 export async function fetchStopActivities(tripId: string, destinationId: string): Promise<StopActivity[]> {
   const p = new URLSearchParams({ resource: "activities", trip_id: tripId, destination_id: destinationId });
-  const res = await fetch(`/api/trip?${p}`);
+  const res = await tenantFetch(`/api/trip?${p}`);
   if (!res.ok) return [];
   const data = await res.json();
   return data.activities ?? [];

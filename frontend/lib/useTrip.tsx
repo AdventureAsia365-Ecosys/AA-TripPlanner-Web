@@ -13,7 +13,8 @@ import {
 import * as api from "./api";
 import { isB2bOnly } from "./advisorDemo";
 import type { AiNoticeKey } from "./aiNotices";
-import { STORAGE_KEY, isUuid, randomUuid } from "./guestIds";
+import { isUuid, randomUuid } from "./guestIds";
+import { idsStorageKey } from "./plannerTenant";
 import type {
   BrowseFilters,
   CountryOption,
@@ -114,7 +115,7 @@ const TripContext = createContext<TripState | null>(null);
 function loadOrCreateIds(): { sessionId: string; tripId: string } {
   if (typeof window !== "undefined") {
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
+      const raw = window.localStorage.getItem(idsStorageKey());
       if (raw) {
         const parsed = JSON.parse(raw);
         if (isUuid(parsed?.sessionId) && isUuid(parsed?.tripId)) return parsed;
@@ -126,7 +127,7 @@ function loadOrCreateIds(): { sessionId: string; tripId: string } {
   const ids = { sessionId: randomUuid(), tripId: randomUuid() };
   if (typeof window !== "undefined") {
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
+      window.localStorage.setItem(idsStorageKey(), JSON.stringify(ids));
     } catch {
       /* ignore */
     }

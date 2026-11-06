@@ -28,6 +28,8 @@ export const PAGES: VisualPage[] = [
   },
   { slug: "tour", route: "/tours/[slug]", resolve: { from: "/", hrefPrefix: "/tours/" } },
   { slug: "plan", route: "/plan", path: "/plan" },
+  // AA-1038 R5 slice 2: the demo tenant's planner on its slug path (404 page until CIS 379 is applied on Dev).
+  { slug: "tenant-plan", route: "/[tenant]/plan", path: "/aa-tripplanner/plan" },
   { slug: "trips", route: "/trips", path: "/trips" },
   { slug: "sign-in", route: "/sign-in", path: "/sign-in" },
   { slug: "privacy", route: "/privacy", path: "/privacy" },
@@ -37,4 +39,6 @@ export const PAGES: VisualPage[] = [
 ];
 
 /** Routes with a page.tsx that the run does not open, each with its reason. */
-export const EXCLUDED: Record<string, string> = {};
+export const EXCLUDED: Record<string, string> = {
+  "/[tenant]": "AA-1038: a tenant's bare slug only redirects to /{slug}/plan (captured as tenant-plan) or is the 404 page",
+};

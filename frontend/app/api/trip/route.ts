@@ -13,6 +13,8 @@ import { currentAccess, type Access } from "@/lib/authSession";
 import { authEnv, callContext } from "@/lib/authRequest";
 import { checkBotId } from "botid/server";
 import { BOT_CHECK_LEVEL, botCheckOn, botCheckRefusal } from "@/lib/botCheck";
+import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
+import { tenantHeaders, type TenantPick } from "@/lib/tenantProxy";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
 // Maps a single { op } POST body onto the Lambda's REST verbs/paths.
@@ -49,6 +51,19 @@ function withCookies(res: NextResponse, access: Access): NextResponse {
 
 const READ_RESOURCES = new Set(["suggestions", "coverage", "activities"]);
 
+// AA-1038 R5 slice 2: the planner of a /{slug} page names its tenant (x-tp-tenant-slug); the BFF resolves it and
+// signs the tenant assertion the Lambda checks (lib/tenantProxy.ts). No header = the bare path = the demo tenant.
+function pickTenant(req: NextRequest): Promise<TenantPick> {
+  return tenantHeaders(req.headers.get(TENANT_SLUG_HEADER), TRIPPLANNER_API_KEY, resolveTenant);
+}
+
+function tenantRefusal(pick: Extract<TenantPick, { ok: false }>, requestId: string): NextResponse {
+  return NextResponse.json({ error: pick.error }, {
+    status: pick.status,
+    headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
+  });
+}
+
 function logUpstream(op: string, status: number, started: number, requestId: string): void {
   console.log(upstreamLogLine({ route: "trip", op, status, ms: Date.now() - started, request_id: requestId }));
 }
@@ -81,11 +96,16 @@ export async function GET(req: NextRequest) {
   // too); the client treats it as an empty trip. No cookies_required mapping on reads: a 404 never
   // resets the client's ids, so there is nothing to protect. AA-837: the itinerary read's 404 goes
   // to the browser as a 200 empty trip (tripReadAnswer), so a first visit logs no console error.
+  const tenant = await pickTenant(req);
+  if (!tenant.ok) return tenantRefusal(tenant, requestId);
   const access = await travellerAccess(req);
   const started = Date.now();
   const upstream = await fetch(`${TRIP_API_URL}${read.path}`, {
     method: "GET",
-    headers: tripHeaders(requestGuestToken(req).token, requestId, access.accessToken, travellerIp(req.headers)),
+    headers: {
+      ...tripHeaders(requestGuestToken(req).token, requestId, access.accessToken, travellerIp(req.headers)),
+      ...tenant.headers,
+    },
   });
   const text = await upstream.text();
   const resource = req.nextUrl.searchParams.get("resource");
@@ -183,12 +203,14 @@ export async function POST(req: NextRequest) {
       });
     }
   }
+  const tenant = await pickTenant(req);
+  if (!tenant.ok) return tenantRefusal(tenant, requestId);
   const guest = requestGuestToken(req);
   const access = await travellerAccess(req);
   const started = Date.now();
   const upstream = await fetch(`${TRIP_API_URL}${path}`, {
     method,
-    headers: tripHeaders(guest.token, requestId, access.accessToken, travellerIp(req.headers)),
+    headers: { ...tripHeaders(guest.token, requestId, access.accessToken, travellerIp(req.headers)), ...tenant.headers },
     body: JSON.stringify(payload),
   });
   const text = await upstream.text();
