@@ -1,12 +1,12 @@
 "use client";
 // AA-908 — My Trips: the signed-in traveller's trips (GET /api/me). "Open" puts the trip's ids into this browser's
 // localStorage (lib/guestIds.ts) and opens the planner; the assembly Lambda lets the owning account read and edit it
-// from any browser (the guest cookie of this browser is not needed). Below the trips: My Payments (AA-682 S5).
+// from any browser (the guest cookie of this browser is not needed). My Payments (AA-682 S5) was retired with the
+// B2C half of AA-Booking (AA-1046, root ADR 0019: agencies are the only customers).
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, ButtonLink, EmptyState, ErrorState } from "@/ui";
 import { myTripsTargets, tenantOfPath, tenantRequestHeaders } from "@/lib/plannerTenant";
 import { fetchAccountStatus, signOut } from "@/lib/useAccount";
-import MyPayments from "@/components/MyPayments";
 import { meOutcome, signedOutWithoutMe, tripFacts, tripStatusLabel, tripTitle, updatedLabel, type MyTrip } from "@/lib/myTrips";
 
 type State =
@@ -129,9 +129,6 @@ export default function MyTrips() {
           ))}
         </ul>
       )}
-
-      {/* AA-682 S5: payment requests from AA-Booking, signed-in only (this branch renders for a session). */}
-      <MyPayments trips={state.trips} />
     </section>
   );
 }
