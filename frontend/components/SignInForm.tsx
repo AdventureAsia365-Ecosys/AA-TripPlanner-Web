@@ -5,6 +5,7 @@ import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { Button } from "@/ui";
 import { LEGAL_LINKS } from "@/lib/legal";
+import { tenantOfPath, tenantRequestHeaders } from "@/lib/plannerTenant";
 
 const MESSAGES: Record<string, string> = {
   invalid_email: "Please enter a valid email address.",
@@ -17,11 +18,15 @@ const MESSAGES: Record<string, string> = {
 };
 const GENERIC = "Something went wrong. Please try again.";
 
-async function post(path: string, body: unknown): Promise<{ status: number; data: Record<string, unknown> }> {
+async function post(
+  path: string,
+  body: unknown,
+  extraHeaders: Record<string, string> = {},
+): Promise<{ status: number; data: Record<string, unknown> }> {
   try {
     const res = await fetch(path, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...extraHeaders },
       body: JSON.stringify(body),
     });
     return { status: res.status, data: await res.json().catch(() => ({})) };
@@ -57,7 +62,8 @@ export default function SignInForm({ next }: { next: string }) {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const { status, data } = await post("/api/auth/verify", { code });
+    // AA-1038 slice 2: a sign-in opened from a tenant's planner (next=/{slug}/plan) claims that tenant's guest trips.
+    const { status, data } = await post("/api/auth/verify", { code }, tenantRequestHeaders(tenantOfPath(next)));
     if (status === 200 && data.signed_in === true) {
       window.location.assign(next);
       return;

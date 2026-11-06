@@ -12,8 +12,9 @@ handler mostly runs in autocommit on one pooled connection (``backend/shared/db.
 transaction-local setting would be gone after the first statement. asyncpg's ``RESET ALL`` when the pool takes the
 connection back is a second safety, not the main one.
 
-There is no tenant header or path yet: every request is the demo tenant (``config.DEFAULT_TENANT_ID``), so this adds
-no new trust surface. The signed BFF tenant assertion comes with the /{slug} path slice.
+A request without a tenant assertion (the bare path) is the demo tenant (``config.DEFAULT_TENANT_ID``). Since AA-1038
+slice 2 a /{slug} request carries the BFF's signed tenant assertion (backend/shared/tenant_assertion.py); the assembly
+Lambda binds its tenant only after the signature and the expiry check out.
 
 Log lines carry the tenant id and where it came from, never a request value.
 """
@@ -29,6 +30,7 @@ from backend.shared import observability
 GUC = "app.tenant_id"
 SOURCE_DEFAULT = "default"  # config.DEFAULT_TENANT_ID (every assembly request in this slice)
 SOURCE_SYSTEM = "system"    # no tenant context on purpose (the jobs Lambda)
+SOURCE_ASSERTION = "assertion"  # AA-1038 slice 2: a /{slug} request, the BFF's verified tenant assertion
 
 BIND_SQL = "SELECT set_config('app.tenant_id', $1, false)"
 UNBIND_SQL = "RESET app.tenant_id"

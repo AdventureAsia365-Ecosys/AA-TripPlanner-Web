@@ -4,7 +4,7 @@
 // from any browser (the guest cookie of this browser is not needed). Below the trips: My Payments (AA-682 S5).
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, ButtonLink, EmptyState, ErrorState } from "@/ui";
-import { STORAGE_KEY } from "@/lib/guestIds";
+import { myTripsTargets, tenantOfPath, tenantRequestHeaders } from "@/lib/plannerTenant";
 import { fetchAccountStatus, signOut } from "@/lib/useAccount";
 import MyPayments from "@/components/MyPayments";
 import { meOutcome, signedOutWithoutMe, tripFacts, tripStatusLabel, tripTitle, updatedLabel, type MyTrip } from "@/lib/myTrips";
@@ -15,17 +15,25 @@ type State =
   | { kind: "error" }
   | { kind: "ok"; email: string | null; trips: MyTrip[] };
 
-function openTrip(t: MyTrip) {
+// AA-1038 slice 2: /trips?tenant={slug} (the "My trips" link of a tenant's planner) lists that tenant's trips and opens
+// them in that tenant's planner with its own ids key; /trips alone is the bare (demo) planner, as before.
+function openTrip(t: MyTrip, tenant: string | null) {
+  const target = myTripsTargets(tenant);
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessionId: t.session_id, tripId: t.trip_id }));
+    window.localStorage.setItem(target.idsKey, JSON.stringify({ sessionId: t.session_id, tripId: t.trip_id }));
   } catch {
     /* ignore: the planner then starts a new trip */
   }
-  window.location.assign("/plan");
+  window.location.assign(target.planner);
 }
 
 export default function MyTrips() {
   const [state, setState] = useState<State>({ kind: "loading" });
+  // Read in the browser only (the page shell is static). It never changes the first render (the loading line), so the
+  // server render (null) and the hydration agree.
+  const [tenant] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : tenantOfPath(`/trips${window.location.search}`),
+  );
   const [attempt, setAttempt] = useState(0);
   const retry = useCallback(() => {
     setState({ kind: "loading" });
@@ -42,7 +50,7 @@ export default function MyTrips() {
           setState({ kind: "signed_out" });
           return null;
         }
-        return fetch("/api/me", { cache: "no-store" });
+        return fetch("/api/me", { cache: "no-store", headers: tenantRequestHeaders(tenant) });
       })
       .then(async (r) => {
         if (!r || !live) return;
@@ -55,7 +63,7 @@ export default function MyTrips() {
     return () => {
       live = false;
     };
-  }, [attempt]);
+  }, [attempt, tenant]);
 
   if (state.kind === "loading") {
     return <p className="text-small text-k-muted" role="status">Loading your trips…</p>;
@@ -65,7 +73,7 @@ export default function MyTrips() {
       <EmptyState title="Sign in to see your trips" icon="route">
         Trips you plan while signed in, and the trip in this browser when you sign in, are kept here.
         <div className="mt-4 flex justify-center">
-          <ButtonLink href="/sign-in?next=/trips" variant="primary">Sign in</ButtonLink>
+          <ButtonLink href={myTripsTargets(tenant).signIn} variant="primary">Sign in</ButtonLink>
         </div>
       </EmptyState>
     );
@@ -92,7 +100,7 @@ export default function MyTrips() {
           {state.email && <p className="mt-1 truncate text-small text-k-muted">Signed in as {state.email}</p>}
         </div>
         <div className="flex gap-2">
-          <ButtonLink href="/plan" variant="secondary" size="sm">Plan a trip</ButtonLink>
+          <ButtonLink href={myTripsTargets(tenant).planner} variant="secondary" size="sm">Plan a trip</ButtonLink>
           <Button variant="ghost" size="sm" onClick={() => signOut("/")} data-testid="sign-out">Sign out</Button>
         </div>
       </div>
@@ -116,7 +124,7 @@ export default function MyTrips() {
                 <p className="mt-2 truncate text-body font-semibold text-k-ink">{tripTitle(t)}</p>
                 <p className="text-small text-k-muted">{tripFacts(t)}</p>
               </div>
-              <Button variant="primary" size="md" className="min-h-11 sm:min-w-28" onClick={() => openTrip(t)}>Open</Button>
+              <Button variant="primary" size="md" className="min-h-11 sm:min-w-28" onClick={() => openTrip(t, tenant)}>Open</Button>
             </li>
           ))}
         </ul>

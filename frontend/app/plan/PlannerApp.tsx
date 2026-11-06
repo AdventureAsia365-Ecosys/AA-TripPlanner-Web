@@ -9,6 +9,7 @@ import TourListPane from "@/components/TourListPane";
 import PlanPrefill from "@/components/PlanPrefill";
 import GuestResetNotice from "@/components/GuestResetNotice";
 import { TripProvider, useTrip, type PlanIntent } from "@/lib/useTrip";
+import { setPlannerTenant } from "@/lib/plannerTenant";
 import { Icon } from "@/ui/Icon";
 
 // Below this width we stack map/trip and toggle between them, so neither
@@ -147,7 +148,11 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
   );
 }
 
-export default function PlannerApp({ intent }: { intent: PlanIntent }) {
+export default function PlannerApp({ intent, tenantSlug = null }: { intent: PlanIntent; tenantSlug?: string | null }) {
+  // AA-1038 R5 slice 2: a /{slug}/plan page names its tenant before the trip state loads (the ids key and the
+  // x-tp-tenant-slug header of every /api/trip call, lib/plannerTenant.ts). The bare /plan passes none. Set during
+  // render on purpose: TripProvider's lazy state init (below) reads the ids key in this same render.
+  setPlannerTenant(tenantSlug);
   // AA-837: the planner follows the site theme (ui/core/tokens.css). Its surfaces and form controls use
   // the k-* tokens, so browser-styled controls (country select, days input) stay readable in dark.
   // The Mapbox basemap stays the light outdoors style in both themes (map imagery, not UI text).

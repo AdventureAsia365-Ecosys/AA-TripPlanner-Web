@@ -3,7 +3,7 @@
 // The tokens themselves stay in HttpOnly cookies that only the BFF reads. One request per page load, shared by every
 // component that asks (header link, send form).
 import { useEffect, useState } from "react";
-import { STORAGE_KEY } from "./guestIds";
+import { clearGuestIdKeys } from "./plannerTenant";
 
 export interface AccountStatus {
   loaded: boolean;
@@ -49,14 +49,14 @@ export function useAccount(): AccountStatus {
   return status;
 }
 
-// Sign out: the BFF revokes the session and drops the guest cookie; this browser also forgets its trip ids, so the
-// next visitor starts a new trip. Then a full page load.
+// Sign out: the BFF revokes the session and drops the guest cookie; this browser also forgets its trip ids (the bare
+// key and every tenant's key, AA-1038 slice 2), so the next visitor starts a new trip. Then a full page load.
 export async function signOut(to: string = "/"): Promise<void> {
   try {
     await fetch("/api/auth/sign-out", { method: "POST" });
   } finally {
     try {
-      window.localStorage.removeItem(STORAGE_KEY);
+      clearGuestIdKeys(window.localStorage);
     } catch {
       /* ignore */
     }

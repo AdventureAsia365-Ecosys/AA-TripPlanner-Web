@@ -42,19 +42,23 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_body()
         # AA-827: the BFF's guest token, passed through like the Lambda adapter does.
         guest_token = self.headers.get(config.GUEST_TOKEN_HEADER)
+        # AA-1038 slice 2: the same tenant assertion check as the Lambda adapter (a refusal answers before any SQL).
+        picked = assembly_handler.tenant_assertion_answer({k.lower(): v for k, v in self.headers.items()})
+        chosen = picked.get("tenant", {})
+        tid = chosen.get("tenant_id", config.DEFAULT_TENANT_ID)
+        source = chosen.get("tenant_source", tenant.SOURCE_DEFAULT)
 
         async def go():
             pool = await get_pool()
             # AA-1038: the same tenant context as the Lambda (assembly_handler.serve): bound right after acquire,
             # before route(), unbound in a finally.
-            async with pool.acquire() as conn, tenant.bound(conn, config.DEFAULT_TENANT_ID,
-                                                            source=tenant.SOURCE_DEFAULT):
+            async with pool.acquire() as conn, tenant.bound(conn, tid, source=source):
                 return await assembly_handler.route(
                     self.command, parsed.path, body, conn=conn, guest_token=guest_token
                 )
 
         try:
-            resp = asyncio.run(go())
+            resp = picked["response"] if "response" in picked else asyncio.run(go())
         except Exception as e:
             resp = {
                 "statusCode": 500,

@@ -54,7 +54,7 @@ from backend.assembly import account as account_mod
 from backend.assembly import activities as activities_mod
 from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
-from backend.shared import component_ids, llm_gateway, observability, ratelimit, tenant
+from backend.shared import component_ids, llm_gateway, observability, ratelimit, tenant, tenant_assertion
 
 _COMPONENTS_RE = re.compile(r"^/trip/([^/]+)/components$")
 _COMPONENT_ITEM_RE = re.compile(r"^/trip/([^/]+)/components/([^/]+)$")
@@ -695,7 +695,8 @@ async def _event_log(conn, trip_id: str) -> list[dict]:
 # --- Lambda adapter ---------------------------------------------------------
 
 async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str] = None,
-                access_token: Optional[str] = None, acquire=None) -> dict:
+                access_token: Optional[str] = None, acquire=None, tenant_id: Optional[str] = None,
+                tenant_source: str = tenant.SOURCE_DEFAULT) -> dict:
     """route() on a pooled connection, behind a catch-all (AA-827): an unexpected error answers 500
     and logs only its type, where it was raised and the route name — never str(e), which can carry
     request values (asyncpg echoes bad input). `acquire` is injectable for tests.
@@ -706,15 +707,18 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
 
     AA-1038 (R5 slice 1, tp-025 shadow RLS): the tenant context is bound right after acquire, before route(), and
     unbound in a finally even when route() raises (tenant.bound). Every request is the demo tenant
-    (config.DEFAULT_TENANT_ID): no header or path picks a tenant yet. A tenant id that is not a uuid fails here,
-    before a connection is taken or any SQL runs."""
+    (config.DEFAULT_TENANT_ID) unless `tenant_id` is given. A tenant id that is not a uuid fails here, before a
+    connection is taken or any SQL runs.
+
+    AA-1038 slice 2: `tenant_id` comes only from a verified BFF tenant assertion (_handle,
+    backend/shared/tenant_assertion.py), source "assertion"; None = the bare path = the default tenant."""
     try:
         caller = await account_mod.caller_from_header(access_token)
-        tenant_id = tenant.canonical(config.DEFAULT_TENANT_ID)
+        tid = tenant.canonical(config.DEFAULT_TENANT_ID if tenant_id is None else tenant_id)
         if acquire is None:
             from backend.shared.db import get_pool
             acquire = (await get_pool()).acquire
-        async with acquire() as conn, tenant.bound(conn, tenant_id, source=tenant.SOURCE_DEFAULT):
+        async with acquire() as conn, tenant.bound(conn, tid, source=tenant_source):
             return await route(method, path, body, conn=conn, guest_token=guest_token, caller=caller)
     except Exception as e:  # noqa: BLE001
         frames = traceback.extract_tb(e.__traceback__)
@@ -722,6 +726,20 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
         observability.emit("assembly_error", route=_route_name(method, path), error=type(e).__name__, at=at)
         observability.capture(e)  # AA-871: Sentry, scrubbed (no-op when SENTRY_DSN is unset)
         return _resp(500, {"error": "internal"})
+
+
+def tenant_assertion_answer(headers: dict[str, str]) -> dict:
+    """{"tenant": serve() kwargs} for a request without an assertion (the default tenant) or with a valid one, else
+    {"response": 401 | 503} (forged, altered, expired, over-long; or the key cannot be read). No SQL either way."""
+    try:
+        checked = tenant_assertion.from_headers(headers)
+    except tenant_assertion.AssertionRefused:
+        return {"response": tenant_assertion.refused_response()}
+    except tenant_assertion.AssertionKeyUnavailable:
+        return {"response": tenant_assertion.unavailable_response()}
+    if checked is None:
+        return {"tenant": {}}
+    return {"tenant": {"tenant_id": checked.tenant_id, "tenant_source": tenant.SOURCE_ASSERTION}}
 
 
 def _extract_request(event: dict) -> tuple[str, str, dict]:
@@ -764,9 +782,13 @@ def _handle(event, context):  # pragma: no cover - thin AWS adapter
     guest_token = headers.get(config.GUEST_TOKEN_HEADER)
     # AA-908: the signed-in traveller's EXTERNAL access token, forwarded by the BFF (never logged).
     access_token = headers.get(config.ACCESS_TOKEN_HEADER)
+    # AA-1038 slice 2: the tenant of a /{slug} request, signed by the BFF; checked before any connection or SQL.
+    picked = tenant_assertion_answer(headers)
+    if "response" in picked:
+        return picked["response"]
 
     return asyncio.get_event_loop().run_until_complete(
-        serve(method, path, body, guest_token=guest_token, access_token=access_token))
+        serve(method, path, body, guest_token=guest_token, access_token=access_token, **picked["tenant"]))
 
 
 # AA-871: request id (BFF header > API Gateway requestId), one JSON request_completed line, Sentry when SENTRY_DSN set.

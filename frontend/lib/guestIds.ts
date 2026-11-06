@@ -1,6 +1,8 @@
 // AA-827: the browser's guest ids, kept in localStorage so a reload restores the trip. They are
 // identifiers, not credentials: what proves the session is the HttpOnly guest cookie (guestToken.ts),
 // which client JS never sees. No React import, so `npm test` can run it.
+// AA-1038 R5 slice 2: a /{slug}/plan page keeps its ids under a key of its own (lib/plannerTenant.ts idsStorageKey).
+import { idsStorageKey } from "./plannerTenant.ts";
 
 export const STORAGE_KEY = "aa-tripplanner:ids";
 export const RESET_NOTICE_KEY = "aa-tripplanner:reset-notice";
@@ -92,8 +94,9 @@ export function resetGuestIds(failed: GuestIds): void {
   resetting = true;
   let notice = RESET_NOTICE;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (storedIdsMatch(raw, failed)) window.localStorage.removeItem(STORAGE_KEY);
+    const key = idsStorageKey();
+    const raw = window.localStorage.getItem(key);
+    if (storedIdsMatch(raw, failed)) window.localStorage.removeItem(key);
     else if (raw) notice = REPLACED_NOTICE;
   } catch {
     /* ignore */
