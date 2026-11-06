@@ -65,6 +65,9 @@ def _rewrite_lock(lock: Path, **changes):
 
 def test_lock_shape(copy, monkeypatch):
     folder, lock = copy
+    # The CIS "Llm core consumers" job sets the local-ref switch for the whole run (its copy's lock says "ref":
+    # "local"), so clear it here: this test checks the refusal first, then the switch.
+    monkeypatch.delenv(cvc.LOCAL_OK_ENV, raising=False)
     _rewrite_lock(lock, dest="api/app/aa_llm", ref="local", canonical={"repo": "x/y", "path": "z"})
     found = cvc.integrity_problems(folder, lock)
     assert any("dest is" in p for p in found) and any("canonical is" in p for p in found)
