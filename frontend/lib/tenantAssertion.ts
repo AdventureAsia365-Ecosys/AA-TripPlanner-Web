@@ -15,12 +15,19 @@ export const TENANT_ASSERTION_HEADER = "x-tp-tenant"; // backend config.TENANT_A
 export const KEY_LABEL = "aa-tripplanner tenant assertion v1";
 export const ASSERTION_LIFETIME_S = 120; // the Lambda refuses more than 300 (TENANT_ASSERTION_MAX_LIFETIME_S)
 
+// The whitespace stripped from the edge key before deriving: the HTTP whitespace a fetch() header value loses anyway
+// (so the X-TripPlanner-Key the Lambda checks and the key both sides derive from are the same value). The Lambda strips
+// the same set (backend tenant_assertion.EDGE_KEY_WHITESPACE); a Vercel env value with a trailing newline still works.
+export function normaliseEdgeKey(edgeKey: string): string {
+  return edgeKey.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+}
+
 function b64url(buf: Buffer): string {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 export function deriveKey(edgeKey: string): Buffer {
-  return createHmac("sha256", edgeKey).update(KEY_LABEL).digest();
+  return createHmac("sha256", normaliseEdgeKey(edgeKey)).update(KEY_LABEL).digest();
 }
 
 export function signTenantAssertion(

@@ -7,8 +7,10 @@ call it to decide between the planner and a 404.
 
 Only a SERVED tenant is answered (in service and tp.hosted live); an unknown slug, a tenant without the add-on, a
 suspended tenant and a slug of the wrong shape are all the same 404, so the answer says nothing about which one it was.
-The view cannot be read (CIS 379 not applied, grant missing): every slug is a 404 and one log line says why; the bare
-path keeps the default tenant, so nothing that works today depends on this view.
+The view does not exist or is not granted (42P01 / 42501: CIS 379 not applied yet): no tenant can be served, so every
+slug is a 404 and one log line says why; the bare path keeps the default tenant, so nothing that works today depends
+on this view. Any other read error (pool, connection, timeout) is TenantLookupUnavailable, which the route answers 503
+no-store: a transient failure must never look like "no such tenant" (the BFF caches a 404 for 30 s, never a 503).
 
 The answer carries what the planner needs to brand the site (name, theme, locale, the BO-8 badge flag) and the tenant
 id the BFF signs. It holds no personal data. The theme is passed through filtered: only names and values of the shape
@@ -30,6 +32,12 @@ TENANT_SQL = (f"SELECT tenant_id, slug, name, kind, in_service, served, tp_launc
 _TOKEN_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 _COLOUR_RE = re.compile(r"^#[0-9a-f]{6}$")
 LOCALES = ("en", "vi")
+# The SQLSTATEs that mean "the view is not there for this role" (a deploy before CIS 379): a 404, not a 503.
+VIEW_ABSENT_SQLSTATES = frozenset({"42P01", "42501"})
+
+
+class TenantLookupUnavailable(Exception):
+    """The lookup could not run (database or pool error): the answer is unknown, not "no such tenant"."""
 
 
 def _theme(raw: Any) -> dict[str, str]:
@@ -60,14 +68,18 @@ def shape(row: Any) -> dict:
 
 
 async def lookup(slug: str, *, pool: Any) -> Optional[dict]:
-    """The served tenant of `slug`, or None (unknown, not served, wrong shape, or the view unreadable)."""
+    """The served tenant of `slug`, or None (unknown, not served, wrong shape, or the view absent before CIS 379).
+    Raises TenantLookupUnavailable on any other read error."""
     if not isinstance(slug, str) or not SLUG_RE.match(slug):
         return None
     try:
         row = await pool.fetchrow(TENANT_SQL, slug)
-    except Exception as exc:  # noqa: BLE001 — before CIS 379 (42P01 / 42501): every slug is a 404, never a 500
-        print(json.dumps({"evt": "tenant_view_unreadable", "error": type(exc).__name__}))
-        return None
+    except Exception as exc:  # noqa: BLE001 — only the type is logged, never str(exc) (asyncpg echoes values)
+        if getattr(exc, "sqlstate", None) in VIEW_ABSENT_SQLSTATES:
+            print(json.dumps({"evt": "tenant_view_unreadable", "error": type(exc).__name__}))
+            return None
+        print(json.dumps({"evt": "tenant_lookup_failed", "error": type(exc).__name__}))
+        raise TenantLookupUnavailable(type(exc).__name__) from None
     if row is None or not row["served"] or not row["in_service"]:
         return None
     return shape(row)

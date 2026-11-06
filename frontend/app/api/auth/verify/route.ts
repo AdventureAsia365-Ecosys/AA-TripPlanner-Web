@@ -5,7 +5,8 @@ import { errorCode, refresh, verify } from "@/lib/cognito";
 import { clearCookie, pendingCookie, readPending, sessionCookies, settleSignUpTokens } from "@/lib/authSession";
 import { authEnv, authLogLine, callContext } from "@/lib/authRequest";
 import { authJson } from "@/lib/authResponse";
-import { tripHeaders } from "@/lib/tripProxy";
+import { claimGuestTrips } from "@/lib/accountProxy";
+import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
 
 // AA-908 — POST /api/auth/verify {code}: check the email code of the pending step (__Host-tp_signin). On success the
 // tokens go into the sealed session cookies, and the assembly Lambda's POST /me/claim links this browser's guest
@@ -61,21 +62,25 @@ export async function POST(req: NextRequest) {
   console.log(authLogLine("verify", pending.mode === "signup" ? "signed_up" : "signed_in", requestId));
 
   // Link this browser's guest trips. Best effort: a failed claim never fails the sign-in (the next signed-in edit
-  // links its session anyway, handler._guard).
+  // links its session anyway, handler._guard). AA-1038 slice 2: a sign-in opened from /{slug}/plan names that tenant
+  // (x-tp-tenant-slug, components/SignInForm.tsx), so the claim runs under its signed assertion (lib/accountProxy.ts).
   const guest = req.cookies.get(guestCookieName())?.value;
   let claimed: number | null = null;
   if (TRIP_API_URL) {
     const started = Date.now();
     try {
-      const upstream = await fetch(`${TRIP_API_URL}/me/claim`, {
-        method: "POST",
-        headers: tripHeaders(TRIPPLANNER_API_KEY, isGuestToken(guest) ? guest : null, requestId,
-          signedIn.accessToken),
-        body: "{}",
+      const claim = await claimGuestTrips({
+        tripApiUrl: TRIP_API_URL,
+        edgeKey: TRIPPLANNER_API_KEY,
+        requestId,
+        accessToken: signedIn.accessToken,
+        guestToken: isGuestToken(guest) ? guest : null,
+        tenantSlug: req.headers.get(TENANT_SLUG_HEADER),
+        resolve: resolveTenant,
       });
-      console.log(upstreamLogLine({ route: "trip", op: "me_claim", status: upstream.status,
+      console.log(upstreamLogLine({ route: "trip", op: "me_claim", status: claim.status,
         ms: Date.now() - started, request_id: requestId }));
-      if (upstream.ok) claimed = Number((await upstream.json())?.claimed ?? 0);
+      claimed = claim.claimed;
     } catch {
       console.log(upstreamLogLine({ route: "trip", op: "me_claim", status: 0, ms: Date.now() - started,
         request_id: requestId }));

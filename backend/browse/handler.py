@@ -140,7 +140,11 @@ async def route(
     # --- AA-1038 R5 slice 2: the served tenant of a /{slug} path (catalog.v_tenant_tripplanner_v1, CIS 379) -----
     m = _TENANT_RE.match(path)
     if m:
-        site = await tenant_site_mod.lookup(m.group(1), pool=pool)
+        try:
+            site = await tenant_site_mod.lookup(m.group(1), pool=pool)
+        except tenant_site_mod.TenantLookupUnavailable:
+            # Transient: the BFF does not cache it and the page shows a retryable error, never the 404 page.
+            return _resp(503, {"error": "tenant lookup unavailable"}, _NO_STORE_HEADERS)
         if site is None:
             return _resp(404, {"error": "tenant not found"}, _NO_STORE_HEADERS)
         # The BFF keeps its own short cache; a suspension must not sit in a shared cache.

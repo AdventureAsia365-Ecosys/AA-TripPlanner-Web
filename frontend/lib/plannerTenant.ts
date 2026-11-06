@@ -8,6 +8,8 @@
 //     key it always had.
 // Only the browser sets it (a module value on the server would be shared by concurrent renders).
 
+import { isTenantSlug } from "./tenantSlug.ts";
+
 export const IDS_KEY = "aa-tripplanner:ids"; // guestIds.STORAGE_KEY, pinned equal by a test
 export const TENANT_SLUG_HEADER = "x-tp-tenant-slug"; // lib/tenantSite.ts TENANT_SLUG_HEADER (server side)
 
@@ -35,4 +37,44 @@ export function tenantFetch(input: string, init: RequestInit = {}): Promise<Resp
   const extra = tenantRequestHeaders();
   if (!Object.keys(extra).length) return fetch(input, init);
   return fetch(input, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), ...extra } });
+}
+
+// The tenant a same-site path belongs to: "/{slug}" or "/{slug}/..." (a servable slug shape, lib/tenantSlug.ts), or a
+// "?tenant={slug}" on any path (My Trips opened from a tenant's planner, /trips?tenant={slug}). Null for the bare
+// paths. Used for the account calls (sign-in claim, My Trips) so they carry the same x-tp-tenant-slug as the planner;
+// the BFF resolves and signs it, so a wrong value only ever reaches a 404 or the demo tenant's view of nothing.
+export function tenantOfPath(path: string | null | undefined): string | null {
+  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//")) return null;
+  const [pathname, query = ""] = path.split("?", 2);
+  const first = pathname.split("/")[1] ?? "";
+  if (isTenantSlug(first)) return first;
+  const fromQuery = new URLSearchParams(query.split("#")[0]).get("tenant");
+  return isTenantSlug(fromQuery) ? fromQuery : null;
+}
+
+// Sign-out forgets every trip id this browser holds: the bare key and each tenant's key (aa-tripplanner:ids:<slug>).
+export function clearGuestIdKeys(storage: Pick<Storage, "length" | "key" | "removeItem">): void {
+  const keys: string[] = [];
+  for (let i = 0; i < storage.length; i += 1) {
+    const k = storage.key(i);
+    if (k === IDS_KEY || (k !== null && k.startsWith(`${IDS_KEY}:`))) keys.push(k);
+  }
+  for (const k of keys) storage.removeItem(k);
+}
+
+// The account links of the planner header (components/AccountLink.tsx): on a tenant's planner they keep the tenant,
+// so the sign-in claims that tenant's trips and My Trips lists them; on the bare paths they are unchanged.
+export function accountLinks(slug: string | null = current): { signIn: string; trips: string } {
+  if (!slug) return { signIn: "/sign-in", trips: "/trips" };
+  return { signIn: `/sign-in?next=${encodeURIComponent(`/${slug}/plan`)}`, trips: `/trips?tenant=${slug}` };
+}
+
+// Where My Trips sends a traveller (components/MyTrips.tsx) for the tenant named in its URL (?tenant=) or none.
+export function myTripsTargets(slug: string | null): { idsKey: string; planner: string; signIn: string } {
+  if (!slug) return { idsKey: IDS_KEY, planner: "/plan", signIn: "/sign-in?next=/trips" };
+  return {
+    idsKey: idsStorageKey(slug),
+    planner: `/${slug}/plan`,
+    signIn: `/sign-in?next=${encodeURIComponent(`/trips?tenant=${slug}`)}`,
+  };
 }

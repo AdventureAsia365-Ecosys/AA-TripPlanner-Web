@@ -176,6 +176,19 @@ async def test_lookup_answers_served_tenants_only_as_the_runtime_role(db, tp_con
     assert await tenant_site.lookup("no-such-agency", pool=pool) is None
 
 
+async def test_lookup_real_errors_absent_view_is_404_a_broken_connection_is_unavailable(db, tp_conn, monkeypatch):
+    # The SQLSTATE split of tenant_site.lookup against real asyncpg errors: a view that does not exist (before CIS 379,
+    # 42P01) is "no tenant" (None -> 404); a connection that is gone is TenantLookupUnavailable (-> 503, not cached).
+    monkeypatch.setattr(tenant_site, "TENANT_SQL", tenant_site.TENANT_SQL.replace(tenant_site.VIEW,
+                                                                                  "catalog.zz_no_such_view"))
+    assert await tenant_site.lookup("quillmere-voyages", pool=_OneConnPool(tp_conn)) is None
+    monkeypatch.undo()
+    gone = await asyncpg.connect(db["tp_dsn"])
+    await gone.close()
+    with pytest.raises(tenant_site.TenantLookupUnavailable):
+        await tenant_site.lookup("quillmere-voyages", pool=_OneConnPool(gone))
+
+
 async def test_two_agencies_are_isolated_through_their_assertions(db, tp_conn):
     a_head, b_head = _header(AGENCY_A, "quillmere-voyages"), _header(AGENCY_B, "ottervale-journeys")
     session_a, trip_a, token_a = await _create_trip(tp_conn, a_head)

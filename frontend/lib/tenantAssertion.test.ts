@@ -8,10 +8,11 @@ import {
   KEY_LABEL,
   TENANT_ASSERTION_HEADER,
   deriveKey,
+  normaliseEdgeKey,
   signTenantAssertion,
 } from "./tenantAssertion.ts";
 import { tenantHeaders } from "./tenantProxy.ts";
-import type { TenantSite } from "./tenantSite.ts";
+import { TenantLookupUnavailable, type TenantSite } from "./tenantSite.ts";
 
 // The cross-language vector: AA-TripPlanner-Web backend/tests/test_aa1038_tenant_assertion.py signs the same claims
 // with the same edge value (built at run time there too) and pins this exact header (backend/shared/tenant_assertion).
@@ -84,4 +85,24 @@ test("an unknown or unserved slug is a 404 and nothing is signed", async () => {
 test("no edge key: 503 (the Lambda could not check it either)", async () => {
   const got = await tenantHeaders("quillmere-voyages", "", async () => SITE);
   assert.deepEqual(got, { ok: false, status: 503, error: "tenant_assertion_unavailable" });
+});
+
+test("an edge key with surrounding whitespace or a newline still signs the vector (the Lambda strips it too)", () => {
+  for (const padded of [`${EDGE}\n`, ` ${EDGE}\r\n`, `\t${EDGE} `]) {
+    assert.equal(normaliseEdgeKey(padded), EDGE);
+    assert.deepEqual(deriveKey(padded), deriveKey(EDGE));
+    assert.equal(signTenantAssertion(padded, TENANT_A, "quillmere-voyages", NOW), VECTOR_HEADER);
+  }
+});
+
+test("a whitespace-only edge key is no key: 503", async () => {
+  const got = await tenantHeaders("quillmere-voyages", " \n", async () => SITE);
+  assert.deepEqual(got, { ok: false, status: 503, error: "tenant_assertion_unavailable" });
+});
+
+test("a lookup that is down is a retryable 503, not an unknown tenant", async () => {
+  const got = await tenantHeaders("quillmere-voyages", EDGE, async () => {
+    throw new TenantLookupUnavailable(502);
+  });
+  assert.deepEqual(got, { ok: false, status: 503, error: "tenant_lookup_unavailable" });
 });

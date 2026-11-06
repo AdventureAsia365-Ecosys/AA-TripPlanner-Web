@@ -8,8 +8,9 @@ assembly adapter: a refused assertion answers 401 / 503 before any connection is
 (source "assertion") as the first statement; no header keeps the default tenant.
 
 The lookup: only a served, in-service row is answered, theme names / values outside the CIS CHECK shape are dropped,
-a slug of the wrong shape runs no SQL, an unreadable view is a 404 (never a 500), and the browse route answers 200 /
-404 with no-store.
+a slug of the wrong shape runs no SQL, a view that is absent before CIS 379 is a 404 (never a 500), any other read
+error is a 503 (never a cached 404), and the browse route answers 200 / 404 / 503 with no-store. An edge key with
+surrounding whitespace derives the same assertion key as the BFF (both strip it).
 """
 from __future__ import annotations
 
@@ -144,6 +145,37 @@ def test_the_key_comes_from_the_edge_key(monkeypatch):
     assert ta.assertion_key() == _key()
 
 
+@pytest.mark.parametrize("padded", [EDGE + "\n", " " + EDGE + "\r\n", "\t" + EDGE + " "])
+def test_an_edge_key_with_surrounding_whitespace_derives_the_same_key(padded):
+    # The BFF derives from the raw Vercel env value, auth.py strips the Secrets Manager value: both normalise the same.
+    assert ta.derive_key(padded) == _key()
+    assert ta.verify(VECTOR_HEADER, ta.derive_key(padded), now=NOW).tenant_id == TENANT_A
+
+
+def test_a_padded_env_key_still_verifies_the_vector(monkeypatch):
+    monkeypatch.setattr(config, "TRIPPLANNER_API_KEY", EDGE + "\n")
+    assert ta.verify(VECTOR_HEADER, ta.assertion_key(), now=NOW).slug == VECTOR_SLUG
+
+
+def test_a_padded_secrets_manager_value_still_verifies_the_vector(monkeypatch):
+    monkeypatch.setattr(config, "TRIPPLANNER_API_KEY", "")
+    monkeypatch.setattr(config, "ENVIRONMENT", "test")
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "aa-tripplanner-test-assembly")
+    monkeypatch.setattr(auth, "_fetch_secret", lambda name: EDGE + "\n")
+    auth.reset_cache()
+    try:
+        assert ta.verify(VECTOR_HEADER, ta.assertion_key(), now=NOW).tenant_id == TENANT_A
+    finally:
+        auth.reset_cache()
+
+
+def test_a_whitespace_only_edge_key_is_no_key(monkeypatch):
+    monkeypatch.setattr(config, "TRIPPLANNER_API_KEY", " \n")
+    monkeypatch.setattr(auth, "_usable", lambda value: True)   # past the edge gate's own placeholder check
+    with pytest.raises(ta.AssertionKeyUnavailable):
+        ta.assertion_key()
+
+
 def test_adapter_without_a_header_keeps_the_default_tenant(monkeypatch):
     monkeypatch.setattr(config, "TRIPPLANNER_API_KEY", EDGE)
     assert handler.tenant_assertion_answer({}) == {"tenant": {}}
@@ -270,12 +302,38 @@ async def test_lookup_runs_no_sql_for_a_bad_slug(slug):
     assert pool.calls == []
 
 
-async def test_lookup_degrades_to_404_when_the_view_cannot_be_read(capsys):
-    class UndefinedTableError(Exception):
-        pass
+class _PgError(Exception):
+    def __init__(self, sqlstate):
+        super().__init__("value that must not be logged")
+        self.sqlstate = sqlstate
 
-    assert await tenant_site.lookup("quillmere-voyages", pool=FakePool(error=UndefinedTableError())) is None
-    assert _lines(capsys) == [{"evt": "tenant_view_unreadable", "error": "UndefinedTableError"}]
+
+@pytest.mark.parametrize("sqlstate, name", [("42P01", "UndefinedTableError"), ("42501", "InsufficientPrivilegeError")])
+async def test_lookup_degrades_to_404_when_the_view_is_absent(capsys, sqlstate, name):
+    # Before CIS 379 (no view / no grant) no tenant can be served: a 404, never a 500 or a 503.
+    error = type(name, (_PgError,), {})(sqlstate)
+    assert await tenant_site.lookup("quillmere-voyages", pool=FakePool(error=error)) is None
+    assert _lines(capsys) == [{"evt": "tenant_view_unreadable", "error": name}]
+
+
+@pytest.mark.parametrize("error", [ConnectionResetError("x"), TimeoutError(), OSError("pool"),
+                                   _PgError("57P01"), _PgError("53300"), RuntimeError("x")])
+async def test_lookup_raises_unavailable_on_a_transient_error(capsys, error):
+    with pytest.raises(tenant_site.TenantLookupUnavailable):
+        await tenant_site.lookup("quillmere-voyages", pool=FakePool(error=error))
+    lines = _lines(capsys)
+    assert lines == [{"evt": "tenant_lookup_failed", "error": type(error).__name__}]
+    assert "must not be logged" not in json.dumps(lines)
+
+
+async def test_browse_route_answers_503_no_store_on_a_transient_error():
+    out = await browse_handler.route("GET", "/browse/tenant/quillmere-voyages", {},
+                                     pool=FakePool(error=ConnectionResetError("x")))
+    assert out["statusCode"] == 503 and out["headers"]["cache-control"] == "no-store"
+    assert json.loads(out["body"]) == {"error": "tenant lookup unavailable"}
+    absent = await browse_handler.route("GET", "/browse/tenant/quillmere-voyages", {},
+                                        pool=FakePool(error=_PgError("42P01")))
+    assert absent["statusCode"] == 404
 
 
 async def test_lookup_defaults_an_unknown_locale_and_a_bad_theme():

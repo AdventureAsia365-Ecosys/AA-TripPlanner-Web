@@ -71,9 +71,19 @@ def _unb64(text: str) -> bytes:
         raise AssertionRefused("malformed") from None
 
 
+# The whitespace both sides strip from the edge key before deriving (frontend/lib/tenantAssertion.ts EDGE_KEY_TRIM):
+# the HTTP whitespace a fetch() header value loses anyway. auth.py strips the Secrets Manager value and Vercel env
+# values can carry a trailing newline, so without this the edge check would pass and every assertion fail.
+EDGE_KEY_WHITESPACE = " \t\r\n"
+
+
+def normalise_edge_key(edge_key: str) -> str:
+    return edge_key.strip(EDGE_KEY_WHITESPACE)
+
+
 def derive_key(edge_key: str) -> bytes:
-    """The assertion key from the edge key (domain-separated HMAC)."""
-    return hmac.new(edge_key.encode("utf-8"), KEY_LABEL, hashlib.sha256).digest()
+    """The assertion key from the edge key (domain-separated HMAC), after normalise_edge_key."""
+    return hmac.new(normalise_edge_key(edge_key).encode("utf-8"), KEY_LABEL, hashlib.sha256).digest()
 
 
 def sign(key: bytes, tenant_id: str, slug: str, *, now: Optional[int] = None, lifetime_s: int = 120) -> str:
@@ -131,7 +141,7 @@ def assertion_key() -> bytes:
         edge = auth.expected_key()
     except auth.ApiKeyUnavailable:
         raise AssertionKeyUnavailable("edge key unavailable") from None
-    if not edge:
+    if not edge or not normalise_edge_key(edge):
         raise AssertionKeyUnavailable("no edge key")
     return derive_key(edge)
 

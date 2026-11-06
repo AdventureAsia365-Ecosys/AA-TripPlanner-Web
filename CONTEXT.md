@@ -661,9 +661,12 @@ it, while every request still runs as one tenant.
   SELECT to `tripplanner`) and answers only a **served** tenant (in service and `tp.hosted` live): tenant id, slug,
   trading name, kind, launcher, the BO-8 badge flag, theme (kit token -> `#rrggbb`, filtered again here) and locale.
   Unknown, add-on-less, suspended and badly shaped slugs are the same 404 (no shared cache; the BFF keeps a per-
-  instance cache of 60 s, 30 s for a miss, `lib/tenantSite.ts`). Until CIS 379 is applied the view is unreadable:
-  every slug is a 404 (log `tenant_view_unreadable`), the bare paths are unaffected. Static routes (`/plan`, `/tours`,
-  `/destinations` …) win over the dynamic segment.
+  instance cache of 60 s, 30 s for a miss, `lib/tenantSite.ts`). Until CIS 379 is applied the view is absent (42P01 /
+  42501): every slug is a 404 (log `tenant_view_unreadable`), the bare paths are unaffected. Any other read error is a
+  503 `no-store` (log `tenant_lookup_failed`), never cached by the BFF, and the `/{slug}` pages show a retryable error
+  (`app/[tenant]/error.tsx`), not the 404 page. Static routes (`/plan`, `/tours`, `/destinations` …) win over the
+  dynamic segment, so those names are **reserved** (`lib/tenantSlug.ts` `RESERVED_TENANT_SLUGS`: every top-level folder
+  of `app/` and `public/`, pinned by a test) and never looked up; CIS slug creation should refuse them (follow-up).
 - **The planner names its tenant, the BFF signs it.** `PlannerApp` sets the page's slug once
   (`lib/plannerTenant.ts`): every `/api/trip` call carries `x-tp-tenant-slug`, and the guest ids live under
   `aa-tripplanner:ids:<slug>` (the bare `/plan` keeps `aa-tripplanner:ids`), so one agency's trip is never sent to
@@ -671,8 +674,14 @@ it, while every request still runs as one tenant.
   assertion** `x-tp-tenant: v1.<payload>.<sig>` (claims `exp`, `iat`, `slug`, `tid`, life 120 s), HMAC-SHA256 with a key
   derived from the edge key (`HMAC(edge key, "aa-tripplanner tenant assertion v1")`, `lib/tenantAssertion.ts` and
   `backend/shared/tenant_assertion.py`, pinned equal by one shared vector). No new secret: both sides already hold the
-  edge key. A slug that does not resolve is a 404 `unknown_tenant` from the BFF; no slug header = no assertion = the
-  default (demo) tenant, exactly as in slice 1.
+  edge key; both sides strip surrounding whitespace (space, tab, CR, LF) from the edge key before deriving. A slug that
+  does not resolve is a 404 `unknown_tenant` from the BFF, a lookup that is down a 503 `tenant_lookup_unavailable`; no
+  slug header = no assertion = the default (demo) tenant, exactly as in slice 1. The account calls do the same
+  (`lib/accountProxy.ts`): the planner header's links keep the tenant (`/sign-in?next=/{slug}/plan`,
+  `/trips?tenant={slug}`), the sign-in form sends `x-tp-tenant-slug` so `POST /me/claim` claims that tenant's guest
+  trips (skipped, never claimed into the demo tenant, when the slug does not resolve), and My Trips sends it to
+  `GET /me/trips` and opens a trip in `/{slug}/plan` under that tenant's ids key. Sign-out forgets every ids key
+  (`aa-tripplanner:ids` and `aa-tripplanner:ids:<slug>`).
 - **The Lambda trusts only the signature.** `assembly/handler.py` `tenant_assertion_answer` runs before any
   connection or SQL: a forged, altered, expired (or `exp - iat` over 300 s, or `iat` more than 30 s ahead) assertion is
   401 `tenant_assertion_invalid`, no bind; when the edge key cannot be read, 503 `tenant_assertion_unavailable`. Log

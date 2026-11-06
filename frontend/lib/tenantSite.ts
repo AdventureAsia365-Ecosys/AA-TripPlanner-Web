@@ -6,15 +6,19 @@
 // are all null, so the page answers 404 and the BFF refuses the request. The bare paths (/plan, /api/trip without a
 // tenant slug) never call this: they keep the default (demo) tenant, as before.
 //
-// Cache: per server instance, a served answer for TENANT_TTL_MS and a miss for TENANT_MISS_TTL_MS, so a planner
-// session costs one lookup a minute, not one per request, and a suspension or a new tenant shows within a minute.
-// No next/* import, so `npm test` runs it.
+// Cache: per server instance, a served answer for TENANT_TTL_MS and a miss (a 404 from browse) for TENANT_MISS_TTL_MS,
+// so a planner session costs one lookup a minute, not one per request, and a suspension or a new tenant shows within a
+// minute. Any other answer (5xx, a network error, an unexpected status) is NOT a miss: resolve() throws
+// TenantLookupUnavailable, nothing is cached, and the caller shows a retryable error (the pages: app/[tenant]/error.tsx;
+// the BFF: 503), never the 404 page. No next/* import, so `npm test` runs it.
+
+import { isTenantSlug } from "./tenantSlug.ts";
+
+export { RESERVED_TENANT_SLUGS, TENANT_SLUG_RE, isTenantSlug } from "./tenantSlug.ts";
 
 export const TENANT_TTL_MS = 60_000;
 export const TENANT_MISS_TTL_MS = 30_000;
 export const TENANT_CACHE_MAX = 500;
-// The slug shape of shared.tenants (backend tenant_assertion.SLUG_RE); anything else is a 404 with no lookup.
-export const TENANT_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,99}$/;
 // The planner's own requests name the page's tenant in this header (lib/plannerTenant.ts); the BFF reads it.
 export const TENANT_SLUG_HEADER = "x-tp-tenant-slug";
 
@@ -27,10 +31,6 @@ export interface TenantSite {
   branding_badge: boolean;
   theme: Record<string, string>;
   locale: string;
-}
-
-export function isTenantSlug(value: unknown): value is string {
-  return typeof value === "string" && TENANT_SLUG_RE.test(value);
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -52,10 +52,21 @@ function asTenant(body: unknown, slug: string): TenantSite | null {
 
 export type TenantFetch = (slug: string) => Promise<{ status: number; body: unknown }>;
 
+// The lookup could not answer (browse 5xx, a network error, an unexpected status): unknown, not "no such tenant".
+export class TenantLookupUnavailable extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`tenant lookup unavailable (${status})`);
+    this.name = "TenantLookupUnavailable";
+    this.status = status;
+  }
+}
+
 // The browse call itself (the default fetcher of resolveTenant).
 export const browseTenantFetch: TenantFetch = async (slug) => {
   const base = process.env.BROWSE_API_URL ?? "";
-  if (!base) return { status: 503, body: null };
+  // No browse API on this deployment (a bare local `next dev`): no tenant can be served here, so a plain 404.
+  if (!base) return { status: 404, body: null };
   const headers: Record<string, string> = { accept: "application/json" };
   const key = process.env.TRIPPLANNER_API_KEY ?? "";
   if (key) headers["x-tripplanner-key"] = key;
@@ -68,6 +79,7 @@ export const browseTenantFetch: TenantFetch = async (slug) => {
 };
 
 export interface TenantResolver {
+  // The served tenant, null when there is none (cached), or TenantLookupUnavailable thrown (not cached).
   resolve(slug: string): Promise<TenantSite | null>;
   clear(): void;
 }
@@ -81,12 +93,12 @@ export function createTenantResolver(fetchTenant: TenantFetch, now: () => number
       const hit = cache.get(slug);
       if (hit && hit.until > t) return hit.site;
       const { status, body } = await fetchTenant(slug);
+      // Only a 200 or a 404 is an answer; anything else (5xx, network = 502, 401 / 403 of a wrong key) is not cached
+      // and is not "unknown tenant": the next request asks again.
+      if (status !== 200 && status !== 404) throw new TenantLookupUnavailable(status);
       const site = status === 200 ? asTenant(body, slug) : null;
-      // A failed call (5xx, network) is not cached: the next request asks again.
-      if (status === 200 || status === 404) {
-        if (cache.size >= TENANT_CACHE_MAX) cache.delete(cache.keys().next().value as string);
-        cache.set(slug, { site, until: t + (site ? TENANT_TTL_MS : TENANT_MISS_TTL_MS) });
-      }
+      if (cache.size >= TENANT_CACHE_MAX) cache.delete(cache.keys().next().value as string);
+      cache.set(slug, { site, until: t + (site ? TENANT_TTL_MS : TENANT_MISS_TTL_MS) });
       return site;
     },
     clear() {
