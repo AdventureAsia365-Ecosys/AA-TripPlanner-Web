@@ -95,6 +95,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # AA-1024 l22 (S271 lessons guard G10): an added line naming a migration by its old number after a renumber
+      # (the file keeps its name, so a search for the new number misses it), or a file the PR removes. Mark a history
+      # note with old-mig-ok. Same script as the CIS / Booking / Partner migration preflight.
+      - name: Migration references (renumber left-overs)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --depth=1 origin "$BASE_SHA"
+          python3 .github/scripts/migration_refs.py --migrations-dir migrations --base "$BASE_SHA"
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v7.1.0
         with:

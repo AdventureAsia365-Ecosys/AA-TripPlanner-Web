@@ -948,7 +948,8 @@ it, while every request still runs as one tenant.
   `result` job per deploy workflow is red when the deploy or verify did not succeed (Vercel: production path only;
   previews unchanged). A PR that adds a route or Lambda worth guarding adds a row.
 - **CI checks**: required "Backend (pytest)", "Frontend (lint + build)", "Migrations (lint, PG 15
-  replay)"; plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan
+  replay)" (on a PR it also refuses an added line naming a migration by an old number after a renumber,
+  `.github/scripts/migration_refs.py`, AA-1024 l22; a history note carries `old-mig-ok`); plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan
   (AA-981 follow-up): `secret-scan.yml`, check "gitleaks" on every PR (lines the PR adds, rules and baseline from
   the base branch) and "gitleaks full history" (`secret-scan-history.yml`) nightly / on push to `main` (branches, tags, pull
   request heads);
