@@ -10,6 +10,7 @@ import { Button } from "@/ui/Button";
 import {
   BUDGET_BANDS,
   EMPTY_LEAD,
+  PHONE_HINT,
   canSendLead,
   leadBody,
   leadFormErrors,
@@ -91,8 +92,9 @@ export default function LeadForm({
         className={field(bad.includes("email"))}
       />
       <input
-        aria-label="Phone (optional)"
-        placeholder="Phone (optional)"
+        aria-label={PHONE_HINT}
+        placeholder={PHONE_HINT}
+        title="Start with + and your country code, for example +44 for the United Kingdom"
         type="tel"
         autoComplete="tel"
         value={form.phone}

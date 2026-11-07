@@ -81,11 +81,30 @@ def test_the_lead_never_carries_a_session_token_ip_or_price():
     ({**GOOD, "trip": {"budget_band": "a lot"}}, "invalid_lead", ["budget_band"]),
     ({**GOOD, "trip": {"message": "x" * 1001}}, "invalid_lead", ["message"]),
     ({**GOOD, "consent": {"contact": True, "marketing": "yes"}}, "invalid_lead", ["marketing"]),
+    # The contract pins E.164 with its country code: the CRM cannot place a local number without a region.
+    ({**GOOD, "traveller": {**GOOD["traveller"], "phone": "090 000 0000"}}, "invalid_lead", ["phone"]),
+    ({**GOOD, "traveller": {**GOOD["traveller"], "phone": "+0 90 000 0000"}}, "invalid_lead", ["phone"]),
+    ({**GOOD, "traveller": {**GOOD["traveller"], "phone": "+84.90.000.0000"}}, "invalid_lead", ["phone"]),
 ])
 def test_validation_refuses(raw, code, fields):
     with pytest.raises(leads.LeadRefused) as e:
         leads.validate(raw, today=TODAY)
     assert (e.value.status, e.value.code, e.value.fields) == (422, code, fields)
+
+
+@pytest.mark.parametrize("phone", ["+84 90 000 0000", "+44 (20) 7946-0000", "+1-202-555-0100", "+8490000000"])
+def test_phones_with_a_country_code_pass_and_match_the_contract(phone):
+    answers = leads.validate({**GOOD, "traveller": {**GOOD["traveller"], "phone": phone}}, today=TODAY)
+    assert answers["phone"] == phone
+    payload = leads.build_lead(route=ROUTE, trip_id=TRIP, answers=answers, summary=SUMMARY)
+    jsonschema.validate(payload, SCHEMA)
+
+
+def test_a_local_phone_is_refused_by_the_contract_too():
+    payload = _lead()
+    payload["traveller"]["phone"] = "090 000 0000"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, SCHEMA)
 
 
 def test_redaction_keeps_ids_only():
@@ -138,7 +157,11 @@ async def test_route_refusals(conn, status, code):
 async def test_route_crm_and_email(monkeypatch):
     crm = await leads.load_route(RouteConn(row=_route_row(crm_core=True, lead_channel="crm", lead_email=None)),
                                  TENANT_A)
-    assert crm.channel == "crm" and leads.channel_ready(crm)
+    assert crm.channel == "crm"
+    monkeypatch.setattr(config, "LEAD_CRM_PULL_ENABLED", False)
+    assert leads.channel_ready(crm) is False                      # CRM pull not switched on: refused, nothing stored
+    monkeypatch.setattr(config, "LEAD_CRM_PULL_ENABLED", True)
+    assert leads.channel_ready(crm) is True
     mail = await leads.load_route(RouteConn(row=_route_row()), TENANT_A)
     assert mail.email == "desk@quillmere.example.invalid"
     monkeypatch.setattr(config, "TP_LEAD_EMAIL_FROM", "")

@@ -27,6 +27,15 @@ test("the form needs a name, a valid e-mail and the contact consent", () => {
     ["phone", "adults", "child_ages"]);
 });
 
+test("a phone needs + and the country code, as the contract and the agency's CRM need it", () => {
+  for (const phone of ["+84 90 000 0000", "+44 (20) 7946-0000", "+1-202-555-0100"]) {
+    assert.deepEqual(leadFormErrors({ ...FILLED, phone }), [], phone);
+  }
+  for (const phone of ["090 000 0000", "+0 90 000 0000", "+84.90.000.0000", "+1 2"]) {
+    assert.deepEqual(leadFormErrors({ ...FILLED, phone }), ["phone"], phone);
+  }
+});
+
 test("children's ages parse as 0-17 numbers", () => {
   assert.deepEqual(childAges(""), []);
   assert.deepEqual(childAges(" 4, 9 "), [4, 9]);

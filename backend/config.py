@@ -130,6 +130,11 @@ TP_LEAD_WEBHOOK_KEY = _get("TP_LEAD_WEBHOOK_KEY", "")
 TP_LEAD_EMAIL_FROM = (_get("TP_LEAD_EMAIL_FROM", "") or "").strip()
 # Seconds one inline webhook POST may take after the request committed (the daily run retries a failure).
 LEAD_WEBHOOK_TIMEOUT_S = float(_get("TP_LEAD_WEBHOOK_TIMEOUT_S", "3"))
+# The crm channel is offered only once the CRM can pull from this deployment (AA-CIS-Infra: the aa-m2m resource
+# server tripplanner.leads with scope deliver for the CRM client, TRIPPLANNER_API_URL on the CRM API and worker).
+# Off (the default) = a crm-routed tenant gets 503 lead_channel_unavailable and nothing is stored, like a webhook /
+# e-mail channel without its key or sender: a lead nobody can collect is personal data with no purpose.
+LEAD_CRM_PULL_ENABLED = (_get("TP_LEAD_CRM_PULL_ENABLED", "") or "").strip().lower() in ("1", "true", "yes", "on")
 
 # --- Guest credential (AA-827) ---
 # The BFF holds a random token in an HttpOnly cookie and forwards it in this header on every

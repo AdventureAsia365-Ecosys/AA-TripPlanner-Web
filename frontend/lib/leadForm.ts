@@ -44,6 +44,10 @@ export const EMPTY_LEAD: LeadForm = {
 };
 
 const EMAIL_RE = /^[^@\s]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,63}$/;
+// The contract's Traveller.phone: E.164 with its country code ("+" first), as backend/assembly/leads.py checks it. The
+// agency's CRM cannot place a local number ("090 ...") without knowing the country.
+export const PHONE_RE = /^\+[1-9][0-9 ()-]{5,39}$/;
+export const PHONE_HINT = "Phone with country code, optional (e.g. +44 20 7946 0000)";
 
 /** True on an agency tenant's planner: a lead goes to that agency. False on the bare path and the AA demo tenant. */
 export function isAgencyPlanner(slug: string | null | undefined): boolean {
@@ -62,7 +66,7 @@ export function leadFormErrors(f: LeadForm): string[] {
   const bad: string[] = [];
   if (!f.name.trim() || f.name.trim().length > 120) bad.push("name");
   if (!EMAIL_RE.test(f.email.trim())) bad.push("email");
-  if (f.phone.trim() && !/^\+?[0-9 ()./-]{6,40}$/.test(f.phone.trim())) bad.push("phone");
+  if (f.phone.trim() && !PHONE_RE.test(f.phone.trim())) bad.push("phone");
   if (!Number.isInteger(f.adults) || f.adults < 1 || f.adults > 50) bad.push("adults");
   if (childAges(f.children) === null) bad.push("child_ages");
   if (f.message.length > 1000) bad.push("message");
@@ -93,7 +97,7 @@ export function leadResultMessage(status: number, body: { error?: string } | nul
     case "consent_required":
       return "Please tick the box so the agency may contact you.";
     case "invalid_lead":
-      return "Some answers need a look: please check the highlighted fields.";
+      return "Some answers need a look: please check the highlighted fields. A phone starts with + and the country code.";
     case "lead_route_missing":
     case "lead_channel_unavailable":
     case "lead_route_unavailable":

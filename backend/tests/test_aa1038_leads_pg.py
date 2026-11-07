@@ -119,6 +119,7 @@ def settings(monkeypatch):
     monkeypatch.setattr(config, "DEFAULT_TENANT_ID", DEMO)
     monkeypatch.setattr(config, "ADVISOR_HANDOFF_DEMO", True)
     monkeypatch.setattr(config, "TP_LEAD_WEBHOOK_KEY", "synthetic-master")
+    monkeypatch.setattr(config, "LEAD_CRM_PULL_ENABLED", True)
 
 
 def _acquire(conn):
@@ -241,6 +242,17 @@ async def test_no_route_and_the_demo_store_nothing(db, tp_conn):
     assert len(await _lead_rows(db["su_dsn"])) == before
 
 
+async def test_crm_pull_off_refuses_and_stores_nothing(db, tp_conn, monkeypatch):
+    monkeypatch.setattr(config, "LEAD_CRM_PULL_ENABLED", False)
+    before = len(await _lead_rows(db["su_dsn"]))
+    a = _header(AGENCY_A, "quillmere-voyages")
+    session, trip, token = await _trip(tp_conn, a)
+    status, body = await _request(tp_conn, "POST", f"/trip/{trip}/send-to-advisor",
+                                  {"session_id": session, "lead": FORM}, token, a)
+    assert (status, body) == (503, {"error": "lead_channel_unavailable"})
+    assert len(await _lead_rows(db["su_dsn"])) == before
+
+
 async def test_the_daily_run_ends_the_hold(db, tp_conn):
     su = await asyncpg.connect(db["su_dsn"])
     try:
@@ -264,7 +276,8 @@ async def test_the_daily_run_ends_the_hold(db, tp_conn):
     assert dry["mode"] == "dry_run" and dry["expire"]["candidates"] >= 1 and dry["expire"]["expired"] == 0
     live = await lead_deliver.run(Pool(), Job(id="j2", kind=lead_deliver.KIND, payload={"trigger": "schedule"},
                                               attempt=1, max_attempts=1))
-    assert live["expire"]["expired"] >= 1
+    assert live["expire"]["expired"] >= 1 and live["expire"]["by_channel"].get("crm", 0) >= 1
+    assert live["attention"] == ["lead_expired_undelivered"]
     row = [r for r in await _lead_rows(db["su_dsn"]) if json.loads(r["payload"]).get("lead_id") == lead_id][0]
     assert row["delivery_error"] == "expired" and row["redacted_at"] is not None
     assert "traveller" not in json.loads(row["payload"])

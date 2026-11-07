@@ -9,8 +9,9 @@ path and the AA demo tenant keep the demo notice (410 b2b_only in handler.py): A
 Where it goes. CIS decides per tenant (catalog.v_tenant_tripplanner_v1, CIS 390): ``crm`` when the tenant holds the CRM
 add-on (crm.core), else the site's ``webhook`` or ``email`` when set, else ``none``. TripPlanner refuses BEFORE storing
 anything when it could not deliver: no route (409 lead_route_missing), the view not readable yet (503
-lead_route_unavailable), a webhook / e-mail channel this deployment cannot use (503 lead_channel_unavailable: no
-signing key, no sender). The traveller is a guest: no tripplanner.customers row, no registration, no session link.
+lead_route_unavailable), a channel this deployment cannot use (503 lead_channel_unavailable: the CRM pull not switched
+on with ``config.LEAD_CRM_PULL_ENABLED``, no webhook signing key, no e-mail sender). The traveller is a guest: no
+tripplanner.customers row, no registration, no session link.
 
 What is kept, and how long. One tripplanner.outbox row (event lead.submitted, tp-026) in the same transaction as the
 trip's ``sent`` event (the AA-676 pattern: a double click answers the same hand-off, a send after an edit is a new
@@ -86,7 +87,9 @@ FAILED_ATTEMPT_SQL = (
     "UPDATE tripplanner.outbox SET delivery_attempts = delivery_attempts + 1, delivery_error = $2 WHERE id = $1")
 
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,63}$")
-_PHONE_RE = re.compile(r"^\+?[0-9 ()./-]{6,40}$")
+# E.164 with its country code (contract Traveller.phone pattern): the CRM normalises a phone without a region, so a
+# local number ("090 ...") would not survive there. Spaces, brackets and dashes are kept as the traveller typed them.
+_PHONE_RE = re.compile(r"^\+[1-9][0-9 ()-]{5,39}$")
 _CONTROL_RE = re.compile(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]")
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -262,8 +265,9 @@ def webhook_key(master: bytes, tenant_id: str) -> bytes:
 
 
 def channel_ready(route: Route) -> bool:
+    """True only when this deployment can hand the lead over on the route's channel (else 503, nothing stored)."""
     if route.channel == "crm":
-        return True
+        return config.LEAD_CRM_PULL_ENABLED
     if route.channel == "webhook":
         return bool(route.webhook_url) and webhook_master_key() is not None
     if route.channel == "email":

@@ -49,6 +49,8 @@
             "null"
           ],
           "maxLength": 40,
+          "pattern": "^\\+[1-9][0-9 ()-]{5,39}$",
+          "description": "E.164 with its country code ('+' first); spaces, brackets and dashes as the traveller typed them. A consumer that cannot normalise a valid-looking number keeps it as text, never drops it.",
           "x-pii": "contact"
         },
         "locale": {

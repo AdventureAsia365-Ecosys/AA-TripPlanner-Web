@@ -74,10 +74,12 @@ def _time_left(context: Any) -> Callable[[], float]:
 
 
 def attention(jobs: list[dict[str, Any]]) -> list[str]:
-    """Ids of the jobs a scheduled run must report: failed, lost, or a HELD retention run."""
+    """Ids of the jobs a scheduled run must report: failed, lost, a HELD retention run, or a result that asks."""
     out = []
     for j in jobs:
-        if j.get("status") in ("failed", "lost") or (j.get("result") or {}).get("mode") in ATTENTION_MODES:
+        result = j.get("result") or {}
+        # A result may also ask for attention itself (tp_lead_deliver: a lead expired undelivered, AA-1038).
+        if j.get("status") in ("failed", "lost") or result.get("mode") in ATTENTION_MODES or result.get("attention"):
             out.append(j["job_id"])
     return out
 

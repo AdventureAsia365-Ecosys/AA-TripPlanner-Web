@@ -24,6 +24,16 @@ AA-Partner (`crm_tp_lead_pull`), root (contracts, ADR, DM-7.1, ERD design page).
   (fail closed for an agency tenant; the demo tenant / bare path keep today's behaviour). Search learns its tenant from
   the same signed assertion in the browse Lambda (no DB binding there: `tenant.using`). The ledger row takes the tenant
   from the request context, so nothing in the request body can name it.
+- **Review fix pass (S272).** (1) `tp_lead_deliver` runs the expiry FIRST in its own transaction, then the retry
+  with a 120 s wall-clock budget (`RETRY_BUDGET_S`; the rest is `deferred`), a breaker per tenant (one failed attempt
+  = that tenant is not tried again this run) and per channel (`webhook_key_unavailable` / `email_sender_unavailable`
+  stop the channel). An expired undelivered lead adds `attention: ["lead_expired_undelivered"]` to the result, which
+  `jobs/handler.attention` reports, so the scheduled tick fails loudly (the jobs Lambda error alarm) before anyone
+  wonders where a lead went; expiries are counted per channel (`expired_crm`, ... in `lead_deliver_run`).
+  (2) The crm channel is gated like the other two: `TP_LEAD_CRM_PULL_ENABLED` (default off) on the assembly Lambda;
+  off = 503 `lead_channel_unavailable`, nothing stored. (3) `Traveller.phone` is pinned to E.164 with its country
+  code (`^\+[1-9][0-9 ()-]{5,39}$`) in the contract, `leads.validate` and the form (hint + `PHONE_RE`), because the
+  CRM normalises without a region; the CRM also keeps a phone it cannot normalise as text in the inquiry message.
 - **Brand** via the kit core layer only (`ui/core/brandTheme.ts`): no per-page colours, the planner just renders the
   block. BO-8 badge only with `tp.branding`.
 
@@ -56,5 +66,8 @@ AA-Partner (`crm_tp_lead_pull`), root (contracts, ADR, DM-7.1, ERD design page).
 - AA-CIS-Infra follow-ups before the channels work live: the aa-m2m resource server `tripplanner.leads` (scope
   `deliver`) for the CRM client and `TRIPPLANNER_API_URL` on the CRM task; Secrets Manager
   `tripplanner/<env>/lead-webhook-key` readable by the assembly and jobs roles; `TP_LEAD_EMAIL_FROM` + SES send for both.
-- Until then a CRM-routed tenant's leads are stored and wait (7 days); a webhook / e-mail tenant is refused with 503
-  `lead_channel_unavailable` (nothing stored).
+- These Infra changes are deploy PREREQUISITES of each channel, not notes: switch `TP_LEAD_CRM_PULL_ENABLED=true` on
+  the assembly Lambda only together with (or after) the CRM's M2M scope and `TRIPPLANNER_API_URL`; give the jobs role
+  the webhook key and SES send in the same apply as the assembly role (else every retry stops at the channel breaker
+  and the expiry ends the lead, loudly). Until then every channel answers 503 `lead_channel_unavailable` and stores
+  nothing; the slice is not live-verified before the crm pull is on.
