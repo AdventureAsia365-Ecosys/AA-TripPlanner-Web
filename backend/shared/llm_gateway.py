@@ -121,6 +121,7 @@ from backend.aa_llm import budget as core_budget
 from backend.aa_llm import contract, ledger, pricing
 from backend.aa_llm import errors as core_errors
 from backend.shared import app_profile, bedrock_satellite, llm_breaker, observability, prompt_registry
+from backend.shared import tenant, tenant_budget
 from backend.shared.bedrock_satellite import BedrockError, ClientFactory
 
 APP = "tripplanner"
@@ -1262,7 +1263,13 @@ async def record(db: Any, call: Call, quality_signal: dict, *,
     signal = {"app": APP, **call.extra, **quality_signal}
     if call.failed:
         signal["failed"] = True
+    # AA-1038 slice 3: the row carries the tenant of the request (the bound / asserted tenant; the demo tenant on the
+    # bare path), so the tenant's AI budget (catalog.v_tenant_ai_budget_v1) and CIS Tenant 360 › Cost count it.
+    if tenant_id is None:
+        tenant_id = tenant.current_id()
     row = ledger_row(call, signal, tenant_id)
+    if _billed(call):
+        tenant_budget.charge(tenant_id, call.cost_usd)
     try:
         try:
             await db.execute(ledger.insert_sql(), *row.args())
@@ -1384,4 +1391,14 @@ async def budget_status(db: Any, stage: Optional[str] = None) -> dict:
         _alert(str(stage), stage_spent, stage_cap)
     decision = core_budget.decide(spent, cap, near_ratio=config.SPEND_NEAR_CAP_RATIO, stage=stage,
                                   stage_spent=stage_spent, stage_cap=stage_cap)
-    return decision.as_dict()
+    out = decision.as_dict()
+    if out["exhausted"]:
+        return out
+    # AA-1038 R5 slice 3: the tenant's own monthly AI budget (CIS 390), after the app caps. A reached tenant budget is
+    # a cap (reason REASON_CAP, scope tenant: narration says ai_budget_exhausted); a budget that cannot be decided is a
+    # pause for that tenant only (fail closed). The bare path / demo tenant has none (tenant_budget.exempt).
+    reason = await tenant_budget.check(db, tenant.current_id())
+    if reason is not None:
+        out.update(exhausted=True, reason=REASON_CAP if reason == tenant_budget.REASON_CAP else reason,
+                   scope="tenant", tenant_reason=reason)
+    return out

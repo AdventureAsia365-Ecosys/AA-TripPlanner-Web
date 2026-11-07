@@ -1,0 +1,388 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Generated from AA-Ecosys docs/contracts/lead.submitted.v1.openapi.yaml (info.version 1.0): the LeadSubmitted component and the ones it references, $ref rewritten to $defs. Regenerate when the contract changes.",
+  "$ref": "#/$defs/LeadSubmitted",
+  "$defs": {
+    "TenantRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant_id",
+        "slug"
+      ],
+      "properties": {
+        "tenant_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+        }
+      }
+    },
+    "Traveller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "email",
+        "phone",
+        "locale"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "x-pii": "contact"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "x-pii": "contact"
+        },
+        "phone": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 40,
+          "x-pii": "contact"
+        },
+        "locale": {
+          "type": "string",
+          "enum": [
+            "en",
+            "vi"
+          ]
+        }
+      }
+    },
+    "Party": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adults",
+        "child_ages"
+      ],
+      "properties": {
+        "adults": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "child_ages": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 17
+          }
+        }
+      }
+    },
+    "TourRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_system",
+        "source_id",
+        "title"
+      ],
+      "properties": {
+        "source_system": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      }
+    },
+    "DayPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "day",
+        "stops"
+      ],
+      "properties": {
+        "day": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 90
+        },
+        "stops": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        }
+      }
+    },
+    "Trip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "days",
+        "countries",
+        "start_date",
+        "budget_band",
+        "message",
+        "tours",
+        "day_plan"
+      ],
+      "properties": {
+        "days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 90
+        },
+        "countries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        },
+        "start_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date",
+          "x-pii": "travel"
+        },
+        "budget_band": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "under_1000",
+            "1000_2000",
+            "2000_3500",
+            "3500_5000",
+            "over_5000",
+            "not_sure",
+            null
+          ],
+          "description": "Per person, excluding flights, USD (the CRM Stage 1 bands)."
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1000,
+          "x-pii": "travel",
+          "description": "The traveller's own words to the agency."
+        },
+        "tours": {
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "$ref": "#/$defs/TourRef"
+          }
+        },
+        "day_plan": {
+          "type": "array",
+          "maxItems": 90,
+          "items": {
+            "$ref": "#/$defs/DayPlan"
+          }
+        }
+      }
+    },
+    "Consent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contact",
+        "marketing",
+        "given_at"
+      ],
+      "properties": {
+        "contact": {
+          "const": true,
+          "description": "The traveller ticked \"the agency may contact me about this trip\"; a lead never exists without it."
+        },
+        "marketing": {
+          "type": "boolean"
+        },
+        "given_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "Source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "app",
+        "trip_ref"
+      ],
+      "properties": {
+        "app": {
+          "type": "string",
+          "enum": [
+            "tripplanner"
+          ]
+        },
+        "trip_ref": {
+          "type": "string",
+          "format": "uuid",
+          "description": "TripPlanner's opaque id of the planned trip (no traveller data behind it)."
+        }
+      }
+    },
+    "LeadSubmitted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "version",
+        "lead_id",
+        "idempotency_key",
+        "submitted_at",
+        "tenant",
+        "source",
+        "traveller",
+        "party",
+        "trip",
+        "consent"
+      ],
+      "properties": {
+        "contract": {
+          "const": "lead.submitted.v1"
+        },
+        "version": {
+          "type": "string",
+          "enum": [
+            "1.0"
+          ]
+        },
+        "lead_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "pattern": "^tp-lead:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "tp-lead:<lead_id>; the consumer stores each key once."
+        },
+        "submitted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "tenant": {
+          "$ref": "#/$defs/TenantRef"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "traveller": {
+          "$ref": "#/$defs/Traveller"
+        },
+        "party": {
+          "$ref": "#/$defs/Party"
+        },
+        "trip": {
+          "$ref": "#/$defs/Trip"
+        },
+        "consent": {
+          "$ref": "#/$defs/Consent"
+        }
+      }
+    },
+    "LeadPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leads",
+        "more"
+      ],
+      "properties": {
+        "leads": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/LeadSubmitted"
+          }
+        },
+        "more": {
+          "type": "boolean",
+          "description": "More pending leads than the limit; ask again after acknowledging these."
+        }
+      }
+    },
+    "LeadAckIn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome"
+      ],
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "stored",
+            "rejected"
+          ],
+          "description": "stored = in the CRM's intake (or already there); rejected = the CRM can never store it (the agency is gone or the lead does not validate). Both end TripPlanner's hold: the payload is redacted."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-z][a-z0-9_]{0,39}$"
+        }
+      }
+    },
+    "LeadAck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lead_id",
+        "state",
+        "already"
+      ],
+      "properties": {
+        "lead_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "delivered",
+            "rejected"
+          ]
+        },
+        "already": {
+          "type": "boolean",
+          "description": "The lead had been acknowledged before; nothing changed."
+        }
+      }
+    }
+  }
+}

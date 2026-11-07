@@ -680,8 +680,48 @@ it, while every request still runs as one tenant.
   (`backend/tests/test_aa1038_tenant_site_pg.py`, two synthetic agencies). A request without an assertion still sees
   every row through the unset branch until the FORCE slice; the bare path binds the demo tenant, so it sees demo rows
   only.
-- **Not in this slice.** Theme tokens on the page (the kit brand token slice), the launcher snippet, `lead.submitted.v1`,
-  per-tenant AI caps, FORCE RLS, the ECS + CloudFront hosting move.
+- **Not in this slice.** The tenant brand, `lead.submitted.v1` and the per-tenant AI caps came with slice 3
+  (below); the launcher snippet, FORCE RLS and the ECS + CloudFront hosting move are later slices.
+
+#### Leads, brand and the per-tenant AI cap (R5 slice 3, AA-1038)
+
+Root ADR 0019 d11 (+ the S272 amendment); contract `lead.submitted.v1` (root `docs/contracts/lead.submitted.v1.openapi.yaml`,
+vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); notes
+`docs/implementation-notes/AA-1038-r5-slice3.md`.
+
+- **Send to advisor on an agency planner** (`/{slug}/plan`, a verified tenant assertion, never the bare path or the AA
+  demo tenant, which keep the demo notice / 410 `b2b_only`): `assembly/handler.py _send_lead` + `assembly/leads.py`.
+  The form (`components/LeadForm.tsx`, `lib/leadForm.ts`) sends `lead` = name, e-mail, optional phone, party, optional
+  start date / budget band / message, contact consent (required) and marketing consent. The Lambda validates it (422
+  `consent_required` / `invalid_lead` + field codes), reads the tenant's route from `catalog.v_tenant_tripplanner_v1`
+  (CIS 390: `lead_channel` crm / webhook / email / none) and refuses BEFORE storing when it could not deliver (409
+  `lead_route_missing`, 503 `lead_route_unavailable` before CIS 390, 503 `lead_channel_unavailable` without a webhook
+  key or an e-mail sender). Then, in one transaction with the trip's `sent` event (a double click answers the same
+  hand-off), one `tripplanner.outbox` row (event `lead.submitted`, `delivery_channel`, tp-026). The guest stays a guest:
+  no `customers` row. Never in a lead: the guest session or token, an access token, an IP, a user agent or a price.
+- **Delivery.** crm: the CRM pulls `GET /trip/m2m/v1/tenants/{id}/leads` and acknowledges `POST
+  .../leads/{lead_id}/ack` (`serve_m2m`): an aa-m2m bearer token of the CRM client with scope
+  `tripplanner.leads/deliver` (`shared/m2m_auth.py`, Dev issuer and client are code constants with an env override)
+  replaces the edge key on these routes only, checked before any SQL; the connection binds the path's tenant (source
+  `m2m`). webhook: one signed POST right after the commit (`X-AA-Signature: t=<unix s>,v1=<hex HMAC-SHA256(key,
+  "<t>." + body)>`, key per tenant = HMAC-SHA256(master, "aa-tripplanner lead webhook v1:" + tenant id), master from
+  `TP_LEAD_WEBHOOK_KEY` or Secrets Manager `tripplanner/<env>/lead-webhook-key`). email: one SES e-mail from
+  `TP_LEAD_EMAIL_FROM`, Reply-To the traveller. Delivered = payload redacted at once (ids only).
+- **Hold window.** Jobs Lambda kind `tp_lead_deliver` (daily): one retry per pending webhook / e-mail lead, then every
+  lead pending for more than `TP_LEAD_HOLD_DAYS` (7) is redacted with `delivery_error = 'expired'`; it skips before
+  tp-026. The jobs role has no SES permission or webhook key yet (AA-CIS-Infra follow-up), so its retries fail with a
+  code and only the expiry acts there.
+- **Brand.** `app/[tenant]/plan/page.tsx` renders the tenant theme through the kit core brand-token layer
+  (`ui/core/brandTheme.ts`, synced from CIS, root ADR 0016 amendment): one `<style>` over the accent family of `--aa-*`,
+  contrast-checked; the trip panel names the agency and shows "Powered by Adventure Asia" only when `tp.branding` is on
+  (BO-8, off by default).
+- **Per-tenant AI cap** (`shared/tenant_budget.py`): `llm_gateway.budget_status` checks, after the app caps, the
+  tenant's month spend against its resolved `ai.budget_usd_monthly` from `catalog.v_tenant_ai_budget_v1` (CIS 390,
+  cached 30 s per tenant, this container's calls charged on top). A reached budget is a cap (`ai_budget_exhausted`,
+  keyword search); no budget key, no row, the view missing or a read error pause AI for that tenant only (fail closed).
+  The bare path / demo tenant has no tenant budget. Every ledger row now carries the request's tenant
+  (`tenant.current()`), so CIS Tenant 360 › Cost and the tenant's budget count planner AI. The browse Lambda checks the
+  same assertion on search (`/api/browse/search` sends `x-tp-tenant-slug`; the BFF signs it as on `/api/trip`).
 
 ### AI (Bedrock)
 

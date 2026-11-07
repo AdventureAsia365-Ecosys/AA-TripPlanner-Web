@@ -17,6 +17,9 @@ import { formatDays } from "@/lib/text";
 import { reasonText, stopLabel, unavailableBanner } from "@/lib/availability";
 import { useAccount } from "@/lib/useAccount";
 import { ADVISOR_HANDOFF_DEMO, DEMO_NOTICE } from "@/lib/advisorDemo";
+import LeadForm from "@/components/LeadForm";
+import { isAgencyPlanner } from "@/lib/leadForm";
+import { plannerAgency, plannerTenant } from "@/lib/plannerTenant";
 
 const DAY_KIND_LABEL: Record<string, string> = {
   extra_night: "Extra night",
@@ -93,6 +96,7 @@ export default function TripPanel() {
     reorder,
     narrate,
     send,
+    sendLead,
     coverage,
     customDays,
     addDay,
@@ -113,6 +117,11 @@ export default function TripPanel() {
   const accountEmail = account.signedIn ? account.email : null;
   const [sentMsg, setSentMsg] = useState<string | null>(null);
   const [demoNotice, setDemoNotice] = useState(false);
+  // AA-1038 slice 3: on an agency tenant's planner the button opens the trip request form (lead.submitted.v1).
+  const [showLead, setShowLead] = useState(false);
+  const agencySlug = plannerTenant();
+  const agency = isAgencyPlanner(agencySlug) ? plannerAgency() : null;
+  const agencyName = agency?.name || "your travel agency";
   // Per-leg travel estimates between consecutive stops, keyed by the component the leg leaves from. AA-847 slice
   // 6d: a river / road / trail day is a "feature" leg along the line between its two stops (lib/lines.ts planTrip).
   const [legs, setLegs] = useState<Map<string, RouteLeg>>(new Map());
@@ -211,6 +220,10 @@ export default function TripPanel() {
 
   const handleSend = async (withCustomer: boolean) => {
     setSentMsg(null);
+    if (isAgencyPlanner(agencySlug)) {
+      setShowLead(true);
+      return;
+    }
     // AA-1034 R0 (B2B-only model): the hand-off is a demo; nothing is sent and no contact details are asked for.
     if (ADVISOR_HANDOFF_DEMO) {
       setShowReg(false);
@@ -702,13 +715,22 @@ export default function TripPanel() {
                 {sentMsg}
               </p>
             )}
-            {!showReg ? (
+            {showLead && !sent ? (
+              <LeadForm
+                agency={agencyName}
+                onSend={sendLead}
+                onDone={(text) => {
+                  setShowLead(false);
+                  setSentMsg(text);
+                }}
+              />
+            ) : !showReg ? (
               <button
                 onClick={() => handleSend(false)}
                 disabled={sent}
                 className="aa-focus w-full rounded-xl bg-k-accent px-3 py-2.5 text-sm font-semibold text-k-on-accent shadow-aa-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {sent ? "✓ Sent to advisor" : "Send to an advisor"}
+                {sent ? "✓ Sent to advisor" : agency ? `Send to ${agencyName}` : "Send to an advisor"}
               </button>
             ) : (
               <div className="space-y-2">
@@ -789,6 +811,16 @@ export default function TripPanel() {
             <p className="mt-2 text-center text-[11px] text-k-muted">
               An advisor confirms logistics before anything is booked.
             </p>
+            {/* BO-8 (root ADR 0019 b8): "Powered by Adventure Asia" only when the agency's tp.branding flag is on
+                (off by default); small, nofollow, never inside an AI text block. */}
+            {agency?.brandingBadge && (
+              <p className="mt-1 text-center text-[10px] text-k-muted" data-testid="powered-by">
+                Powered by{" "}
+                <a href="https://adventure.asia/" rel="nofollow noopener" target="_blank" className="aa-focus underline">
+                  Adventure Asia
+                </a>
+              </p>
+            )}
           </div>
         </>
       )}

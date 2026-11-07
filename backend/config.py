@@ -117,6 +117,20 @@ API_KEY_CACHE_SECONDS = 600
 # Secrets Manager on every request.
 API_KEY_RETRY_AFTER_SECONDS = 10
 
+# --- Leads to the agency tenant (AA-1038 R5 slice 3, root ADR 0019 d11, contract lead.submitted.v1) ---
+# A lead not delivered within this many days is redacted anyway (data standards DM-7.1 row tripplanner.outbox).
+LEAD_HOLD_DAYS = int(_get("TP_LEAD_HOLD_DAYS", "7"))
+# The webhook channel signs each POST with a key per tenant, derived from this master secret (Secrets Manager, read by
+# name with the Lambda role; TP_LEAD_WEBHOOK_KEY in the env wins: local dev, tests). Absent = the webhook channel is
+# not available: a tenant routed to a webhook gets 503 lead_channel_unavailable and nothing is stored.
+LEAD_WEBHOOK_KEY_SECRET_TEMPLATE = "tripplanner/{environment}/lead-webhook-key"
+TP_LEAD_WEBHOOK_KEY = _get("TP_LEAD_WEBHOOK_KEY", "")
+# The e-mail channel sends from this address through SES (the AA sender, Reply-To the traveller). Unset = the e-mail
+# channel is not available (503 lead_channel_unavailable, nothing stored).
+TP_LEAD_EMAIL_FROM = (_get("TP_LEAD_EMAIL_FROM", "") or "").strip()
+# Seconds one inline webhook POST may take after the request committed (the daily run retries a failure).
+LEAD_WEBHOOK_TIMEOUT_S = float(_get("TP_LEAD_WEBHOOK_TIMEOUT_S", "3"))
+
 # --- Guest credential (AA-827) ---
 # The BFF holds a random token in an HttpOnly cookie and forwards it in this header on every
 # mutating call; the session row stores only sha256(token) (migration tp-011). session_id is an

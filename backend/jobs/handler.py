@@ -31,22 +31,25 @@ import os
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
-from backend.jobs import outbox_redact, queue, rate_counter_purge, runner
+from backend.jobs import lead_deliver, outbox_redact, queue, rate_counter_purge, runner
 from backend.shared import observability, tenant
 
 # kind -> handler(pool, job). Every kind matches '^tp_[a-z0-9_]+$' (tp-021 job_kind_chk, owners.yaml tp_).
 HANDLERS: dict[str, runner.Handler] = {
     outbox_redact.KIND: outbox_redact.run,
     rate_counter_purge.KIND: rate_counter_purge.run,  # AA-1015: tripplanner.ai_rate_counter windows > 2 days
+    lead_deliver.KIND: lead_deliver.run,  # AA-1038 slice 3: webhook / e-mail lead retries + the 7-day lead hold
 }
 # Kinds the daily tick queues: kind -> (payload, max_attempts, idempotency key of a UTC day).
 DAILY: dict[str, tuple[dict[str, Any], int, Callable[[date], str]]] = {
     outbox_redact.KIND: ({"trigger": "schedule"}, outbox_redact.MAX_ATTEMPTS, outbox_redact.schedule_key),
     rate_counter_purge.KIND: ({"trigger": "schedule"}, rate_counter_purge.MAX_ATTEMPTS,
                               rate_counter_purge.schedule_key),
+    lead_deliver.KIND: ({"trigger": "schedule"}, lead_deliver.MAX_ATTEMPTS, lead_deliver.schedule_key),
 }
 MAX_ATTEMPTS: dict[str, int] = {outbox_redact.KIND: outbox_redact.MAX_ATTEMPTS,
-                                rate_counter_purge.KIND: rate_counter_purge.MAX_ATTEMPTS}
+                                rate_counter_purge.KIND: rate_counter_purge.MAX_ATTEMPTS,
+                                lead_deliver.KIND: lead_deliver.MAX_ATTEMPTS}
 SCHEDULER = "scheduler:tp-jobs-daily"
 OPERATOR = "operator:lambda-invoke"
 OPS = ("tick", "enqueue", "run", "status")

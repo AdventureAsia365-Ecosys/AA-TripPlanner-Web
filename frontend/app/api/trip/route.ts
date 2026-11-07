@@ -166,7 +166,8 @@ export async function POST(req: NextRequest) {
       break;
     case "send":
       path = `/trip/${tripId}/send-to-advisor`;
-      payload = { session_id: b.session_id, customer: b.customer };
+      // AA-1038 slice 3: on an agency tenant's planner the answers travel as `lead` (lead.submitted.v1).
+      payload = { session_id: b.session_id, customer: b.customer, lead: b.lead };
       break;
     case "narrate":
       path = `/trip/${tripId}/narrate`;

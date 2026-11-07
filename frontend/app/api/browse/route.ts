@@ -9,6 +9,8 @@ import { currentAccess } from "@/lib/authSession";
 import { authEnv, callContext } from "@/lib/authRequest";
 import { checkBotId } from "botid/server";
 import { BOT_CHECK_LEVEL, botCheckOn, botCheckRefusal } from "@/lib/botCheck";
+import { TENANT_SLUG_HEADER, tenantHeaders } from "@/lib/tenantProxy";
+import { resolveTenant } from "@/lib/tenantSite";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -109,6 +111,16 @@ export async function GET(req: NextRequest) {
     const access = await currentAccess(env.sessionSecret, req.cookies, (rt) => refresh(rt, callContext(env, req.headers)));
     limitHeaders = aiLimitHeaders(travellerIp(req.headers), access.accessToken !== null);
     setCookies = access.setCookies;
+    // AA-1038 R5 slice 3: a /{slug} planner's search names its tenant, so the Lambda applies that tenant's AI budget
+    // and writes the ledger row for it. Signed here exactly as on /api/trip (lib/tenantProxy.ts); no header = AA's site.
+    const pick = await tenantHeaders(req.headers.get(TENANT_SLUG_HEADER), TRIPPLANNER_API_KEY, resolveTenant);
+    if (!pick.ok) {
+      return NextResponse.json({ error: pick.error }, {
+        status: pick.status,
+        headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
+      });
+    }
+    limitHeaders = { ...limitHeaders, ...pick.headers };
   }
   const started = Date.now();
   const upstream = await fetch(`${BROWSE_API_URL}${upstreamPath}`, {
