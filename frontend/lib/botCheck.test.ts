@@ -8,6 +8,7 @@ import {
   BOT_PROTECT,
   NARRATE_PATH,
   SEARCH_PATH,
+  SEND_PATH,
   botCheckOn,
   botCheckRefusal,
   isBotRefusal,
@@ -80,13 +81,14 @@ test("the browser maps only a 403 bot_check_failed to the bot notice, in both la
   assert.ok(AI_NOTICES.vi.botCheck.length > 20);
 });
 
-test("only the free Basic level, on both protected paths, and the server pins the same level", () => {
+test("only the free Basic level, on every protected path, and the server pins the same level", () => {
   assert.equal(BOT_CHECK_LEVEL, "basic");
   assert.deepEqual(
     BOT_PROTECT.map((p) => [p.path, p.method, p.advancedOptions.checkLevel]),
     [
       [SEARCH_PATH, "GET", "basic"],
       [NARRATE_PATH, "POST", "basic"],
+      [SEND_PATH, "POST", "basic"],
     ],
   );
   for (const route of ["app/api/browse/route.ts", "app/api/trip/route.ts"]) {
@@ -100,11 +102,14 @@ test("only the free Basic level, on both protected paths, and the server pins th
 test("each protected path has its route, the planner calls it, and proxy.ts mints the guest cookie on narrate", () => {
   assert.ok(existsSync(new URL(`../app${SEARCH_PATH}/route.ts`, import.meta.url)));
   assert.ok(existsSync(new URL(`../app${NARRATE_PATH}/route.ts`, import.meta.url)));
+  assert.ok(existsSync(new URL(`../app${SEND_PATH}/route.ts`, import.meta.url)));
   const api = src("lib/api.ts");
   assert.match(api, /\$\{SEARCH_PATH\}\?q=/);
   assert.match(api, /\}, NARRATE_PATH\);/);
+  assert.match(api, /\}, SEND_PATH\);/);
   assert.doesNotMatch(api, /resource=search/);
   assert.match(src("proxy.ts"), /"\/api\/trip\/narrate"/);
+  assert.match(src("proxy.ts"), /"\/api\/trip\/send"/);
   // the client init is gated by the same build value as the handlers
   assert.match(src("instrumentation-client.ts"), /if \(botCheckOn\(\)\) initBotId\(\{ protect: BOT_PROTECT \}\)/);
   assert.match(src("next.config.mjs"), /NEXT_PUBLIC_TP_BOT_CHECK: botCheckFlag\(\)/);
@@ -116,6 +121,8 @@ test("the check runs before the Lambda call in both handlers", () => {
   assert.ok(browse.indexOf('botCheckRefusal("search"') < browse.indexOf("aiLimitHeaders("));
   const trip = src("app/api/trip/route.ts");
   const post = trip.slice(trip.indexOf("export async function POST"));
-  assert.ok(post.indexOf('botCheckRefusal("narrate"') > 0);
-  assert.ok(post.indexOf('botCheckRefusal("narrate"') < post.indexOf("await fetch(`${TRIP_API_URL}"));
+  // narrate and (AA-1038 slice 3, S272 review) send: one branch, the route name is the op
+  assert.ok(post.indexOf('if (b.op === "narrate" || b.op === "send")') > 0);
+  assert.ok(post.indexOf("botCheckRefusal(b.op") > 0);
+  assert.ok(post.indexOf("botCheckRefusal(b.op") < post.indexOf("await fetch(`${TRIP_API_URL}"));
 });

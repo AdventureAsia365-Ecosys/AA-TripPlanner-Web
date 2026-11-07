@@ -17,9 +17,10 @@ import type {
 import type { TourList, TourSort } from "./catalogTypes";
 import { readTourRoute, type TourRouteResult } from "./tourRoute";
 import { COOKIES_NOTICE, COOKIES_REQUIRED, resetGuestIds, showGuestNotice } from "./guestIds";
-import { NARRATE_PATH, SEARCH_PATH, isBotRefusal } from "./botCheck";
+import { NARRATE_PATH, SEARCH_PATH, SEND_PATH, isBotRefusal } from "./botCheck";
 // AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
 import { tenantFetch } from "./plannerTenant";
+import type { LeadBody } from "./leadForm";
 
 function filterParams(f: BrowseFilters): string {
   const p = new URLSearchParams();
@@ -117,7 +118,8 @@ export async function search(
   filters: BrowseFilters,
 ): Promise<{ pins: DestinationPin[]; notice: AiNoticeKey | null }> {
   const qs = filterParams(filters);
-  const res = await fetch(
+  // AA-1038 slice 3: a /{slug} planner names its tenant on search too (its AI budget), via tenantFetch.
+  const res = await tenantFetch(
     `${SEARCH_PATH}?q=${encodeURIComponent(q)}&${qs}`,
   );
   if (res.status === 429) return { pins: [], notice: limitNotice("search") };
@@ -259,13 +261,15 @@ export async function sendToAdvisor(
   tripId: string,
   sessionId: string,
   customer?: { name: string; phone: string; email: string; consent: boolean },
-): Promise<{ status: number; body: TripResponse & { error?: string } }> {
-  const { status, data } = await postTrip<TripResponse>({
+  lead?: LeadBody,
+): Promise<{ status: number; body: TripResponse & { error?: string; fields?: string[] } }> {
+  const { status, data } = await postTrip<TripResponse & { fields?: string[] }>({
     op: "send",
     trip_id: tripId,
     session_id: sessionId,
     customer,
-  });
+    lead,
+  }, SEND_PATH);
   return { status, body: data };
 }
 

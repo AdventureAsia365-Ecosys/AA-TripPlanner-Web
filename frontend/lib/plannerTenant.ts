@@ -14,10 +14,21 @@ export const IDS_KEY = "aa-tripplanner:ids"; // guestIds.STORAGE_KEY, pinned equ
 export const TENANT_SLUG_HEADER = "x-tp-tenant-slug"; // lib/tenantSite.ts TENANT_SLUG_HEADER (server side)
 
 let current: string | null = null;
+// AA-1038 slice 3: what the planner shows of the agency (its trading name on the lead form, the BO-8 badge flag).
+export interface PlannerAgency {
+  name: string;
+  brandingBadge: boolean;
+}
+let agency: PlannerAgency | null = null;
 
-export function setPlannerTenant(slug: string | null): void {
+export function setPlannerTenant(slug: string | null, site: PlannerAgency | null = null): void {
   if (typeof window === "undefined") return;
   current = slug || null;
+  agency = slug ? site : null;
+}
+
+export function plannerAgency(): PlannerAgency | null {
+  return agency;
 }
 
 export function plannerTenant(): string | null {

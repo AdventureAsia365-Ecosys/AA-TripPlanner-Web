@@ -15,6 +15,7 @@ import { isB2bOnly } from "./advisorDemo";
 import type { AiNoticeKey } from "./aiNotices";
 import { isUuid, randomUuid } from "./guestIds";
 import { idsStorageKey } from "./plannerTenant";
+import type { LeadBody } from "./leadForm";
 import type {
   BrowseFilters,
   CountryOption,
@@ -76,6 +77,8 @@ interface TripState {
   send: (customer?: { name: string; phone: string; email: string; consent: boolean }) => Promise<
     { ok: boolean; needsRegistration: boolean; demo?: boolean }
   >;
+  // AA-1038 slice 3: an agency tenant's planner sends a lead (lead.submitted.v1) instead.
+  sendLead: (lead: LeadBody) => Promise<{ status: number; body: { error?: string; fields?: string[] } }>;
   // AA-674 / Jira PR-11: routes of real AA tours.
   coverage: Coverage | null;
   customDays: CustomDay[];
@@ -386,6 +389,18 @@ export function TripProvider({
     [tripId, sessionId],
   );
 
+  const sendLead = useCallback(
+    async (lead: LeadBody) => {
+      const { status: code, body } = await api.sendToAdvisor(tripId, sessionId, undefined, lead);
+      if (code === 200) {
+        if (body.itinerary) setItinerary(body.itinerary);
+        setStatus("sent");
+      }
+      return { status: code, body };
+    },
+    [tripId, sessionId],
+  );
+
   const value: TripState = {
     sessionId,
     tripId,
@@ -415,6 +430,7 @@ export function TripProvider({
     reorder,
     narrate,
     send,
+    sendLead,
     coverage,
     customDays,
     unavailableStops,

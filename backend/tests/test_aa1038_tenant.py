@@ -163,7 +163,7 @@ async def test_a_failed_unbind_keeps_the_body_error_and_discards_the_connection(
 def fake_route(monkeypatch):
     seen: dict = {}
 
-    async def route(method, path, body, *, conn, guest_token=None, caller=None):
+    async def route(method, path, body, *, conn, guest_token=None, caller=None, client=None):
         seen["statements_before"] = list(conn.statements)
         await conn.execute("SELECT 'route'")
         if seen.get("raise"):

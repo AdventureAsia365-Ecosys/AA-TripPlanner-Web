@@ -7,6 +7,8 @@ answers whether it may go on:
 
   narrate  per guest session, 1 hour window, ``config.TP_RATE_NARRATE_PER_HOUR`` (10)
   search   per traveller IP,  1 minute window, ``config.TP_RATE_SEARCH_PER_MINUTE`` (30)
+  send     per guest session, 1 hour window, ``config.TP_RATE_SEND_PER_HOUR`` (5)      AA-1038: a lead to an agency
+  send_ip  per traveller IP,  1 hour window, ``config.TP_RATE_SEND_IP_PER_HOUR`` (20)  (no model, but personal data)
 
 A signed-in traveller gets ``config.TP_RATE_SIGNED_IN_FACTOR`` (2) times the allowance. A refused request is counted
 too (a client that keeps hammering stays refused until the window ends) and answers 429 with ``retry_after_s``.
@@ -25,6 +27,11 @@ Fail mode: when the counter cannot be written (tp-023 not applied yet, DB error)
 ``ai_rate_counter_error`` ERROR line is printed. The limiter protects fairness; the daily spend cap (which fails
 closed, AA-642 S0) protects the budget.
 
+Beacon (AA-1038 slice 3): the same table records, per tenant and :data:`BEACON_WINDOW_SECONDS` window, that the CRM
+listed that tenant's leads (:func:`touch`, scope ``crm_pull``); :func:`seen_within` answers whether it did recently, so
+the crm lead channel refuses a tenant the CRM is not pulling. Same keyed hash, no tenant id in clear. A beacon read that
+fails raises (the caller fails closed: nothing stored); a beacon write that fails is logged and ignored.
+
 Retention (data standards DM-7.1 / DM-7.2): windows older than 2 days are deleted by the jobs Lambda kind
 ``tp_retention_ai_rate_counter`` (backend/jobs/rate_counter_purge.py).
 """
@@ -41,11 +48,17 @@ from backend.shared import auth, observability
 
 SCOPE_NARRATE = "narrate"
 SCOPE_SEARCH = "search"
+SCOPE_SEND = "send"
+SCOPE_SEND_IP = "send_ip"
+SCOPE_CRM_PULL = "crm_pull"
 KIND_SESSION = "session"
 KIND_IP = "ip"
+KIND_TENANT = "tenant"
 
 NARRATE_WINDOW_SECONDS = 3600
 SEARCH_WINDOW_SECONDS = 60
+SEND_WINDOW_SECONDS = 3600
+BEACON_WINDOW_SECONDS = 300
 
 # Used to key the HMAC only where the edge gate is disabled (local dev, unit tests): there is no secret to use.
 _LOCAL_PEPPER = "tripplanner-local-ratelimit"
@@ -95,6 +108,10 @@ def rule_for(scope: str, *, signed_in: bool) -> Rule:
         return Rule(scope, NARRATE_WINDOW_SECONDS, int(config.TP_RATE_NARRATE_PER_HOUR) * factor)
     if scope == SCOPE_SEARCH:
         return Rule(scope, SEARCH_WINDOW_SECONDS, int(config.TP_RATE_SEARCH_PER_MINUTE) * factor)
+    if scope == SCOPE_SEND:
+        return Rule(scope, SEND_WINDOW_SECONDS, int(config.TP_RATE_SEND_PER_HOUR) * factor)
+    if scope == SCOPE_SEND_IP:
+        return Rule(scope, SEND_WINDOW_SECONDS, int(config.TP_RATE_SEND_IP_PER_HOUR) * factor)
     raise ValueError(f"unknown rate-limit scope {scope!r}")
 
 
@@ -159,6 +176,23 @@ async def hit(db: Any, scope: str, kind: str, value: str, *, signed_in: bool = F
                            window_s=rule.window_s, signed_in=signed_in, retry_after_s=retry_after)
         return Decision(False, scope, rule.limit, rule.window_s, count, retry_after)
     return Decision(True, scope, rule.limit, rule.window_s, count)
+
+
+SEEN_SQL = ("SELECT EXISTS (SELECT 1 FROM tripplanner.ai_rate_counter WHERE key_hash = $1 "
+            "AND window_start >= now() - make_interval(secs => $2::int))")
+
+
+async def touch(db: Any, scope: str, kind: str, value: str) -> None:
+    """Record one beacon in the current :data:`BEACON_WINDOW_SECONDS` window. Never raises (an ERROR line instead)."""
+    try:
+        await db.fetchrow(UPSERT_SQL, key_hash(scope, kind, value), BEACON_WINDOW_SECONDS)
+    except Exception as e:  # noqa: BLE001
+        observability.emit("rate_beacon_error", level="error", scope=scope, error=type(e).__name__)
+
+
+async def seen_within(db: Any, scope: str, kind: str, value: str, seconds: int) -> bool:
+    """True when a beacon window of ``value`` started within the last ``seconds``. Raises on a read error."""
+    return bool(await db.fetchval(SEEN_SQL, key_hash(scope, kind, value), int(seconds)))
 
 
 def limited_body(decision: Decision) -> dict:

@@ -136,7 +136,7 @@ async def test_tick_queues_one_scheduled_dry_run_per_day_and_counts_without_writ
     await _outbox(su, 2, 10)
     first = await _serve(env, {"op": "tick"}, today=date(2026, 10, 29))
     again = await _serve(env, {"op": "tick"}, today=date(2026, 10, 29))
-    assert len(first["queued"]) == len(handler.DAILY) == 2 and again["queued"] == [] and again["jobs"] == []
+    assert len(first["queued"]) == len(handler.DAILY) == 3 and again["queued"] == [] and again["jobs"] == []
     job = _of(first, kind.KIND)
     assert job["status"] == "succeeded" and job["kind"] == kind.KIND
     res = job["result"]
@@ -310,7 +310,9 @@ async def test_runner_stops_claiming_when_the_invocation_is_almost_over(env):
 async def test_status_and_bad_events(env):
     await _serve(env, {"op": "tick"}, today=date(2026, 10, 29))
     status = await _serve(env, {"op": "status"})
-    assert {j["kind"]: j["result"]["mode"] for j in status["jobs"]} == {kind.KIND: "dry_run", purge.KIND: "dry_run"}
+    # AA-1038 slice 3: tp_lead_deliver skips on this replay (tp-026 is not part of it): no lead row can exist.
+    assert {j["kind"]: j["result"]["mode"] for j in status["jobs"]} == {kind.KIND: "dry_run", purge.KIND: "dry_run",
+                                                                        "tp_lead_deliver": "skipped"}
     assert "unknown op" in (await _serve(env, {}))["error"]
     assert "unknown kind" in (await _serve(env, {"op": "enqueue", "kind": "bk_retention_job"}))["error"]
     assert "reserved" in (await _serve(env, {"op": "enqueue", "kind": kind.KIND,

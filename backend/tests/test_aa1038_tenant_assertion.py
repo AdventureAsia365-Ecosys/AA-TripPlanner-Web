@@ -247,7 +247,7 @@ async def test_serve_binds_the_asserted_tenant_first(monkeypatch):
     async def acquire():
         yield conn
 
-    async def fake_route(method, path, body, *, conn, guest_token, caller):
+    async def fake_route(method, path, body, *, conn, guest_token, caller, client=None):
         await conn.execute("SELECT 1")
         return {"statusCode": 200, "headers": {}, "body": "{}"}
 

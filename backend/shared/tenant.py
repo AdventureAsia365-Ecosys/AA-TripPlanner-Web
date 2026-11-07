@@ -21,9 +21,11 @@ Log lines carry the tenant id and where it came from, never a request value.
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
-from typing import Any
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, Optional
 
 from backend.shared import observability
 
@@ -31,9 +33,49 @@ GUC = "app.tenant_id"
 SOURCE_DEFAULT = "default"  # config.DEFAULT_TENANT_ID (every assembly request in this slice)
 SOURCE_SYSTEM = "system"    # no tenant context on purpose (the jobs Lambda)
 SOURCE_ASSERTION = "assertion"  # AA-1038 slice 2: a /{slug} request, the BFF's verified tenant assertion
+SOURCE_M2M = "m2m"              # AA-1038 slice 3: the CRM's lead pull, the tenant of the path under a verified M2M token
 
 BIND_SQL = "SELECT set_config('app.tenant_id', $1, false)"
 UNBIND_SQL = "RESET app.tenant_id"
+
+
+@dataclass(frozen=True)
+class Current:
+    """The tenant this request runs as and where it came from (AA-1038 slice 3): read by the lead route, the per-tenant
+    AI budget and the ledger rows, so none of them takes a tenant from the request body."""
+
+    tenant_id: str
+    source: str
+
+    @property
+    def from_tenant_path(self) -> bool:
+        """A /{slug} request (verified BFF assertion) or the CRM's pull of one tenant: never the bare demo path."""
+        return self.source in (SOURCE_ASSERTION, SOURCE_M2M)
+
+
+_CURRENT: ContextVar[Optional[Current]] = ContextVar("tp_current_tenant", default=None)
+
+
+def current() -> Optional[Current]:
+    """The tenant of the running request, or None outside one (the jobs Lambda, a test that binds nothing)."""
+    return _CURRENT.get()
+
+
+def current_id() -> Optional[str]:
+    cur = _CURRENT.get()
+    return cur.tenant_id if cur else None
+
+
+@contextmanager
+def using(tenant_id: Any, *, source: str) -> Iterator[str]:
+    """The tenant of a request that binds no database context (the browse Lambda reads no tenant table): it names the
+    tenant for the AI budget and the ledger only. Raises InvalidTenant (no value echoed) for a non-uuid."""
+    tid = canonical(tenant_id)
+    token = _CURRENT.set(Current(tid, source))
+    try:
+        yield tid
+    finally:
+        _CURRENT.reset(token)
 
 
 class InvalidTenant(ValueError):
@@ -83,9 +125,11 @@ async def bound(conn: Any, tenant_id: Any, *, source: str = SOURCE_DEFAULT) -> A
     ``tenant_unbind_failed`` is logged with the error type only and the connection is terminated, so a connection
     whose context is unknown never goes back into use."""
     tid = await bind(conn, tenant_id, source=source)
+    token = _CURRENT.set(Current(tid, source))
     try:
         yield tid
     finally:
+        _CURRENT.reset(token)
         try:
             await unbind(conn)
         except Exception as e:  # noqa: BLE001
