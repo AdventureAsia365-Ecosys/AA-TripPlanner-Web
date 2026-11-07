@@ -87,6 +87,9 @@ def test_registered_once_and_columns(db):
             idx = await su.fetchval("SELECT indexdef FROM pg_indexes WHERE schemaname = 'tripplanner' "
                                     "AND indexname = 'outbox_lead_pending_idx'")
             assert "(tenant_id, id)" in idx and "lead.submitted" in idx and "delivered_at IS NULL" in idx
+            cap_idx = await su.fetchval("SELECT indexdef FROM pg_indexes WHERE schemaname = 'tripplanner' "
+                                        "AND indexname = 'outbox_lead_tenant_created_idx'")
+            assert "(tenant_id, created_at)" in cap_idx and "lead.submitted" in cap_idx
             view_cols = [r["attname"] for r in await su.fetch(
                 "SELECT attname FROM pg_attribute WHERE attrelid = 'tripplanner.v_inquiry_outbox'::regclass "
                 "AND attnum > 0 AND NOT attisdropped ORDER BY attnum")]
@@ -177,3 +180,42 @@ def test_booking_never_reads_a_lead(db):
         finally:
             await bk.close()
     run(body())
+
+
+# S272 review: the view's FILTER is guarded, not only its columns (the filter is what keeps leads away from booking).
+_VIEW_GUARD_RE = re.compile(r"IF (regexp_replace\(pg_catalog\.pg_get_viewdef\('tripplanner\.v_inquiry_outbox'::regclass\)"
+                            r".*?\$re\$.*?\$re\$) THEN", re.S)
+
+
+def _view_guard() -> str:
+    m = _VIEW_GUARD_RE.search(TP026.read_text(encoding="utf-8"))
+    assert m, "tp-026 guards the v_inquiry_outbox filter"
+    return m.group(1)
+
+
+def test_the_view_filter_guard_is_in_the_file():
+    assert "inquiry\\.submitted" in _view_guard() and "\\Z" in _view_guard()
+
+
+@pytest.mark.parametrize("where,kept", [
+    ("WHERE event = 'inquiry.submitted'", True),
+    ("", False),
+    ("WHERE event = 'inquiry.submitted' OR event = 'lead.submitted'", False),
+    ("WHERE event IN ('inquiry.submitted', 'lead.submitted')", False),
+    ("WHERE event <> 'trip.other' AND event = 'inquiry.submitted'", False),
+])
+def test_the_view_filter_guard_refuses_a_widened_view(db, where, kept):
+    """A CREATE OR REPLACE with the same columns and no / a wider filter passes the column guard; the filter guard
+    (the file's own expression, evaluated on the real PostgreSQL definition) refuses it."""
+    async def body():
+        su = await asyncpg.connect(db["su_dsn"])
+        try:
+            async def scenario(conn):
+                await conn.execute(
+                    "CREATE OR REPLACE VIEW tripplanner.v_inquiry_outbox AS SELECT id, schema_version, idempotency_key, "
+                    f"aggregate_id AS trip_id, payload, created_at FROM tripplanner.outbox {where}")
+                return await conn.fetchval(f"SELECT NOT ({_view_guard()})")
+            return await _in_rollback(su, scenario)
+        finally:
+            await su.close()
+    assert run(body()) is kept
