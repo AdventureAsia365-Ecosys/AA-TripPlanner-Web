@@ -86,6 +86,33 @@ class DanglingTest(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             self.assertTrue(errors[0].startswith("notes.md:2: `004_widget_gate.sql`"))
 
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_non_utf8_added_line_does_not_crash_the_check(self):
+        """A Latin-1 byte in an added line used to raise UnicodeDecodeError in git()'s strict decode; the line is read
+        with U+FFFD and the tokens on it are still checked."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            (t / "migrations").mkdir()
+            (t / "migrations" / "001_a.sql").write_text("BEGIN;\nCOMMIT;\n")
+            (t / "notes.md").write_text("history\n")
+            _git(t, "init", "-q")
+            _git(t, "add", "-A")
+            _git(t, "commit", "-qm", "base")
+            base = _git(t, "rev-parse", "HEAD")
+            (t / "migrations" / "002_widget_gate.sql").write_text("BEGIN;\nCOMMIT;\n")
+            (t / "notes.md").write_bytes(b"history\ncaf\xe9 note: see 004_widget_gate.sql\n")
+            (t / "legacy.csv").write_bytes(b"name\nM\xfcller\n")
+            _git(t, "add", "-A")
+            _git(t, "commit", "-qm", "a Latin-1 line next to a stale reference")
+            cwd = os.getcwd()
+            try:
+                os.chdir(t)
+                errors = mr.check("migrations", base)
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(len(errors), 1)
+            self.assertTrue(errors[0].startswith("notes.md:2: `004_widget_gate.sql`"))
+
 
 class CiStepTest(unittest.TestCase):
     def test_the_migrations_job_runs_the_check_on_pull_requests(self):
