@@ -121,16 +121,23 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   service `aa-tripplanner-dev-web` (one Fargate Spot task, AA-CIS-Infra `modules/environment/tripplanner_web.tf`)
   behind a CloudFront distribution and a CLOUDFRONT-scope web ACL (`accounts/aa365/tripplanner_web_edge.tf`: a rate
   rule per viewer IP, a stricter one and a Challenge on the two model paths, a token-issuing Challenge on planner
-  page navigations). `.github/workflows/deploy-web-dev.yml` builds on an arm64 runner, pushes the immutable git-SHA tag,
+  page navigations). The planner gets its WAF token from the web ACL's JavaScript integration (`lib/wafToken.ts`:
+  `challenge.js` of the build value `NEXT_PUBLIC_TP_WAF_INTEGRATION_URL`, repository variable `TP_WAF_INTEGRATION_URL`),
+  because most ways into the planner are client-side navigations the web ACL never challenges; a call still
+  challenged gets one token refresh and retry, then one page reload, then the `botCheck` notice (never an empty
+  answer). `.github/workflows/deploy-web-dev.yml` builds on an arm64 runner, pushes the immutable git-SHA tag,
   copies the family's latest task definition with only the image swapped and verifies through CloudFront
-  (`/api/health` git_sha, pages, headers, the challenge); its PR job `preview` replaces the Vercel preview for the image
+  (`/api/health` git_sha, pages with real catalog content, headers, the challenge, the integration script); its PR job `preview` replaces the Vercel preview for the image
   (the standalone server started in the runner). Build-time values: `NEXT_PUBLIC_MAPBOX_TOKEN` (repo secret
-  `TP_MAPBOX_PUBLIC_TOKEN`) and `NEXT_PUBLIC_SITE_URL`; every server value is task env or a Secrets Manager secret.
+  `TP_MAPBOX_PUBLIC_TOKEN`), `NEXT_PUBLIC_SITE_URL` and `NEXT_PUBLIC_TP_WAF_INTEGRATION_URL`; every server value is task
+  env or a Secrets Manager secret, so the image cannot read the catalog at build: the home, `/destinations` and
+  `sitemap.xml` render on request there (`lib/renderMode.ts`), their catalog reads still cached by the tagged fetch
+  cache, resolved photo redirects kept in process for the catalog TTL (`lib/photoResolve.ts`).
   BotID is off in the image (`TP_BOT_CHECK=off`); the web ACL takes its place, and the task env `TP_EDGE_GATE=on` makes
   the BFF answer search and narration only on `/api/browse/search` and `/api/trip/narrate` (the paths the web ACL
   sees; the older spellings get 404 `use_protected_path`, `lib/edgeGate.ts`). `TP_CLIENT_IP_SOURCE=cloudfront` takes the
   traveller's address from `CloudFront-Viewer-Address` (`lib/clientIp.ts`): behind CloudFront the leftmost
-  `x-forwarded-for` entry is the viewer's own words. CloudFront caches only `/_next/static/*` and `/photo-cdn/*`; pages
+  `x-forwarded-for` entry is the viewer's own words. CloudFront caches only `/_next/static/*` and `/photo-cdn/*` (the latter keyed on `?v=`); pages
   and `/api/*` go to the task (the catalog purge then drops the in-process ISR cache; the Vercel CDN purge is a no-op
   there). Until the DNS switch Vercel keeps serving `tripplanner.lumiguides.it.com` and `vercel-deploy.yml` keeps
   running; cut-over and rollback: root runbook `docs/ops/runbooks/tripplanner-web-ecs-cutover.md`.

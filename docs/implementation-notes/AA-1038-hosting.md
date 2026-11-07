@@ -17,9 +17,32 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
   name) and `NEXT_PUBLIC_SITE_URL`. `GIT_SHA`, `APP_VERSION` (release-please manifest) and `SENTRY_RELEASE` are baked
   into the runtime stage. Every server value comes from the task definition (AA-CIS-Infra).
 - **BotID off in the image, the web ACL in its place.** BotID needs the Vercel edge. The CLOUDFRONT-scope web ACL
-  (Infra) rate-limits per viewer IP and Challenges the two model paths; a browser gets its WAF token from a silent
-  Challenge when it opens a planner page (`/plan`, `/{tenant}/plan`: the only pages that call the model paths,
-  `lib/api.ts`), so `fetch` calls to the model paths carry it. Catalog pages are never challenged.
+  (Infra) rate-limits per viewer IP and Challenges the two model paths and a document load of a planner page. Catalog
+  pages are never challenged.
+- **The planner's WAF token comes from the JavaScript integration (review S272, `lib/wafToken.ts`).** The first
+  design relied on the challenged document load of `/plan`, but most ways into the planner are client-side Next
+  navigations (header link, home search, tour and destination CTAs, all `next/link` or `router.push`): an RSC fetch
+  with `sec-fetch-dest: empty`, never challenged, so search and narration then got the web ACL's 202, which `search()`
+  parsed as JSON (throw) and `narrate()` reported as ok with an empty text. Now: the planner loads `challenge.js` from
+  the web ACL's integration URL (build value `NEXT_PUBLIC_TP_WAF_INTEGRATION_URL`, repository variable
+  `TP_WAF_INTEGRATION_URL` = Terraform output `tripplanner_web_edge.waf_integration_url`) as it mounts and calls
+  `AwsWafIntegration.getToken()` before each model call (it stores the `aws-waf-token` cookie and refreshes it, which
+  also ends the 4 h immunity gap). A call still challenged (`202` + `x-amzn-waf-action: challenge`, `isWafChallenge`)
+  gets one token refresh and one retry (safe: the app never saw it), then one page reload per 5 minutes (a challenged
+  document load), then the `botCheck` notice. `search()` and `narrate()` never read a challenge as an answer.
+  Chosen over hard navigations into `/plan` (every link and `router.push` would need a guard forever, tenant links
+  too) and over challenging every page (an interstitial on catalog pages and for crawlers). No CSP change: the CSP has
+  no `script-src` / `connect-src`. Off the edge (Vercel, local, CI) the URL is empty and nothing loads.
+- **Catalog routes render on request in the image (review S272, `lib/renderMode.ts`).** The image builds with no
+  server value, so `next build` prerendered the home, `/destinations` and `sitemap.xml` with a failed catalog read
+  (the "We couldn't load ..." state, a two-line sitemap), served for up to 30 / 60 minutes after each deploy. With
+  `NEXT_OUTPUT=standalone` (both Dockerfile stages) those three routes call `connection()` and render per request
+  (build output: `ƒ`); the catalog reads stay in the tagged fetch cache (`next.revalidate`, purged by CIS). Next never
+  caches a 302 in its fetch cache, so the photo redirect lookups of `/destinations` (up to 24 per render) would have
+  hit the catalog on every view: `resolveRedirect` now keeps successful targets in process for the catalog TTL
+  (`REDIRECT_MEMO_MS`, at most 500, failures never kept); the ISR page kept them just as long. Chosen over BuildKit
+  secret mounts of the catalog at build (the deploy role would need the edge key, and a build would depend on the
+  catalog being up). Vercel, CI and local builds keep the prerendered ISR pages.
 - **Edge gate (`lib/edgeGate.ts`, task env `TP_EDGE_GATE=on`).** A WAF rule sees the URI path only, so the older
   spellings of the model calls (`GET /api/browse?resource=search`, `POST /api/trip {op:"narrate"}`) would pass the edge
   unchallenged. With the gate on they answer 404 `use_protected_path` before any upstream call. The search route no
@@ -44,7 +67,13 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
 ## Changed
 
 - New: `frontend/Dockerfile`, `frontend/.dockerignore`, `.github/workflows/deploy-web-dev.yml`, `frontend/lib/clientIp.ts`
-  (+ test), `frontend/lib/edgeGate.ts` (+ test).
+  (+ test), `frontend/lib/edgeGate.ts` (+ test), `frontend/lib/wafToken.ts` (+ test), `frontend/lib/renderMode.ts`
+  (+ test).
+- Review S272: `frontend/lib/api.ts` (`search()` and the narrate path of `postTrip()` through `throughWafEdge`, a
+  challenge never ok), `frontend/app/plan/PlannerApp.tsx` (token on mount), `frontend/app/page.tsx`,
+  `frontend/app/destinations/page.tsx`, `frontend/app/sitemap.ts` (render on request in the image),
+  `frontend/lib/photoResolve.ts` (redirect memo), the deploy verify (real catalog content on `/`, `/destinations`,
+  `sitemap.xml`; `challenge.js` answers), the build refuses an unset `TP_WAF_INTEGRATION_URL`.
 - `frontend/next.config.mjs` (standalone switch), `frontend/lib/cognito.ts` (`travellerIp` delegates to `clientIp`),
   `frontend/app/api/browse/route.ts`, `frontend/app/api/browse/search/route.ts`, `frontend/app/api/trip/route.ts` (edge
   gate), `frontend/lib/health.ts` (comment), `.github/scripts/check_security_headers.sh` (+ test: `RESOLVE`),
@@ -60,15 +89,20 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
   them by `s-maxage`). The task serves pages from its ISR cache, so the cost is one small origin hop per page view, not
   a render. Caching pages at CloudFront would need a CloudFront invalidation in the purge route (a paid call per path
   and an AWS grant on the task) — not worth it on Dev.
-- WAF token lifetime: a traveller who stays on the planner longer than the token immunity time (Infra variable,
-  4 hours) gets a challenged narration call (shown as the planner's error state) until the next page load. The AWS WAF
-  JS integration (token refresh in the page) is the follow-up if that shows up.
+- WAF token: `challenge.js` is a third-party script on the planner (AWS WAF's own host, the web ACL's integration
+  URL); it is what AWS designs for single-page apps and replaces BotID's same-origin script. Each token fetch is a
+  billed challenge attempt (cents at Dev volume).
+- Home, `/destinations` and `sitemap.xml` render per request in the image (a few tens of ms of CPU on the 0.5 vCPU
+  task, catalog data cached); pages are not cached at CloudFront either, so this is the cost of the image build having
+  no catalog. Revisit with BuildKit secret mounts if the task's CPU shows it.
 
 ## Should know
 
 - Live order (orchestrator): root PR, Infra PR + bootstrap apply + Terraform Apply, repository settings
-  (`TP_WEB_ENABLED`, `TP_WEB_CLOUDFRONT_DNS`, secret `TP_MAPBOX_PUBLIC_TOKEN`), this PR, scale to 1, re-run the deploy,
+  (`TP_WEB_ENABLED`, `TP_WEB_CLOUDFRONT_DNS`, `TP_WAF_INTEGRATION_URL`, secret `TP_MAPBOX_PUBLIC_TOKEN`), this PR, scale to 1, re-run the deploy,
   then the runbook's checks and the DNS switch as its own approved step.
 - Local proof (S272): `NEXT_OUTPUT=standalone next build` and the standalone server with the ECS env: `/api/health`
   reports the given sha, `/privacy`, `/` and `/plan` 200 with all headers and `X-Robots-Tag: noindex`, the old search
   and narrate spellings 404 `use_protected_path`, `/api/browse/search` passes the gate (500 only because no backend ran).
+- Local proof (S272 review pass): the standalone build lists `/`, `/destinations` and `/sitemap.xml` as `ƒ` (on
+  request), the integration URL is inlined into one client chunk, and the standalone server answers the three 200.
