@@ -949,7 +949,7 @@ it, while every request still runs as one tenant.
   previews unchanged). A PR that adds a route or Lambda worth guarding adds a row.
 - **CI checks**: required "Backend (pytest)", "Frontend (lint + build)", "Migrations (lint, PG 15
   replay)" (on a PR it also refuses an added line naming a migration by an old number after a renumber,
-  `.github/scripts/migration_refs.py`, AA-1024 l22; a history note carries `old-mig-ok`); plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan
+  `.github/scripts/migration_refs.py`, AA-1024 l22; a history note carries `old-mig-ok`; and an added tp-NNN that is not main max + 1 on the main of the run, or that an older open PR also adds under another name, `.github/scripts/migration_numbers.py`: no merge queue here, so re-run the PR's CI after another migration PR merged); plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan
   (AA-981 follow-up): `secret-scan.yml`, check "gitleaks" on every PR (lines the PR adds, rules and baseline from
   the base branch) and "gitleaks full history" (`secret-scan-history.yml`) nightly / on push to `main` (branches, tags, pull
   request heads);
