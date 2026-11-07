@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.15.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.14.0...v0.15.0) (2026-11-07)
+
+
+### Features
+
+* /{slug} tenant planner path with a signed BFF tenant assertion ([#228](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/228)) ([b54421f](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/b54421f2074f14e587271f2a3befc4e9ee23c936))
+* assembly binds the tenant context on every request (shadow RLS) ([#227](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/227)) ([954b925](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/954b9257c58c0017c4fd6b13c81d049ebb92f392))
+* bot check (Vercel BotID Basic) before search and narration; AA-text narration answered first ([#201](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/201)) ([4fd7dca](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/4fd7dcabba569ce489084ccdcb08f6546fd0365b))
+* browse catalog JSON carries the machine-readable AI mark of the Master text ([#223](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/223)) ([ad1fcec](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/ad1fcec339949a703f29af4cbae19088c6ad23a4))
+* Dev and preview deployments are noindex and show a "Preview site" footer line ([#200](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/200)) ([25d1803](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/25d1803c4f488776ac4dee4edd818150b6366505))
+* drop tripplanner.llm_spend_daily, the tp-010 spend counter (migration tp-024, destructive) ([#216](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/216)) ([fe42833](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/fe42833939b1a96e373085cdc5ceebb75f878237))
+* gateway dispatches by deployment with a breaker per connection and core pricing ([#211](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/211)) ([d24808e](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/d24808e6d32dd58d62b01d265ef95a017a161689))
+* gateway ledger rows carry prompt_version, prompt_hash and request_id, with a prompt bump gate ([#207](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/207)) ([78f3255](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/78f3255a1ce4b7eef28162f3c14fbdcc8ed55cf2))
+* gateway on the shared core aa_llm (CIS 323 views with fallback, ledger v2 rows) (AA-642 S8) ([#203](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/203)) ([c845b62](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/c845b623030ed42bfcb8dede46b5f889486fe8d8))
+* gateway reads the CIS views only (fail closed) and applies the stage x model temperature ([#215](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/215)) ([184ba85](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/184ba857430233a3ad82a3040b6df14fc25fdfa6))
+* migration numbers check (main max + 1, one open PR per tp-NNN); migration refs read non-UTF-8 lines ([#234](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/234)) ([759ec03](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/759ec0396d251a263164189672c1ca46fc1b30a5))
+* narration AI notice variant and machine mark in the trip planner and tour pages ([#222](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/222)) ([c3e6acc](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/c3e6acce40ec82437762871a4328750fd3ab9421))
+* narration gateway treats a truncated reply as a failure and stops at a route deadline ([#206](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/206)) ([0da18a8](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/0da18a84b40885fc5e1013688080b4e4de74826f))
+* per-session and per-IP AI limits on narration and search, stage caps and 80% spend alerts ([#199](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/199)) ([4c6b341](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/4c6b341483d7c4249d39a908b73bae4c257ffc14))
+* refuse migration references left behind by a renumber, and a push mid-rebase ([#233](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/233)) ([91d0608](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/91d0608b48b5ab84375933888c41ce42977bcda0))
+* retire My Payments on /trips with the Booking B2C drop ([#230](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/230)) ([cdb5b11](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/cdb5b11ea159e16673268882dbd04e8f266b321a))
+* search embeds the query only in the embedding space of the searched column ([#208](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/208)) ([69e4b2b](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/69e4b2bea452d05b3e8c410ec01aa17ce8a87731))
+* Send to an advisor shows a B2B-only demo notice and the hand-off answers 410 b2b_only ([#218](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/218)) ([537b0fd](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/537b0fd5e4f725d1c1063952c77373cde9468398))
+* tenant_id and shadow RLS on the trip tables (tp-025) ([#226](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/226)) ([0656822](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/065682220d3fed1fd3b3fa0fe03f88f5ff0cc8da))
+* tour page shows the from price from Booking price.from.v1 ([#224](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/224)) ([cf6faf9](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/cf6faf9a99193bf2564ff5d8cade0fabb9946f63))
+* traveller AI notice (tour page, planner, footer) and terms section Use of AI ([#210](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/210)) ([8e59223](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/8e59223a2dcbd81ee492507c0ef9a25e5f4e7503))
+* TripPlanner acts on its app profile (AI switch, daily cap over every stage) ([#217](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/217)) ([9bc3d7f](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/9bc3d7f044d0e0efa26dde09967e072f381229f8))
+
+
+### Bug Fixes
+
+* destination detail hides suspect points and redirects merged ids ([#195](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/195)) ([26c2c97](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/26c2c976f40ca8b2452e353b3537bef55abc0d2c))
+* fail closed and degrade narration and search when AI cannot run ([#198](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/198)) ([0f2fcb8](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/0f2fcb8581319030ae97bcf19444317b092db7a1))
+* unknown single-segment paths render the themed not-found page ([#229](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/229)) ([e9033c5](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/e9033c5e226e3f3d679258c85cc5506e75bdf0a5))
+
 ## [0.14.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.13.0...v0.14.0) (2026-10-29)
 
 
