@@ -1,0 +1,292 @@
+name: Deploy Web Dev
+
+# AA-1038 R5 hosting (root ADR 0019 d23, S265 tech-lead decision: one Fargate Spot task + CloudFront + a CLOUDFRONT-scope
+# web ACL) — the TripPlanner frontend (frontend/, Next.js standalone) to ECS Dev, service aa-tripplanner-dev-web
+# (AA-CIS-Infra modules/environment/tripplanner_web.tf; edge accounts/aa365/tripplanner_web_edge.tf). Same model as
+# AA-Booking deploy-admin-dev.yml and AA-Partner deploy-web-dev.yml: build on a native arm64 runner -> push to ECR
+# aa-tripplanner-dev-web with the immutable git-SHA tag -> copy the family's latest revision with only the image swapped
+# (env, secrets and size come from that revision, so a Terraform change reaches the task on the next deploy) -> update
+# the service -> wait stable -> check the running task has this image -> verify through CloudFront.
+#
+# Vercel keeps serving tripplanner.lumiguides.it.com until the DNS switch (root runbook
+# docs/ops/runbooks/tripplanner-web-ecs-cutover.md); vercel-deploy.yml keeps running until the Vercel retirement. Before
+# the switch the verify resolves the public host to the CloudFront distribution on this runner only (--resolve), so the
+# ECS copy is checked through the real edge (web ACL included) without touching DNS; after the switch it is the same
+# address.
+#
+# Pull requests (frontend/** or this file): job `preview` replaces the per-PR Vercel preview for the image: it builds
+# the image from the PR head, starts it in the runner (the standalone `next start` server, with the ECS edge settings
+# TP_EDGE_GATE=on and TP_CLIENT_IP_SOURCE=cloudfront) and checks /api/health (this commit), a static page, the security
+# headers, the preview noindex header and the edge gate. No AWS, no secret, no push.
+#
+# Configuration (repository settings; the deploy role trusts ref:refs/heads/main only, with no `environment:`):
+#   secrets.AWS_DEPLOY_ROLE_ARN    the TripPlanner deploy role (shared with deploy-lambdas.yml); AA-CIS-Infra
+#                                  tripplanner_web.tf tripplanner_app_deploy_web grants this family, service and
+#                                  execution role only
+#   secrets.TP_MAPBOX_PUBLIC_TOKEN the Mapbox PUBLIC token (pk..., URL-restricted), inlined into the browser bundle at
+#                                  build (NEXT_PUBLIC_MAPBOX_TOKEN); a secret only so the lint rule on vars names holds
+#   vars.TP_WEB_ENABLED            "true" once tripplanner_web.tf is applied; otherwise a push run is red
+#   vars.TP_WEB_CLOUDFRONT_DNS     the distribution's *.cloudfront.net name (Terraform output tripplanner_web_edge;
+#                                  not secret): the --resolve target of the verify
+# The cluster, service, family, container and repository names are fixed below (Terraform outputs tripplanner_web_*).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - "!frontend/lib/*.test.ts"
+      - ".github/workflows/deploy-web-dev.yml"
+  pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-web-dev.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-web-dev-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  AWS_REGION: us-west-1
+  ECR_REPOSITORY: aa-tripplanner-dev-web
+  ECS_CLUSTER: aa-cis-dev-cluster
+  ECS_SERVICE: aa-tripplanner-dev-web
+  ECS_TASK_FAMILY: aa-tripplanner-dev-web
+  CONTAINER: web
+  PUBLIC_HOST: tripplanner.lumiguides.it.com
+  SITE_URL: https://tripplanner.lumiguides.it.com
+
+jobs:
+  preview:
+    name: Preview (image, next start in the runner)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build the image (no push)
+        env:
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          APP_VERSION=$(jq -r '."."' .release-please-manifest.json)
+          docker build --build-arg GIT_SHA="$SHA" --build-arg APP_VERSION="$APP_VERSION" \
+            --build-arg NEXT_PUBLIC_SITE_URL="$SITE_URL" -t tp-web:preview frontend
+          docker image inspect tp-web:preview --format '{{.Architecture}}' | grep -qx arm64
+          docker image inspect tp-web:preview --format '{{.Config.User}}' | grep -qx 10001
+
+      # The standalone server with the ECS edge settings. BROWSE_API_URL points at a closed local port: the pages and
+      # routes checked here call no upstream, and the edge gate answers before any upstream call.
+      - name: Start the server and check it
+        env:
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          docker run -d --name tp-web -p 3000:3000 \
+            -e TP_EDGE_GATE=on -e TP_CLIENT_IP_SOURCE=cloudfront \
+            -e BROWSE_API_URL=http://127.0.0.1:9 -e TRIP_API_URL=http://127.0.0.1:9 \
+            tp-web:preview >/dev/null
+          ok=""
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/api/health -o /tmp/h.json; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs tp-web 2>&1 | tail -20
+          [ -n "$ok" ] || { echo "::error::the standalone server did not answer /api/health"; exit 1; }
+          jq -e --arg sha "$SHA" '.status == "ok" and .service == "aa-tripplanner-web" and .git_sha == $sha' /tmp/h.json
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/privacy)
+          [ "$CODE" = "200" ] || { echo "::error::/privacy answered $CODE"; exit 1; }
+          bash .github/scripts/check_security_headers.sh http://127.0.0.1:3000 /privacy
+          curl -sS -o /dev/null -D /tmp/p.h http://127.0.0.1:3000/privacy
+          grep -qi '^x-robots-tag: *noindex' /tmp/p.h || { echo "::error::the preview noindex header is missing"; exit 1; }
+          # The edge gate: search only on its protected path (the older spelling would pass the web ACL unchallenged).
+          CODE=$(curl -s -o /tmp/g.json -w '%{http_code}' 'http://127.0.0.1:3000/api/browse?resource=search&q=temple')
+          [ "$CODE" = "404" ] && jq -e '.error == "use_protected_path"' /tmp/g.json >/dev/null \
+            || { echo "::error::GET /api/browse?resource=search answered $CODE, expected 404 use_protected_path"; exit 1; }
+          echo "Preview image ${SHA::7}: health, /privacy, headers, noindex and the edge gate OK"
+
+  config:
+    name: Deploy configuration
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check AWS_DEPLOY_ROLE_ARN and TP_WEB_ENABLED
+        env:
+          HAS_ROLE: ${{ secrets.AWS_DEPLOY_ROLE_ARN != '' }}
+          ENABLED: ${{ vars.TP_WEB_ENABLED }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Deploys run from main only (the deploy role trusts ref:refs/heads/main)."
+            exit 1
+          fi
+          if [ "${HAS_ROLE}" != "true" ] || [ "${ENABLED}" != "true" ]; then
+            echo "::error::AWS_DEPLOY_ROLE_ARN unset or TP_WEB_ENABLED != true: the ECS web service is not applied yet (AA-CIS-Infra tripplanner_web.tf)."
+            exit 1
+          fi
+
+  deploy:
+    name: Deploy TripPlanner web to ECS Dev
+    needs: config
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      running: ${{ steps.running.outputs.running }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image (git-SHA tag only)
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          MAPBOX_TOKEN: ${{ secrets.TP_MAPBOX_PUBLIC_TOKEN }}
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="${GITHUB_SHA}"
+          IMAGE="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          # IMMUTABLE repository: a re-run of the same commit reuses the image already pushed.
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "image ${IMAGE_TAG} already in ECR: reusing it (no build, no push)"
+          else
+            if [ -z "$MAPBOX_TOKEN" ]; then
+              echo "::error::TP_MAPBOX_PUBLIC_TOKEN is not set: the map would not load. Nothing was built."
+              exit 1
+            fi
+            APP_VERSION=$(jq -r '."."' .release-please-manifest.json)
+            docker build --build-arg GIT_SHA="${GITHUB_SHA}" --build-arg APP_VERSION="$APP_VERSION" \
+              --build-arg NEXT_PUBLIC_MAPBOX_TOKEN="$MAPBOX_TOKEN" --build-arg NEXT_PUBLIC_SITE_URL="$SITE_URL" \
+              -t "$IMAGE" frontend
+            docker image inspect "$IMAGE" --format '{{.Architecture}}' | grep -qx arm64
+            docker push "$IMAGE"
+          fi
+          echo "DEPLOY_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Register task definition (new image) and update service
+        run: |
+          set -euo pipefail
+          aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].serviceName' --output text | grep -qx "$ECS_SERVICE" \
+            || { echo "::error::service $ECS_SERVICE not found"; exit 1; }
+          aws ecs describe-task-definition --task-definition "$ECS_TASK_FAMILY" --query 'taskDefinition' --output json > /tmp/td.json
+          # family:revision only: the full ARN names the AWS account (public logs).
+          echo "base task definition: $(jq -r '.taskDefinitionArn | split("/") | last' /tmp/td.json)"
+          jq -e --arg c "$CONTAINER" '(.containerDefinitions | length) == 1 and .containerDefinitions[0].name == $c' /tmp/td.json >/dev/null \
+            || { echo "::error::$ECS_TASK_FAMILY must have exactly one container, $CONTAINER"; exit 1; }
+          jq --arg img "$DEPLOY_IMAGE" --arg c "$CONTAINER" \
+            'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.deregisteredAt)
+             | .containerDefinitions |= map(if .name == $c then .image = $img else . end)' \
+            /tmp/td.json > /tmp/td_new.json
+          NEW_TD=$(aws ecs register-task-definition --cli-input-json file:///tmp/td_new.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "registered: ${NEW_TD##*/}"
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$NEW_TD" >/dev/null
+
+      - name: Wait for the service to be stable
+        run: aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+      - name: Running task carries this image
+        id: running
+        run: |
+          set -euo pipefail
+          DESIRED=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --query 'services[0].desiredCount' --output text)
+          if [ "$DESIRED" = "0" ]; then
+            echo "::warning::$ECS_SERVICE has desired count 0: deployed, nothing running to verify (scaling Dev up is a separate step)."
+            echo "running=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TASKS=$(aws ecs list-tasks --cluster "$ECS_CLUSTER" --service-name "$ECS_SERVICE" --desired-status RUNNING --query 'taskArns' --output text)
+          [ -n "$TASKS" ] || { echo "::error::no running task"; exit 1; }
+          # shellcheck disable=SC2086
+          IMAGES=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
+            --query "tasks[].containers[?name=='${CONTAINER}'].image[]" --output text)
+          for img in $IMAGES; do
+            [ "$img" = "$DEPLOY_IMAGE" ] || { echo "::error::a running task has ${img##*/}, expected ${DEPLOY_IMAGE##*/} (the circuit breaker may have rolled the service back: read the service events)"; exit 1; }
+          done
+          echo "every running task has ${DEPLOY_IMAGE##*/}"
+          echo "running=true" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Post-deploy verify (through CloudFront)
+    needs: deploy
+    if: needs.deploy.outputs.running == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Health, pages, headers, edge gate and the web ACL challenge, served by ECS through CloudFront
+        env:
+          CF_DNS: ${{ vars.TP_WEB_CLOUDFRONT_DNS }}
+        run: |
+          set -euo pipefail
+          [ -n "$CF_DNS" ] || { echo "::error::vars.TP_WEB_CLOUDFRONT_DNS is not set (Terraform output tripplanner_web_edge.distribution_domain)"; exit 1; }
+          IP=$(getent ahostsv4 "$CF_DNS" | awk 'NR==1{print $1}')
+          [ -n "$IP" ] || { echo "::error::cannot resolve TP_WEB_CLOUDFRONT_DNS"; exit 1; }
+          R=(--resolve "${PUBLIC_HOST}:443:${IP}")
+          ok=""
+          for _ in $(seq 1 10); do
+            if curl -fsS "${R[@]}" "https://${PUBLIC_HOST}/api/health" -o /tmp/h.json \
+               && jq -e --arg sha "$GITHUB_SHA" '.status == "ok" and .service == "aa-tripplanner-web" and .git_sha == $sha' /tmp/h.json >/dev/null; then
+              ok=1; break
+            fi
+            sleep 15
+          done
+          [ -n "$ok" ] || { echo "::error::https://${PUBLIC_HOST}/api/health does not answer this commit through CloudFront"; cat /tmp/h.json 2>/dev/null || true; exit 1; }
+          for p in / /plan /destinations; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "${R[@]}" "https://${PUBLIC_HOST}${p}")
+            [ "$CODE" = "200" ] || { echo "::error::${p} answered $CODE"; exit 1; }
+          done
+          RESOLVE="${PUBLIC_HOST}:443:${IP}" bash .github/scripts/check_security_headers.sh "https://${PUBLIC_HOST}" /
+          # The web ACL: a model call without the browser's WAF token is challenged at the edge (HTTP 202 + the
+          # x-amzn-waf-action header), never answered by the app; the older spelling reaches the app's edge gate (404).
+          curl -sS -o /dev/null -D /tmp/c.h "${R[@]}" "https://${PUBLIC_HOST}/api/browse/search?q=temple"
+          grep -qiE '^x-amzn-waf-action: *challenge' /tmp/c.h || { echo "::error::/api/browse/search was not challenged by the web ACL"; head -5 /tmp/c.h; exit 1; }
+          CODE=$(curl -s -o /tmp/g.json -w '%{http_code}' "${R[@]}" "https://${PUBLIC_HOST}/api/browse?resource=search&q=temple")
+          [ "$CODE" = "404" ] && jq -e '.error == "use_protected_path"' /tmp/g.json >/dev/null \
+            || { echo "::error::GET /api/browse?resource=search answered $CODE, expected 404 use_protected_path"; exit 1; }
+          echo "ECS serves ${PUBLIC_HOST} through CloudFront: health on ${GITHUB_SHA::7}, pages 200, headers, challenge, edge gate"
+
+  result:
+    name: Deploy Web Dev result
+    runs-on: ubuntu-latest
+    if: always() && github.event_name != 'pull_request'
+    needs: [config, deploy, verify]
+    steps:
+      - name: Every job succeeded (verify may skip only when the service runs no task)
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          RUNNING: ${{ needs.deploy.outputs.running }}
+        run: |
+          set -uo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          BAD=$(echo "$NEEDS" | jq -r --arg running "$RUNNING" '[to_entries[]
+            | select(.value.result != "success" and ((.key == "verify" and .value.result == "skipped" and $running == "false") | not))
+            | "\(.key)=\(.value.result)"] | join(", ")')
+          if [ -n "$BAD" ]; then
+            echo "::error::Deploy Web Dev is not verified: $BAD"
+            exit 1
+          fi
+          if [ "$RUNNING" = "false" ]; then echo "Deployed at desired count 0: scale the service to 1 and re-run to verify."; else echo "Deployed and verified."; fi

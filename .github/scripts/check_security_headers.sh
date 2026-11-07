@@ -10,7 +10,9 @@
 #   - else VERCEL_TOKEN → `vercel curl` (CLI pinned by VERCEL_CLI; team from VERCEL_ORG_ID), which
 #                         reads the project's own protection-bypass token through the API with the
 #                         team token; never add --debug: it prints that token in the (public) log;
-#   - else              → plain curl (public hosts only).
+#   - else              → plain curl (public hosts only). AA-1038: with RESOLVE=<host>:443:<ip> the plain curl
+#                         pins the host to that address (the CloudFront distribution before the DNS switch,
+#                         .github/workflows/deploy-web-dev.yml).
 # 3 tries, 10 s apart. Response headers only; nothing secret is printed (the CLI's stderr is only grepped).
 #
 # Protected answer: when the request is stopped by Vercel Deployment Protection (HTTP 401/403, a redirect to
@@ -34,7 +36,9 @@ fetch_headers() {
     VERCEL_TOKEN="$VERCEL_TOKEN" npx --yes "$VERCEL_CLI" curl "$PATH_PART" --deployment "$BASE" --yes \
       -- -sS -o /dev/null -D "$out" --max-time 30 >/dev/null 2>"$out.err"
   else
-    curl -sS -o /dev/null -D "$out" --max-time 30 "${BASE}${PATH_PART}" 2>"$out.err"
+    local pin=()
+    [ -n "${RESOLVE:-}" ] && pin=(--resolve "$RESOLVE")
+    curl -sS -o /dev/null -D "$out" --max-time 30 "${pin[@]}" "${BASE}${PATH_PART}" 2>"$out.err"
   fi
 }
 

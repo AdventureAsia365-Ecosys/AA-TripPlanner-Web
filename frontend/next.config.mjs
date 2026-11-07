@@ -46,6 +46,9 @@ export function botCheckFlag(env = process.env) {
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // AA-1038 R5 hosting: the ECS image (frontend/Dockerfile) builds the Next standalone server; the CI build and Vercel
+  // keep the default output. Same switch as the AA-Booking and AA-CIS-App admin images.
+  ...(process.env.NEXT_OUTPUT === "standalone" ? { output: "standalone" } : {}),
   // Inlined into client and server code at build (lib/botCheck.ts botCheckOn). Set TP_BOT_CHECK, never this name.
   env: { NEXT_PUBLIC_TP_BOT_CHECK: botCheckFlag() },
   async headers() {

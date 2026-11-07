@@ -32,6 +32,7 @@
 // "<email>\n<bff_ts>"); the trigger accepts it for 5 minutes. Never log an email, a code, a session or a token.
 
 import { createHmac } from "node:crypto";
+import { clientIp, clientIpSource, type ClientIpSource, type HeaderSource } from "./clientIp.ts";
 
 export const COGNITO_REGION = "us-west-1";
 export const COGNITO_ENDPOINT = `https://cognito-idp.${COGNITO_REGION}.amazonaws.com/`;
@@ -116,18 +117,12 @@ export function errorCode(e: unknown): ErrorCode {
   }
 }
 
-const IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
-const IPV6 = /^[0-9a-fA-F:]{2,45}$/;
+export type { HeaderSource };
 
-export interface HeaderSource {
-  get(name: string): string | null;
-}
-
-// The traveller's own address. On Vercel the edge sets x-forwarded-for (and x-real-ip); a client cannot prepend to
-// it there. The first entry is the client.
-export function travellerIp(headers: HeaderSource): string | null {
-  const first = (headers.get("x-forwarded-for") ?? headers.get("x-real-ip") ?? "").split(",")[0].trim();
-  return IPV4.test(first) || (first.includes(":") && IPV6.test(first)) ? first : null;
+// The traveller's own address (lib/clientIp.ts): on Vercel the edge-set x-forwarded-for, behind CloudFront on ECS
+// (TP_CLIENT_IP_SOURCE=cloudfront, AA-1038) CloudFront-Viewer-Address. A client cannot choose the source.
+export function travellerIp(headers: HeaderSource, source: ClientIpSource = clientIpSource()): string | null {
+  return clientIp(headers, source);
 }
 
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,63}$/;

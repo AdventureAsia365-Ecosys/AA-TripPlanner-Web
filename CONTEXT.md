@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-11-05
+last_reviewed: 2026-11-07
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -116,6 +116,24 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   production. The Vercel Git integration is off (`frontend/vercel.json`, `git.deploymentEnabled:
   false`) because the Hobby team cap (~100 deployments / 24 h, all projects) was being used up.
   Needs the repo secret `VERCEL_TOKEN`. Check the "Vercel deploy" job on the PR for deploy success.
+- **ECS hosting (AA-1038 R5, Dev; root ADR 0019 d23, S265 tech-lead decision).** The same frontend also ships as a
+  Next.js standalone image (`frontend/Dockerfile`, `NEXT_OUTPUT=standalone`, non-root uid 10001, ARM64) to the ECS
+  service `aa-tripplanner-dev-web` (one Fargate Spot task, AA-CIS-Infra `modules/environment/tripplanner_web.tf`)
+  behind a CloudFront distribution and a CLOUDFRONT-scope web ACL (`accounts/aa365/tripplanner_web_edge.tf`: a rate
+  rule per viewer IP, a stricter one and a Challenge on the two model paths, a token-issuing Challenge on document
+  navigations). `.github/workflows/deploy-web-dev.yml` builds on an arm64 runner, pushes the immutable git-SHA tag,
+  copies the family's latest task definition with only the image swapped and verifies through CloudFront
+  (`/api/health` git_sha, pages, headers, the challenge); its PR job `preview` replaces the Vercel preview for the image
+  (the standalone server started in the runner). Build-time values: `NEXT_PUBLIC_MAPBOX_TOKEN` (repo secret
+  `TP_MAPBOX_PUBLIC_TOKEN`) and `NEXT_PUBLIC_SITE_URL`; every server value is task env or a Secrets Manager secret.
+  BotID is off in the image (`TP_BOT_CHECK=off`); the web ACL takes its place, and the task env `TP_EDGE_GATE=on` makes
+  the BFF answer search and narration only on `/api/browse/search` and `/api/trip/narrate` (the paths the web ACL
+  sees; the older spellings get 404 `use_protected_path`, `lib/edgeGate.ts`). `TP_CLIENT_IP_SOURCE=cloudfront` takes the
+  traveller's address from `CloudFront-Viewer-Address` (`lib/clientIp.ts`): behind CloudFront the leftmost
+  `x-forwarded-for` entry is the viewer's own words. CloudFront caches only `/_next/static/*` and `/photo-cdn/*`; pages
+  and `/api/*` go to the task (the catalog purge then drops the in-process ISR cache; the Vercel CDN purge is a no-op
+  there). Until the DNS switch Vercel keeps serving `tripplanner.lumiguides.it.com` and `vercel-deploy.yml` keeps
+  running; cut-over and rollback: root runbook `docs/ops/runbooks/tripplanner-web-ecs-cutover.md`.
 - **Security headers (AA-876)** on every response (`frontend/next.config.mjs`, same list as the CIS admin and
   portal): HSTS, `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, a minimal
   CSP (`frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'` — no `script-src` yet),

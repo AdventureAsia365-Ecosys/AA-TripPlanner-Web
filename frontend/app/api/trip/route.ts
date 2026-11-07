@@ -13,6 +13,7 @@ import { currentAccess, type Access } from "@/lib/authSession";
 import { authEnv, callContext } from "@/lib/authRequest";
 import { checkBotId } from "botid/server";
 import { BOT_CHECK_LEVEL, botCheckOn, botCheckRefusal } from "@/lib/botCheck";
+import { edgeGateOn, edgeGateRefusal } from "@/lib/edgeGate";
 import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
 import { tenantHeaders, type TenantPick } from "@/lib/tenantProxy";
 
@@ -191,6 +192,14 @@ export async function POST(req: NextRequest) {
 
   const requestId = requestIdFor(req.headers);
   if (b.op === "narrate") {
+    // AA-1038: behind the CloudFront web ACL (ECS), narration is answered only on its protected path (lib/edgeGate.ts).
+    const gated = edgeGateRefusal("narrate", req.nextUrl.pathname, edgeGateOn());
+    if (gated) {
+      return NextResponse.json(gated.body, {
+        status: gated.status,
+        headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
+      });
+    }
     // AA-1015 (S262): BotID Basic (free) before the Lambda, so a refused narration is never counted by the
     // per-session limit and never reaches a model. The planner calls POST /api/trip/narrate (lib/botCheck.ts).
     const refused = await botCheckRefusal("narrate", botCheckOn(), () =>

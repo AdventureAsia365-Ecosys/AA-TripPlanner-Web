@@ -45,6 +45,7 @@ FAKE_FETCH = textwrap.dedent(
     """\
     #!/usr/bin/env bash
     echo x >>"$FAKE_CALLS"
+    [ -n "${FAKE_ARGS:-}" ] && printf '%s\n' "$*" >>"$FAKE_ARGS"
     out=""
     while [ $# -gt 0 ]; do
       if [ "$1" = "-D" ]; then out="$2"; shift; fi
@@ -68,13 +69,16 @@ class CheckSecurityHeadersTest(unittest.TestCase):
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
         self.calls = Path(self.tmp.name) / "calls"
         self.calls.write_text("")
+        self.args = Path(self.tmp.name) / "args"
+        self.args.write_text("")
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
     def run_script(self, headers: str, *, allow: str | None = None, token: bool = False, stderr: str = "",
-                   exit_code: int = 0) -> subprocess.CompletedProcess[str]:
+                   exit_code: int = 0, resolve: str | None = None) -> subprocess.CompletedProcess[str]:
         env = {
+            "FAKE_ARGS": str(self.args),
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "FAKE_HEADERS": headers,
             "FAKE_STDERR": stderr,
@@ -85,6 +89,8 @@ class CheckSecurityHeadersTest(unittest.TestCase):
             env["ALLOW_PROTECTED"] = allow
         if token:
             env["VERCEL_TOKEN"] = "fake-team-token"
+        if resolve is not None:
+            env["RESOLVE"] = resolve
         return subprocess.run(["bash", str(SCRIPT), "https://preview.example.vercel.app", "/"],
                               env=env, capture_output=True, text=True, timeout=60)
 
@@ -114,6 +120,16 @@ class CheckSecurityHeadersTest(unittest.TestCase):
         result = self.run_script("", allow="1", stderr="curl: (6) Could not resolve host", exit_code=6)
         self.assertEqual(result.returncode, 1)
         self.assertIn("missing security headers", result.stdout)
+
+    def test_resolve_pins_the_host_on_plain_curl(self) -> None:
+        # AA-1038: the ECS deploy checks the public host through the CloudFront distribution before the DNS switch.
+        result = self.run_script(GOOD, resolve="tripplanner.example.test:443:192.0.2.10")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("--resolve tripplanner.example.test:443:192.0.2.10", self.args.read_text())
+
+    def test_no_resolve_by_default(self) -> None:
+        self.run_script(GOOD)
+        self.assertNotIn("--resolve", self.args.read_text())
 
     # --- Vercel Deployment Protection answered ----------------------------------------------------------
 
