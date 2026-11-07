@@ -55,6 +55,16 @@ export type TravellerField = keyof typeof TRAVELLER_MAX;
 // agency's CRM cannot place a local number ("090 ...") without knowing the country.
 export const PHONE_RE = /^\+[1-9][0-9 ()-]{5,39}$/;
 export const PHONE_HINT = "Phone with country code, optional (e.g. +44 20 7946 0000)";
+// The contract's name token rule: after NFKD, at least one letter or digit (Unicode category L or N). The agency's CRM
+// files the traveller by the name's tokens, so a name of punctuation, symbols or emoji only ("-", "...", an em dash)
+// is refused here and by backend/assembly/leads.py (422 invalid_lead, fields [name]) before anything is stored.
+export const NAME_TOKEN_RE = /[\p{L}\p{N}]/u;
+export const NAME_TOKEN_NORMALISATION = "NFKD";
+
+/** True when the cleaned name holds a letter or digit after NFKD (what the CRM can file the traveller by). */
+export function hasNameToken(text: string): boolean {
+  return NAME_TOKEN_RE.test(text.normalize(NAME_TOKEN_NORMALISATION));
+}
 
 /** The rule's cleaning: control characters out, NFC, trimmed (what the length and the pattern are checked on). */
 export function cleanTravellerText(value: string): string {
@@ -67,7 +77,7 @@ export function travellerFieldOk(field: TravellerField, value: unknown): boolean
   if (typeof value !== "string") return false;
   const text = cleanTravellerText(value);
   if ([...text].length > TRAVELLER_MAX[field]) return false;
-  if (field === "name") return text !== "";
+  if (field === "name") return text !== "" && hasNameToken(text);
   if (field === "email") return EMAIL_RE.test(text);
   return text === "" || PHONE_RE.test(text);
 }

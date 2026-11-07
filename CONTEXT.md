@@ -703,9 +703,12 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   storing: BotID on `POST /api/trip/send` in the BFF (403
   `bot_check_failed`), then per guest session and per traveller IP limits (`ratelimit` scopes `send` / `send_ip`, 5 and
   20 an hour, 429 `rate_limited`) and a per-tenant cap of leads in 24 hours (`TP_LEAD_TENANT_DAILY_CAP`, 200, 429
-  `lead_cap_reached`). A phone needs `+` and the country code (contract `Traveller.phone`, E.164). Name, e-mail and
-  phone follow one rule in the form, the Lambda and the CRM (control characters out, NFC, trimmed, code-point length,
-  the patterns), pinned by the shared vectors `backend/tests/contracts/lead.submitted.v1.traveller-rules.json`. Then, in one transaction with the trip's `sent` event (a double click answers the same
+  `lead_cap_reached`; counted in the send transaction after `pg_advisory_xact_lock(hashtext('tp_lead_cap:' ||
+  tenant_id))`, so concurrent sends of one tenant never pass it). A phone needs `+` and the country code (contract
+  `Traveller.phone`, E.164). A name needs at least one letter or digit after NFKD (`leads.has_name_token`: the CRM
+  files the traveller by the name's tokens; `-`, `...` or an emoji only is 422 `invalid_lead` on `name`). Name, e-mail
+  and phone follow one rule in the form, the Lambda and the CRM (control characters out, NFC, trimmed, code-point
+  length, the name token, the patterns), pinned by the shared vectors `backend/tests/contracts/lead.submitted.v1.traveller-rules.json`. Then, in one transaction with the trip's `sent` event (a double click answers the same
   hand-off), one `tripplanner.outbox` row (event `lead.submitted`, `delivery_channel`, tp-026). The guest stays a guest:
   no `customers` row. Never in a lead: the guest session or token, an access token, an IP, a user agent or a price.
 - **Delivery.** crm: the CRM pulls `GET /trip/m2m/v1/tenants/{id}/leads` and acknowledges `POST

@@ -1,12 +1,14 @@
 {
   "contract": "lead.submitted.v1",
-  "about": "Shared test vectors of the Traveller rules of lead.submitted.v1 (name, email, phone). One rule, applied the same way by the producer (AA-TripPlanner-Web backend/assembly/leads.py validate and frontend/lib/leadForm.ts) and the consumer (AA-Partner api/app/tripplanner/leads.py traveller_errors): control characters removed, Unicode NFC, trimmed, then the length in code points and the pattern. name: required, 1..120. email: required, at most 254, pattern email_pattern, compared lower-case. phone: optional (null or empty = absent), at most 40, pattern phone_pattern (E.164 with its country code). The root file is the source; each app keeps a byte copy (TripPlanner backend/tests/contracts/, AA-Partner docs/contracts/rules/).",
+  "about": "Shared test vectors of the Traveller rules of lead.submitted.v1 (name, email, phone). One rule, applied the same way by the producer (AA-TripPlanner-Web backend/assembly/leads.py validate and frontend/lib/leadForm.ts) and the consumer (AA-Partner api/app/tripplanner/leads.py traveller_errors): control characters removed, Unicode NFC, trimmed, then the length in code points and the pattern. name: required, 1..120, and it must hold at least one name token: after the Unicode NFKD decomposition at least one character of category L (letter) or N (digit), pattern name_token_pattern; this is what the CRM's blind index (AA-Partner api/app/vault/blind_index.py name_tokens) needs to file the traveller, so a name of punctuation, symbols or emoji only ('-', '...', an em dash) is refused before storing, never stored and then lost at the agency. email: required, at most 254, pattern email_pattern, compared lower-case. phone: optional (null or empty = absent), at most 40, pattern phone_pattern (E.164 with its country code). The root file is the source; each app keeps a byte copy (TripPlanner backend/tests/contracts/, AA-Partner docs/contracts/rules/).",
   "control_characters": "[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]",
   "max_length": {
     "name": 120,
     "email": 254,
     "phone": 40
   },
+  "name_token_normalisation": "NFKD",
+  "name_token_pattern": "[\\p{L}\\p{N}]",
   "email_pattern": "^[^@\\s]{1,64}@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,63}$",
   "phone_pattern": "^\\+[1-9][0-9 ()-]{5,39}$",
   "cases": [
@@ -33,6 +35,78 @@
       "id": "blank",
       "value": "   ",
       "valid": false
+    },
+    {
+      "field": "name",
+      "id": "dash_only",
+      "value": "-",
+      "valid": false
+    },
+    {
+      "field": "name",
+      "id": "dots_only",
+      "value": "...",
+      "valid": false
+    },
+    {
+      "field": "name",
+      "id": "em_dash_only",
+      "value": "\u2014",
+      "valid": false
+    },
+    {
+      "field": "name",
+      "id": "emoji_only",
+      "value": "\ud83c\udf34",
+      "valid": false
+    },
+    {
+      "field": "name",
+      "id": "underscores_only",
+      "value": "___",
+      "valid": false
+    },
+    {
+      "field": "name",
+      "id": "combining_mark_only",
+      "value": "\u0301",
+      "valid": false
+    },
+    {
+      "field": "name",
+      "id": "cjk_only",
+      "value": "\u674e\u5c0f\u9f99",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "accents",
+      "value": "Zo\u00eb N\u00fa\u00f1ez",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "vietnamese_d",
+      "value": "\u0110\u1eb7ng Th\u1ecb Hoa",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "emoji_and_letters",
+      "value": "Ada \ud83c\udf34",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "digits_only",
+      "value": "42",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "compatibility_letters",
+      "value": "\u2122",
+      "valid": true
     },
     {
       "field": "name",

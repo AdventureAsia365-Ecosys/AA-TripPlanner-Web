@@ -127,6 +127,27 @@ AA-Partner (`crm_tp_lead_pull`), root (contracts, ADR, DM-7.1, ERD design page).
 - The beacon makes a crm tenant refuse leads for up to 10 minutes after a CRM outage starts (and after the CRM is
   first switched on): intended, a lead is stored only when it can leave.
 
+## Review fix pass 3 (S272)
+
+- **Name token rule (finding: a name like `-` was stored, delivered and lost at the CRM).** The CRM's intake indexes
+  the traveller's name with `blind_index.name_tokens`, which needs a letter or digit token; `validate` accepted any
+  non-empty cleaned name, so `-`, `...`, an em dash or an emoji-only name was stored here, pulled, acknowledged
+  `stored` (final `delivered`, redacted) and then failed in the CRM's intake with no alert. Now the contract's rule
+  (root `docs/contracts/rules/lead.submitted.v1.traveller-rules.json`, keys `name_token_normalisation` `NFKD` and
+  `name_token_pattern` `[\p{L}\p{N}]`, new name vectors) is applied by `leads.has_name_token` (Python `str.isalnum`
+  after NFKD; a test checks it equals Unicode category L or N on every code point, which is also what the CRM's `\w`
+  split keeps) and by the form (`hasNameToken`, the same regex as the rules file): 422 `invalid_lead`, fields `[name]`,
+  nothing stored. A CJK-only or accented name is valid. The CRM rejects such a lead at the pull as well (ack
+  `rejected`, so `lead_rejected_by_crm` here and `tp_lead_rejected` there), for a producer that skips this check.
+- **Exact daily cap.** The cap was count-then-store under the per-trip lock only, so two sends of one tenant on two
+  trips could both count `cap - 1` and both store. `tenant_leads_24h` now takes
+  `pg_advisory_xact_lock(hashtext('tp_lead_cap:' || tenant_id))` before the count (always after the per-trip lock, so
+  no crosswise wait), held to the commit of the lead row. Tradeoff: sends of one tenant are serialised for the rest of
+  their transaction (the trip summary read and the inserts, milliseconds); the cap is a safety bound, not a hot path.
+  Tests: `test_review_repro_the_cap_lock_is_taken_before_the_count` (offline, lock statement before the count) and
+  `test_two_concurrent_sends_never_pass_the_tenant_cap` (local Postgres, two connections, a slowed trip summary: one
+  200 and one 429 `lead_cap_reached`; it fails with the lock statement removed).
+
 ## Should know
 
 - Merge order: tp-026 migration PR (applied by Migration Apply), CIS 390 (applied), the CIS kit PR and its Kit Sync PR

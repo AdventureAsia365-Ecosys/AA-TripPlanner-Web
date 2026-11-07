@@ -35,6 +35,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 120,
+          "description": "At least one letter or digit after NFKD (Unicode category L or N; rules file name_token_pattern). A name of punctuation, symbols or emoji only ('-', '...', an em dash) is refused by the producer (422 invalid_lead, fields [name]) and rejected by the consumer (ack rejected), never acknowledged stored.",
           "x-pii": "contact"
         },
         "email": {

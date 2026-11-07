@@ -14,7 +14,9 @@ on with ``config.LEAD_CRM_PULL_ENABLED`` or the CRM has not listed THIS tenant's
 ``config.LEAD_CRM_PULL_FRESH_S`` (``crm_pull_fresh``: the agency is locked, offboarding or not provisioned yet), no
 webhook signing key, no e-mail sender). Before storing, the handler also counts the send per guest session and per
 traveller IP (``ratelimit`` scopes send / send_ip, 429 rate_limited) and caps the tenant's leads per 24 hours
-(``config.TP_LEAD_TENANT_DAILY_CAP``, 429 lead_cap_reached). The traveller is a guest: no tripplanner.customers row,
+(``config.TP_LEAD_TENANT_DAILY_CAP``, 429 lead_cap_reached; counted under a per-tenant transaction advisory lock,
+``TENANT_CAP_LOCK_SQL``, so concurrent sends never pass the cap). A name must hold a letter or digit
+(``has_name_token``: what the CRM needs to file the traveller). The traveller is a guest: no tripplanner.customers row,
 no registration, no session link.
 
 What is kept, and how long. One tripplanner.outbox row (event lead.submitted, tp-026) in the same transaction as the
@@ -99,7 +101,10 @@ REJECTED_SQL = (
     "delivery_error = $3 WHERE id = $1")
 FAILED_ATTEMPT_SQL = (
     "UPDATE tripplanner.outbox SET delivery_attempts = delivery_attempts + 1, delivery_error = $2 WHERE id = $1")
-# The tenant's leads of the last 24 hours (the daily cap); the connection is bound to the tenant as well.
+# The tenant's leads of the last 24 hours (the daily cap); the connection is bound to the tenant as well. The count
+# runs after TENANT_CAP_LOCK_SQL in the send transaction: two concurrent sends of one tenant (different trips, so the
+# per-trip lock does not order them) would otherwise both count N-1 and both store, one lead past the cap each time.
+TENANT_CAP_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('tp_lead_cap:' || $1::text))"
 TENANT_LEADS_24H_SQL = (
     "SELECT count(*)::int FROM tripplanner.outbox WHERE event = 'lead.submitted' AND tenant_id = $1 "
     "AND created_at > now() - interval '24 hours'")
@@ -167,6 +172,16 @@ def _text(value: Any, max_len: int) -> Optional[str]:
     return text or None
 
 
+def has_name_token(text: str) -> bool:
+    """The contract's name token rule: after NFKD, at least one letter or digit (Unicode category L or N; Python's
+    ``str.isalnum`` is exactly that set). It is what the agency's CRM needs to file the traveller (AA-Partner
+    ``blind_index.name_tokens``, which splits the NFKD text on every non-word character and on ``_``): a name of
+    punctuation, symbols or emoji only ("-", "...", an em dash) is refused here (422 invalid_lead, fields [name]) before
+    anything is stored, never delivered and then lost at the agency. Shared test vectors: name cases of
+    tests/contracts/lead.submitted.v1.traveller-rules.json."""
+    return any(c.isalnum() for c in unicodedata.normalize("NFKD", text))
+
+
 def _int(value: Any, lo: int, hi: int) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise ValueError
@@ -197,7 +212,7 @@ def validate(raw: Any, *, today: Optional[date] = None) -> dict:
 
     def name() -> str:
         v = _text(traveller.get("name"), MAX_NAME)
-        if not v:
+        if not v or not has_name_token(v):
             raise ValueError
         return v
 
@@ -335,6 +350,11 @@ async def mark_crm_pull(conn: Any, tenant_id: str) -> None:
 
 
 async def tenant_leads_24h(conn: Any, tenant_id: str) -> int:
+    """The tenant's leads of the last 24 hours, counted under the tenant's cap lock (``TENANT_CAP_LOCK_SQL``, held to
+    the end of the transaction). Call it only inside the send transaction, after the per-trip lock (always that order,
+    so two sends never wait on each other crosswise): the lock serialises the count-then-store of one tenant, so the
+    cap is exact under concurrency."""
+    await conn.execute(TENANT_CAP_LOCK_SQL, tenant_id)
     return int(await conn.fetchval(TENANT_LEADS_24H_SQL, tenant_id) or 0)
 
 

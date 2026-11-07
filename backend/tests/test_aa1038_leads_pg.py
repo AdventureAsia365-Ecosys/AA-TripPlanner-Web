@@ -9,10 +9,12 @@ Two synthetic agencies: A routes leads to its CRM, B to a webhook; C has no rout
 CRM lead with A's tenant and contract shape, and a double click answers the same hand-off; the CRM pull of A lists it,
 the pull of B never does; B's ack of A's lead is a 404; A's ack redacts it (ids only) and a second ack is "already";
 B's send is delivered to the (fake) webhook at once and redacted; C's send is refused and stores nothing; the bare path
-keeps the demo answer; the daily run ends the hold of an old pending lead. Invented names only.
+keeps the demo answer; the daily run ends the hold of an old pending lead; two concurrent sends of one agency on two
+connections never pass its daily cap (the per-tenant advisory lock). Invented names only.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import sys
@@ -295,3 +297,38 @@ async def test_the_daily_run_ends_the_hold(db, tp_conn):
     row = [r for r in await _lead_rows(db["su_dsn"]) if json.loads(r["payload"]).get("lead_id") == lead_id][0]
     assert row["delivery_error"] == "expired" and row["redacted_at"] is not None
     assert "traveller" not in json.loads(row["payload"])
+
+
+async def test_two_concurrent_sends_never_pass_the_tenant_cap(db, tp_conn, monkeypatch):
+    """S272 review: the cap was count-then-store without a tenant lock, so two sends of one agency (two trips, two
+    connections) both counted cap - 1 and both stored. trip_summary (after the count, before the insert) is slowed so
+    both transactions would count before either inserts; the per-tenant advisory lock makes the second one wait for
+    the first commit, count it and answer 429."""
+    a = _header(AGENCY_A, "quillmere-voyages")
+    status, _page = await _crm(tp_conn, "GET", f"/trip/m2m/v1/tenants/{AGENCY_A}/leads")  # beacon fresh
+    assert status == 200
+    other = await asyncpg.connect(db["tp_dsn"])
+    try:
+        first, second = await _trip(tp_conn, a), await _trip(other, a)
+        su = await asyncpg.connect(db["su_dsn"])
+        try:
+            count = await su.fetchval(leads.TENANT_LEADS_24H_SQL, AGENCY_A)
+        finally:
+            await su.close()
+        monkeypatch.setattr(config, "TP_LEAD_TENANT_DAILY_CAP", count + 1)
+        real_summary = leads.trip_summary
+
+        async def slow_summary(*args, **kwargs):
+            await asyncio.sleep(0.5)
+            return await real_summary(*args, **kwargs)
+
+        monkeypatch.setattr(leads, "trip_summary", slow_summary)
+        before = len(await _lead_rows(db["su_dsn"]))
+        results = await asyncio.gather(
+            *[_request(conn, "POST", f"/trip/{trip}/send-to-advisor", {"session_id": session, "lead": FORM}, token, a)
+              for conn, (session, trip, token) in ((tp_conn, first), (other, second))])
+    finally:
+        await other.close()
+    assert sorted(status for status, _body in results) == [200, 429], results
+    assert {"error": "lead_cap_reached"} in [body for _status, body in results]
+    assert len(await _lead_rows(db["su_dsn"])) == before + 1

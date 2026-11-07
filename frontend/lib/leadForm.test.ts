@@ -7,6 +7,8 @@ import {
   CONTROL_RE,
   EMAIL_RE,
   EMPTY_LEAD,
+  NAME_TOKEN_NORMALISATION,
+  NAME_TOKEN_RE,
   PHONE_RE,
   TRAVELLER_MAX,
   canSendLead,
@@ -79,7 +81,7 @@ interface RuleCase { field: TravellerField; id: string; value: unknown; valid: b
 const RULES = JSON.parse(readFileSync(
   new URL("../../backend/tests/contracts/lead.submitted.v1.traveller-rules.json", import.meta.url), "utf8",
 )) as { cases: RuleCase[]; email_pattern: string; phone_pattern: string; control_characters: string;
-  max_length: Record<TravellerField, number> };
+  max_length: Record<TravellerField, number>; name_token_pattern: string; name_token_normalisation: string };
 
 test("the Traveller rule gives the shared verdict on every vector", () => {
   assert.ok(RULES.cases.length > 30);
@@ -99,4 +101,15 @@ test("review repro: a name NFC lengthens past 120 is caught in the form, not rej
   assert.deepEqual(leadFormErrors({ ...FILLED, name: "\ufb2c".repeat(40) }), []);
   // code points, not UTF-16 units: 120 astral letters are 240 units and still valid
   assert.deepEqual(leadFormErrors({ ...FILLED, name: "\u{1D49C}".repeat(120) }), []);
+});
+
+test("review repro: a name without a letter or digit is caught in the form (the CRM could not file it)", () => {
+  for (const name of ["-", "...", "\u2014", "\u{1F334}", "___", "\u0301"]) {
+    assert.deepEqual(leadFormErrors({ ...FILLED, name }), ["name"], JSON.stringify(name));
+  }
+  for (const name of ["\u674e\u5c0f\u9f99", "Zo\u00eb N\u00fa\u00f1ez", "Ada \u{1F334}", "\u2122", "R2"]) {
+    assert.deepEqual(leadFormErrors({ ...FILLED, name }), [], JSON.stringify(name));
+  }
+  assert.equal(NAME_TOKEN_RE.source, RULES.name_token_pattern);
+  assert.equal(NAME_TOKEN_NORMALISATION, RULES.name_token_normalisation);
 });

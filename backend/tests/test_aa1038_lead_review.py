@@ -64,6 +64,30 @@ def test_review_repro_a_name_nfc_lengthens_is_refused_before_storing():
     assert e.value.fields == ["name"]
 
 
+@pytest.mark.parametrize("name", ["-", "...", "\u2014", "\U0001f334", "___", "\u0301"])
+def test_review_repro_a_name_without_a_letter_or_digit_is_refused_before_storing(name):
+    """S272 review 3: '-' passed validate(), was stored and delivered to the CRM, whose intake then failed to index the
+    name (blind_index.name_tokens) and lost the request silently. Now refused here: 422 invalid_lead, fields [name]."""
+    with pytest.raises(leads.LeadRefused) as e:
+        leads.validate(_with("name", name))
+    assert (e.value.status, e.value.code, e.value.fields) == (422, "invalid_lead", ["name"])
+
+
+@pytest.mark.parametrize("name", ["\u674e\u5c0f\u9f99", "Zo\u00eb N\u00fa\u00f1ez", "Ada \U0001f334", "\u2122", "R2"])
+def test_a_cjk_accented_or_mixed_name_is_a_name(name):
+    assert leads.validate(_with("name", name))["name"] == name
+
+
+def test_the_name_token_rule_is_the_shared_one():
+    """The rules file names the token class as [\\p{L}\\p{N}] after NFKD (the frontend's regex); str.isalnum, used
+    here and by the CRM's \\w split, is exactly Unicode category L or N on every code point."""
+    assert (RULES["name_token_normalisation"], RULES["name_token_pattern"]) == ("NFKD", "[\\p{L}\\p{N}]")
+    import sys
+    import unicodedata
+    odd = [c for c in range(sys.maxunicode + 1) if chr(c).isalnum() != (unicodedata.category(chr(c))[0] in "LN")]
+    assert odd == []
+
+
 # --- send-to-advisor: limits and the crm beacon, nothing stored on a refusal ----------------------------------------
 
 class SendConn:
@@ -250,6 +274,14 @@ async def test_an_invalid_lead_is_not_counted_by_the_limits(send_env):
     out = await handler._send_lead(SendConn(), TRIP, {"session_id": SESSION, "lead": _with("email", "x")},  # noqa: SLF001
                                    "tok", account_mod.GUEST, TENANT_A)
     assert out["statusCode"] == 422 and send_env["hits"] == [] and send_env["stored"] == 0
+
+
+@pytest.mark.asyncio
+async def test_review_repro_send_with_a_dash_name_answers_422_and_stores_nothing(send_env):
+    out = await handler._send_lead(SendConn(), TRIP, {"session_id": SESSION, "lead": _with("name", "-")},  # noqa: SLF001
+                                   "tok", account_mod.GUEST, TENANT_A)
+    assert (out["statusCode"], json.loads(out["body"])) == (422, {"error": "invalid_lead", "fields": ["name"]})
+    assert send_env["hits"] == [] and send_env["stored"] == 0
 
 
 def test_send_rules_exist_with_the_signed_in_factor(monkeypatch):
@@ -447,6 +479,26 @@ def test_ses_client_has_short_timeouts_and_is_cached(monkeypatch):
 
 def test_tenant_cap_counts_the_tenant_only():
     assert "tenant_id = $1" in leads.TENANT_LEADS_24H_SQL and "24 hours" in leads.TENANT_LEADS_24H_SQL
+
+
+@pytest.mark.asyncio
+async def test_review_repro_the_cap_lock_is_taken_before_the_count():
+    """S272 review: two concurrent sends of one tenant (different trips) both counted N-1 and both stored. The tenant's
+    transaction advisory lock now runs before the count (the PG twin: test_aa1038_leads_pg.py)."""
+    calls = []
+
+    class Conn:
+        async def execute(self, sql, *args):
+            calls.append(("execute", sql, args))
+
+        async def fetchval(self, sql, *args):
+            calls.append(("fetchval", sql, args))
+            return 4
+
+    assert await leads.tenant_leads_24h(Conn(), TENANT_A) == 4
+    assert [c[0] for c in calls] == ["execute", "fetchval"]
+    assert calls[0][1] == "SELECT pg_advisory_xact_lock(hashtext('tp_lead_cap:' || $1::text))"
+    assert calls[0][2] == (TENANT_A,) and calls[1][1] == leads.TENANT_LEADS_24H_SQL and calls[1][2] == (TENANT_A,)
 
 
 def test_the_bound_tenant_is_unchanged_by_the_m2m_check():
