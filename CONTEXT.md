@@ -695,8 +695,9 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   start date / budget band / message, contact consent (required) and marketing consent. The Lambda validates it (422
   `consent_required` / `invalid_lead` + field codes), reads the tenant's route from `catalog.v_tenant_tripplanner_v1`
   (CIS 390: `lead_channel` crm / webhook / email / none) and refuses BEFORE storing when it could not deliver (409
-  `lead_route_missing`, 503 `lead_route_unavailable` before CIS 390, 503 `lead_channel_unavailable` without a webhook
-  key or an e-mail sender). Then, in one transaction with the trip's `sent` event (a double click answers the same
+  `lead_route_missing`, 503 `lead_route_unavailable` before CIS 390, 503 `lead_channel_unavailable` while the CRM
+  pull is not switched on (`TP_LEAD_CRM_PULL_ENABLED`, default off) or without a webhook key or an e-mail sender). A
+  phone needs `+` and the country code (contract `Traveller.phone`, E.164). Then, in one transaction with the trip's `sent` event (a double click answers the same
   hand-off), one `tripplanner.outbox` row (event `lead.submitted`, `delivery_channel`, tp-026). The guest stays a guest:
   no `customers` row. Never in a lead: the guest session or token, an access token, an IP, a user agent or a price.
 - **Delivery.** crm: the CRM pulls `GET /trip/m2m/v1/tenants/{id}/leads` and acknowledges `POST
@@ -707,10 +708,12 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   "<t>." + body)>`, key per tenant = HMAC-SHA256(master, "aa-tripplanner lead webhook v1:" + tenant id), master from
   `TP_LEAD_WEBHOOK_KEY` or Secrets Manager `tripplanner/<env>/lead-webhook-key`). email: one SES e-mail from
   `TP_LEAD_EMAIL_FROM`, Reply-To the traveller. Delivered = payload redacted at once (ids only).
-- **Hold window.** Jobs Lambda kind `tp_lead_deliver` (daily): one retry per pending webhook / e-mail lead, then every
-  lead pending for more than `TP_LEAD_HOLD_DAYS` (7) is redacted with `delivery_error = 'expired'`; it skips before
-  tp-026. The jobs role has no SES permission or webhook key yet (AA-CIS-Infra follow-up), so its retries fail with a
-  code and only the expiry acts there.
+- **Hold window.** Jobs Lambda kind `tp_lead_deliver` (daily): FIRST, in its own transaction, every lead pending for
+  more than `TP_LEAD_HOLD_DAYS` (7) is redacted with `delivery_error = 'expired'` (so delivery can never hold the
+  retention back); then one retry per pending webhook / e-mail lead within a 120 s budget, with a breaker per tenant
+  and per channel. An expiry of an undelivered lead marks the job `attention` and the daily tick fails loudly. It
+  skips before tp-026. The jobs role needs the webhook key and SES send in the same Infra apply as the assembly role
+  (a deploy prerequisite of those channels).
 - **Brand.** `app/[tenant]/plan/page.tsx` renders the tenant theme through the kit core brand-token layer
   (`ui/core/brandTheme.ts`, synced from CIS, root ADR 0016 amendment): one `<style>` over the accent family of `--aa-*`,
   contrast-checked; the trip panel names the agency and shows "Powered by Adventure Asia" only when `tp.branding` is on
