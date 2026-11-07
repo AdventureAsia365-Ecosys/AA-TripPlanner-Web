@@ -50,7 +50,7 @@
           ],
           "maxLength": 40,
           "pattern": "^\\+[1-9][0-9 ()-]{5,39}$",
-          "description": "E.164 with its country code ('+' first); spaces, brackets and dashes as the traveller typed them. A consumer that cannot normalise a valid-looking number keeps it as text, never drops it.",
+          "description": "E.164 with its country code ('+' first); spaces, brackets and dashes as the traveller typed them. The producer refuses a local number (the CRM normalises without a region). A consumer that still cannot normalise a number keeps it as text for the agent, never drops it.",
           "x-pii": "contact"
         },
         "locale": {
