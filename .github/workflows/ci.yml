@@ -92,6 +92,9 @@ jobs:
   migrations:
     name: Migrations (lint, PG 15 replay)
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read    # migration numbers: the files of the other open PRs (deploy-lambdas.yml grants it too)
     steps:
       - uses: actions/checkout@v7
 
@@ -106,6 +109,26 @@ jobs:
           set -euo pipefail
           git fetch --quiet --depth=1 origin "$BASE_SHA"
           python3 .github/scripts/migration_refs.py --migrations-dir migrations --base "$BASE_SHA"
+
+      # AA-1024 follow-up: the number part of the CIS / Booking / Partner migration preflight. An added file takes main
+      # max + 1 (then + 2, ...) of the main fetched NOW (a re-run after another PR merged re-checks it), no number twice,
+      # and no other open PR adds the same tp-NNN under another name (against an older PR: red; a newer one: warning).
+      - name: Migration numbers (main max + 1, one open PR per tp-NNN)
+        if: github.event_name == 'pull_request'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --depth=1 origin main
+          ARGS=(--migrations-dir migrations --base "$(git rev-parse FETCH_HEAD)" --pr "$PR_NUMBER")
+          if gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open --limit 100 --json number,files \
+              > "$RUNNER_TEMP/open-prs.json" 2> "$RUNNER_TEMP/gh.err"; then
+            ARGS+=(--open-prs "$RUNNER_TEMP/open-prs.json")
+          else
+            echo "::notice::open pull requests not readable: $(head -c 300 "$RUNNER_TEMP/gh.err")"
+          fi
+          python3 .github/scripts/migration_numbers.py "${ARGS[@]}"
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v7.1.0

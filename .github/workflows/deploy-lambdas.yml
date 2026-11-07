@@ -55,6 +55,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+      pull-requests: read # ci.yml's Migrations job asks for it (migration numbers; a no-op on push)
 
   deploy:
     name: Build + deploy Lambda code
