@@ -171,6 +171,7 @@ async def test_route_crm_and_email(monkeypatch):
 
 
 def test_webhook_not_ready_without_a_key(monkeypatch):
+    monkeypatch.setattr(leads, "resolve_host_bounded", lambda host: ["93.184.215.14"])  # a public address
     monkeypatch.setattr(config, "TP_LEAD_WEBHOOK_KEY", "")
     monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
     assert leads.channel_ready(ROUTE) is False

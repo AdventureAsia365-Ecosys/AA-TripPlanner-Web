@@ -698,7 +698,9 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   `lead_route_missing`, 503 `lead_route_unavailable` before CIS 390, 503 `lead_channel_unavailable` while the CRM
   pull is not switched on (`TP_LEAD_CRM_PULL_ENABLED`, default off) or the CRM has not listed THIS tenant within
   `TP_LEAD_CRM_PULL_FRESH_S` (600 s; the list call is the tenant's beacon, kept in `ai_rate_counter` scope `crm_pull`),
-  or without a webhook key or an e-mail sender). Also before storing: BotID on `POST /api/trip/send` in the BFF (403
+  without a webhook key or an e-mail sender, or when the webhook URL is not https or its host does not resolve (2 s
+  bound, `TP_LEAD_WEBHOOK_RESOLVE_TIMEOUT_S`) to public addresses only: `leads.webhook_target_problem`). Also before
+  storing: BotID on `POST /api/trip/send` in the BFF (403
   `bot_check_failed`), then per guest session and per traveller IP limits (`ratelimit` scopes `send` / `send_ip`, 5 and
   20 an hour, 429 `rate_limited`) and a per-tenant cap of leads in 24 hours (`TP_LEAD_TENANT_DAILY_CAP`, 200, 429
   `lead_cap_reached`). A phone needs `+` and the country code (contract `Traveller.phone`, E.164). Name, e-mail and
@@ -712,17 +714,21 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   replaces the edge key on these routes only, checked before any SQL; the connection binds the path's tenant (source
   `m2m`), and only a tenant whose route is crm now is served (404 `tenant_not_on_crm`: the CRM client is a platform
   credential). An ack never changes a final state (delivered, rejected; an expired lead keeps its expiry unless the
-  CRM stored it). Only a public address is ever posted to (`leads.public_address_check`). webhook: one signed POST right after the commit (`X-AA-Signature: t=<unix s>,v1=<hex HMAC-SHA256(key,
+  CRM stored it). Only a public address is ever posted to (`leads.public_address_check`, checked again at each
+  POST). webhook: one signed POST right after the commit (`X-AA-Signature: t=<unix s>,v1=<hex HMAC-SHA256(key,
   "<t>." + body)>`, key per tenant = HMAC-SHA256(master, "aa-tripplanner lead webhook v1:" + tenant id), master from
   `TP_LEAD_WEBHOOK_KEY` or Secrets Manager `tripplanner/<env>/lead-webhook-key`). email: one SES e-mail from
   `TP_LEAD_EMAIL_FROM`, Reply-To the traveller. Delivered = payload redacted at once (ids only).
 - **Hold window.** Jobs Lambda kind `tp_lead_deliver` (daily, 3 attempts): FIRST, batch after batch (500 rows per
   transaction, 90 s budget, a failing batch tried again at once), every pending lead older than
-  `TP_LEAD_HOLD_DAYS` (clamped 2..7) minus one tick interval and a 1 h margin (`leads.hold_cutoff`) is redacted with
-  `delivery_error = 'expired'`, so under the real schedule a lead is redacted at the latest 7 days after it was
-  written; then the leads the CRM rejected since the last tick are counted; then one retry per pending webhook / e-mail
-  lead within a 120 s budget, with a breaker per tenant and per channel. An expiry, a rejected lead or rows left after
-  the budget mark the job `attention` and the daily tick fails loudly. It
+  `TP_LEAD_HOLD_DAYS` (clamped 3..7) minus two tick intervals and a 1 h margin (`leads.hold_cutoff`, 4 d 23 h at 7
+  days) is redacted with `delivery_error = 'expired'`, so under the real schedule a lead is redacted at the latest 7
+  days after it was written even when the tick that picks it fails (the re-queued job runs at the next daily tick;
+  two failed ticks in a row are the residual risk, each one loud); then the leads the CRM rejected since the last tick
+  are counted; then one retry per pending webhook / e-mail lead within a 120 s budget, with a breaker per tenant and
+  per channel; a webhook URL on a non-public address is a route defect (`route_defect`, not retried). An expiry, a
+  rejected lead, a route defect or rows left after the budget mark the job `attention` and the daily tick fails
+  loudly. It
   skips before tp-026. The jobs role needs the webhook key and SES send in the same Infra apply as the assembly role
   (a deploy prerequisite of those channels).
 - **Brand.** `app/[tenant]/plan/page.tsx` renders the tenant theme through the kit core brand-token layer

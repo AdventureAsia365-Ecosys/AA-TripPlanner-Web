@@ -5,8 +5,8 @@
 * send-to-advisor is limited per session and per IP (429 rate_limited) and per tenant per day (429 lead_cap_reached),
   and the crm channel refuses a tenant the CRM is not pulling (503): in every case nothing is stored;
 * the M2M API serves only a tenant whose route is crm now; a list call is the tenant's beacon;
-* an ack never changes a final state; the webhook never posts into a private network; the SES client has short
-  timeouts.
+* an ack never changes a final state; the webhook never posts into a private network, and a webhook route on a
+  non-public address is refused before anything is stored; the SES client has short timeouts.
 
 A fake connection plays the database. Invented names only.
 """
@@ -83,14 +83,15 @@ class SendConn:
 
 @pytest.fixture
 def send_env(monkeypatch):
-    state = {"channel": "crm", "fresh": True, "leads_24h": 0, "limited": set(), "hits": [], "stored": 0, "sent": 0}
+    state = {"channel": "crm", "fresh": True, "leads_24h": 0, "limited": set(), "hits": [], "stored": 0, "sent": 0,
+             "webhook_url": "https://hooks.example.invalid/l"}
 
     async def guard(*a, **k):
         return None
 
     async def load_route(conn, tid):
         return leads.Route(tid, "quillmere-voyages", "Quillmere Voyages", state["channel"],
-                           webhook_url="https://hooks.example.invalid/l" if state["channel"] == "webhook" else None)
+                           webhook_url=state["webhook_url"] if state["channel"] == "webhook" else None)
 
     async def fresh(conn, tid):
         return state["fresh"]
@@ -174,6 +175,74 @@ async def test_review_repro_the_tenant_daily_cap_refuses_before_storing(send_env
     send_env["leads_24h"] = 3
     assert await _send() == (429, {"error": "lead_cap_reached"})
     assert send_env["stored"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url,addresses", [
+    ("https://127.0.0.1/hook", None), ("https://10.0.3.7:8443/leads", None), ("https://169.254.169.254/x", None),
+    ("https://[::1]/hook", None), ("https://internal.example.invalid/h", ["10.0.4.20"]),
+    ("https://nowhere.example.invalid/h", OSError("synthetic: no such host")),
+])
+async def test_review_repro_a_webhook_route_on_a_non_public_address_refuses_before_storing(send_env, monkeypatch,
+                                                                                         url, addresses):
+    """Review repro: the CIS 390 CHECK accepts https://127.0.0.1/hook; the lead was stored, never delivered and held
+    until the hold ended it. Now the target is checked before the transaction: 503, nothing stored, nothing posted."""
+    posted = []
+
+    def resolve(host):
+        if addresses is None:
+            raise AssertionError("an IP literal is never resolved")
+        if isinstance(addresses, Exception):
+            raise addresses
+        return addresses
+
+    monkeypatch.setattr(leads, "resolve_host_bounded", resolve)
+    monkeypatch.setattr(leads, "urllib_post", lambda *a, **k: posted.append(a) or 200)
+    monkeypatch.setattr(config, "TP_LEAD_WEBHOOK_KEY", "synthetic-master")
+    send_env.update(channel="webhook", webhook_url=url)
+    assert await _send(ratelimit.Client(ip="203.0.113.7")) == (503, {"error": "lead_channel_unavailable"})
+    assert send_env["stored"] == 0 and send_env["hits"] == [] and posted == []
+
+
+@pytest.mark.asyncio
+async def test_a_webhook_route_on_a_public_address_stores_and_posts(send_env, monkeypatch):
+    posted = []
+    monkeypatch.setattr(leads, "resolve_host_bounded", lambda host: ["93.184.215.14"])
+    monkeypatch.setattr(leads, "urllib_post", lambda url, body, headers, timeout: posted.append(url) or 200)
+    monkeypatch.setattr(config, "TP_LEAD_WEBHOOK_KEY", "synthetic-master")
+    send_env.update(channel="webhook")
+    status, body = await _send()
+    assert status == 200 and body["lead"]["channel"] == "webhook" and send_env["stored"] == 1
+    assert posted == ["https://hooks.example.invalid/l"]
+
+
+def test_a_slow_resolver_is_bounded_and_refuses(monkeypatch):
+    import time as _time
+
+    monkeypatch.setattr(config, "LEAD_WEBHOOK_RESOLVE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(leads, "resolve_host", lambda host: _time.sleep(0.5) or ["93.184.215.14"])
+    started = _time.monotonic()
+    assert leads.webhook_target_problem("https://slow.example.invalid/h") == leads.WEBHOOK_URL_UNRESOLVABLE
+    assert _time.monotonic() - started < 0.4
+
+
+def test_target_problem_codes():
+    public = lambda host: ["93.184.215.14"]  # noqa: E731
+    assert leads.webhook_target_problem("https://hooks.example.invalid/l", resolve=public) is None
+    assert leads.webhook_target_problem("https://127.0.0.1/hook") == leads.WEBHOOK_URL_NOT_PUBLIC
+    assert leads.webhook_target_problem("http://hooks.example.invalid/l", resolve=public) == "webhook_url_not_https"
+
+
+def test_unresolvable_is_not_the_permanent_defect_code(monkeypatch):
+    """The daily retry treats webhook_urlnotpublic as a permanent route defect; a DNS failure stays transient."""
+    monkeypatch.setattr(config, "TP_LEAD_WEBHOOK_KEY", "synthetic-master")
+
+    def post(url, body, headers, timeout):
+        return leads.urllib_post(url, body, headers, timeout, resolve=lambda h: [])
+
+    lead = {"lead_id": LEAD, "idempotency_key": f"tp-lead:{LEAD}"}
+    assert leads.deliver_webhook("https://agency.example.invalid/h", lead, TENANT_A, post=post) == \
+        leads.WEBHOOK_URL_UNRESOLVABLE
 
 
 @pytest.mark.asyncio

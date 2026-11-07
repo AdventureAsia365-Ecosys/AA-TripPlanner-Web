@@ -3,10 +3,11 @@ old (data standards DM-7.1 row ``tripplanner.outbox``: a lead is kept only until
 leads the CRM rejected, and retry the webhook / e-mail leads that are not delivered yet.
 
 The run is daily (AA-CIS-Infra EventBridge ``cron(30 19 * * ? *)``), so the cutoff is conservative
-(``leads.hold_cutoff``): a lead is expired at the first tick after it is ``LEAD_HOLD_DAYS - 1 day - 1 hour`` old, which
-is at the latest ``LEAD_HOLD_DAYS`` after it was written even when the tick runs up to an hour late
-(``test_aa1038_lead_deliver.py`` replays the real schedule). A tick that does not run at all is the residual risk:
-the jobs Lambda's error alarm and the next tick, which catches up.
+(``leads.hold_cutoff``): a lead is picked at the first tick after it is ``LEAD_HOLD_DAYS - 2 days - 1 hour`` old. That
+tick may run up to an hour late, or fail (the database unreachable past the in-run tries, the invocation used up by
+earlier jobs): the job is then re-queued and the next daily tick ends the hold, still before ``LEAD_HOLD_DAYS``
+(``test_aa1038_lead_deliver.py`` replays the real schedule with the expiring tick failing). Two failed ticks in a row
+are the residual risk; each one already fails loudly (the jobs Lambda's error alarm).
 
 Each run, in this order (ids, counts and error codes only in the result, DM-6.3):
 
@@ -34,7 +35,12 @@ Each run, in this order (ids, counts and error codes only in the result, DM-6.3)
    (``leads.deliver_now``); delivered = redacted at once, a failure counts the attempt. Circuit breakers for the rest
    of the run: a tenant whose attempt failed is not tried again (``tenant_skipped``: one dead endpoint cannot use up
    the run), and a channel this deployment cannot use (``webhook_key_unavailable`` / ``email_sender_unavailable``)
-   stops every row of that channel (``channel_skipped``).
+   stops every row of that channel (``channel_skipped``). A route that can never be delivered to (a webhook URL on a
+   non-public address or not https, :data:`ROUTE_DEFECT`) is a permanent defect, not a transient failure: that
+   tenant's rows are counted ``route_defect`` and not tried, and the run asks for attention (``lead_route_defect``)
+   so AA staff fix the URL in Tenant 360; the rows stay inside their hold, which still ends them. The send path
+   refuses such a route before storing (``leads.channel_ready``), so only rows stored before the URL changed get
+   here.
 
 The jobs Lambda binds no tenant (backend/jobs/handler.py): it reads the rows of every tenant through the tp-025 shadow
 policy's unset branch. Its role needs the webhook key and SES send as well as the assembly role (AA-CIS-Infra, a
@@ -62,7 +68,11 @@ RETRY_MAX = 200
 RETRY_BUDGET_S = 120.0
 # Errors that say this deployment cannot use the channel at all (not one tenant's endpoint).
 CHANNEL_DOWN = frozenset({"webhook_key_unavailable", "email_sender_unavailable"})
+# Errors that say the tenant's route itself can never be delivered to (a webhook URL aimed at a private, loopback or
+# link-local address, or not https) until AA staff change it: no retry helps, so the run asks for attention.
+ROUTE_DEFECT = frozenset({leads.WEBHOOK_URL_NOT_PUBLIC, "webhook_url_not_https"})
 ATTENTION_EXPIRED = "lead_expired_undelivered"
+ATTENTION_ROUTE_DEFECT = "lead_route_defect"
 ATTENTION_INCOMPLETE = "lead_expiry_incomplete"
 ATTENTION_REJECTED = "lead_rejected_by_crm"
 EXPIRE_MAX = 500           # rows per expiry batch (one transaction each)
@@ -109,8 +119,8 @@ def validate_payload(payload: Any) -> dict[str, Any]:
 
 
 def _retry_counts() -> dict[str, int]:
-    return {"tried": 0, "delivered": 0, "failed": 0, "route_changed": 0, "tenant_skipped": 0, "channel_skipped": 0,
-            "deferred": 0}
+    return {"tried": 0, "delivered": 0, "failed": 0, "route_changed": 0, "route_defect": 0, "tenant_skipped": 0,
+            "channel_skipped": 0, "deferred": 0}
 
 
 async def retry(conn: Any, cutoff: datetime, *, deliver: Optional[Callable[..., Any]] = None,
@@ -121,6 +131,7 @@ async def retry(conn: Any, cutoff: datetime, *, deliver: Optional[Callable[..., 
     deadline = clock() + (RETRY_BUDGET_S if budget_s is None else budget_s)
     routes: dict[str, Any] = {}
     broken_tenants: set[str] = set()
+    defect_tenants: set[str] = set()
     broken_channels: set[str] = set()
     for r in await conn.fetch(RETRY_SQL, cutoff, RETRY_MAX):
         if clock() >= deadline:
@@ -129,6 +140,9 @@ async def retry(conn: Any, cutoff: datetime, *, deliver: Optional[Callable[..., 
         tid, channel = r["tenant_id"], r["delivery_channel"]
         if channel in broken_channels:
             counts["channel_skipped"] += 1
+            continue
+        if tid in defect_tenants:
+            counts["route_defect"] += 1
             continue
         if tid in broken_tenants:
             counts["tenant_skipped"] += 1
@@ -148,6 +162,9 @@ async def retry(conn: Any, cutoff: datetime, *, deliver: Optional[Callable[..., 
         counts["failed" if error else "delivered"] += 1
         if error in CHANNEL_DOWN:
             broken_channels.add(channel)
+        elif error in ROUTE_DEFECT:
+            counts["route_defect"] += 1
+            defect_tenants.add(tid)
         elif error:
             broken_tenants.add(tid)
     return counts
@@ -246,6 +263,8 @@ async def run(pool: Any, job: Job, *, now: Optional[datetime] = None,
         attention.append(ATTENTION_INCOMPLETE)
     if rejected["count"]:
         attention.append(ATTENTION_REJECTED)
+    if retried["route_defect"]:
+        attention.append(ATTENTION_ROUTE_DEFECT)
     if attention:
         result["attention"] = attention
     observability.emit("lead_deliver_run", **{f"retry_{k}": v for k, v in retried.items()},

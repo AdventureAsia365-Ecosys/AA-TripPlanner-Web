@@ -224,6 +224,7 @@ async def test_webhook_lead_is_delivered_and_redacted_at_once(db, tp_conn, monke
         return 200
 
     monkeypatch.setattr(leads, "urllib_post", post)
+    monkeypatch.setattr(leads, "resolve_host_bounded", lambda host: ["93.184.215.14"])  # a public address
     b = _header(AGENCY_B, "ottervale-journeys")
     session, trip, token = await _trip(tp_conn, b)
     status, body = await _request(tp_conn, "POST", f"/trip/{trip}/send-to-advisor",

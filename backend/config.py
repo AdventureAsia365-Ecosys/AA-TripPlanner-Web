@@ -120,10 +120,11 @@ API_KEY_RETRY_AFTER_SECONDS = 10
 # --- Leads to the agency tenant (AA-1038 R5 slice 3, root ADR 0019 d11, contract lead.submitted.v1) ---
 # A lead not delivered within this many days is redacted anyway (data standards DM-7.1 row tripplanner.outbox: at most
 # 7 days). The value is clamped to LEAD_HOLD_DAYS_MIN..LEAD_HOLD_DAYS_MAX, so an env typo (TP_LEAD_HOLD_DAYS=30) can
-# never stretch the promise; a value that is not a number counts as the maximum. The floor is 2: the daily expiry
-# tick needs one tick interval of headroom inside the hold (backend/assembly/leads.py hold_cutoff).
+# never stretch the promise; a value that is not a number counts as the maximum. The floor is 3: the daily expiry
+# needs two tick intervals of headroom inside the hold, one between runs and one failed tick it absorbs
+# (backend/assembly/leads.py hold_cutoff, EXPIRY_TICKS_ABSORBED).
 LEAD_HOLD_DAYS_MAX = 7
-LEAD_HOLD_DAYS_MIN = 2
+LEAD_HOLD_DAYS_MIN = 3
 
 
 def lead_hold_days(raw: Optional[str]) -> int:
@@ -154,6 +155,9 @@ TP_LEAD_WEBHOOK_KEY = _get("TP_LEAD_WEBHOOK_KEY", "")
 TP_LEAD_EMAIL_FROM = (_get("TP_LEAD_EMAIL_FROM", "") or "").strip()
 # Seconds one inline webhook POST may take after the request committed (the daily run retries a failure).
 LEAD_WEBHOOK_TIMEOUT_S = float(_get("TP_LEAD_WEBHOOK_TIMEOUT_S", "3"))
+# How long the send path waits for the webhook host to resolve before it refuses (503, nothing stored): the target is
+# checked to be a public address BEFORE the lead is stored (backend/assembly/leads.py webhook_target_problem).
+LEAD_WEBHOOK_RESOLVE_TIMEOUT_S = float(_get("TP_LEAD_WEBHOOK_RESOLVE_TIMEOUT_S", "2"))
 # The crm channel is offered only once the CRM can pull from this deployment (AA-CIS-Infra: the aa-m2m resource
 # server tripplanner.leads with scope deliver for the CRM client, TRIPPLANNER_API_URL on the CRM API and worker).
 # Off (the default) = a crm-routed tenant gets 503 lead_channel_unavailable and nothing is stored, like a webhook /

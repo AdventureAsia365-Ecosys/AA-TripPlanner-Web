@@ -21,8 +21,9 @@ What is kept, and how long. One tripplanner.outbox row (event lead.submitted, tp
 trip's ``sent`` event (the AA-676 pattern: a double click answers the same hand-off, a send after an edit is a new
 lead). The payload holds the traveller's name, e-mail, optional phone, party, trip summary and consent; it is
 redacted at delivery (``redacted_payload``: ids only) and at the latest ``config.LEAD_HOLD_DAYS`` (<= 7) after it was
-written, undelivered (``tp_lead_deliver`` in the jobs Lambda, daily, with the conservative ``hold_cutoff``). Never
-in a lead: the guest session or token, an access token, an IP, a user agent or any price.
+written, undelivered (``tp_lead_deliver`` in the jobs Lambda, daily, with the conservative ``hold_cutoff`` that
+survives one failed tick). Never in a lead: the guest session or token, an access token, an IP, a user agent or
+any price.
 
 Delivery:
   * crm: the CRM pulls (``list_pending``) and acknowledges (``acknowledge``) over HTTP with an M2M token
@@ -38,6 +39,7 @@ Delivery:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import hmac
 import ipaddress
@@ -107,6 +109,12 @@ TENANT_LEADS_24H_SQL = (
 # hold. A change of the schedule in Infra changes EXPIRY_TICK_INTERVAL here first (test_aa1038_lead_deliver.py).
 EXPIRY_TICK_INTERVAL = timedelta(days=1)
 EXPIRY_TICK_MARGIN = timedelta(hours=1)
+# Ticks the hold absorbs on top of the one between two runs: the tick that should end a lead's hold may fail (the
+# database unreachable for longer than lead_deliver._tried covers, an RDS reboot or failover, a cold-start pool
+# error) or not reach the job (run_due stops when the earlier jobs use up the invocation). The failed job is re-queued,
+# and the scheduler wakes the jobs Lambda only at the next daily tick, so that tick must still be inside the hold.
+# Two failed ticks in a row is the residual risk (each one already fails loudly: the jobs Lambda error alarm).
+EXPIRY_TICKS_ABSORBED = 1
 
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,63}$")
 # E.164 with its country code (contract Traveller.phone pattern): the CRM normalises a phone without a region, so a
@@ -289,13 +297,22 @@ def webhook_key(master: bytes, tenant_id: str) -> bytes:
     return hmac.new(master, WEBHOOK_KEY_LABEL + tenant_id.encode(), hashlib.sha256).hexdigest().encode()
 
 
-def channel_ready(route: Route) -> bool:
+def channel_ready(route: Route, *, resolve: Optional[Resolver] = None) -> bool:
     """True only when this deployment can hand the lead over on the route's channel (else 503, nothing stored). For
-    crm this is the deployment switch only; the per-tenant part is :func:`crm_pull_fresh`."""
+    crm this is the deployment switch only; the per-tenant part is :func:`crm_pull_fresh`. For webhook the target
+    must also be an https URL whose host is a public address now (:func:`webhook_target_problem`): a route aimed at a
+    private, loopback or link-local address (the CIS 390 CHECK accepts ``https://127.0.0.1/hook``) could never be
+    delivered, so the traveller's details are never stored for it."""
     if route.channel == "crm":
         return config.LEAD_CRM_PULL_ENABLED
     if route.channel == "webhook":
-        return bool(route.webhook_url) and webhook_master_key() is not None
+        if not route.webhook_url or webhook_master_key() is None:
+            return False
+        problem = webhook_target_problem(route.webhook_url, resolve=resolve)
+        if problem is not None:
+            observability.emit("lead_webhook_target_refused", tenant_id=route.tenant_id, error=problem)
+            return False
+        return True
     if route.channel == "email":
         return bool(route.email) and bool(config.TP_LEAD_EMAIL_FROM)
     return False
@@ -497,14 +514,49 @@ Poster = Callable[[str, bytes, dict, float], int]
 
 
 class UrlNotPublic(Exception):
-    """The webhook host is not a public address (private, loopback, link-local, reserved) or does not resolve."""
+    """The webhook host is not a public address (private, loopback, link-local, reserved): a permanent route defect
+    (error code ``webhook_urlnotpublic``) until AA staff change the URL."""
 
+
+class UrlUnresolvable(UrlNotPublic):
+    """The webhook host did not resolve (in time): possibly transient (error code ``webhook_urlunresolvable``)."""
+
+
+# Error codes of deliver_webhook for the two cases (``webhook_`` + the exception class name, lower case).
+WEBHOOK_URL_NOT_PUBLIC = "webhook_urlnotpublic"
+WEBHOOK_URL_UNRESOLVABLE = "webhook_urlunresolvable"
 
 Resolver = Callable[[str], list[str]]
+_resolver_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="lead-dns")
 
 
 def resolve_host(host: str) -> list[str]:
     return sorted({info[4][0] for info in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)})
+
+
+def resolve_host_bounded(host: str) -> list[str]:
+    """:func:`resolve_host` within ``config.LEAD_WEBHOOK_RESOLVE_TIMEOUT_S`` (getaddrinfo has no timeout of its own):
+    the send path checks the webhook target before storing, and a slow resolver must not hold the request."""
+    future = _resolver_pool.submit(resolve_host, host)
+    try:
+        return future.result(timeout=config.LEAD_WEBHOOK_RESOLVE_TIMEOUT_S)
+    except concurrent.futures.TimeoutError:
+        raise OSError("resolve timeout") from None
+
+
+def webhook_target_problem(url: str, *, resolve: Optional[Resolver] = None) -> Optional[str]:
+    """None when ``url`` is https and its host resolves to public addresses only, else the error code
+    (``webhook_url_not_https`` / ``webhook_urlnotpublic`` / ``webhook_urlunresolvable``). An IP literal is never
+    looked up; a host name is resolved within the bound (:func:`resolve_host_bounded`)."""
+    if not url.startswith("https://"):
+        return "webhook_url_not_https"
+    try:
+        public_address_check(url, resolve=resolve or resolve_host_bounded)
+    except UrlUnresolvable:
+        return WEBHOOK_URL_UNRESOLVABLE
+    except UrlNotPublic:
+        return WEBHOOK_URL_NOT_PUBLIC
+    return None
 
 
 def public_address_check(url: str, *, resolve: Resolver = resolve_host) -> None:
@@ -517,9 +569,9 @@ def public_address_check(url: str, *, resolve: Resolver = resolve_host) -> None:
     try:
         addresses = [host] if _is_ip(host) else resolve(host)
     except OSError:
-        raise UrlNotPublic("unresolvable") from None
+        raise UrlUnresolvable("unresolvable") from None
     if not addresses:
-        raise UrlNotPublic("unresolvable")
+        raise UrlUnresolvable("unresolvable")
     for raw in addresses:
         ip = ipaddress.ip_address(raw.split("%", 1)[0])
         if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
@@ -654,12 +706,16 @@ async def deliver_now(conn: Any, row_id: int, route: Route, payload: dict, **kw:
 
 
 def effective_hold() -> timedelta:
-    """How old a pending lead may be at an expiry tick: the hold minus one tick interval and the lateness margin, so a
-    lead written just after a tick is still redacted by the tick before it turns ``config.LEAD_HOLD_DAYS`` old."""
-    return timedelta(days=config.LEAD_HOLD_DAYS) - EXPIRY_TICK_INTERVAL - EXPIRY_TICK_MARGIN
+    """How old a pending lead may be at an expiry tick: the hold minus one tick interval, the ticks it absorbs
+    (:data:`EXPIRY_TICKS_ABSORBED`) and the lateness margin, so a lead written just after a tick is still redacted
+    before it turns ``config.LEAD_HOLD_DAYS`` old even when the tick that should end its hold fails (the next one
+    does). With the 7-day hold a lead is expired once it is 4 d 23 h old."""
+    return (timedelta(days=config.LEAD_HOLD_DAYS) - (1 + EXPIRY_TICKS_ABSORBED) * EXPIRY_TICK_INTERVAL
+            - EXPIRY_TICK_MARGIN)
 
 
 def hold_cutoff(now: Optional[datetime] = None) -> datetime:
     """Leads written before this are expired by the run at ``now``. Conservative for the daily schedule: a lead written
-    at t is redacted by the first tick after t + effective_hold, i.e. at the latest t + LEAD_HOLD_DAYS - margin."""
+    at t is picked by the first tick after t + effective_hold; if that tick fails, the next one (one interval later)
+    still ends it before t + LEAD_HOLD_DAYS - margin."""
     return (now or datetime.now(timezone.utc)) - effective_hold()

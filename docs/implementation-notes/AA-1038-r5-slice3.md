@@ -64,6 +64,32 @@ AA-Partner (`crm_tp_lead_pull`), root (contracts, ADR, DM-7.1, ERD design page).
   an ack never changes a final state; the webhook refuses a non-public address (`webhook_urlnotpublic`); the inline
   SES client has 2 s / 3 s timeouts and no SDK retry; tp-026 guards the `v_inquiry_outbox` filter (whitespace-
   normalised view definition must end with the one predicate), tested on a real PostgreSQL with widened views.
+- **Review fix pass 3 (S272).** Two majors, each reproduced as a test.
+  (1) **The 7 days survive a failed tick.** The pass-2 cutoff kept a lead inside 7 days only when every tick ran: if
+  the tick that picks a lead fails (the database unreachable past `_tried`'s ~3 s, an RDS reboot / failover / stop, a
+  cold-start pool error, or `run_due` stopping below `MIN_TIME_LEFT_S` before the job), the re-queued job waits for
+  the next daily tick (the scheduler has no other wake-up) and the lead was redacted at 7 d 22 h 59 m. `hold_cutoff`
+  now also absorbs one failed tick (`EXPIRY_TICKS_ABSORBED = 1`: hold - 2 intervals - 1 h, 4 d 23 h at 7 days), and
+  the floor of `TP_LEAD_HOLD_DAYS` is 3. Chosen over waking the jobs Lambda hourly: no Infra change, and an hourly
+  wake-up costs a Lambda start + DB connection 24 times a day for one job. Cost: an undelivered lead is held about
+  5 to 6 days instead of 6 to 7 (delivery retries get one day less); the CRM and a working webhook / e-mail deliver
+  within minutes, so this only shortens the life of leads that were failing anyway. Two failed ticks in a row are
+  the residual risk (each fails loudly). Test: `test_aa1038_lead_deliver.py` replays the real cron with the expiring
+  tick's database down, including the reported lead (written 2026-11-02 20:31 UTC, now redacted at 6 d 22 h 59 m), and
+  shows that the pass-2 cutoff gave 7 d 22 h 59 m.
+  (2) **A webhook route on a non-public address refuses before storing.** The CIS 390 CHECK accepts
+  `https://127.0.0.1/hook`; `channel_ready` checked only that a URL and the key exist, so the lead was stored and
+  could never leave. `channel_ready` now runs `webhook_target_problem` (https + `public_address_check`; an IP literal
+  is not looked up, a host name resolves within `TP_LEAD_WEBHOOK_RESOLVE_TIMEOUT_S`, 2 s, on a small thread pool as
+  `getaddrinfo` has no timeout) before the transaction: 503 `lead_channel_unavailable`, nothing stored, nothing
+  posted, log event `lead_webhook_target_refused` (error code only, never the URL). A host that does not resolve is
+  now `UrlUnresolvable` (`webhook_urlunresolvable`, transient) and stays apart from `webhook_urlnotpublic`
+  (permanent). `tp_lead_deliver` treats `webhook_urlnotpublic` / `webhook_url_not_https` as a route defect: that
+  tenant's rows are counted `route_defect`, not tried again this run, and the run asks for attention
+  (`lead_route_defect`). The rows stay inside their hold (not redacted at once): AA staff may fix a typo in Tenant 360
+  within the hold and the lead then still reaches the agency; the hold bounds the data either way. Only rows stored
+  before the URL changed can get there now. Not done here (CIS, follow-up): refusing private / loopback literals in
+  the CIS 390 CHECK or the Tenant 360 form.
 - **Brand** via the kit core layer only (`ui/core/brandTheme.ts`): no per-page colours, the planner just renders the
   block. BO-8 badge only with `tp.branding`.
 
@@ -92,6 +118,9 @@ AA-Partner (`crm_tp_lead_pull`), root (contracts, ADR, DM-7.1, ERD design page).
 - The per-tenant daily cap protects the agency and AA's SES from a send loop, but a determined sender with many IPs
   could fill one tenant's cap for a day (the tenant then gets 429 for real travellers). 200 a day is far above pilot
   traffic; raise it per deployment with `TP_LEAD_TENANT_DAILY_CAP`.
+- The send path now resolves the webhook host before storing (up to 2 s added to a send on a slow resolver; a
+  resolver failure refuses the lead, the traveller can send again). The check and the POST resolve separately (DNS
+  rebinding between them is the residual risk, bounded by https-only and the second check at POST time).
 - The webhook is still retried only by the daily run (an endpoint down for a minute delays a lead up to a day), and
   `channel_ready` treats the webhook channel as ready once the master secret exists, before AA has handed any agency
   its key; the key-handover script is the follow-up that must ship before a tenant is routed to a webhook.

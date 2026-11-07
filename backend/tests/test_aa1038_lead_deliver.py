@@ -173,8 +173,8 @@ async def test_one_dead_endpoint_is_tried_once_per_run(routes):
 
     out = await lead_deliver.run(Pool(conn), _job(), now=NOW, deliver=deliver)
     assert tried == [1, 3, 5]
-    assert out["retry"] == {"tried": 3, "delivered": 2, "failed": 1, "route_changed": 0, "tenant_skipped": 2,
-                            "channel_skipped": 0, "deferred": 0}
+    assert out["retry"] == {"tried": 3, "delivered": 2, "failed": 1, "route_changed": 0, "route_defect": 0,
+                            "tenant_skipped": 2, "channel_skipped": 0, "deferred": 0}
 
 
 @pytest.mark.asyncio
@@ -256,13 +256,128 @@ def test_the_old_cutoff_was_the_bug():
     assert leads.EXPIRY_TICK_INTERVAL == timedelta(days=1)  # Infra cron(30 19 * * ? *): change both together
 
 
-@pytest.mark.parametrize("raw,days", [("7", 7), ("30", 7), ("70", 7), ("5", 5), ("1", 2), ("0", 2), ("-3", 2),
-                                      ("seven", 7), ("", 7), (None, 7)])
+@pytest.mark.parametrize("raw,days", [("7", 7), ("30", 7), ("70", 7), ("5", 5), ("3", 3), ("2", 3), ("1", 3),
+                                      ("0", 3), ("-3", 3), ("seven", 7), ("", 7), (None, 7)])
 def test_the_hold_env_is_clamped_to_at_most_7_days(raw, days):
     from backend import config
 
     assert config.lead_hold_days(raw) == days
     assert config.LEAD_HOLD_DAYS <= config.LEAD_HOLD_DAYS_MAX == 7
+
+
+def test_the_hold_floor_leaves_room_for_a_failed_tick(monkeypatch):
+    """At the floor the cutoff still lies in the past: the expiry never redacts a lead the moment it is written."""
+    monkeypatch.setattr(leads.config, "LEAD_HOLD_DAYS", leads.config.LEAD_HOLD_DAYS_MIN)
+    assert leads.effective_hold() > timedelta(0)
+
+
+class ScheduleConn(FakeConn):
+    """One pending lead written at ``written``: picked and counted only when it is older than the run's cutoff, as
+    the EXPIRE_PICK_SQL / COUNT_EXPIRED_SQL predicate ``created_at < cutoff`` does. ``down`` = the database is
+    unreachable for every try of the run (an RDS reboot, failover or a stopped instance)."""
+
+    def __init__(self, written):
+        super().__init__(old_rows=[_old(1, "webhook")])
+        self.written = written
+        self.down = False
+        self.expired_by: datetime | None = None
+        self.run_at: datetime | None = None
+
+    async def fetchval(self, sql, *args):
+        if sql == lead_deliver.COUNT_EXPIRED_SQL:
+            return len(self.old_rows) if self.written < args[0] else 0
+        return await super().fetchval(sql, *args)
+
+    async def fetch(self, sql, *args):
+        if sql == lead_deliver.EXPIRE_PICK_SQL:
+            if self.down:
+                raise ConnectionError("synthetic: database unreachable")
+            if not self.written < args[0]:
+                self.pick_limits.append(args[1])
+                return []
+        return await super().fetch(sql, *args)
+
+    async def execute(self, sql, *args):
+        self.expired_by = self.run_at
+        return await super().execute(sql, *args)
+
+
+async def _replay(written, tick0, late_minutes, fail_first_expiring_tick=True):
+    """The real schedule; the first tick whose cutoff passes the lead fails (the job is re-queued for the next tick,
+    the scheduler has no other wake-up). Returns (expired at, failed tick)."""
+
+    async def sleep(_s):
+        return None
+
+    conn, failed = ScheduleConn(written), None
+    for tick in _ticks(tick0, 14, late_minutes):
+        if tick <= written:
+            continue
+        conn.run_at = tick
+        conn.down = fail_first_expiring_tick and failed is None and written < leads.hold_cutoff(tick)
+        try:
+            await lead_deliver.run(Pool(conn), _job(), now=tick, deliver=None, sleep=sleep)
+        except ConnectionError:
+            failed = tick
+            continue
+        if conn.expired_by is not None:
+            return conn.expired_by, failed
+    raise AssertionError("never expired")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_minutes", [0, 59])
+@pytest.mark.parametrize("written_minute_after_tick", [1, 60, 61, 600, 1439])
+async def test_review_repro_the_hold_survives_a_failed_expiring_tick(monkeypatch, late_minutes,
+                                                                    written_minute_after_tick):
+    """Review repro: the tick that should end the hold fails, the job waits for the next daily tick, and the lead
+    was redacted 7 d 22 h 59 m after it was written. The cutoff now absorbs that one failed tick."""
+    monkeypatch.setattr(leads.config, "LEAD_HOLD_DAYS", 7)
+    tick0 = datetime(2026, 11, 1, 19, 30, tzinfo=timezone.utc)
+    written = tick0 + timedelta(minutes=written_minute_after_tick)
+    expired_at, failed = await _replay(written, tick0, late_minutes)
+    assert failed is not None and expired_at > failed
+    assert expired_at - written <= timedelta(days=7)
+
+
+@pytest.mark.asyncio
+async def test_review_repro_the_reported_lead_is_redacted_inside_7_days(monkeypatch):
+    """The exact case of the finding: written Mon 2026-11-02 20:31 UTC, the expiring tick's database unreachable."""
+    monkeypatch.setattr(leads.config, "LEAD_HOLD_DAYS", 7)
+    written = datetime(2026, 11, 2, 20, 31, tzinfo=timezone.utc)
+    expired_at, failed = await _replay(written, datetime(2026, 11, 1, 19, 30, tzinfo=timezone.utc), 0)
+    assert failed == datetime(2026, 11, 8, 19, 30, tzinfo=timezone.utc)
+    assert expired_at == datetime(2026, 11, 9, 19, 30, tzinfo=timezone.utc)
+    assert expired_at - written == timedelta(days=6, hours=22, minutes=59)
+
+
+@pytest.mark.asyncio
+async def test_without_the_absorbed_tick_a_failed_tick_broke_the_promise(monkeypatch):
+    """The previous cutoff (one tick interval of headroom only) kept that lead 7 d 22 h 59 m."""
+    monkeypatch.setattr(leads.config, "LEAD_HOLD_DAYS", 7)
+    monkeypatch.setattr(leads, "EXPIRY_TICKS_ABSORBED", 0)
+    written = datetime(2026, 11, 2, 20, 31, tzinfo=timezone.utc)
+    expired_at, _ = await _replay(written, datetime(2026, 11, 1, 19, 30, tzinfo=timezone.utc), 0)
+    assert expired_at - written == timedelta(days=7, hours=22, minutes=59)
+
+
+@pytest.mark.asyncio
+async def test_a_webhook_route_on_a_private_address_is_a_route_defect(routes):
+    """Rows stored before AA staff pointed the URL at a private address: never tried again, the run asks for
+    attention; a transient failure of another tenant keeps the old breaker."""
+    rows = [_row(1, T_SLOW), _row(2, T_SLOW), _row(3, T_OK), _row(4, T_OK)]
+    conn = FakeConn(retry_rows=rows)
+    tried = []
+
+    async def deliver(c, row_id, route, payload):
+        tried.append(row_id)
+        return leads.WEBHOOK_URL_NOT_PUBLIC if route.tenant_id == T_SLOW else "webhook_urlunresolvable"
+
+    out = await lead_deliver.run(Pool(conn), _job(), now=NOW, deliver=deliver)
+    assert tried == [1, 3]
+    assert out["retry"]["route_defect"] == 2 and out["retry"]["tenant_skipped"] == 1
+    assert out["attention"] == ["lead_route_defect"]
+    assert handler.attention([{"job_id": "j", "status": "succeeded", "result": out}]) == ["j"]
 
 
 @pytest.mark.asyncio
