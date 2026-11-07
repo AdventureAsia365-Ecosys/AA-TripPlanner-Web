@@ -25,11 +25,15 @@
 --        delivery_attempts integer NOT NULL DEFAULT 0  webhook / e-mail tries (the CRM pull is not counted);
 --        delivery_error    text      the last failure as a code (^[a-z][a-z0-9_:]{0,63}$), never a message or value.
 --   3. outbox_lead_pending_idx (tenant_id, id) WHERE event = 'lead.submitted' AND delivered_at IS NULL AND
---      redacted_at IS NULL: the CRM pull of one tenant (oldest first) and the daily delivery run read only it.
+--      redacted_at IS NULL: the CRM pull of one tenant (oldest first) and the daily delivery run read only it;
+--      outbox_lead_tenant_created_idx (tenant_id, created_at) WHERE event = 'lead.submitted': the per-tenant daily
+--      lead cap counts a tenant's leads of the last 24 hours on every send (S272 review).
 --   4. column comments; the table comment restated: the owner's redaction and the lead delivery (the TripPlanner
 --      Lambdas, role tripplanner) are the only UPDATEs; v_inquiry_outbox (booking) keeps its fixed column list and its
 --      event filter, so no lead ever reaches AA-Booking.
---   5. Register tp-026.
+--   5. guards, among them: v_inquiry_outbox keeps its column list AND its one filter event = 'inquiry.submitted'
+--      (the only thing that keeps a lead's personal data away from role booking, S272 review);
+--   6. Register tp-026.
 -- The runtime role tripplanner needs UPDATE on the outbox for the delivery columns and the redaction: it holds
 -- SELECT, INSERT, UPDATE, DELETE through the tp_owner default privileges (tp-013, restated by tp-021); asserted below.
 -- RLS: the tp-025 shadow policy outbox_tenant_shadow already covers every new column (FOR ALL, TO tripplanner).
@@ -39,9 +43,9 @@
 -- waits well under a second; past the runner's lock_timeout the file rolls back whole and can be re-run.
 -- Re-runnable (test_replay_twice_pg.py): IF NOT EXISTS on the columns and the index, constraints dropped and added
 -- again, the same comments, ON CONFLICT DO NOTHING.
--- Undo: a later tp- file (contract): DROP INDEX outbox_lead_pending_idx, the two lead CHECKs back to
--- event IN ('inquiry.submitted'); then DROP COLUMN delivery_* with `-- migrate: destructive` (DRY RUN first) once no
--- code reads them and no lead row is left.
+-- Undo: a later tp- file (contract): DROP INDEX outbox_lead_pending_idx and outbox_lead_tenant_created_idx, the two
+-- lead CHECKs back to event IN ('inquiry.submitted'); then DROP COLUMN delivery_* with `-- migrate: destructive` (DRY
+-- RUN first) once no code reads them and no lead row is left.
 
 BEGIN;
 
@@ -90,6 +94,8 @@ ALTER TABLE tripplanner.outbox
 
 CREATE INDEX IF NOT EXISTS outbox_lead_pending_idx ON tripplanner.outbox (tenant_id, id)
     WHERE event = 'lead.submitted' AND delivered_at IS NULL AND redacted_at IS NULL;
+CREATE INDEX IF NOT EXISTS outbox_lead_tenant_created_idx ON tripplanner.outbox (tenant_id, created_at)
+    WHERE event = 'lead.submitted';
 
 -- 4. comments
 
@@ -134,6 +140,13 @@ BEGIN
        IS DISTINCT FROM 'id,schema_version,idempotency_key,trip_id,payload,created_at' THEN
         RAISE EXCEPTION 'tp-026: tripplanner.v_inquiry_outbox changed its columns';
     END IF;
+    -- The filter, not only the columns: a CREATE OR REPLACE with the same columns and no (or a widened) filter would
+    -- hand every lead's personal data to role booking. The whitespace-normalised definition must END with the one
+    -- predicate event = 'inquiry.submitted' (no OR, no other condition).
+    IF regexp_replace(pg_catalog.pg_get_viewdef('tripplanner.v_inquiry_outbox'::regclass), '\s+', ' ', 'g')
+       !~ $re$ WHERE \(?(outbox\.)?event = 'inquiry\.submitted'(::text)?\)?;? ?\Z$re$ THEN
+        RAISE EXCEPTION 'tp-026: tripplanner.v_inquiry_outbox no longer filters event = inquiry.submitted only';
+    END IF;
     IF EXISTS (SELECT 1 FROM tripplanner.outbox WHERE event <> 'lead.submitted' AND delivery_channel IS NOT NULL) THEN
         RAISE EXCEPTION 'tp-026: a non-lead outbox row has a delivery channel';
     END IF;
@@ -141,7 +154,7 @@ END $$;
 
 INSERT INTO shared.schema_versions (version, applied_at, description)
 VALUES ('tp-026', now(), 'AA-1038 R5 slice 3: tripplanner.outbox lead.submitted rows (delivery_channel, delivered_at, '
-                         'delivery_attempts, delivery_error, outbox_lead_pending_idx)')
+                         'delivery_attempts, delivery_error, outbox_lead_pending_idx, outbox_lead_tenant_created_idx)')
 ON CONFLICT (version) DO NOTHING;
 
 COMMIT;
