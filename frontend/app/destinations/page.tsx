@@ -2,6 +2,8 @@
 // first, then the designed no-photo tiles; lib/photos.gridWithPhotos). It was a 404 before, while the destination
 // pages' breadcrumb said "Destinations". One catalog read, the same ISR-cached getCountries() the home page uses.
 import type { Metadata } from "next";
+import { connection } from "next/server";
+import { rendersOnRequest } from "@/lib/renderMode";
 import CtaBand from "@/components/site/CtaBand";
 import DestinationTile from "@/components/site/DestinationTile";
 import { noPhotoTone } from "@/components/site/NoPhotoTile";
@@ -30,6 +32,8 @@ export const metadata: Metadata = {
 };
 
 export default async function DestinationsPage() {
+  // The ECS image has no catalog at build: render on request there (lib/renderMode.ts).
+  if (rendersOnRequest()) await connection();
   const res = await getCountries();
   const countries = res.ok ? res.data.countries : [];
   const { items: grid, shown } = gridWithPhotos(countries, (c) => c.cover_url_small ?? c.cover_url);

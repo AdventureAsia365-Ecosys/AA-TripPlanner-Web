@@ -10,6 +10,7 @@ import PlanPrefill from "@/components/PlanPrefill";
 import GuestResetNotice from "@/components/GuestResetNotice";
 import { TripProvider, useTrip, type PlanIntent } from "@/lib/useTrip";
 import { setPlannerTenant } from "@/lib/plannerTenant";
+import { wafToken } from "@/lib/wafToken";
 import { Icon } from "@/ui/Icon";
 
 // Below this width we stack map/trip and toggle between them, so neither
@@ -153,6 +154,12 @@ export default function PlannerApp({ intent, tenantSlug = null }: { intent: Plan
   // x-tp-tenant-slug header of every /api/trip call, lib/plannerTenant.ts). The bare /plan passes none. Set during
   // render on purpose: TripProvider's lazy state init (below) reads the ids key in this same render.
   setPlannerTenant(tenantSlug);
+  // AA-1038 R5 hosting: behind CloudFront, fetch the AWS WAF token as the planner opens (most ways in are client-side
+  // navigations, which the web ACL never challenges), so the first search or narration already carries it. A no-op
+  // where no integration URL was built in (Vercel, local, CI). lib/wafToken.ts.
+  useEffect(() => {
+    void wafToken();
+  }, []);
   // AA-837: the planner follows the site theme (ui/core/tokens.css). Its surfaces and form controls use
   // the k-* tokens, so browser-styled controls (country select, days input) stay readable in dark.
   // The Mapbox basemap stays the light outdoors style in both themes (map imagery, not UI text).

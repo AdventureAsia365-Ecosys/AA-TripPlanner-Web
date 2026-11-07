@@ -18,6 +18,8 @@ import type { TourList, TourSort } from "./catalogTypes";
 import { readTourRoute, type TourRouteResult } from "./tourRoute";
 import { COOKIES_NOTICE, COOKIES_REQUIRED, resetGuestIds, showGuestNotice } from "./guestIds";
 import { NARRATE_PATH, SEARCH_PATH, isBotRefusal } from "./botCheck";
+// AA-1038 R5 hosting: the two model calls carry the AWS WAF token behind CloudFront (no-op elsewhere).
+import { isWafChallenge, throughWafEdge } from "./wafToken";
 // AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
 import { tenantFetch } from "./plannerTenant";
 
@@ -111,15 +113,17 @@ export async function fetchByCountry(
 }
 
 // `notice` (AA-1015): this visitor reached the per-IP search limit (429) or the bot check refused the request (403
-// bot_check_failed); the caller keeps what the map shows and says why. Search has its own path for the bot check.
+// bot_check_failed, or (AA-1038) the CloudFront web ACL still challenges it after a token refresh: HTTP 202, never
+// parsed as an answer); the caller keeps what the map shows and says why. Search has its own path for the bot check.
 export async function search(
   q: string,
   filters: BrowseFilters,
 ): Promise<{ pins: DestinationPin[]; notice: AiNoticeKey | null }> {
   const qs = filterParams(filters);
-  const res = await fetch(
+  const res = await throughWafEdge(() => fetch(
     `${SEARCH_PATH}?q=${encodeURIComponent(q)}&${qs}`,
-  );
+  ));
+  if (isWafChallenge(res)) return { pins: [], notice: "botCheck" };
   if (res.status === 429) return { pins: [], notice: limitNotice("search") };
   if (res.status === 403 && isBotRefusal(res.status, await res.json().catch(() => null))) {
     return { pins: [], notice: "botCheck" };
@@ -152,17 +156,21 @@ export async function fetchTrip(tripId: string): Promise<TripResponse | null> {
 //   Retry once: if the cookie was only lost, the browser now holds the new one and the retry gets the
 //   real answer. A second cookies_required means this browser does not keep the cookie: keep the ids,
 //   say cookies are needed. A refused mutation changed nothing, so the retry is safe.
-// `path`: POST /api/trip, or the narrate op's own path (AA-1015, the bot check: lib/botCheck.ts).
+// `path`: POST /api/trip, or the narrate op's own path (AA-1015, the bot check: lib/botCheck.ts). The narrate path goes
+// through the CloudFront web ACL's token step (AA-1038, lib/wafToken.ts); `challenged` = the web ACL still answered
+// with its Challenge (HTTP 202, no app answer), never reported as ok.
 async function postTrip<T = Record<string, unknown>>(
   body: Record<string, unknown> & { session_id: string; trip_id: string },
   path: string = "/api/trip",
-): Promise<{ ok: boolean; status: number; data: T & { error?: string } }> {
-  const send = async () => {
-    const res = await tenantFetch(path, {
+): Promise<{ ok: boolean; status: number; challenged: boolean; data: T & { error?: string } }> {
+  const post = () =>
+    tenantFetch(path, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+  const send = async () => {
+    const res = path === NARRATE_PATH ? await throughWafEdge(post) : await post();
     const data = (await res.json().catch(() => ({}))) as T & { error?: string };
     return { res, data };
   };
@@ -181,7 +189,8 @@ async function postTrip<T = Record<string, unknown>>(
   ) {
     resetGuestIds({ sessionId: body.session_id, tripId: body.trip_id });
   }
-  return { ok: res.ok, status: res.status, data };
+  const challenged = isWafChallenge(res);
+  return { ok: res.ok && !challenged, status: res.status, challenged, data };
 }
 
 export async function addComponent(
@@ -231,7 +240,7 @@ export async function narrate(
   sessionId: string,
   mode: "compose" | "renarrate" = "compose",
 ): Promise<{ ok: boolean; narration: string; source: string; notice: AiNoticeKey | null }> {
-  const { ok, status, data } = await postTrip<{
+  const { ok, status, challenged, data } = await postTrip<{
     narration?: string;
     source?: string;
     ai_paused?: boolean;
@@ -244,7 +253,7 @@ export async function narrate(
   }, NARRATE_PATH);
   // AA-1015: the per-session narration limit (429) or a bot-check refusal (403) keeps the current narration and says why.
   if (status === 429) return { ok: false, narration: "", source: "", notice: limitNotice("narrate") };
-  if (isBotRefusal(status, data)) return { ok: false, narration: "", source: "", notice: "botCheck" };
+  if (challenged || isBotRefusal(status, data)) return { ok: false, narration: "", source: "", notice: "botCheck" };
   if (!ok) return { ok: false, narration: "", source: "", notice: null };
   return {
     ok: true,

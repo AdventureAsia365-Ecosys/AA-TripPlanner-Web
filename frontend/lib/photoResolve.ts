@@ -107,14 +107,51 @@ export async function resolvePhotoUrl(url: string | null | undefined): Promise<s
   return (await resolveRedirect(url)) ?? url;
 }
 
+// AA-1038 R5 hosting (review S272): a resolved target is kept in process for the catalog page TTL. Next never caches a
+// 302 in its fetch cache (200 only), so a page that renders on request (the ECS image's /destinations,
+// lib/renderMode.ts) would otherwise ask the catalog for up to RESOLVE_MAX redirects on every view. The ISR page kept a
+// resolved URL just as long. Only successful lookups are kept (a failure is asked again next time), at most
+// REDIRECT_MEMO_MAX entries (the oldest goes first). Keep REDIRECT_MEMO_MS equal to CATALOG_REVALIDATE_S
+// (lib/photoResolve.test.ts).
+export const REDIRECT_MEMO_MS = 1800 * 1000;
+export const REDIRECT_MEMO_MAX = 500;
+const redirectMemo = new Map<string, { target: string; until: number }>();
+
+export function rememberRedirect(url: string, target: string, now: number = Date.now()): void {
+  redirectMemo.delete(url);
+  if (redirectMemo.size >= REDIRECT_MEMO_MAX) {
+    const oldest = redirectMemo.keys().next().value;
+    if (oldest !== undefined) redirectMemo.delete(oldest);
+  }
+  redirectMemo.set(url, { target, until: now + REDIRECT_MEMO_MS });
+}
+
+export function rememberedRedirect(url: string, now: number = Date.now()): string | null {
+  const hit = redirectMemo.get(url);
+  if (!hit) return null;
+  if (hit.until <= now) {
+    redirectMemo.delete(url);
+    return null;
+  }
+  return hit.target;
+}
+
+export function forgetRedirects(): void {
+  redirectMemo.clear();
+}
+
 // The CDN file a catalog photo URL redirects to, or null (no redirect, a refused target, an error or a timeout).
 // `signal` replaces the per-call timeout (resolvePhotoMap shares one deadline between its lookups).
 export async function resolveRedirect(url: string, signal?: AbortSignal): Promise<string | null> {
+  const known = rememberedRedirect(url);
+  if (known) return known;
   try {
     const res = await fetch(url, { redirect: "manual", signal: signal ?? AbortSignal.timeout(RESOLVE_TIMEOUT_MS) });
     // The body of a redirect is empty or tiny; release the connection either way.
     res.body?.cancel().catch(() => {});
-    return redirectTarget(res.status, res.headers.get("location"), res.headers.get("cache-control"));
+    const target = redirectTarget(res.status, res.headers.get("location"), res.headers.get("cache-control"));
+    if (target) rememberRedirect(url, target);
+    return target;
   } catch {
     return null;
   }

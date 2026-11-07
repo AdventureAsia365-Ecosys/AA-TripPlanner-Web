@@ -28,6 +28,10 @@ name: Deploy Web Dev
 #   vars.TP_WEB_ENABLED            "true" once tripplanner_web.tf is applied; otherwise a push run is red
 #   vars.TP_WEB_CLOUDFRONT_DNS     the distribution's *.cloudfront.net name (Terraform output tripplanner_web_edge;
 #                                  not secret): the --resolve target of the verify
+#   vars.TP_WAF_INTEGRATION_URL    the web ACL's JavaScript integration URL (Terraform output
+#                                  tripplanner_web_edge.waf_integration_url; public, every planner page loads
+#                                  challenge.js from it): built in as NEXT_PUBLIC_TP_WAF_INTEGRATION_URL, so the planner
+#                                  gets its WAF token however it was opened (frontend/lib/wafToken.ts)
 # The cluster, service, family, container and repository names are fixed below (Terraform outputs tripplanner_web_*).
 
 on:
@@ -162,6 +166,7 @@ jobs:
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           MAPBOX_TOKEN: ${{ secrets.TP_MAPBOX_PUBLIC_TOKEN }}
+          WAF_URL: ${{ vars.TP_WAF_INTEGRATION_URL }}
         run: |
           set -euo pipefail
           IMAGE_TAG="${GITHUB_SHA}"
@@ -174,9 +179,14 @@ jobs:
               echo "::error::TP_MAPBOX_PUBLIC_TOKEN is not set: the map would not load. Nothing was built."
               exit 1
             fi
+            if ! printf '%s' "$WAF_URL" | grep -qE '^https://[A-Za-z0-9.-]+\.awswaf\.com/'; then
+              echo "::error::vars.TP_WAF_INTEGRATION_URL is not set to the web ACL's integration URL (Terraform output tripplanner_web_edge.waf_integration_url): search and narration would be challenged. Nothing was built."
+              exit 1
+            fi
             APP_VERSION=$(jq -r '."."' .release-please-manifest.json)
             docker build --build-arg GIT_SHA="${GITHUB_SHA}" --build-arg APP_VERSION="$APP_VERSION" \
               --build-arg NEXT_PUBLIC_MAPBOX_TOKEN="$MAPBOX_TOKEN" --build-arg NEXT_PUBLIC_SITE_URL="$SITE_URL" \
+              --build-arg NEXT_PUBLIC_TP_WAF_INTEGRATION_URL="$WAF_URL" \
               -t "$IMAGE" frontend
             docker image inspect "$IMAGE" --format '{{.Architecture}}' | grep -qx arm64
             docker push "$IMAGE"
@@ -240,6 +250,7 @@ jobs:
       - name: Health, pages, headers, edge gate and the web ACL challenge, served by ECS through CloudFront
         env:
           CF_DNS: ${{ vars.TP_WEB_CLOUDFRONT_DNS }}
+          WAF_URL: ${{ vars.TP_WAF_INTEGRATION_URL }}
         run: |
           set -euo pipefail
           [ -n "$CF_DNS" ] || { echo "::error::vars.TP_WEB_CLOUDFRONT_DNS is not set (Terraform output tripplanner_web_edge.distribution_domain)"; exit 1; }
@@ -259,6 +270,19 @@ jobs:
             CODE=$(curl -s -o /dev/null -w '%{http_code}' "${R[@]}" "https://${PUBLIC_HOST}${p}")
             [ "$CODE" = "200" ] || { echo "::error::${p} answered $CODE"; exit 1; }
           done
+          # Real catalog content, not a page baked without the catalog (the error state also answers 200): the home
+          # links to tours and /destinations to countries, and neither shows the "couldn't load" state.
+          curl -fsS "${R[@]}" "https://${PUBLIC_HOST}/" -o /tmp/home.html
+          curl -fsS "${R[@]}" "https://${PUBLIC_HOST}/destinations" -o /tmp/dest.html
+          for f in /tmp/home.html /tmp/dest.html; do
+            if grep -qE "We couldn(&#x27;|'|&apos;)t load" "$f"; then echo "::error::${f##*/}: the catalog error state is served"; exit 1; fi
+          done
+          grep -q 'href="/tours/' /tmp/home.html || { echo "::error::the home page lists no tour"; exit 1; }
+          grep -q 'href="/destinations/' /tmp/dest.html || { echo "::error::/destinations lists no country"; exit 1; }
+          curl -fsS "${R[@]}" "https://${PUBLIC_HOST}/sitemap.xml" | grep -q '/tours/' || { echo "::error::sitemap.xml lists no tour"; exit 1; }
+          # The planner's WAF token source (frontend/lib/wafToken.ts) answers.
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "${WAF_URL%/}/challenge.js")
+          [ "$CODE" = "200" ] || { echo "::error::the web ACL integration script answered $CODE (vars.TP_WAF_INTEGRATION_URL)"; exit 1; }
           RESOLVE="${PUBLIC_HOST}:443:${IP}" bash .github/scripts/check_security_headers.sh "https://${PUBLIC_HOST}" /
           # The web ACL: a model call without the browser's WAF token is challenged at the edge (HTTP 202 + the
           # x-amzn-waf-action header), never answered by the app; the older spelling reaches the app's edge gate (404).
@@ -267,7 +291,7 @@ jobs:
           CODE=$(curl -s -o /tmp/g.json -w '%{http_code}' "${R[@]}" "https://${PUBLIC_HOST}/api/browse?resource=search&q=temple")
           [ "$CODE" = "404" ] && jq -e '.error == "use_protected_path"' /tmp/g.json >/dev/null \
             || { echo "::error::GET /api/browse?resource=search answered $CODE, expected 404 use_protected_path"; exit 1; }
-          echo "ECS serves ${PUBLIC_HOST} through CloudFront: health on ${GITHUB_SHA::7}, pages 200, headers, challenge, edge gate"
+          echo "ECS serves ${PUBLIC_HOST} through CloudFront: health on ${GITHUB_SHA::7}, pages with catalog content, headers, challenge, integration script, edge gate"
 
   result:
     name: Deploy Web Dev result

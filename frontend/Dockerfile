@@ -11,16 +11,21 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
 # Build-time values only. NEXT_PUBLIC_* are inlined into the browser bundle by `next build`, so they are build args:
-# the Mapbox PUBLIC token (pk..., URL-restricted, shipped to every browser by design) and the canonical site URL.
+# the Mapbox PUBLIC token (pk..., URL-restricted, shipped to every browser by design), the canonical site URL and the
+# web ACL's JavaScript integration URL (public: every planner page loads challenge.js from it, lib/wafToken.ts).
 # Every server value (BROWSE_API_URL, TRIP_API_URL, TRIPPLANNER_API_KEY, the session / revalidate keys) is read from
-# the task's environment at run time; no secret is ever a build arg.
+# the task's environment at run time; no secret is ever a build arg. So the catalog cannot be read here: the routes
+# that would prerender catalog data (home, /destinations, sitemap.xml) render on request in this image
+# (lib/renderMode.ts, NEXT_OUTPUT=standalone), never an empty or error page baked at build.
 ARG NEXT_PUBLIC_MAPBOX_TOKEN=""
 ARG NEXT_PUBLIC_SITE_URL="https://tripplanner.lumiguides.it.com"
+ARG NEXT_PUBLIC_TP_WAF_INTEGRATION_URL=""
 # BotID needs the Vercel edge: off in this image (lib/botCheck.ts); the CloudFront web ACL guards search and narration.
 ENV NEXT_OUTPUT=standalone \
     TP_BOT_CHECK=off \
     NEXT_PUBLIC_MAPBOX_TOKEN=${NEXT_PUBLIC_MAPBOX_TOKEN} \
-    NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}
+    NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL} \
+    NEXT_PUBLIC_TP_WAF_INTEGRATION_URL=${NEXT_PUBLIC_TP_WAF_INTEGRATION_URL}
 RUN NODE_OPTIONS=--max-old-space-size=2048 npm run build
 
 FROM node:22-alpine AS runtime
@@ -30,6 +35,8 @@ ARG APP_VERSION=unknown
 # events with the same commit (lib/sentryLite.ts; Vercel set VERCEL_GIT_COMMIT_SHA instead).
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
+    # Same render mode at run time as at build (lib/renderMode.ts).
+    NEXT_OUTPUT=standalone \
     PORT=3000 \
     HOSTNAME=0.0.0.0 \
     GIT_SHA=${GIT_SHA} \

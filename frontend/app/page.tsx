@@ -7,6 +7,8 @@
 // band → photo ribbon (cream) → navy footer. No two adjacent bands share a surface. Same two catalog reads
 // as before (featured limit 6 → 9). Reveals only on sections after the first screen.
 import type { Metadata } from "next";
+import { connection } from "next/server";
+import { rendersOnRequest } from "@/lib/renderMode";
 import Link from "next/link";
 import CtaBand from "@/components/site/CtaBand";
 import DestinationTile from "@/components/site/DestinationTile";
@@ -79,6 +81,8 @@ function ribbonItems(tours: TourCardData[], countries: CountrySummary[]): Ribbon
 }
 
 export default async function HomePage() {
+  // The ECS image has no catalog at build: render on request there (lib/renderMode.ts).
+  if (rendersOnRequest()) await connection();
   // The ribbon reads a longer featured list than the row (S253): the catalogue reuses a few covers on many tours, so 9
   // tours plus the country covers gave 7 unique photos, under the 8 the ribbon needs to move. Both reads are ISR-cached.
   const [countriesRes, toursRes, ribbonRes] = await Promise.all([
