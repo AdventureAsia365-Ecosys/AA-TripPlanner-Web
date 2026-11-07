@@ -44,8 +44,8 @@ export const EMPTY_LEAD: LeadForm = {
 };
 
 // The contract's Traveller rule (lead.submitted.v1), the SAME rule as backend/assembly/leads.py validate() and the
-// CRM's traveller_errors (AA-Partner): control characters removed, Unicode NFC, trimmed, then the length in code
-// points (not UTF-16 units) and the pattern. Shared test vectors: backend/tests/contracts/
+// CRM's traveller_errors (AA-Partner): control characters removed, Unicode NFC, trimmed (the e-mail then lower-cased),
+// then the length in code points (not UTF-16 units) and the pattern. Shared test vectors: backend/tests/contracts/
 // lead.submitted.v1.traveller-rules.json (a byte copy of the root docs/contracts/rules/ file), run by leadForm.test.ts.
 export const EMAIL_RE = /^[^@\s]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,63}$/;
 export const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
@@ -75,7 +75,10 @@ export function cleanTravellerText(value: string): string {
 export function travellerFieldOk(field: TravellerField, value: unknown): boolean {
   if (value === null || value === undefined) return field === "phone";
   if (typeof value !== "string") return false;
-  const text = cleanTravellerText(value);
+  // The e-mail is lower-cased FIRST and checked as sent: toLowerCase() turns U+0130 (capital I with dot above) into
+  // two code points, so a check before lower-casing passed an address the CRM rejects (vectors dotted_capital_i_*).
+  const cleaned = cleanTravellerText(value);
+  const text = field === "email" ? cleaned.toLowerCase() : cleaned;
   if ([...text].length > TRAVELLER_MAX[field]) return false;
   if (field === "name") return text !== "" && hasNameToken(text);
   if (field === "email") return EMAIL_RE.test(text);

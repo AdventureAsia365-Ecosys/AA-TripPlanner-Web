@@ -78,6 +78,25 @@ def test_a_cjk_accented_or_mixed_name_is_a_name(name):
     assert leads.validate(_with("name", name))["name"] == name
 
 
+@pytest.mark.parametrize("email", [
+    "\u0130" * 33 + "@example.com",  # local part 33 code points typed, 66 lower-cased
+    "a" * 60 + "\u0130" * 4 + "@example.com",  # 64 typed, 68 lower-cased
+    "a" * 62 + "\u0130" * 2 + "@" + "b" * 181 + ".example",  # 254 typed, 256 lower-cased (total limit)
+])
+def test_review_repro_an_email_lower_casing_lengthens_is_refused_before_storing(email):
+    """S272 review 4: validate() checked the e-mail, then lower-cased it; U+0130 lower-cases to two code points, so
+    the value sent broke the CRM's local-part or total limit and the CRM rejected a lead TripPlanner had stored."""
+    with pytest.raises(leads.LeadRefused) as e:
+        leads.validate(_with("email", email))
+    assert (e.value.status, e.value.code, e.value.fields) == (422, "invalid_lead", ["email"])
+
+
+def test_the_email_sent_is_the_lower_case_value_that_was_checked():
+    sent = leads.validate(_with("email", "\u0130\u0130@Example.Invalid"))["email"]
+    assert sent == "i\u0307i\u0307@example.invalid"
+    assert len(sent) <= leads.MAX_EMAIL and leads._EMAIL_RE.match(sent)  # noqa: SLF001
+
+
 def test_the_name_token_rule_is_the_shared_one():
     """The rules file names the token class as [\\p{L}\\p{N}] after NFKD (the frontend's regex); str.isalnum, used
     here and by the CRM's \\w split, is exactly Unicode category L or N on every code point."""

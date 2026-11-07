@@ -113,3 +113,14 @@ test("review repro: a name without a letter or digit is caught in the form (the 
   assert.equal(NAME_TOKEN_RE.source, RULES.name_token_pattern);
   assert.equal(NAME_TOKEN_NORMALISATION, RULES.name_token_normalisation);
 });
+
+test("review repro: an e-mail lower-casing lengthens is caught in the form (checked as sent, lower-case)", () => {
+  for (const email of [
+    "\u0130".repeat(33) + "@example.com",
+    "a".repeat(60) + "\u0130".repeat(4) + "@example.com",
+    "a".repeat(62) + "\u0130".repeat(2) + "@" + "b".repeat(181) + ".example",
+  ]) {
+    assert.deepEqual(leadFormErrors({ ...FILLED, email }), ["email"], email);
+  }
+  assert.deepEqual(leadFormErrors({ ...FILLED, email: "\u0130\u0130@Example.Invalid" }), []);
+});

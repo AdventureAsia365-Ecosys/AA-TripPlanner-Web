@@ -42,6 +42,7 @@
           "type": "string",
           "format": "email",
           "maxLength": 254,
+          "description": "Lower-case. The producer lower-cases the address first and checks the length and the rules file email_pattern (local part at most 64 code points) on that value, so an address lower-casing lengthens (U+0130, capital I with dot above, becomes 'i' and U+0307) is refused before storing, never rejected by the consumer.",
           "x-pii": "contact"
         },
         "phone": {

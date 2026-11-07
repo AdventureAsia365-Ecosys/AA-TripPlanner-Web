@@ -217,10 +217,14 @@ def validate(raw: Any, *, today: Optional[date] = None) -> dict:
         return v
 
     def email() -> str:
+        # Lower-case FIRST, then the length and the pattern on the value we send: str.lower() turns U+0130 (capital I
+        # with dot above) into two code points, so checking before lower-casing let a 64-code-point local part become
+        # 65 and the CRM rejected the lead after it was stored (S272 review 4). Shared vectors: dotted_capital_i_*.
         v = _text(traveller.get("email"), MAX_EMAIL)
-        if not v or not _EMAIL_RE.match(v):
+        v = v.lower() if v else v
+        if not v or len(v) > MAX_EMAIL or not _EMAIL_RE.match(v):
             raise ValueError
-        return v.lower()
+        return v
 
     def phone() -> Optional[str]:
         v = _text(traveller.get("phone"), MAX_PHONE)

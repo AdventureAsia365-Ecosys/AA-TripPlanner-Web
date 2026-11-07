@@ -148,6 +148,23 @@ AA-Partner (`crm_tp_lead_pull`), root (contracts, ADR, DM-7.1, ERD design page).
   `test_two_concurrent_sends_never_pass_the_tenant_cap` (local Postgres, two connections, a slowed trip summary: one
   200 and one 429 `lead_cap_reached`; it fails with the lock statement removed).
 
+## Review fix pass 4 (S272)
+
+- **Finding.** `validate()` checked the e-mail's length and pattern, then returned `v.lower()`. `str.lower()` turns
+  U+0130 (capital I with dot above) into `i` + U+0307, so `'İ' * 33 + '@example.com'` (local part 33) was sent with a
+  local part of 66 code points, and `'a' * 60 + 'İ' * 4 + '@example.com'` with 68; a long domain also pushed the
+  total past 254. The lead was stored and answered 2xx, then the CRM rejected it (loud, but the request never reached
+  the agency, which breaks the contract's "a lead the producer accepts is never rejected by the consumer").
+- **Decision.** Lower-case first, then the length (`MAX_EMAIL`) and `_EMAIL_RE` on that value, which is the value sent.
+  The form's `travellerFieldOk` does the same (`toLowerCase()` before the code-point length and `EMAIL_RE`); it still
+  sends the e-mail as typed (trimmed) and the Lambda lower-cases it. U+0130 is the only code point whose lower case is
+  longer than one code point, and `\s` agrees with `str.isspace()` everywhere, so this is the only e-mail gap.
+- **Tests.** Shared vectors `dotted_capital_i_fits`, `dotted_capital_i_lengthens_local`,
+  `dotted_capital_i_lengthens_total` (rules file byte copy); `test_review_repro_an_email_lower_casing_lengthens_is_refused_before_storing`
+  (the review's two addresses plus the total case: 422 `invalid_lead`, fields `[email]`),
+  `test_the_email_sent_is_the_lower_case_value_that_was_checked`, and the matching form test in `leadForm.test.ts`.
+  The vendored `lead.submitted.v1.json` takes the new `Traveller.email` description.
+
 ## Should know
 
 - Merge order: tp-026 migration PR (applied by Migration Apply), CIS 390 (applied), the CIS kit PR and its Kit Sync PR
