@@ -43,11 +43,34 @@ export const EMPTY_LEAD: LeadForm = {
   marketing: false,
 };
 
-const EMAIL_RE = /^[^@\s]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,63}$/;
+// The contract's Traveller rule (lead.submitted.v1), the SAME rule as backend/assembly/leads.py validate() and the
+// CRM's traveller_errors (AA-Partner): control characters removed, Unicode NFC, trimmed, then the length in code
+// points (not UTF-16 units) and the pattern. Shared test vectors: backend/tests/contracts/
+// lead.submitted.v1.traveller-rules.json (a byte copy of the root docs/contracts/rules/ file), run by leadForm.test.ts.
+export const EMAIL_RE = /^[^@\s]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,63}$/;
+export const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+export const TRAVELLER_MAX = { name: 120, email: 254, phone: 40 } as const;
+export type TravellerField = keyof typeof TRAVELLER_MAX;
 // The contract's Traveller.phone: E.164 with its country code ("+" first), as backend/assembly/leads.py checks it. The
 // agency's CRM cannot place a local number ("090 ...") without knowing the country.
 export const PHONE_RE = /^\+[1-9][0-9 ()-]{5,39}$/;
 export const PHONE_HINT = "Phone with country code, optional (e.g. +44 20 7946 0000)";
+
+/** The rule's cleaning: control characters out, NFC, trimmed (what the length and the pattern are checked on). */
+export function cleanTravellerText(value: string): string {
+  return value.replace(CONTROL_RE, "").normalize("NFC").trim();
+}
+
+/** True when `value` passes the Traveller rule for `field` (name and e-mail required, phone optional). */
+export function travellerFieldOk(field: TravellerField, value: unknown): boolean {
+  if (value === null || value === undefined) return field === "phone";
+  if (typeof value !== "string") return false;
+  const text = cleanTravellerText(value);
+  if ([...text].length > TRAVELLER_MAX[field]) return false;
+  if (field === "name") return text !== "";
+  if (field === "email") return EMAIL_RE.test(text);
+  return text === "" || PHONE_RE.test(text);
+}
 
 /** True on an agency tenant's planner: a lead goes to that agency. False on the bare path and the AA demo tenant. */
 export function isAgencyPlanner(slug: string | null | undefined): boolean {
@@ -64,9 +87,9 @@ export function childAges(raw: string): number[] | null {
 /** Field names the form must fix before it can be sent (empty = ready). Consent is checked apart (the button). */
 export function leadFormErrors(f: LeadForm): string[] {
   const bad: string[] = [];
-  if (!f.name.trim() || f.name.trim().length > 120) bad.push("name");
-  if (!EMAIL_RE.test(f.email.trim())) bad.push("email");
-  if (f.phone.trim() && !PHONE_RE.test(f.phone.trim())) bad.push("phone");
+  if (!travellerFieldOk("name", f.name)) bad.push("name");
+  if (!travellerFieldOk("email", f.email)) bad.push("email");
+  if (!travellerFieldOk("phone", f.phone)) bad.push("phone");
   if (!Number.isInteger(f.adults) || f.adults < 1 || f.adults > 50) bad.push("adults");
   if (childAges(f.children) === null) bad.push("child_ages");
   if (f.message.length > 1000) bad.push("message");
@@ -104,6 +127,13 @@ export function leadResultMessage(status: number, body: { error?: string } | nul
       return `${agency} cannot take requests from the planner right now. Please contact them directly.`;
     case "empty_trip":
       return "Add a stop or a day to your trip first.";
+    // AA-1038 slice 3 (S272 review): the send limits (per session / per IP per hour, per agency per day) and BotID.
+    case "rate_limited":
+      return "You have sent several requests already. Please wait a little before sending again.";
+    case "lead_cap_reached":
+      return `${agency} has received many requests from the planner today. Please try again tomorrow or contact them directly.`;
+    case "bot_check_failed":
+      return "We could not confirm this request came from a browser. Please reload the page and try again.";
     default:
       return "Something went wrong. Please try again.";
   }

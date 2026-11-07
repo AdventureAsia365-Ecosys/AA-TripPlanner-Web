@@ -17,7 +17,7 @@ import type {
 import type { TourList, TourSort } from "./catalogTypes";
 import { readTourRoute, type TourRouteResult } from "./tourRoute";
 import { COOKIES_NOTICE, COOKIES_REQUIRED, resetGuestIds, showGuestNotice } from "./guestIds";
-import { NARRATE_PATH, SEARCH_PATH, isBotRefusal } from "./botCheck";
+import { NARRATE_PATH, SEARCH_PATH, SEND_PATH, isBotRefusal } from "./botCheck";
 // AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
 import { tenantFetch } from "./plannerTenant";
 import type { LeadBody } from "./leadForm";
@@ -269,7 +269,7 @@ export async function sendToAdvisor(
     session_id: sessionId,
     customer,
     lead,
-  });
+  }, SEND_PATH);
   return { status, body: data };
 }
 

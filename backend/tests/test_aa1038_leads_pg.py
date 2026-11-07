@@ -169,6 +169,14 @@ async def _lead_rows(su_dsn):
 async def test_crm_lead_of_one_agency_only(db, tp_conn):
     a = _header(AGENCY_A, "quillmere-voyages")
     session, trip, token = await _trip(tp_conn, a)
+    before = len(await _lead_rows(db["su_dsn"]))
+    # S272 review: the CRM has not listed this tenant yet (no beacon) -> refused, nothing stored.
+    status, body = await _request(tp_conn, "POST", f"/trip/{trip}/send-to-advisor",
+                                  {"session_id": session, "lead": FORM}, token, a)
+    assert (status, body) == (503, {"error": "lead_channel_unavailable"})
+    assert len(await _lead_rows(db["su_dsn"])) == before
+    status, page = await _crm(tp_conn, "GET", f"/trip/m2m/v1/tenants/{AGENCY_A}/leads")  # the CRM's pull: beacon
+    assert status == 200
     status, body = await _request(tp_conn, "POST", f"/trip/{trip}/send-to-advisor",
                                   {"session_id": session, "lead": FORM}, token, a)
     assert status == 200 and body["lead"]["channel"] == "crm", body
@@ -183,9 +191,14 @@ async def test_crm_lead_of_one_agency_only(db, tp_conn):
 
     status, page = await _crm(tp_conn, "GET", f"/trip/m2m/v1/tenants/{AGENCY_A}/leads")
     assert status == 200 and lead_id in [p["lead_id"] for p in page["leads"]]
+    # B's route is not crm: the CRM client (a platform credential) reaches nothing of B (S272 review hardening).
     status, page_b = await _crm(tp_conn, "GET", f"/trip/m2m/v1/tenants/{AGENCY_B}/leads")
-    assert status == 200 and lead_id not in [p["lead_id"] for p in page_b["leads"]]
+    assert (status, page_b) == (404, {"error": "tenant_not_on_crm"})
     status, wrong = await _crm(tp_conn, "POST", f"/trip/m2m/v1/tenants/{AGENCY_B}/leads/{lead_id}/ack",
+                               {"outcome": "stored"})
+    assert (status, wrong) == (404, {"error": "tenant_not_on_crm"})
+    # another tenant's lead id under the right tenant path is still 404 lead_not_found
+    status, wrong = await _crm(tp_conn, "POST", f"/trip/m2m/v1/tenants/{AGENCY_A}/leads/{uuid.uuid4()}/ack",
                                {"outcome": "stored"})
     assert (status, wrong) == (404, {"error": "lead_not_found"})
 

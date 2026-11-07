@@ -123,6 +123,7 @@ async def route(
     narrator: Optional[Any] = None,
     guest_token: Optional[str] = None,
     caller: account_mod.Caller = account_mod.GUEST,
+    client: ratelimit.Client = ratelimit.UNKNOWN_CLIENT,
 ) -> dict:
     sender = sender or notify_mod.LoggingSender()
 
@@ -205,7 +206,7 @@ async def route(
         # bare path or the AA demo tenant) the request becomes a lead.submitted.v1 for THAT tenant (leads.py).
         cur = tenant.current()
         if cur is not None and cur.source == tenant.SOURCE_ASSERTION and not tenant_budget.exempt(cur.tenant_id):
-            return await _send_lead(conn, m.group(1), body, guest_token, caller, cur.tenant_id)
+            return await _send_lead(conn, m.group(1), body, guest_token, caller, cur.tenant_id, client=client)
         # AA-1034 R0 (root ADR 0019): B2B-only, so no lead is stored and nothing goes to Booking. Before the guard and
         # any SQL: the answer is the same for every caller and reveals nothing about the trip.
         if config.ADVISOR_HANDOFF_DEMO:
@@ -569,10 +570,13 @@ async def _resolve_narrator(mode: str, narrator: Optional[Any], conn, calls: lis
 
 
 async def _send_lead(conn, trip_id: str, body: dict, guest_token: Optional[str], caller: account_mod.Caller,
-                     tenant_id: str, **delivery: Any) -> dict:
+                     tenant_id: str, *, client: ratelimit.Client = ratelimit.UNKNOWN_CLIENT,
+                     **delivery: Any) -> dict:
     """Send to advisor on an agency tenant's planner (AA-1038 slice 3): one lead.submitted.v1 for the bound tenant.
-    Refused before anything is stored when the answers are invalid, the tenant has no usable route or the trip is
-    empty. A double click (latest event already `sent`) answers the same hand-off. No customer row: a guest."""
+    Refused before anything is stored when the answers are invalid, the tenant has no usable route (for crm: the CRM
+    has not pulled this tenant lately), the session or the traveller's IP sent too often (429 rate_limited), the
+    tenant reached its daily lead cap (429 lead_cap_reached) or the trip is empty. A double click (latest event already
+    `sent`) answers the same hand-off. No customer row: a guest."""
     session_id = body.get("session_id")
     if not session_id:
         return _resp(400, {"error": "session_id required"})
@@ -583,9 +587,23 @@ async def _send_lead(conn, trip_id: str, body: dict, guest_token: Optional[str],
         route_ = await leads_mod.load_route(conn, tenant_id)
         if not leads_mod.channel_ready(route_):
             raise leads_mod.LeadRefused(503, "lead_channel_unavailable")
+        if route_.channel == "crm" and not await leads_mod.crm_pull_fresh(conn, tenant_id):
+            # The CRM is not pulling this tenant (agency locked / offboarding / not provisioned, or the pull is
+            # down): a stored lead would only wait for the hold to end it.
+            raise leads_mod.LeadRefused(503, "lead_channel_unavailable")
     except leads_mod.LeadRefused as e:
         observability.emit("lead_refused", code=e.code, tenant_id=tenant_id)
         return _resp(e.status, e.body())
+    # Counted only when the request would store a lead (same mechanism as narrate): per session, then per IP.
+    limits = [(ratelimit.SCOPE_SEND, ratelimit.KIND_SESSION, session_id)]
+    if client.ip:
+        limits.append((ratelimit.SCOPE_SEND_IP, ratelimit.KIND_IP, client.ip))
+    for scope, kind, value in limits:
+        decision = await ratelimit.hit(conn, scope, kind, value, signed_in=caller.signed_in or client.signed_in)
+        if not decision.allowed:
+            observability.emit("lead_refused", code="rate_limited", scope=scope, tenant_id=tenant_id)
+            return {"statusCode": 429, "headers": ratelimit.limited_headers(decision, _HEADERS),
+                    "body": json.dumps(ratelimit.limited_body(decision))}
     async with conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"tp_send:{trip_id}")
         last = await _last_event(conn, trip_id)
@@ -597,6 +615,10 @@ async def _send_lead(conn, trip_id: str, body: dict, guest_token: Optional[str],
         added = await events_mod.current_custom_days(conn, trip_id)
         if not current and not added:
             return _resp(400, {"error": "empty_trip", "detail": "add a stop or a day before sending"})
+        if await leads_mod.tenant_leads_24h(conn, tenant_id) >= config.TP_LEAD_TENANT_DAILY_CAP:
+            observability.emit("lead_refused", code="lead_cap_reached", tenant_id=tenant_id,
+                               cap=config.TP_LEAD_TENANT_DAILY_CAP)
+            return _resp(429, {"error": "lead_cap_reached"})
         # Added days count as days; their notes (free text) never go into the lead.
         summary = await leads_mod.trip_summary(conn, current, extra_days=len(added))
         itinerary = await events_mod.append_event(conn, trip_id, session_id, "sent", {"session_id": session_id})
@@ -624,7 +646,12 @@ def is_m2m_path(path: str) -> bool:
 async def serve_m2m(method: str, path: str, body: dict, authorization: Optional[str], *, acquire=None,
                     verify=None) -> dict:
     """GET /trip/m2m/v1/tenants/{tenant_id}/leads and POST .../leads/{lead_id}/ack. The bearer is verified before any
-    SQL; the connection is then bound to the path's tenant (source m2m), so the tp-025 policy filters as well."""
+    SQL; the connection is then bound to the path's tenant (source m2m), so the tp-025 policy filters as well.
+
+    The CRM client is a platform credential (one client, every tenant): only a tenant whose route resolves to crm NOW
+    is served (else 404 tenant_not_on_crm), so a leaked token reaches no tenant that left the CRM add-on or was never
+    on it. A list call is the tenant's beacon (leads.mark_crm_pull): the crm channel takes leads only while it is
+    fresh."""
     verify = verify or m2m_auth.verify_bearer
     try:
         await verify(authorization)
@@ -657,8 +684,19 @@ async def serve_m2m(method: str, path: str, body: dict, authorization: Optional[
             from backend.shared.db import get_pool
             acquire = (await get_pool()).acquire
         async with acquire() as conn, tenant.bound(conn, tenant_raw, source=tenant.SOURCE_M2M) as tid:
+            try:
+                route_ = await leads_mod.load_route(conn, tid)
+            except leads_mod.LeadRefused as e:
+                if e.status == 503:
+                    return _resp(503, {"error": "unavailable"})
+                route_ = None
+            if route_ is None or route_.channel != "crm":
+                observability.emit("m2m_tenant_not_on_crm", tenant_id=tid)
+                return _resp(404, {"error": "tenant_not_on_crm"})
             if m_list:
-                return _resp(200, await leads_mod.list_pending(conn, tid, limit))
+                page = await leads_mod.list_pending(conn, tid, limit)
+                await leads_mod.mark_crm_pull(conn, tid)
+                return _resp(200, page)
             ack = await leads_mod.acknowledge(conn, tid, m_ack.group(2), outcome or "stored", reason)
             return _resp(200, ack) if ack is not None else _resp(404, {"error": "lead_not_found"})
     except Exception as e:  # noqa: BLE001
@@ -804,7 +842,8 @@ async def _event_log(conn, trip_id: str) -> list[dict]:
 
 async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str] = None,
                 access_token: Optional[str] = None, acquire=None, tenant_id: Optional[str] = None,
-                tenant_source: str = tenant.SOURCE_DEFAULT) -> dict:
+                tenant_source: str = tenant.SOURCE_DEFAULT,
+                client: ratelimit.Client = ratelimit.UNKNOWN_CLIENT) -> dict:
     """route() on a pooled connection, behind a catch-all (AA-827): an unexpected error answers 500
     and logs only its type, where it was raised and the route name — never str(e), which can carry
     request values (asyncpg echoes bad input). `acquire` is injectable for tests.
@@ -827,7 +866,7 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
             from backend.shared.db import get_pool
             acquire = (await get_pool()).acquire
         async with acquire() as conn, tenant.bound(conn, tid, source=tenant_source):
-            return await route(method, path, body, conn=conn, guest_token=guest_token, caller=caller)
+            return await route(method, path, body, conn=conn, guest_token=guest_token, caller=caller, client=client)
     except Exception as e:  # noqa: BLE001
         frames = traceback.extract_tb(e.__traceback__)
         at = f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}" if frames else ""
@@ -901,8 +940,11 @@ def _handle(event, context):  # pragma: no cover - thin AWS adapter
     if "response" in picked:
         return picked["response"]
 
+    # AA-1038 slice 3: the traveller's IP the BFF forwards (trusted only with the edge key) for the send limits.
+    client = ratelimit.client_from_headers(headers)
     return asyncio.get_event_loop().run_until_complete(
-        serve(method, path, body, guest_token=guest_token, access_token=access_token, **picked["tenant"]))
+        serve(method, path, body, guest_token=guest_token, access_token=access_token, client=client,
+              **picked["tenant"]))
 
 
 # AA-871: request id (BFF header > API Gateway requestId), one JSON request_completed line, Sentry when SENTRY_DSN set.

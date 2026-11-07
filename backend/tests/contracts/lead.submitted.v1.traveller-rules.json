@@ -1,0 +1,218 @@
+{
+  "contract": "lead.submitted.v1",
+  "about": "Shared test vectors of the Traveller rules of lead.submitted.v1 (name, email, phone). One rule, applied the same way by the producer (AA-TripPlanner-Web backend/assembly/leads.py validate and frontend/lib/leadForm.ts) and the consumer (AA-Partner api/app/tripplanner/leads.py traveller_errors): control characters removed, Unicode NFC, trimmed, then the length in code points and the pattern. name: required, 1..120. email: required, at most 254, pattern email_pattern, compared lower-case. phone: optional (null or empty = absent), at most 40, pattern phone_pattern (E.164 with its country code). The root file is the source; each app keeps a byte copy (TripPlanner backend/tests/contracts/, AA-Partner docs/contracts/rules/).",
+  "control_characters": "[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]",
+  "max_length": {
+    "name": 120,
+    "email": 254,
+    "phone": 40
+  },
+  "email_pattern": "^[^@\\s]{1,64}@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,63}$",
+  "phone_pattern": "^\\+[1-9][0-9 ()-]{5,39}$",
+  "cases": [
+    {
+      "field": "name",
+      "id": "plain",
+      "value": "Ada Fernwick",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "trimmed",
+      "value": "  Ada Fernwick  ",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "empty",
+      "value": "",
+      "valid": false
+    },
+    {
+      "field": "name",
+      "id": "blank",
+      "value": "   ",
+      "valid": false
+    },
+    {
+      "field": "name",
+      "id": "max_length",
+      "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "too_long",
+      "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": false
+    },
+    {
+      "field": "name",
+      "id": "control_characters_dropped",
+      "value": "\u0007\u0007\u0007\u0007\u0007AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "decomposed_vietnamese_composes",
+      "value": "Nguye\u0302\u0303n Van An",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "nfc_lengthens_past_the_limit",
+      "value": "\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c",
+      "valid": false
+    },
+    {
+      "field": "name",
+      "id": "nfc_lengthens_to_the_limit",
+      "value": "\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c\ufb2c",
+      "valid": true
+    },
+    {
+      "field": "name",
+      "id": "not_a_string",
+      "value": 42,
+      "valid": false
+    },
+    {
+      "field": "email",
+      "id": "plain",
+      "value": "ada@example.invalid",
+      "valid": true
+    },
+    {
+      "field": "email",
+      "id": "mixed_case",
+      "value": "Ada@Example.Invalid",
+      "valid": true
+    },
+    {
+      "field": "email",
+      "id": "subdomain",
+      "value": "desk@mail.agency.example.invalid",
+      "valid": true
+    },
+    {
+      "field": "email",
+      "id": "trimmed",
+      "value": " ada@example.invalid ",
+      "valid": true
+    },
+    {
+      "field": "email",
+      "id": "empty",
+      "value": "",
+      "valid": false
+    },
+    {
+      "field": "email",
+      "id": "no_dot_in_domain",
+      "value": "ada@localhost",
+      "valid": false
+    },
+    {
+      "field": "email",
+      "id": "space_in_local",
+      "value": "ada fern@example.invalid",
+      "valid": false
+    },
+    {
+      "field": "email",
+      "id": "two_at_signs",
+      "value": "ada@@example.invalid",
+      "valid": false
+    },
+    {
+      "field": "email",
+      "id": "no_local_part",
+      "value": "@example.invalid",
+      "valid": false
+    },
+    {
+      "field": "email",
+      "id": "local_part_too_long",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.invalid",
+      "valid": false
+    },
+    {
+      "field": "email",
+      "id": "one_letter_tld",
+      "value": "ada@example.c",
+      "valid": false
+    },
+    {
+      "field": "email",
+      "id": "underscore_in_domain",
+      "value": "ada@exa_mple.invalid",
+      "valid": false
+    },
+    {
+      "field": "email",
+      "id": "too_long",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.invalid",
+      "valid": false
+    },
+    {
+      "field": "phone",
+      "id": "absent",
+      "value": null,
+      "valid": true
+    },
+    {
+      "field": "phone",
+      "id": "vietnam_mobile",
+      "value": "+84 912 345 678",
+      "valid": true
+    },
+    {
+      "field": "phone",
+      "id": "uk_brackets_dashes",
+      "value": "+44 (20) 7946-0000",
+      "valid": true
+    },
+    {
+      "field": "phone",
+      "id": "us_dashes",
+      "value": "+1-202-555-0143",
+      "valid": true
+    },
+    {
+      "field": "phone",
+      "id": "local_number",
+      "value": "0912 345 678",
+      "valid": false
+    },
+    {
+      "field": "phone",
+      "id": "zero_country_code",
+      "value": "+0 123 456 789",
+      "valid": false
+    },
+    {
+      "field": "phone",
+      "id": "letters",
+      "value": "+84 91 ABC 5678",
+      "valid": false
+    },
+    {
+      "field": "phone",
+      "id": "too_short",
+      "value": "+12345",
+      "valid": false
+    },
+    {
+      "field": "phone",
+      "id": "extension_text",
+      "value": "+84 912 345 678 ext 9",
+      "valid": false
+    },
+    {
+      "field": "phone",
+      "id": "too_long",
+      "value": "+84 9999999999999999999999999999999999999999",
+      "valid": false
+    }
+  ]
+}

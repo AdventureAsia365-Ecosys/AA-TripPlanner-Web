@@ -308,9 +308,18 @@ async def test_m2m_bad_requests_take_no_connection(method, path, body, status, c
 
 
 @pytest.mark.asyncio
-async def test_m2m_list_binds_the_path_tenant_and_drops_other_tenants_rows():
+async def test_m2m_list_binds_the_path_tenant_and_drops_other_tenants_rows(monkeypatch):
     other = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
     seen: dict = {}
+
+    async def load_route(conn, tid):
+        return leads.Route(tid, "quillmere-voyages", "Quillmere Voyages", "crm")
+
+    async def mark(conn, tid):
+        seen["beacon"] = tid
+
+    monkeypatch.setattr(leads, "load_route", load_route)
+    monkeypatch.setattr(leads, "mark_crm_pull", mark)
 
     class Conn:
         async def execute(self, sql, *args):
@@ -334,6 +343,7 @@ async def test_m2m_list_binds_the_path_tenant_and_drops_other_tenants_rows():
     assert out["statusCode"] == 200 and [p["lead_id"] for p in body["leads"]] == [LEAD] and body["more"] is True
     assert seen["current"] == tenant.Current(TENANT_A, tenant.SOURCE_M2M)
     assert seen["exec"][0] == ("SELECT set_config('app.tenant_id', $1, false)", (TENANT_A,))
+    assert seen["beacon"] == TENANT_A
 
 
 @pytest.mark.asyncio

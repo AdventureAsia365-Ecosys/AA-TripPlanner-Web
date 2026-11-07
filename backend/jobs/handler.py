@@ -38,7 +38,7 @@ from backend.shared import observability, tenant
 HANDLERS: dict[str, runner.Handler] = {
     outbox_redact.KIND: outbox_redact.run,
     rate_counter_purge.KIND: rate_counter_purge.run,  # AA-1015: tripplanner.ai_rate_counter windows > 2 days
-    lead_deliver.KIND: lead_deliver.run,  # AA-1038 slice 3: webhook / e-mail lead retries + the 7-day lead hold
+    lead_deliver.KIND: lead_deliver.run,  # AA-1038 slice 3: the lead hold (<= 7 days), rejected leads, retries
 }
 # Kinds the daily tick queues: kind -> (payload, max_attempts, idempotency key of a UTC day).
 DAILY: dict[str, tuple[dict[str, Any], int, Callable[[date], str]]] = {
@@ -74,12 +74,15 @@ def _time_left(context: Any) -> Callable[[], float]:
 
 
 def attention(jobs: list[dict[str, Any]]) -> list[str]:
-    """Ids of the jobs a scheduled run must report: failed, lost, a HELD retention run, or a result that asks."""
+    """Ids of the jobs a scheduled run must report: failed, lost, re-queued after an error, a HELD retention run, or a
+    result that asks."""
     out = []
     for j in jobs:
         result = j.get("result") or {}
-        # A result may also ask for attention itself (tp_lead_deliver: a lead expired undelivered, AA-1038).
-        if j.get("status") in ("failed", "lost") or result.get("mode") in ATTENTION_MODES or result.get("attention"):
+        # A result may also ask for attention itself (tp_lead_deliver: a lead expired undelivered, AA-1038). A run
+        # that raised and was re-queued (attempts left, e.g. tp_lead_deliver) is reported now, not only at its end.
+        if (j.get("status") in ("failed", "lost") or j.get("error") or result.get("mode") in ATTENTION_MODES
+                or result.get("attention")):
             out.append(j["job_id"])
     return out
 

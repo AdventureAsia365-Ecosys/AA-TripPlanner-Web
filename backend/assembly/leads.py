@@ -10,32 +10,44 @@ Where it goes. CIS decides per tenant (catalog.v_tenant_tripplanner_v1, CIS 390)
 add-on (crm.core), else the site's ``webhook`` or ``email`` when set, else ``none``. TripPlanner refuses BEFORE storing
 anything when it could not deliver: no route (409 lead_route_missing), the view not readable yet (503
 lead_route_unavailable), a channel this deployment cannot use (503 lead_channel_unavailable: the CRM pull not switched
-on with ``config.LEAD_CRM_PULL_ENABLED``, no webhook signing key, no e-mail sender). The traveller is a guest: no
-tripplanner.customers row, no registration, no session link.
+on with ``config.LEAD_CRM_PULL_ENABLED`` or the CRM has not listed THIS tenant's leads within
+``config.LEAD_CRM_PULL_FRESH_S`` (``crm_pull_fresh``: the agency is locked, offboarding or not provisioned yet), no
+webhook signing key, no e-mail sender). Before storing, the handler also counts the send per guest session and per
+traveller IP (``ratelimit`` scopes send / send_ip, 429 rate_limited) and caps the tenant's leads per 24 hours
+(``config.TP_LEAD_TENANT_DAILY_CAP``, 429 lead_cap_reached). The traveller is a guest: no tripplanner.customers row,
+no registration, no session link.
 
 What is kept, and how long. One tripplanner.outbox row (event lead.submitted, tp-026) in the same transaction as the
 trip's ``sent`` event (the AA-676 pattern: a double click answers the same hand-off, a send after an edit is a new
 lead). The payload holds the traveller's name, e-mail, optional phone, party, trip summary and consent; it is
-redacted at delivery (``redacted_payload``: ids only) and at the latest after ``config.LEAD_HOLD_DAYS`` undelivered
-(``tp_lead_deliver`` in the jobs Lambda). Never in a lead: the guest session or token, an access token, an IP, a user
-agent or any price.
+redacted at delivery (``redacted_payload``: ids only) and at the latest ``config.LEAD_HOLD_DAYS`` (<= 7) after it was
+written, undelivered (``tp_lead_deliver`` in the jobs Lambda, daily, with the conservative ``hold_cutoff``). Never
+in a lead: the guest session or token, an access token, an IP, a user agent or any price.
 
 Delivery:
   * crm: the CRM pulls (``list_pending``) and acknowledges (``acknowledge``) over HTTP with an M2M token
-    (backend/shared/m2m_auth.py), one tenant per call, under that tenant's RLS context;
+    (backend/shared/m2m_auth.py), one tenant per call, under that tenant's RLS context, only for a tenant whose route
+    is crm now (a leaked token reaches no tenant that left the CRM add-on); each list call is the tenant's beacon
+    (``mark_crm_pull``);
   * webhook: one signed POST right after the commit (``deliver_webhook``, ``config.LEAD_WEBHOOK_TIMEOUT_S``), then the
     daily run retries; ``X-AA-Signature: t=<unix s>,v1=<hex HMAC-SHA256(key, "<t>." + body)>``, key per tenant =
-    HMAC-SHA256(master, "aa-tripplanner lead webhook v1:" + tenant_id) (``webhook_key``; AA hands the tenant its key);
+    HMAC-SHA256(master, "aa-tripplanner lead webhook v1:" + tenant_id) as its 64-character lowercase hex text, used as
+    ASCII bytes (``webhook_key``; AA hands the tenant its key); only a public address is ever posted to
+    (``urllib_post`` refuses a private, loopback or link-local one);
   * email: one SES e-mail right after the commit (``deliver_email``), Reply-To the traveller, the same retries.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import re
+import socket
 import time
+import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -43,7 +55,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from backend import config
-from backend.shared import observability
+from backend.shared import observability, ratelimit
 
 EVENT = "lead.submitted"
 CONTRACT = "lead.submitted.v1"
@@ -85,6 +97,16 @@ REJECTED_SQL = (
     "delivery_error = $3 WHERE id = $1")
 FAILED_ATTEMPT_SQL = (
     "UPDATE tripplanner.outbox SET delivery_attempts = delivery_attempts + 1, delivery_error = $2 WHERE id = $1")
+# The tenant's leads of the last 24 hours (the daily cap); the connection is bound to the tenant as well.
+TENANT_LEADS_24H_SQL = (
+    "SELECT count(*)::int FROM tripplanner.outbox WHERE event = 'lead.submitted' AND tenant_id = $1 "
+    "AND created_at > now() - interval '24 hours'")
+
+# The expiry schedule (AA-CIS-Infra accounts/aa365/tripplanner_jobs.tf: EventBridge cron(30 19 * * ? *), one tick a
+# day) and how late a tick may run (Lambda start, earlier jobs of the same tick). hold_cutoff keeps both inside the
+# hold. A change of the schedule in Infra changes EXPIRY_TICK_INTERVAL here first (test_aa1038_lead_deliver.py).
+EXPIRY_TICK_INTERVAL = timedelta(days=1)
+EXPIRY_TICK_MARGIN = timedelta(hours=1)
 
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,63}$")
 # E.164 with its country code (contract Traveller.phone pattern): the CRM normalises a phone without a region, so a
@@ -124,11 +146,14 @@ class Route:
 # --- the traveller's answers ----------------------------------------------------------------------------------------
 
 def _text(value: Any, max_len: int) -> Optional[str]:
+    """Control characters out, NFC, trimmed, at most ``max_len`` code points: the CRM's Stage 1 ``clean_text`` rule
+    byte for byte (a name NFC lengthens past the limit is refused here, never rejected later by the CRM). Shared test
+    vectors: tests/contracts/lead.submitted.v1.traveller-rules.json (root docs/contracts/rules/)."""
     if value is None:
         return None
     if not isinstance(value, str):
         raise ValueError
-    text = _CONTROL_RE.sub("", value).strip()
+    text = unicodedata.normalize("NFC", _CONTROL_RE.sub("", value)).strip()
     if len(text) > max_len:
         raise ValueError
     return text or None
@@ -265,7 +290,8 @@ def webhook_key(master: bytes, tenant_id: str) -> bytes:
 
 
 def channel_ready(route: Route) -> bool:
-    """True only when this deployment can hand the lead over on the route's channel (else 503, nothing stored)."""
+    """True only when this deployment can hand the lead over on the route's channel (else 503, nothing stored). For
+    crm this is the deployment switch only; the per-tenant part is :func:`crm_pull_fresh`."""
     if route.channel == "crm":
         return config.LEAD_CRM_PULL_ENABLED
     if route.channel == "webhook":
@@ -273,6 +299,26 @@ def channel_ready(route: Route) -> bool:
     if route.channel == "email":
         return bool(route.email) and bool(config.TP_LEAD_EMAIL_FROM)
     return False
+
+
+async def crm_pull_fresh(conn: Any, tenant_id: str) -> bool:
+    """True when the CRM listed this tenant's leads within ``config.LEAD_CRM_PULL_FRESH_S`` (the beacon of
+    :func:`mark_crm_pull`). A read error is False: the crm channel then refuses (nothing stored), never stores blind."""
+    try:
+        return await ratelimit.seen_within(conn, ratelimit.SCOPE_CRM_PULL, ratelimit.KIND_TENANT, tenant_id,
+                                           config.LEAD_CRM_PULL_FRESH_S)
+    except Exception as e:  # noqa: BLE001
+        observability.emit("lead_crm_beacon_unreadable", error=type(e).__name__)
+        return False
+
+
+async def mark_crm_pull(conn: Any, tenant_id: str) -> None:
+    """The CRM listed this tenant's leads (serve_m2m): the crm channel may take this tenant's next leads."""
+    await ratelimit.touch(conn, ratelimit.SCOPE_CRM_PULL, ratelimit.KIND_TENANT, tenant_id)
+
+
+async def tenant_leads_24h(conn: Any, tenant_id: str) -> int:
+    return int(await conn.fetchval(TENANT_LEADS_24H_SQL, tenant_id) or 0)
 
 
 async def load_route(conn: Any, tenant_id: str) -> Route:
@@ -394,24 +440,35 @@ async def list_pending(conn: Any, tenant_id: str, limit: int) -> dict:
 
 
 async def acknowledge(conn: Any, tenant_id: str, lead_id: str, outcome: str, reason: Optional[str]) -> Optional[dict]:
-    """LeadAck, or None when the tenant has no such CRM lead (404). Idempotent; the payload is redacted either way."""
+    """LeadAck, or None when the tenant has no such CRM lead (404). Idempotent; the payload is redacted either way.
+
+    A lead in a final state never changes again: delivered (any later ack answers ``already``), rejected (any later
+    ack, ``stored`` included, answers ``already``), expired then acked ``rejected`` (answers ``expired``, the expiry
+    record is kept). Only a pending lead, or an expired one the CRM did store, changes state."""
     async with conn.transaction():
         row = await conn.fetchrow(LEAD_ROW_SQL, f"tp-lead:{lead_id}", tenant_id)
         if row is None:
             return None
         payload = _payload(row["payload"])
+        error = str(row["delivery_error"] or "")
+        redacted = row["redacted_at"] is not None
         if row["delivered_at"] is not None:
             return {"lead_id": lead_id, "state": "delivered", "already": True}
-        rejected_before = row["redacted_at"] is not None and str(row["delivery_error"] or "").startswith("rejected")
-        if outcome == "stored":
-            await conn.execute(DELIVERED_SQL, row["id"], json.dumps(redacted_payload(payload)))
-            observability.emit("lead_delivered", channel="crm", tenant_id=tenant_id)
-            return {"lead_id": lead_id, "state": "delivered", "already": False}
-        if rejected_before:
+        if redacted and error.startswith("rejected"):
             return {"lead_id": lead_id, "state": "rejected", "already": True}
+        expired = redacted and error == "expired"
+        if outcome == "stored":
+            # A pending lead, or one the hold ended while the CRM was storing it: the agency has it, say so.
+            await conn.execute(DELIVERED_SQL, row["id"], json.dumps(redacted_payload(payload)))
+            observability.emit("lead_delivered", channel="crm", tenant_id=tenant_id, after_expiry=expired)
+            return {"lead_id": lead_id, "state": "delivered", "already": False}
+        if expired:
+            return {"lead_id": lead_id, "state": "expired", "already": True}
         await conn.execute(REJECTED_SQL, row["id"], json.dumps(redacted_payload(payload)),
                            f"rejected:{reason}" if reason else "rejected")
-        observability.emit("lead_rejected", channel="crm", tenant_id=tenant_id, reason=reason)
+        # A rejected lead is a traveller's request the agency will never see: an ERROR line now (ids and the reason
+        # code only), and tp_lead_deliver's next run counts it as attention (the daily tick fails loudly).
+        observability.emit("lead_rejected", level="error", channel="crm", tenant_id=tenant_id, reason=reason)
         return {"lead_id": lead_id, "state": "rejected", "already": False}
 
 
@@ -439,8 +496,52 @@ def signature(key: bytes, body: bytes, timestamp: int) -> str:
 Poster = Callable[[str, bytes, dict, float], int]
 
 
-def urllib_post(url: str, body: bytes, headers: dict, timeout: float) -> int:
-    """POST and return the HTTP status (redirects are not followed: a 3xx is a failure)."""
+class UrlNotPublic(Exception):
+    """The webhook host is not a public address (private, loopback, link-local, reserved) or does not resolve."""
+
+
+Resolver = Callable[[str], list[str]]
+
+
+def resolve_host(host: str) -> list[str]:
+    return sorted({info[4][0] for info in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)})
+
+
+def public_address_check(url: str, *, resolve: Resolver = resolve_host) -> None:
+    """Raise UrlNotPublic unless EVERY address of the URL's host is a global unicast address (no 10/8, 172.16/12,
+    192.168/16, 127/8, 169.254/16, ::1, fc00::/7, fe80::/10, 100.64/10, the VPC resolver ...). The webhook URL is set
+    by AA staff today (CIS Tenant 360, CHECK ^https://), but a lead must never be posted into AA's own network."""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if not host:
+        raise UrlNotPublic("no host")
+    try:
+        addresses = [host] if _is_ip(host) else resolve(host)
+    except OSError:
+        raise UrlNotPublic("unresolvable") from None
+    if not addresses:
+        raise UrlNotPublic("unresolvable")
+    for raw in addresses:
+        ip = ipaddress.ip_address(raw.split("%", 1)[0])
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if not ip.is_global or ip.is_multicast:
+            raise UrlNotPublic("not public")
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def urllib_post(url: str, body: bytes, headers: dict, timeout: float, *, resolve: Resolver = resolve_host) -> int:
+    """POST and return the HTTP status (redirects are not followed: a 3xx is a failure). The host must resolve to
+    public addresses only (UrlNotPublic otherwise: error code webhook_urlnotpublic). The check and the connection
+    resolve separately; a DNS answer that flips in between is the residual risk, bounded by the https-only target."""
+    public_address_check(url, resolve=resolve)
+
     class _NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *a, **k):  # noqa: ANN002, ANN003, ANN201
             return None
@@ -502,10 +603,21 @@ def email_text(payload: dict, tenant_name: str) -> tuple[str, str]:
 Mailer = Callable[[dict], None]
 
 
-def ses_mailer(message: dict) -> None:
-    import boto3  # lazy: tests and local runs never reach SES
+_ses_client: dict[str, Any] = {}
 
-    boto3.client("sesv2", region_name=config.BEDROCK_REGION).send_email(**message)
+
+def ses_mailer(message: dict) -> None:
+    """One SES send with short timeouts and no SDK retry: it runs in the request path after the commit (API Gateway
+    answers at about 30 s); a failure is retried by the daily run. The client is cached per container."""
+    client = _ses_client.get("sesv2")
+    if client is None:
+        import boto3  # lazy: tests and local runs never reach SES
+        from botocore.config import Config
+
+        client = boto3.client("sesv2", region_name=config.BEDROCK_REGION,
+                              config=Config(connect_timeout=2, read_timeout=3, retries={"max_attempts": 1}))
+        _ses_client["sesv2"] = client
+    client.send_email(**message)
 
 
 def deliver_email(to: str, payload: dict, tenant_name: str, *, send: Mailer = ses_mailer) -> Optional[str]:
@@ -541,5 +653,13 @@ async def deliver_now(conn: Any, row_id: int, route: Route, payload: dict, **kw:
     return error
 
 
+def effective_hold() -> timedelta:
+    """How old a pending lead may be at an expiry tick: the hold minus one tick interval and the lateness margin, so a
+    lead written just after a tick is still redacted by the tick before it turns ``config.LEAD_HOLD_DAYS`` old."""
+    return timedelta(days=config.LEAD_HOLD_DAYS) - EXPIRY_TICK_INTERVAL - EXPIRY_TICK_MARGIN
+
+
 def hold_cutoff(now: Optional[datetime] = None) -> datetime:
-    return (now or datetime.now(timezone.utc)) - timedelta(days=config.LEAD_HOLD_DAYS)
+    """Leads written before this are expired by the run at ``now``. Conservative for the daily schedule: a lead written
+    at t is redacted by the first tick after t + effective_hold, i.e. at the latest t + LEAD_HOLD_DAYS - margin."""
+    return (now or datetime.now(timezone.utc)) - effective_hold()

@@ -118,8 +118,32 @@ API_KEY_CACHE_SECONDS = 600
 API_KEY_RETRY_AFTER_SECONDS = 10
 
 # --- Leads to the agency tenant (AA-1038 R5 slice 3, root ADR 0019 d11, contract lead.submitted.v1) ---
-# A lead not delivered within this many days is redacted anyway (data standards DM-7.1 row tripplanner.outbox).
-LEAD_HOLD_DAYS = int(_get("TP_LEAD_HOLD_DAYS", "7"))
+# A lead not delivered within this many days is redacted anyway (data standards DM-7.1 row tripplanner.outbox: at most
+# 7 days). The value is clamped to LEAD_HOLD_DAYS_MIN..LEAD_HOLD_DAYS_MAX, so an env typo (TP_LEAD_HOLD_DAYS=30) can
+# never stretch the promise; a value that is not a number counts as the maximum. The floor is 2: the daily expiry
+# tick needs one tick interval of headroom inside the hold (backend/assembly/leads.py hold_cutoff).
+LEAD_HOLD_DAYS_MAX = 7
+LEAD_HOLD_DAYS_MIN = 2
+
+
+def lead_hold_days(raw: Optional[str]) -> int:
+    """The hold window in days, clamped to LEAD_HOLD_DAYS_MIN..LEAD_HOLD_DAYS_MAX (unset / not a number = the max)."""
+    try:
+        days = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return LEAD_HOLD_DAYS_MAX
+    return max(LEAD_HOLD_DAYS_MIN, min(LEAD_HOLD_DAYS_MAX, days))
+
+
+LEAD_HOLD_DAYS = lead_hold_days(_get("TP_LEAD_HOLD_DAYS", str(LEAD_HOLD_DAYS_MAX)))
+# How many leads one tenant may receive in 24 hours (a script on a tenant's public planner could otherwise store
+# traveller contacts and flood the agency's inbox or CRM without limit). Past it, a send is refused before anything is
+# stored (429 lead_cap_reached).
+TP_LEAD_TENANT_DAILY_CAP = int(_get("TP_LEAD_TENANT_DAILY_CAP", "200"))
+# The crm channel takes a lead for a tenant only when the CRM listed that tenant's leads within this many seconds
+# (plus one beacon window, ratelimit.BEACON_WINDOW_SECONDS): a CRM that cannot pull a tenant (agency locked,
+# offboarding, not provisioned yet) means 503 lead_channel_unavailable and nothing stored. The CRM pulls every minute.
+LEAD_CRM_PULL_FRESH_S = int(_get("TP_LEAD_CRM_PULL_FRESH_S", "600"))
 # The webhook channel signs each POST with a key per tenant, derived from this master secret (Secrets Manager, read by
 # name with the Lambda role; TP_LEAD_WEBHOOK_KEY in the env wins: local dev, tests). Absent = the webhook channel is
 # not available: a tenant routed to a webhook gets 503 lead_channel_unavailable and nothing is stored.
@@ -223,6 +247,10 @@ LLM_STAGE_PARAMS = (_get("LLM_STAGE_PARAMS", "on") or "on").strip().lower() not 
 TP_RATE_NARRATE_PER_HOUR = int(_get("TP_RATE_NARRATE_PER_HOUR", "10"))
 TP_RATE_SEARCH_PER_MINUTE = int(_get("TP_RATE_SEARCH_PER_MINUTE", "30"))
 TP_RATE_SIGNED_IN_FACTOR = int(_get("TP_RATE_SIGNED_IN_FACTOR", "2"))
+# AA-1038 slice 3: "Send to advisor" on an agency tenant's planner (a lead with the traveller's contact), per hour: per
+# guest session and per traveller IP (signed-in factor as above). Counted only when the request would store a lead.
+TP_RATE_SEND_PER_HOUR = int(_get("TP_RATE_SEND_PER_HOUR", "5"))
+TP_RATE_SEND_IP_PER_HOUR = int(_get("TP_RATE_SEND_IP_PER_HOUR", "20"))
 # Sent by the BFF (Vercel) with the traveller's address and whether a traveller session is signed in. Trusted ONLY
 # when the request also carries the right x-tripplanner-key (only the BFF has it); otherwise ignored.
 CLIENT_IP_HEADER = "x-tp-client-ip"

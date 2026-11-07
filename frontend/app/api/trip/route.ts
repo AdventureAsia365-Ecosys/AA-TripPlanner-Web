@@ -191,10 +191,12 @@ export async function POST(req: NextRequest) {
   }
 
   const requestId = requestIdFor(req.headers);
-  if (b.op === "narrate") {
+  if (b.op === "narrate" || b.op === "send") {
     // AA-1015 (S262): BotID Basic (free) before the Lambda, so a refused narration is never counted by the
     // per-session limit and never reaches a model. The planner calls POST /api/trip/narrate (lib/botCheck.ts).
-    const refused = await botCheckRefusal("narrate", botCheckOn(), () =>
+    // AA-1038 slice 3 (S272 review): the same check before "Send to advisor" (POST /api/trip/send), which stores a
+    // traveller's contact for an agency; the Lambda then limits it per session, per IP and per tenant per day.
+    const refused = await botCheckRefusal(b.op, botCheckOn(), () =>
       checkBotId({ advancedOptions: { checkLevel: BOT_CHECK_LEVEL } }),
     );
     if (refused) {
