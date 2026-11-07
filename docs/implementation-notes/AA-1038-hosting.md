@@ -18,7 +18,8 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
   into the runtime stage. Every server value comes from the task definition (AA-CIS-Infra).
 - **BotID off in the image, the web ACL in its place.** BotID needs the Vercel edge. The CLOUDFRONT-scope web ACL
   (Infra) rate-limits per viewer IP and Challenges the two model paths; a browser gets its WAF token from a silent
-  Challenge on its first document navigation, so `fetch` calls to the model paths carry it.
+  Challenge when it opens a planner page (`/plan`, `/{tenant}/plan`: the only pages that call the model paths,
+  `lib/api.ts`), so `fetch` calls to the model paths carry it. Catalog pages are never challenged.
 - **Edge gate (`lib/edgeGate.ts`, task env `TP_EDGE_GATE=on`).** A WAF rule sees the URI path only, so the older
   spellings of the model calls (`GET /api/browse?resource=search`, `POST /api/trip {op:"narrate"}`) would pass the edge
   unchallenged. With the gate on they answer 404 `use_protected_path` before any upstream call. The search route no

@@ -120,8 +120,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   Next.js standalone image (`frontend/Dockerfile`, `NEXT_OUTPUT=standalone`, non-root uid 10001, ARM64) to the ECS
   service `aa-tripplanner-dev-web` (one Fargate Spot task, AA-CIS-Infra `modules/environment/tripplanner_web.tf`)
   behind a CloudFront distribution and a CLOUDFRONT-scope web ACL (`accounts/aa365/tripplanner_web_edge.tf`: a rate
-  rule per viewer IP, a stricter one and a Challenge on the two model paths, a token-issuing Challenge on document
-  navigations). `.github/workflows/deploy-web-dev.yml` builds on an arm64 runner, pushes the immutable git-SHA tag,
+  rule per viewer IP, a stricter one and a Challenge on the two model paths, a token-issuing Challenge on planner
+  page navigations). `.github/workflows/deploy-web-dev.yml` builds on an arm64 runner, pushes the immutable git-SHA tag,
   copies the family's latest task definition with only the image swapped and verifies through CloudFront
   (`/api/health` git_sha, pages, headers, the challenge); its PR job `preview` replaces the Vercel preview for the image
   (the standalone server started in the runner). Build-time values: `NEXT_PUBLIC_MAPBOX_TOKEN` (repo secret
