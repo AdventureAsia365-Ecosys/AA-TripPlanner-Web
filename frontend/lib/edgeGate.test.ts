@@ -38,6 +38,23 @@ test("both model branches check the gate, and search keeps its protected pathnam
   assert.doesNotMatch(search, /pathname\s*=/);
 });
 
+test("a dot-segment spelling reaches the gate as the protected path, so the web ACL must normalize too", () => {
+  // Next builds req.nextUrl with WHATWG new URL. These spellings resolve to the model routes, and the gate lets them
+  // through: only the web ACL's URL_DECODE + NORMALIZE_PATH (tripplanner_web_edge.tf) puts them under rule 1 and 2.
+  const resolved = (raw: string) => new URL(raw, "http://tp.invalid").pathname;
+  for (const raw of ["/api/browse/%2e/search", "/api/browse/%2E/search", "/api/browse/./search", "/api/x/../browse/search"]) {
+    assert.equal(resolved(raw), SEARCH_PATH, raw);
+    assert.equal(edgeGateRefusal("search", resolved(raw), true), null, raw);
+  }
+  for (const raw of ["/api/trip/%2e/narrate", "/api/trip/./narrate"]) {
+    assert.equal(resolved(raw), NARRATE_PATH, raw);
+    assert.equal(edgeGateRefusal("narrate", resolved(raw), true), null, raw);
+  }
+  // An encoded letter stays encoded, so it is not the protected path (and the route never matches it).
+  assert.notEqual(resolved("/api/browse/%73earch"), SEARCH_PATH);
+  assert.notEqual(edgeGateRefusal("search", resolved("/api/browse/%73earch"), true), null);
+});
+
 test("the web ACL paths of AA-CIS-Infra are the two protected paths", () => {
   assert.equal(SEARCH_PATH, "/api/browse/search");
   assert.equal(NARRATE_PATH, "/api/trip/narrate");

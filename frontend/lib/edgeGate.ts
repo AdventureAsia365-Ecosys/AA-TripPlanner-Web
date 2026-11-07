@@ -9,6 +9,12 @@
 // the BFF answers those spellings 404 `use_protected_path` before any Lambda call, so every model call has passed
 // the edge rules. The planner already calls only the two protected paths (AA-1015).
 //
+// The pathname here is the one Next resolved with WHATWG `new URL`: a dot segment, plain or percent-encoded
+// (/api/browse/%2e/search, /api/trip/./narrate), is already gone, so such a spelling reaches the route as the
+// protected path and this gate lets it through. The web ACL must see it the same way: CloudFront hands WAF the raw
+// path, so every path match there URL-decodes, then normalizes (tripplanner_web_edge.tf, review S272). An encoded
+// letter (/api/browse/%73earch) stays encoded in WHATWG and never reaches these routes.
+//
 // On / off: the runtime env TP_EDGE_GATE ("on" only on the ECS task, set by Terraform), read per request. Off
 // (Vercel, local, CI) keeps today's behaviour, where BotID guards the same two calls in the shared branch.
 //

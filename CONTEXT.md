@@ -135,7 +135,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   cache, resolved photo redirects kept in process for the catalog TTL (`lib/photoResolve.ts`).
   BotID is off in the image (`TP_BOT_CHECK=off`); the web ACL takes its place, and the task env `TP_EDGE_GATE=on` makes
   the BFF answer search and narration only on `/api/browse/search` and `/api/trip/narrate` (the paths the web ACL
-  sees; the older spellings get 404 `use_protected_path`, `lib/edgeGate.ts`). `TP_CLIENT_IP_SOURCE=cloudfront` takes the
+  sees after URL-decoding and normalizing, so a dot-segment spelling is caught at the edge too; the older spellings get
+  404 `use_protected_path`, `lib/edgeGate.ts`). `TP_CLIENT_IP_SOURCE=cloudfront` takes the
   traveller's address from `CloudFront-Viewer-Address` (`lib/clientIp.ts`): behind CloudFront the leftmost
   `x-forwarded-for` entry is the viewer's own words. CloudFront caches only `/_next/static/*` and `/photo-cdn/*` (the latter keyed on `?v=`); pages
   and `/api/*` go to the task (the catalog purge then drops the in-process ISR cache; the Vercel CDN purge is a no-op

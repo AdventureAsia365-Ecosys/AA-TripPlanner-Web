@@ -48,6 +48,11 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
   unchallenged. With the gate on they answer 404 `use_protected_path` before any upstream call. The search route no
   longer rewrites its pathname to `/api/browse` (the handler reads only the query), so the handler can tell the two
   apart. Off on Vercel, local and CI (BotID covers both spellings there).
+- **Dot-segment spellings are the web ACL's job (review S272).** Next resolves the request path with WHATWG `new URL`,
+  so `/api/browse/%2e/search` or `/api/trip/./narrate` reaches the model route and the gate as the protected path.
+  The gate cannot tell them apart and does not try; the web ACL URL-decodes and normalizes every path match
+  (AA-CIS-Infra `tripplanner_web_edge.tf`), so they meet the same rate rule and Challenge. `lib/edgeGate.test.ts` pins
+  the resolution the infra side relies on.
 - **Client address behind CloudFront (`lib/clientIp.ts`, task env `TP_CLIENT_IP_SOURCE=cloudfront`).** CloudFront
   appends the viewer to the `x-forwarded-for` the viewer sent, so its first entry is forgeable there; the per-IP AI
   limits and the Cognito per-traveller WAF key would follow a forged value. CloudFront-Viewer-Address is set by
