@@ -6,10 +6,15 @@ import { readFileSync } from "node:fs";
 import {
   PHOTO_CDN_ORIGIN,
   PHOTO_PROXY_PREFIX,
+  REDIRECT_MEMO_MAX,
+  REDIRECT_MEMO_MS,
   cacheMaxAge,
+  forgetRedirects,
   heroFiles,
   preconnectOrigin,
   redirectTarget,
+  rememberRedirect,
+  rememberedRedirect,
   resolveHeroPhoto,
   resolvePhotoUrl,
   resolveRedirect,
@@ -19,6 +24,7 @@ import {
   sizedPhotoUrl,
   uniquePhotoUrls,
 } from "./photoResolve.ts";
+import { CATALOG_REVALIDATE_S } from "./catalog.ts";
 
 const P = "https://api.example/content/photos/abc";
 const CDN = "https://img.example/vn/file-1600.webp?v=1";
@@ -75,10 +81,53 @@ test("preconnectOrigin names the CDN only when the photo moved to another host",
 function withFetch(impl: typeof fetch, run: () => Promise<void>) {
   const real = globalThis.fetch;
   globalThis.fetch = impl;
+  forgetRedirects();
   return run().finally(() => {
     globalThis.fetch = real;
+    forgetRedirects();
   });
 }
+
+// AA-1038 (review S272): resolved redirects are kept in process for the catalog TTL, so a page rendered on request (the
+// ECS image) does not ask the catalog again on every view; failures are never kept.
+test("a resolved redirect is asked once per catalog TTL; a failure is asked again", async () => {
+  assert.equal(REDIRECT_MEMO_MS, CATALOG_REVALIDATE_S * 1000);
+  let calls = 0;
+  await withFetch(
+    (async () => {
+      calls += 1;
+      return new Response(null, { status: 302, headers: { location: CDN, "cache-control": CDN_CC } });
+    }) as typeof fetch,
+    async () => {
+      assert.equal(await resolveRedirect(`${P}?size=large`), CDN);
+      assert.equal(await resolveRedirect(`${P}?size=large`), CDN);
+      assert.equal(calls, 1);
+    },
+  );
+  calls = 0;
+  await withFetch(
+    (async () => {
+      calls += 1;
+      throw new Error("down");
+    }) as typeof fetch,
+    async () => {
+      assert.equal(await resolveRedirect(`${P}?size=small`), null);
+      assert.equal(await resolveRedirect(`${P}?size=small`), null);
+      assert.equal(calls, 2);
+    },
+  );
+});
+
+test("the redirect memo expires after its TTL and keeps at most REDIRECT_MEMO_MAX entries", () => {
+  forgetRedirects();
+  rememberRedirect("u", CDN, 1000);
+  assert.equal(rememberedRedirect("u", 1000 + REDIRECT_MEMO_MS - 1), CDN);
+  assert.equal(rememberedRedirect("u", 1000 + REDIRECT_MEMO_MS), null);
+  for (let i = 0; i <= REDIRECT_MEMO_MAX; i += 1) rememberRedirect(`k${i}`, CDN, 0);
+  assert.equal(rememberedRedirect("k0", 1), null);
+  assert.equal(rememberedRedirect(`k${REDIRECT_MEMO_MAX}`, 1), CDN);
+  forgetRedirects();
+});
 
 test("resolvePhotoUrl follows one 302 and falls back to the catalog URL on any failure", async () => {
   await withFetch(

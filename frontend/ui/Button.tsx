@@ -1,7 +1,7 @@
 // AA-812 — the brand button (CIS kit primitives.tsx Button, AA-752): pill radius; primary = gold
 // pill, uppercase with light tracking on md/lg; secondary = gold outline; ghost = line outline.
-import Link from "next/link";
 import type { ComponentProps, ReactNode } from "react";
+import { SiteLink, type SiteLinkProps } from "./SiteLink";
 
 // AA-995: "on-dark" = the outline button on the navy band and on photos (light text, white hairline that
 // turns gold on hover).
@@ -42,13 +42,11 @@ export function ButtonLink({
   className = "",
   children,
   ...rest
-}: { href: string; variant?: ButtonVariant; size?: ButtonSize; children: ReactNode } & Omit<
-  ComponentProps<typeof Link>,
-  "href"
->) {
+}: { href: string; variant?: ButtonVariant; size?: ButtonSize; children: ReactNode } & Omit<SiteLinkProps, "href">) {
+  // AA-1038: a planner href renders a plain <a> (a document load, ui/SiteLink.tsx).
   return (
-    <Link href={href} className={buttonClass(variant, size, className)} {...rest}>
+    <SiteLink href={href} className={buttonClass(variant, size, className)} {...rest}>
       {children}
-    </Link>
+    </SiteLink>
   );
 }

@@ -1,7 +1,8 @@
 // AA-995 — three ways to start (destinations, the map, a tour) as lifted cards, on the cream surface. The status pages
 // (not-found, the route error page) end with it, so a lost visitor lands somewhere useful and the navy title band does
 // not run straight into the navy footer.
-import Link from "next/link";
+// AA-1038: SiteLink = next/link, except a planner href renders a plain <a> (a document load, ui/SiteLink.tsx).
+import { SiteLink } from "@/ui/SiteLink";
 import { Icon } from "@/ui";
 
 const WAYS = [
@@ -16,7 +17,7 @@ export default function WaysIn() {
       <ul className="mx-auto grid max-w-page gap-3 px-gutter md:grid-cols-3 md:gap-6">
         {WAYS.map((w) => (
           <li key={w.href}>
-            <Link href={w.href} prefetch={false}
+            <SiteLink href={w.href} prefetch={false}
                   className="tp-lift group flex h-full items-start gap-4 rounded-card border border-k-line bg-k-card p-5 shadow-e1 hover:border-k-accent-border">
               <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-k-accent-tint">
                 <Icon name={w.icon} className="h-5 w-5 text-k-accent-deep" />
@@ -25,7 +26,7 @@ export default function WaysIn() {
                 <span className="block text-body font-semibold text-k-ink"><span className="tp-link">{w.title}</span></span>
                 <span className="mt-1 block text-small text-k-muted">{w.body}</span>
               </span>
-            </Link>
+            </SiteLink>
           </li>
         ))}
       </ul>

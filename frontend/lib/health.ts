@@ -2,6 +2,8 @@
 // APP_VERSION (the release-please manifest version) and GIT_SHA are set per deployment by
 // .github/workflows/vercel-deploy.yml (`vercel deploy --env`), so a promoted or rolled-back deployment
 // keeps reporting its own build. VERCEL_GIT_COMMIT_SHA is the fallback for a deployment made another way.
+// AA-1038: on ECS both are baked into the image (frontend/Dockerfile build args, .github/workflows/deploy-web-dev.yml),
+// and this route is the target group and container health check, so it never calls upstream.
 export type HealthBody = {
   status: "ok";
   service: string;

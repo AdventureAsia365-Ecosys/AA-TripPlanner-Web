@@ -4,7 +4,8 @@
 // pages, and every page without JS). With `overHero` (home) it sits transparent on a dark scrim over the
 // photo hero and turns solid once the hero has scrolled away (HeaderScrollState). Below md the links move
 // into a native <dialog> menu (MobileMenu); a "Skip to content" link comes first in the tab order.
-import Link from "next/link";
+// AA-1038: SiteLink = next/link, except a planner href renders a plain <a> (a document load, ui/SiteLink.tsx).
+import { SiteLink } from "@/ui/SiteLink";
 import AiLabel, { AI_BRAND_SHORT, AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
 import { ThemeToggle } from "@/ui/ThemeToggle";
 import { buttonClass } from "@/ui";
@@ -34,32 +35,32 @@ export default function SiteHeader({ overHero = false }: { overHero?: boolean })
             {/* No prefetch (S255): a prefetch of "/" from every page applied the home page's image preload hints next to
                 that page's own LCP image. Since S256 the hero sends no hint (HomeHeroPicture is a client component),
                 but the eager card photos still do. */}
-            <Link href="/" prefetch={false} aria-label="Adventure Asia Trip Planner — home" className="shrink-0">
+            <SiteLink href="/" prefetch={false} aria-label="Adventure Asia Trip Planner — home" className="shrink-0">
               {/* logo-h108.png: the logo at 108 px tall (3x the 36 px it shows at), 8-bit: 6.8 KB instead of the 16 KB
                   752 x 481 original, which every page loaded next to its LCP image (S256). */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/brand/logo-h108.png" alt="Adventure Asia" width={50} height={32} className="h-8 w-auto lg:h-9" />
-            </Link>
+            </SiteLink>
             <AiLabel tone="kit" variant="band" label={AI_SITE_LABEL} shortLabel={AI_BRAND_SHORT} explanation={AI_SITE_EXPLANATION} />
           </div>
           <nav aria-label="Main" className="flex items-center gap-1.5 md:gap-2">
             {SITE_NAV.map((l) => (
-              <Link
+              <SiteLink
                 key={l.href}
                 href={l.href}
                 className="hidden px-2 text-small font-medium text-k-on-band transition-colors duration-fast ease-std hover:text-k-band-accent md:inline"
               >
                 {l.label}
-              </Link>
+              </SiteLink>
             ))}
             {/* AA-908: Sign in / My trips, fetched by the browser (this header is on CDN-cached pages). */}
             <AccountLink tone="band" className="hidden md:inline" />
             <span className="hidden md:inline-flex">
               <ThemeToggle tone="band" />
             </span>
-            <Link href="/plan" className={buttonClass("primary", "sm", "min-h-11 px-4 md:min-h-10")}>
+            <SiteLink href="/plan" className={buttonClass("primary", "sm", "min-h-11 px-4 md:min-h-10")}>
               Plan a trip
-            </Link>
+            </SiteLink>
             <MobileMenu links={SITE_NAV} />
           </nav>
         </div>

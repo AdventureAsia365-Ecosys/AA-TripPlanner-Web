@@ -7,7 +7,10 @@
 // band → photo ribbon (cream) → navy footer. No two adjacent bands share a surface. Same two catalog reads
 // as before (featured limit 6 → 9). Reveals only on sections after the first screen.
 import type { Metadata } from "next";
-import Link from "next/link";
+import { connection } from "next/server";
+import { rendersOnRequest } from "@/lib/renderMode";
+// AA-1038: SiteLink = next/link, except a planner href renders a plain <a> (a document load, ui/SiteLink.tsx).
+import { SiteLink } from "@/ui/SiteLink";
 import CtaBand from "@/components/site/CtaBand";
 import DestinationTile from "@/components/site/DestinationTile";
 import HomeHero from "@/components/site/HomeHero";
@@ -79,6 +82,8 @@ function ribbonItems(tours: TourCardData[], countries: CountrySummary[]): Ribbon
 }
 
 export default async function HomePage() {
+  // The ECS image has no catalog at build: render on request there (lib/renderMode.ts).
+  if (rendersOnRequest()) await connection();
   // The ribbon reads a longer featured list than the row (S253): the catalogue reuses a few covers on many tours, so 9
   // tours plus the country covers gave 7 unique photos, under the 8 the ribbon needs to move. Both reads are ISR-cached.
   const [countriesRes, toursRes, ribbonRes] = await Promise.all([
@@ -144,7 +149,7 @@ export default async function HomePage() {
           <ul className="mx-auto mt-10 grid max-w-page grid-cols-3 gap-3 px-gutter md:mt-14 md:gap-6" aria-label="Ways to start">
             {WAYS_IN.map((w) => (
               <li key={w.title}>
-                <Link
+                <SiteLink
                   href={w.href}
                   prefetch={false}
                   className="group flex h-full flex-col items-center gap-2 rounded-card p-2 text-center md:flex-row md:items-start md:gap-4 md:p-4 md:text-left"
@@ -157,7 +162,7 @@ export default async function HomePage() {
                     </span>
                     <span className="mt-1 hidden text-small text-k-muted md:block">{w.body}</span>
                   </span>
-                </Link>
+                </SiteLink>
               </li>
             ))}
           </ul>
@@ -190,9 +195,9 @@ export default async function HomePage() {
                 title="Trips to start from"
                 lead="Real Adventure Asia routes. Open one and change it day by day."
                 action={
-                  <Link href="/plan" className="text-small font-semibold text-k-accent-deep">
+                  <SiteLink href="/plan" className="text-small font-semibold text-k-accent-deep">
                     <span className="tp-link">See all on the map</span> <span aria-hidden className="tp-link-arrow">→</span>
-                  </Link>
+                  </SiteLink>
                 }
               >
                 {tours.map((t, i) => (

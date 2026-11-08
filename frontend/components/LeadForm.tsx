@@ -5,7 +5,7 @@
 // stays a guest and Adventure Asia keeps no copy once the request is delivered. The bare /plan and the AA demo tenant
 // never show this form (TripPanel keeps the demo notice there).
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/ui/Button";
 import {
   BUDGET_BANDS,
@@ -13,11 +13,13 @@ import {
   PHONE_HINT,
   canSendLead,
   leadBody,
+  leadFormDirty,
   leadFormErrors,
   leadResultMessage,
   type LeadBody,
   type LeadForm as LeadFormState,
 } from "@/lib/leadForm";
+import { holdWafReload } from "@/lib/wafChallenge";
 
 const INPUT =
   "aa-focus w-full rounded-lg border bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted";
@@ -41,6 +43,10 @@ export default function LeadForm({
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const bad = touched ? [...leadFormErrors(form), ...serverBad] : serverBad;
+  // Typed input lives only here: while it does, a challenged search or narration answers with the bot-check notice
+  // instead of reloading the planner (lib/wafChallenge.ts, review S272). Released on unmount or when cleared.
+  const dirty = leadFormDirty(form);
+  useEffect(() => (dirty ? holdWafReload() : undefined), [dirty]);
   const set = (patch: Partial<LeadFormState>) => {
     setForm({ ...form, ...patch });
     setServerBad([]);

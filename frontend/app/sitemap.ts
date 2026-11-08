@@ -1,10 +1,14 @@
 // AA-812 — sitemap.xml: home, the destinations index, every listed tour and destination from the CIS catalog (ISR).
 import type { MetadataRoute } from "next";
+import { connection } from "next/server";
+import { rendersOnRequest } from "@/lib/renderMode";
 import { getSitemap, siteUrl } from "@/lib/catalog";
 
 export const revalidate = 3600;
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  // The ECS image has no catalog at build: render on request there (lib/renderMode.ts).
+  if (rendersOnRequest()) await connection();
   const base = siteUrl();
   const out: MetadataRoute.Sitemap = [
     { url: `${base}/`, changeFrequency: "daily", priority: 1 },

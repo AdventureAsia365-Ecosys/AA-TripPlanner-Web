@@ -4,4 +4,5 @@ export { AiNotice, type AiNoticeTone } from "./AiNotice";
 export { Badge, type Tone } from "./Badge";
 export { Button, ButtonLink, buttonClass, type ButtonVariant, type ButtonSize } from "./Button";
 export { Icon, type IconName } from "./Icon";
+export { SiteLink, type SiteLinkProps } from "./SiteLink";
 export { EmptyState, ErrorState } from "./States";

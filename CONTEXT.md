@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-11-05
+last_reviewed: 2026-11-07
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -116,6 +116,42 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   production. The Vercel Git integration is off (`frontend/vercel.json`, `git.deploymentEnabled:
   false`) because the Hobby team cap (~100 deployments / 24 h, all projects) was being used up.
   Needs the repo secret `VERCEL_TOKEN`. Check the "Vercel deploy" job on the PR for deploy success.
+- **ECS hosting (AA-1038 R5, Dev; root ADR 0019 d23, S265 tech-lead decision).** The same frontend also ships as a
+  Next.js standalone image (`frontend/Dockerfile`, `NEXT_OUTPUT=standalone`, non-root uid 10001, ARM64) to the ECS
+  service `aa-tripplanner-dev-web` (one Fargate Spot task, AA-CIS-Infra `modules/environment/tripplanner_web.tf`)
+  behind a CloudFront distribution (`accounts/aa365/tripplanner_web_edge.tf`) and three TripPlanner rules in the ALB
+  web ACL (`modules/waf`, scoped to this host: a rate rule per viewer IP, a stricter one on the protected paths (the
+  two model calls and "Send to advisor"), a Challenge on the protected paths and on a document load of a planner
+  page; no Bot Control and no web ACL of its
+  own, S272 cost decision). The planner gets its WAF token from that Challenge on its own document load: every
+  in-site way into it is a full page load (`ui/SiteLink.tsx` renders a plain `<a>` for a planner href, `ButtonLink`
+  goes through it, the home search uses `window.location.assign`), and a planner reached client-side anyway reloads
+  once into a document (`lib/plannerNav.ts`). There is no JavaScript SDK (AWS WAF gives `challenge.js` only to a web
+  ACL with a paid intelligent-threat group). A model call still challenged (`lib/wafChallenge.ts`: `202` +
+  `x-amzn-waf-action: challenge`, e.g. after the 4 h token) triggers one planner reload per 5 minutes, then the
+  `botCheck` notice (never an empty answer), and none while a lead form holds typed input (`holdWafReload` in
+  `components/LeadForm.tsx`: the `botCheck` notice instead); a challenged send never reloads (the lead form would be
+  lost) and is answered as the bot-check refusal ("reload the page"). `.github/workflows/deploy-web-dev.yml` builds on an arm64 runner, pushes the immutable git-SHA tag,
+  copies the family's latest task definition with only the image swapped and verifies through CloudFront
+  (`/api/health` git_sha, pages with real catalog content, headers, `202` + `x-amzn-waf-action: challenge` without a
+  token on search, narrate, send and the document load of `/plan` and `/aa-tripplanner/plan` (a 200 there means the
+  rule is broken), a tour page loaded as a document 200, the older spellings 404); its PR job `preview` replaces the Vercel preview for the image
+  (the standalone server started in the runner). Build-time values: `NEXT_PUBLIC_MAPBOX_TOKEN` (repo secret
+  `TP_MAPBOX_PUBLIC_TOKEN`) and `NEXT_PUBLIC_SITE_URL`; every server value is task
+  env or a Secrets Manager secret, so the image cannot read the catalog at build: the home, `/destinations` and
+  `sitemap.xml` render on request there (`lib/renderMode.ts`), their catalog reads still cached by the tagged fetch
+  cache, resolved photo redirects kept in process for the catalog TTL (`lib/photoResolve.ts`).
+  BotID is off in the image (`TP_BOT_CHECK=off`); the web ACL takes its place, and the task env `TP_EDGE_GATE=on` makes
+  the BFF answer search, narration and "Send to advisor" only on `/api/browse/search`, `/api/trip/narrate` and
+  `/api/trip/send` (the paths the web ACL
+  sees after URL-decoding and normalizing, matched with `CONTAINS` so a dot-segment spelling, a leading
+  `/%2e%2e/` included, is caught at the edge too; the older spellings get
+  404 `use_protected_path`, `lib/edgeGate.ts`). `TP_CLIENT_IP_SOURCE=cloudfront` takes the
+  traveller's address from `CloudFront-Viewer-Address` (`lib/clientIp.ts`): behind CloudFront the leftmost
+  `x-forwarded-for` entry is the viewer's own words. CloudFront caches only `/_next/static/*` and `/photo-cdn/*` (the latter keyed on `?v=`); pages
+  and `/api/*` go to the task (the catalog purge then drops the in-process ISR cache; the Vercel CDN purge is a no-op
+  there). Until the DNS switch Vercel keeps serving `tripplanner.lumiguides.it.com` and `vercel-deploy.yml` keeps
+  running; cut-over and rollback: root runbook `docs/ops/runbooks/tripplanner-web-ecs-cutover.md`.
 - **Security headers (AA-876)** on every response (`frontend/next.config.mjs`, same list as the CIS admin and
   portal): HSTS, `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, a minimal
   CSP (`frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'` — no `script-src` yet),
