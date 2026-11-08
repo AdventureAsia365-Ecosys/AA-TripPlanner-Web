@@ -270,7 +270,10 @@ jobs:
           done
           grep -q 'href="/tours/' /tmp/home.html || { echo "::error::the home page lists no tour"; exit 1; }
           grep -q 'href="/destinations/' /tmp/dest.html || { echo "::error::/destinations lists no country"; exit 1; }
-          curl -fsS "${R[@]}" "https://${PUBLIC_HOST}/sitemap.xml" | grep -q '/tours/' || { echo "::error::sitemap.xml lists no tour"; exit 1; }
+          # Write the sitemap to a file first: with pipefail, grep -q closing the pipe early makes curl fail (exit 23) on a
+          # large sitemap, so a sitemap full of tours was reported as empty (S272).
+          curl -fsS "${R[@]}" "https://${PUBLIC_HOST}/sitemap.xml" -o /tmp/sitemap.xml
+          grep -q '/tours/' /tmp/sitemap.xml || { echo "::error::sitemap.xml lists no tour"; exit 1; }
           RESOLVE="${PUBLIC_HOST}:443:${IP}" bash .github/scripts/check_security_headers.sh "https://${PUBLIC_HOST}" /
           # The web ACL (TripPlanner rules of the ALB web ACL). These requests carry no aws-waf-token, so a working
           # Challenge rule ALWAYS answers them itself: HTTP 202 + x-amzn-waf-action: challenge, never the app. A 200
