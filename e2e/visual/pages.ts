@@ -16,6 +16,12 @@ export interface VisualPage {
   resolve?: { from: string; hrefPrefix: string };
   /** The document's expected HTTP status (default 200). */
   status?: number;
+  /**
+   * AA-1038 (S272): the web ACL challenges the first document load of the planner without a token (HTTP 202 +
+   * x-amzn-waf-action: challenge); the browser solves it and reloads the page. The run accepts that one 202 and checks
+   * the reloaded document instead.
+   */
+  challenged?: boolean;
 }
 
 export const PAGES: VisualPage[] = [
@@ -27,9 +33,9 @@ export const PAGES: VisualPage[] = [
     resolve: { from: "/destinations", hrefPrefix: "/destinations/" },
   },
   { slug: "tour", route: "/tours/[slug]", resolve: { from: "/", hrefPrefix: "/tours/" } },
-  { slug: "plan", route: "/plan", path: "/plan" },
+  { slug: "plan", route: "/plan", path: "/plan", challenged: true },
   // AA-1038 R5 slice 2: the demo tenant's planner on its slug path (404 page until CIS 379 is applied on Dev).
-  { slug: "tenant-plan", route: "/[tenant]/plan", path: "/aa-tripplanner/plan" },
+  { slug: "tenant-plan", route: "/[tenant]/plan", path: "/aa-tripplanner/plan", challenged: true },
   { slug: "trips", route: "/trips", path: "/trips" },
   { slug: "sign-in", route: "/sign-in", path: "/sign-in" },
   { slug: "privacy", route: "/privacy", path: "/privacy" },
