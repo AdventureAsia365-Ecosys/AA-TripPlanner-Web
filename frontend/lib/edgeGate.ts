@@ -2,8 +2,8 @@
 // behind CloudFront: the two that can reach a model (search: an embedding call, narration: a chat model call) and
 // "Send to advisor" (stores a traveller's contact and delivers it to an agency; review S272).
 //
-// On ECS the BotID check is off (it needs the Vercel edge; lib/botCheck.ts) and the TripPlanner rules of the ALB web
-// ACL take its place (AA-CIS-Infra tripplanner_web_edge.tf, modules/waf): a rate rule and a Challenge on the URI paths
+// The TripPlanner rules of the ALB web ACL are their bot check (lib/botCheck.ts; AA-CIS-Infra tripplanner_web_edge.tf,
+// modules/waf): a rate rule and a Challenge on the URI paths
 //   GET  /api/browse/search,   POST /api/trip/narrate   and   POST /api/trip/send.
 // A WAF rule sees the path, not the query string or the JSON body, so the older spellings of the same calls
 // (GET /api/browse?resource=search, POST /api/trip {op: "narrate" | "send"}) would pass the edge unchallenged. With the
@@ -19,8 +19,8 @@
 // CONTAINS, never EXACTLY (modules/waf, review S272). An encoded letter (/api/browse/%73earch) stays encoded in
 // WHATWG and never reaches these routes.
 //
-// On / off: the runtime env TP_EDGE_GATE ("on" only on the ECS task, set by Terraform), read per request. Off
-// (Vercel, local, CI) keeps today's behaviour, where BotID guards the same two calls in the shared branch.
+// On / off: the runtime env TP_EDGE_GATE ("on" on the ECS task, set by Terraform), read per request. Off only where no
+// edge is in front (local `next dev` / `next start`, CI), so every spelling still works there.
 //
 // No next/* import: `npm test` runs it.
 

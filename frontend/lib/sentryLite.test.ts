@@ -25,7 +25,7 @@ test("scrubs e-mails, phones, tokens and key-like params", () => {
 
 test("the event has the request id, route and release, and no PII, headers or query", () => {
   const err = new Error("send failed for jane@example.com");
-  const ev = buildEvent(err, REQ, CTX, { VERCEL_ENV: "production", VERCEL_GIT_COMMIT_SHA: "abc123" });
+  const ev = buildEvent(err, REQ, CTX, { SENTRY_ENVIRONMENT: "dev", SENTRY_RELEASE: "abc123" });
   const text = JSON.stringify(ev);
   assert.equal(text.includes("jane"), false);
   assert.equal(text.includes("c=1"), false);
@@ -34,7 +34,7 @@ test("the event has the request id, route and release, and no PII, headers or qu
   assert.equal(tags.request_id, "rid-1");
   assert.equal(tags.route, "/api/trip");
   assert.equal(ev.release, "abc123");
-  assert.equal(ev.environment, "production");
+  assert.equal(ev.environment, "dev");
 });
 
 test("a malformed request id is not used as a tag", () => {
@@ -81,8 +81,10 @@ test("posts to the envelope endpoint with the public key", async () => {
   assert.match(auth, /sentry_key=pubkey/);
 });
 
-test("SENTRY_ENVIRONMENT wins over the Vercel target", () => {
+test("SENTRY_ENVIRONMENT names the environment; the Vercel variables are not read any more (AA-1038)", () => {
   const ev = buildEvent(new Error("x"), REQ, CTX, { SENTRY_ENVIRONMENT: "dev", VERCEL_ENV: "production" });
   assert.equal(ev.environment, "dev");
-  assert.equal(buildEvent(new Error("x"), REQ, CTX, { VERCEL_ENV: "preview" }).environment, "preview");
+  const bare = buildEvent(new Error("x"), REQ, CTX, { VERCEL_ENV: "preview", VERCEL_GIT_COMMIT_SHA: "abc123" });
+  assert.equal(bare.environment, "development");
+  assert.equal(bare.release, "unknown");
 });

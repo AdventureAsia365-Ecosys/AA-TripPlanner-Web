@@ -38,10 +38,9 @@ export async function proxy(req: NextRequest, event?: NextFetchEvent) {
         status: 410,
         headers: {
           "content-type": "text/html; charset=utf-8",
-          // AA-987: no shared cache keeps the 410 (a restored tour must come back within 2 minutes); a browser
-          // may keep it for a minute.
+          // AA-987: no shared cache keeps the 410 (a restored tour must come back within 2 minutes: CloudFront
+          // caches no page, AA-CIS-Infra tripplanner_web_edge.tf); a browser may keep it for a minute.
           "cache-control": "public, max-age=60",
-          "vercel-cdn-cache-control": "no-store",
           "x-robots-tag": "noindex",
         },
       });

@@ -6,7 +6,7 @@ as a service at all (run manually / on a schedule, not request-driven).
 
 ```
 AA-TripPlanner-Web/
-├── frontend/                       # Next.js app (Vercel)
+├── frontend/                       # Next.js app (ECS behind CloudFront)
 │   ├── app/
 │   │   ├── page.tsx                 # map + filter chips + trip panel
 │   │   └── api/                      # BFF routes (server-side only,

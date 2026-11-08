@@ -14,7 +14,7 @@
 // refusal, whose line asks the traveller to reload the page. Nor does a challenged search or narration while a lead
 // form holds typed input (components/LeadForm.tsx holdWafReload, review S272): the form lives only in React state, so
 // the call is answered with the botCheck notice instead and the traveller reloads when they choose.
-// Off the edge (Vercel, local, CI) no answer is ever a challenge.
+// Off the edge (local, CI) no answer is ever a challenge.
 //
 // No next/* import: `npm test` runs it.
 

@@ -20,7 +20,7 @@ limiter does.
 
 Trust: the BFF forwards the traveller's address in ``x-tp-client-ip`` and the signed-in state in ``x-tp-signed-in``.
 Both are read ONLY when the request carries the right ``x-tripplanner-key`` (:func:`client_from_headers`); without the
-gate (local dev) or with a wrong key they are ignored. The address API Gateway sees is Vercel's, shared by every
+gate (local dev) or with a wrong key they are ignored. The address API Gateway sees is the web server's, shared by every
 traveller, so it is never used as a fallback: no trusted address = no per-IP limit (the spend cap still applies).
 
 Fail mode: when the counter cannot be written (tp-023 not applied yet, DB error) the request is ALLOWED and one

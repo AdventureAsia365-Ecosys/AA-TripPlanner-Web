@@ -18,13 +18,13 @@ customer, KHÔNG phải booking hoàn chỉnh (booking thuộc AAA sau này).
 
 ## KIẾN TRÚC (tóm tắt — chi tiết ở docs/architecture-overview.md)
 ```
-Browser (Next.js, Vercel) → BFF /api/* (server-side, giữ TRIPPLANNER_API_KEY)
+Browser → CloudFront + web ACL → Next.js (ECS Fargate, aa-tripplanner-dev-web) → BFF /api/* (server-side, giữ TRIPPLANNER_API_KEY)
   → API Gateway HTTP v2 (auth=NONE)  → Lambda A Browse (stateless, đọc; embed câu search)
                                       → Lambda B Assembly (stateful, Bedrock narration)
   → RDS Postgres acc2 (schema tripplanner.* + shared.destinations, pgvector)
   → Bedrock: Cohere Embed v4 (cache → acc2 → acc3 → keyword fallback, AA-862) / Claude (satellite assume acc3 only; acc1 retired, AA-998)
 ```
-- **3 đơn vị deploy:** Frontend (Vercel), Lambda A Browse, Lambda B Assembly. Pipeline địa điểm (extraction/geocode/tour graph) đã chuyển sang CIS (AA-712 slice 6a, ADR 0007) — repo này chỉ còn đọc.
+- **3 đơn vị deploy:** Frontend (ECS sau CloudFront, `deploy-web-dev.yml`; project Vercel đã gỡ ở AA-1038, S272), Lambda A Browse, Lambda B Assembly. Pipeline địa điểm (extraction/geocode/tour graph) đã chuyển sang CIS (AA-712 slice 6a, ADR 0007) — repo này chỉ còn đọc.
 - **Auth MVP:** edge shared-secret `X-TripPlanner-Key` (BFF ↔ Lambda), chưa per-user.
 
 ## DB (dùng CHUNG RDS acc2 với AA-CIS)

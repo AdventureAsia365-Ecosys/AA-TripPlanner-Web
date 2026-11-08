@@ -93,7 +93,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 
 ### Frontend
 
-- **Next.js 16.4** (App Router, Turbopack build) on **React 19.2**, deployed on **Vercel** (AA-904 15.5,
+- **Next.js 16.4** (App Router, Turbopack build) on **React 19.2**, served by **ECS behind CloudFront** (AA-1038 R5;
+  the Vercel project was retired after the S272 cut-over) (AA-904 15.5,
   AA-906 16 — same major as the CIS admin/portal and Booking). Route `params` / `searchParams` are
   Promises (await them); route segment config (`export const revalidate`) must be a number literal
   (`lib/segmentConfig.test.ts` keeps the catalog pages equal to `CATALOG_REVALIDATE_S`). The request
@@ -111,12 +112,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   vulnerable postcss, so the AA-904 postcss override is gone (`npm audit --omit=dev`: 0).
 - **Mapbox GL** for the interactive map (destination pins, trip routing, day-by-day view).
 - Talks to the backend Lambdas over HTTP; no direct DB access from the browser.
-- Deploy is CI-driven (S241): `.github/workflows/vercel-deploy.yml` runs `vercel deploy` when a PR
-  or a push to `main` touches `frontend/**` — PR → preview (URL in one PR comment), `main` →
-  production. The Vercel Git integration is off (`frontend/vercel.json`, `git.deploymentEnabled:
-  false`) because the Hobby team cap (~100 deployments / 24 h, all projects) was being used up.
-  Needs the repo secret `VERCEL_TOKEN`. Check the "Vercel deploy" job on the PR for deploy success.
-- **ECS hosting (AA-1038 R5, Dev; root ADR 0019 d23, S265 tech-lead decision).** The same frontend also ships as a
+- Deploy is CI-driven: `.github/workflows/deploy-web-dev.yml` (below) is the only deploy of the frontend. The Vercel
+  deploy (`vercel-deploy.yml`, `frontend/vercel.json`, the repo secret `VERCEL_TOKEN`) was retired with the Vercel
+  project (AA-1038, root runbook `docs/ops/runbooks/tripplanner-web-ecs-cutover.md` section 4).
+- **ECS hosting (AA-1038 R5, Dev; root ADR 0019 d23, S265 tech-lead decision).** The frontend ships as a
   Next.js standalone image (`frontend/Dockerfile`, `NEXT_OUTPUT=standalone`, non-root uid 10001, ARM64) to the ECS
   service `aa-tripplanner-dev-web` (one Fargate Spot task, AA-CIS-Infra `modules/environment/tripplanner_web.tf`)
   behind a CloudFront distribution (`accounts/aa365/tripplanner_web_edge.tf`) and three TripPlanner rules in the ALB
@@ -135,13 +134,15 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   copies the family's latest task definition with only the image swapped and verifies through CloudFront
   (`/api/health` git_sha, pages with real catalog content, headers, `202` + `x-amzn-waf-action: challenge` without a
   token on search, narrate, send and the document load of `/plan` and `/aa-tripplanner/plan` (a 200 there means the
-  rule is broken), a tour page loaded as a document 200, the older spellings 404); its PR job `preview` replaces the Vercel preview for the image
-  (the standalone server started in the runner). Build-time values: `NEXT_PUBLIC_MAPBOX_TOKEN` (repo secret
+  rule is broken), a tour page loaded as a document 200, the older spellings 404); then job `release` (post-deploy-verify.yml, app web: health git_sha and the
+  release-please version on the public host) and job `visual` (report-only). Its PR job `preview` checks the image
+  (the standalone server started in the runner); there is no per-PR deployment. Build-time values: `NEXT_PUBLIC_MAPBOX_TOKEN` (repo secret
   `TP_MAPBOX_PUBLIC_TOKEN`) and `NEXT_PUBLIC_SITE_URL`; every server value is task
   env or a Secrets Manager secret, so the image cannot read the catalog at build: the home, `/destinations` and
   `sitemap.xml` render on request there (`lib/renderMode.ts`), their catalog reads still cached by the tagged fetch
   cache, resolved photo redirects kept in process for the catalog TTL (`lib/photoResolve.ts`).
-  BotID is off in the image (`TP_BOT_CHECK=off`); the web ACL takes its place, and the task env `TP_EDGE_GATE=on` makes
+  The web ACL's rules are the whole bot check (Vercel BotID left with Vercel: no `botid` / `@vercel/functions`
+  package, `lib/botCheck.test.ts` guards it), and the task env `TP_EDGE_GATE=on` makes
   the BFF answer search, narration and "Send to advisor" only on `/api/browse/search`, `/api/trip/narrate` and
   `/api/trip/send` (the paths the web ACL
   sees after URL-decoding and normalizing, matched with `CONTAINS` so a dot-segment spelling, a leading
@@ -149,22 +150,23 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   404 `use_protected_path`, `lib/edgeGate.ts`). `TP_CLIENT_IP_SOURCE=cloudfront` takes the
   traveller's address from `CloudFront-Viewer-Address` (`lib/clientIp.ts`): behind CloudFront the leftmost
   `x-forwarded-for` entry is the viewer's own words. CloudFront caches only `/_next/static/*` and `/photo-cdn/*` (the latter keyed on `?v=`); pages
-  and `/api/*` go to the task (the catalog purge then drops the in-process ISR cache; the Vercel CDN purge is a no-op
-  there). Until the DNS switch Vercel keeps serving `tripplanner.lumiguides.it.com` and `vercel-deploy.yml` keeps
-  running; cut-over and rollback: root runbook `docs/ops/runbooks/tripplanner-web-ecs-cutover.md`.
+  and `/api/*` go to the task (the catalog purge drops the in-process ISR cache; there is no CDN entry to purge).
+  `tripplanner.lumiguides.it.com` is a CNAME to the distribution (S272 cut-over; the DNS switch and its Vercel
+  rollback target were removed at the Vercel retirement). Rollback = redeploy the previous image (Deploy Web Dev on
+  the reverted commit). Runbook: root `docs/ops/runbooks/tripplanner-web-ecs-cutover.md`.
 - **Security headers (AA-876)** on every response (`frontend/next.config.mjs`, same list as the CIS admin and
   portal): HSTS, `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, a minimal
   CSP (`frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'` — no `script-src` yet),
   `Permissions-Policy` (camera, microphone, geolocation off), and no `x-powered-by`. `frame-ancestors 'none'`
-  blocks any partner iframe of TripPlanner until an allow-list is designed (KAN-20 B2B). A production deploy
-  fails red if `https://aa-tripplanner.vercel.app/` lacks any of them ("Check the production security headers"
-  step in `vercel-deploy.yml`; TripPlanner has no UI smoke workflow, so this is its header smoke).
-- **Visual run (AA-994 S5b).** After every successful deploy, `vercel-deploy.yml` job `visual` calls
+  blocks any partner iframe of TripPlanner until an allow-list is designed (KAN-20 B2B). A deploy fails red if the
+  public host (through CloudFront) or the PR's preview image lacks any of them (`.github/scripts/check_security_headers.sh`
+  in `deploy-web-dev.yml`; TripPlanner has no UI smoke workflow, so this is its header smoke).
+- **Visual run (AA-994 S5b).** After every verified deploy, `deploy-web-dev.yml` job `visual` calls
   `.github/workflows/visual.yml` (also dispatchable with any `base_url`): Playwright (`e2e/visual/`, its own pinned
   package) opens every page of `e2e/visual/pages.ts` at 1440 x 900 and 390 x 844 in light and dark, checks no page-level
   horizontal overflow, no console / page error, no failed same-origin request, and uploads full-page PNGs + `report.json`
-  (14 days), with one table in the job summary and one PR comment. Previews use the deployment URL (skipped with a
-  notice while the project has no automation bypass), production the public host. Report-only: the deploy verdict
+  (14 days), with one table in the job summary. It captures the public host `https://tripplanner.lumiguides.it.com`
+  and reads no secret (no protected preview any more). Report-only: the deploy verdict
   (`result`) does not wait on it. `frontend/lib/visualPages.test.ts` fails when an `app/**/page.tsx` route is neither
   listed nor excluded with a reason.
 
@@ -238,11 +240,11 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   pins that tour's whole route through the existing apply-route flow (`&ask=1` opens the trip).
 - `/tours/[slug]` and `/destinations/[country]`: Server Components with ISR (30 min, the browse
   CDN TTL), JSON-LD (`TouristTrip`, `TouristDestination`), `sitemap.xml`, `robots.txt`.
-- **Preview until go-live (TL-24, S262):** every deployment, the Dev host included, is a preview unless its Vercel env
-  sets `SITE_INDEXING=on` (`frontend/lib/siteMode.ts`): root-layout robots `noindex, nofollow`, an `X-Robots-Tag:
+- **Preview until go-live (TL-24, S262):** every deployment, the Dev host included, is a preview unless its runtime
+  env sets `SITE_INDEXING=on` (`frontend/lib/siteMode.ts`): root-layout robots `noindex, nofollow`, an `X-Robots-Tag:
   noindex, nofollow` header on every response (`next.config.mjs`), `robots.txt` without the sitemap line (crawl rules
-  kept so crawlers read the noindex), and a "Preview site" line in the footer. `VERCEL_ENV` cannot be used: the Dev
-  host is a Vercel production deployment. Go-live sets the flag on the live project only.
+  kept so crawlers read the noindex), and a "Preview site" line in the footer. No other variable decides it. Go-live
+  sets the flag on the live task only.
 - AA-995 (S254) puts the rest of the customer pages on "Golden Hour": `/destinations/[country]` (photo hero under the
   transparent header → tours carousel / grid → places map + list → navy CTA band → "Around {country}" ribbon),
   `/tours/[slug]` (gallery strip / mosaic → title, key facts, chips → highlights → day-by-day timeline → where you go
@@ -258,8 +260,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `/destinations` and the tour cards of a destination page. Every other photo (places list, photo ribbons, home)
   keeps the catalog URL. Same browse reads per page as before. Since S256 a resolved photo-CDN file is served
   **same-origin** as `/photo-cdn/<path>?v=…`, an external rewrite in `next.config.mjs` to the CIS photo CDN
-  (`img.lumiguides.it.com`, AA-844) with `x-vercel-enable-rewrite-caching: 1`, so the Vercel CDN caches the versioned
-  file and the browser reuses the HTML connection (no preconnect needed). The hero also asks the catalog for
+  (`img.lumiguides.it.com`, AA-844); CloudFront caches the versioned file (behaviour `/photo-cdn/*`, `?v=` in the
+  cache key, AA-CIS-Infra `tripplanner_web_edge.tf`) and the browser reuses the HTML connection (no preconnect needed). The hero also asks the catalog for
   `?size=medium` (960 w) and adds it to the srcset only when CIS redirects it to a file (CIS answers 422 today).
   The first-row tiles of `/destinations` load eagerly (the first is the LCP); the others stay lazy.
   Since S258 the static map (destination and tour pages) and the destination page's place thumbnails render through
@@ -269,14 +271,13 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - **On-demand purge on a CIS tour lifecycle event (AA-987).** CIS posts one HMAC-signed notice per event of
   `catalog.v_tour_lifecycle_outbox` (CIS job `tripplanner_purge`, retried with backoff, swept every 5 min) to
   `POST /api/revalidate/catalog` (`app/api/revalidate/catalog/route.ts`, logic in `lib/catalogPurge.ts`). Header
-  `X-AA-Signature: t=<unix s>,v1=<hex hmac-sha256 of "t.body">`, secret = Vercel env `CATALOG_REVALIDATE_SECRET`
+  `X-AA-Signature: t=<unix s>,v1=<hex hmac-sha256 of "t.body">`, secret = task env `CATALOG_REVALIDATE_SECRET`
   (same value as CIS secret `aa-cis/<env>/tripplanner-revalidate-hmac`), 5-minute timestamp window, body contract
   `catalog.tour.lifecycle.v1` (`events[]`: `event_id`, `source_id`, `event`, …). It drops every cache that can show the
   old state: `revalidateTag("tp-catalog", { expire: 0 })` (every catalog fetch of `lib/catalog.ts` carries that tag),
-  `revalidatePath` of `/`, `/tours/[slug]`, `/destinations/[country]`, and the Vercel CDN entries of `/api/browse`
-  (`dangerouslyDeleteByTag("tp-catalog")`, `@vercel/functions`). A cacheable `/api/browse` answer is now kept by the
-  CDN for the Lambda TTL (`vercel-cdn-cache-control`, tag `vercel-cache-tag: tp-catalog`) and by the browser for 60 s
-  at most. Idempotent (a replay purges again); 401 bad / stale signature, 400 bad body, 503 secret unset, 502 purge
+  `revalidatePath` of `/`, `/tours/[slug]`, `/destinations/[country]`. No CDN step: CloudFront caches no page and no
+  `/api/*` answer (the Vercel CDN tag purge left with the Vercel project, AA-1038). A cacheable `/api/browse` answer
+  is kept by the browser for 60 s at most. Idempotent (a replay purges again); 401 bad / stale signature, 400 bad body, 503 secret unset, 502 purge
   failed (CIS retries). One `{"evt":"catalog_purge",…}` log line per call (event ids and kinds, no source ids).
 - **Tours AA no longer serves (AA-986 L6, root ADR 0015 decision 5 / Q5).** Lists, countries, the sitemap and every
   planner read already hide them (they read `catalog.v_tour` / `v_tour_component`, live tours only). A tour page of a
@@ -285,8 +286,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   retired suffixes (`lib/goneTours.ts`, `GET /browse/catalog/retired`, refreshed every minute per instance in the
   background; AA-987: a request waits for the browse call, at most 1.5 s, only when the list is over 2 minutes old or
   was never loaded, so a retired tour answers 410 within 2 minutes on every instance; a failed refresh keeps the last
-  list and makes nobody wait until its retry is due). The 410 is never kept by the CDN (`vercel-cdn-cache-control:
-  no-store`, browser 60 s), so a restored tour comes back as fast. The browse Lambda reads the CIS tombstone `catalog.v_tour_retired` (CIS 274) and
+  list and makes nobody wait until its retry is due). The 410 is never kept by the CDN (CloudFront caches no
+  page; browser 60 s), so a restored tour comes back as fast. The browse Lambda reads the CIS tombstone `catalog.v_tour_retired` (CIS 274) and
   answers `/browse/catalog/tours/{slug}` 410 for a retired key too (the page shows 404 until the proxy list catches
   up). A **paused** key stays **404** (temporary). A **superseded** version needs nothing: the slug suffix is the
   stable `source_id`, so the old slug finds the current version and the page permanent-redirects (308) to its slug.
@@ -326,7 +327,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - Runtime: **Python 3.12**. The two functions are separate deploy units so the cacheable read
   path and the expensive stateful path scale and cache independently.
 - **Edge shared secret** (`backend/shared/auth.py`, AA-878): both Lambdas check the
-  `X-TripPlanner-Key` header the BFF sends (Vercel env `TRIPPLANNER_API_KEY`, same value). On Lambda
+  `X-TripPlanner-Key` header the BFF sends (task env `TRIPPLANNER_API_KEY`, same value). On Lambda
   the expected key is read from Secrets Manager by the name `tripplanner/<ENVIRONMENT>/api-key`
   (derived from the existing `ENVIRONMENT` env, IAM-role read, cached 10 min per container so a
   rotation lands without a redeploy); a `TRIPPLANNER_API_KEY` env value still wins (local dev). It
@@ -451,7 +452,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   with `PREFERRED_CHALLENGE=EMAIL_OTP` (an existing one), else `ResendConfirmationCode` (a sign-up never confirmed);
   the browser gets the same answer in every case.
   - **Only this BFF may create a traveller (sign-up proof).** `SignUp` carries `ValidationData` `bff_ts` + `bff_proof`
-    = hex HMAC-SHA256(Vercel env `TP_COGNITO_SIGNUP_PROOF_KEY`, `"<email>\n<bff_ts>"`); the Infra pre sign-up trigger
+    = hex HMAC-SHA256(task env `TP_COGNITO_SIGNUP_PROOF_KEY`, `"<email>\n<bff_ts>"`); the Infra pre sign-up trigger
     refuses a native sign-up without a valid proof less than 5 minutes old. Otherwise anyone could pre-register a
     traveller's address with a password through the public API and inherit the account once the traveller confirmed
     it with our code (review round, S250). So every UNCONFIRMED traveller was created here, without a password.
@@ -468,7 +469,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   header link and the send form; `GET /api/me` (401 `sign_in_required` when signed out) returns the email and the
   Lambda's `/me/trips`. My Trips shows the sign-in prompt only on 401; any other failure shows Try again and Sign out.
   - Cookies (`lib/authSession.ts`, sealed with AES-256-GCM by `lib/seal.ts`, a copy of AA-Partner's with its own
-    purposes and salt; key = Vercel env `TP_SESSION_SECRET`): `__Host-tp_auth` (access token, its expiry, email),
+    purposes and salt; key = task env `TP_SESSION_SECRET`): `__Host-tp_auth` (access token, its expiry, email),
     `__Host-tp_refresh` (refresh token; its own cookie because a Cognito refresh token is about 1.8 kB) and
     `__Host-tp_signin` (the pending code step, 10 minutes). HttpOnly, Secure, SameSite=Lax, Path=/. When fewer than
     60 s of the access token remain, the BFF refreshes it (`GetTokensFromRefreshToken`; rotation is on, a rotated
@@ -479,9 +480,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
     Only the no-store routes `/api/auth/*`, `/api/me` and `/api/trip` set them, never a CDN-cached page.
   - `/api/trip` forwards the access token (`x-tripplanner-access`) when signed in, so My Trips opens a trip on any
     browser and signed-in edits link their session.
-  - WAF: every Cognito call carries `x-aa-traveller-bff` = Vercel env `TP_COGNITO_BFF_KEY` (AA-CIS-Infra secret
+  - WAF: every Cognito call carries `x-aa-traveller-bff` = task env `TP_COGNITO_BFF_KEY` (AA-CIS-Infra secret
     `tripplanner/<env>/cognito-bff-key`) and `X-AA-Traveller-IP` = the first `x-forwarded-for` address, so the Cognito
-    web ACL counts each traveller, not the shared Vercel egress address (Infra rule `BffRatePerTravellerIp`). The two
+    web ACL counts each traveller, not the shared egress address of the web server (Infra rule `BffRatePerTravellerIp`). The two
     go together: without a valid traveller address neither is sent, and the call is counted per egress IP.
   - Sign-in claims every unowned guest trip of this browser (§Traveller accounts); the privacy page tells travellers
     to sign out on a shared computer.
@@ -736,8 +737,8 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   `TP_LEAD_CRM_PULL_FRESH_S` (600 s; the list call is the tenant's beacon, kept in `ai_rate_counter` scope `crm_pull`),
   without a webhook key or an e-mail sender, or when the webhook URL is not https or its host does not resolve (2 s
   bound, `TP_LEAD_WEBHOOK_RESOLVE_TIMEOUT_S`) to public addresses only: `leads.webhook_target_problem`). Also before
-  storing: BotID on `POST /api/trip/send` in the BFF (403
-  `bot_check_failed`), then per guest session and per traveller IP limits (`ratelimit` scopes `send` / `send_ip`, 5 and
+  storing: the web ACL's rate rule and Challenge on `POST /api/trip/send` (AA-1038; a challenged send never reaches
+  the app and the form shows `bot_check_failed`'s "reload the page" line), then per guest session and per traveller IP limits (`ratelimit` scopes `send` / `send_ip`, 5 and
   20 an hour, 429 `rate_limited`) and a per-tenant cap of leads in 24 hours (`TP_LEAD_TENANT_DAILY_CAP`, 200, 429
   `lead_cap_reached`; counted in the send transaction after `pg_advisory_xact_lock(hashtext('tp_lead_cap:' ||
   tenant_id))`, so concurrent sends of one tenant never pass it). A phone needs `+` and the country code (contract
@@ -876,14 +877,14 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   jobs Lambda kind `tp_retention_ai_rate_counter` deletes windows older than 2 days (DM-7.2). Optional stage caps
   `TP_DAILY_SPEND_CAP_SEARCH_USD` / `_COMPOSE_USD` (unset = combined cap only) and a once-a-day `llm_spend_alert`
   line at 80 % and 100 % of a cap.
-- **Bot check (AA-1015, S262)**: Vercel BotID **Basic** (free on every plan; `checkLevel: "basic"` pinned on client
-  and server, so the paid Deep Analysis never runs) in the BFF before the Lambda, on search and narration only
-  (`frontend/lib/botCheck.ts`). The planner calls them at their own paths, `GET /api/browse/search` and
-  `POST /api/trip/narrate` (the BotID client matches the pathname, so map tiles and trip edits never wait for the
-  challenge); the shared branches (`resource=search`, `op: "narrate"`) check whatever the path. Refused: 403
-  `bot_check_failed`, not counted by the limits, calm EN / VI line. One build-time switch for client and server,
-  `NEXT_PUBLIC_TP_BOT_CHECK` from `TP_BOT_CHECK` (`next.config.mjs botCheckFlag`; unset = on for a Vercel build).
-  A check that throws fails open with a `bot_check_error` line (limits + spend cap still apply).
+- **Bot check (AA-1015, S262; AA-1038)**: the three TripPlanner rules of the ALB web ACL in front of the ECS task
+  (rate per viewer IP, a tighter rate and a silent Challenge on the protected paths), never the app. The planner
+  calls the protected calls at their own paths, `GET /api/browse/search`, `POST /api/trip/narrate` and
+  `POST /api/trip/send` (`frontend/lib/botCheck.ts`), so map tiles and trip edits are never challenged; the edge gate
+  (`lib/edgeGate.ts`, task env `TP_EDGE_GATE=on`) answers the older spellings 404 so nothing skips the rules. A
+  challenged call (202 `x-amzn-waf-action: challenge`) never reaches the app, is not counted by the limits and shows
+  a calm EN / VI line (`botCheck` notice). Vercel BotID did this until the Vercel retirement (AA-1038): no `botid`
+  package, build flag or client init is left.
 - **Fail closed + degrade mode (AA-642 S0, root ADR 0009 decisions 5 and 6)**: the gateway never calls a
   model it cannot account for. Spend counter unreadable (or a counter write failed in the last 60 s,
   `SPEND_UNREADABLE_HOLD_SECONDS`, per container) → `budget_status` is `exhausted` with reason
@@ -1004,7 +1005,7 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   / `narration_cache_skipped` lines. One `request_completed` line per invocation: method, **route name** (never the
   path: it carries trip and session ids), status, `duration_ms`. Everything passes `backend/shared/scrub.py` (a copy of
   AA-Booking's: e-mails, `+` phones, Bearer tokens, JWTs, key-like query values, PII-named keys). BFF: one
-  `{"evt":"bff_upstream","route","op","status","ms","request_id"}` line per upstream call (Vercel logs).
+  `{"evt":"bff_upstream","route","op","status","ms","request_id"}` line per upstream call (the web task's log group `/ecs/aa-tripplanner-dev-web`).
 - **Sentry, only when a DSN is found.** Lambdas: the `SENTRY_DSN` env (local, tests) or, on Lambda with no env value,
   the secret `tripplanner/<ENVIRONMENT>/sentry-dsn` read by name once per cold start (same pattern as the edge key; no
   DSN in the Lambda env; Infra creates the shell and grants the read); no value / failed read = Sentry off, logged as
@@ -1017,13 +1018,14 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   `{"sentry_test": true}` (not reachable over HTTP) raises `SentryTestError`, which must appear in Sentry with its fake
   e-mail shown as `[email]`. Next.js: `frontend/instrumentation.ts` `onRequestError`
   posts server-side errors with a dependency-free reporter (`lib/sentryLite.ts`, no `@sentry/nextjs`): no browser
-  errors, no source maps, no headers / query / body; `release` = `VERCEL_GIT_COMMIT_SHA`.
+  errors, no source maps, no headers / query / body; `release` = `SENTRY_RELEASE` (the image's commit),
+  `environment` = `SENTRY_ENVIRONMENT` (task env).
 
 ## Deploy & CI
 
-- **Frontend**: Vercel, deployed by `.github/workflows/vercel-deploy.yml` (preview per PR that
-  touches `frontend/**`, production on such a merge to `main`); Git integration off via
-  `frontend/vercel.json`; needs the repo secret `VERCEL_TOKEN`.
+- **Frontend**: ECS Dev behind CloudFront, deployed by `.github/workflows/deploy-web-dev.yml` on a merge to `main` that
+  touches `frontend/**` (PR: the `preview` job checks the image in the runner). The Vercel project and its deploy
+  workflow were retired (AA-1038).
 - **Backend Lambdas**: deployed via GitHub Actions assuming the OIDC role
   `aa-tripplanner-dev-app-deploy` (an Infra-owned IAM role). The role's trust is scoped to this
   repo through the org OIDC subject
@@ -1039,13 +1041,13 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   Lambda turns the run red.
 - **Post-deploy verify (AA-993 V4, root ADR 0016 D3)**: `.github/workflows/post-deploy-verify.yml` (app `web` |
   `lambdas`; `workflow_call` from the deploy workflows, `workflow_dispatch` with `expected_sha` from `main`), script
-  `.github/scripts/post_deploy_verify.sh`, rows `.github/verify/{web,lambdas}.rows`. Web, after every production
-  deploy: `GET https://aa-tripplanner.vercel.app/api/health` → 200 with `git_sha` = the deployed commit
-  (`steps.plan.outputs.sha`) and `version` = its manifest. Lambdas: each function `Active`, `LastUpdateStatus`
+  `.github/scripts/post_deploy_verify.sh`, rows `.github/verify/{web,lambdas}.rows`. Web, after every verified ECS
+  deploy (job `release` of `deploy-web-dev.yml`): `GET https://tripplanner.lumiguides.it.com/api/health` → 200 with
+  `git_sha` = the deployed commit (`github.sha`) and `version` = its manifest. Lambdas: each function `Active`, `LastUpdateStatus`
   `Successful`, `CodeSha256` = the uploaded zip, whose S3 metadata `git-sha` / `app-version` = the deployed commit /
   version (written by the upload step), plus the smoke rows above. Red/green only, table in the job summary; a
-  `result` job per deploy workflow is red when the deploy or verify did not succeed (Vercel: production path only;
-  previews unchanged). A PR that adds a route or Lambda worth guarding adds a row.
+  `result` job per deploy workflow is red when the deploy or verify did not succeed (Deploy Web Dev: verify and
+  release may skip only while the service runs no task). A PR that adds a route or Lambda worth guarding adds a row.
 - **CI checks**: required "Backend (pytest)", "Frontend (lint + build)", "Migrations (lint, PG 15
   replay)" (on a PR it also refuses an added line naming a migration by an old number after a renumber,
   `.github/scripts/migration_refs.py`, AA-1024 l22; a history note carries `old-mig-ok`; and an added tp-NNN that is not main max + 1 on the main of the run, or that an older open PR also adds under another name, `.github/scripts/migration_numbers.py`: no merge queue here, so re-run the PR's CI after another migration PR merged); plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan
@@ -1064,13 +1066,10 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   (what the squash merge writes), and it fails when another workflow has a job named `gitleaks`. `.gitleaks.toml`
   carries a copy of the gitleaks v8.30.1 default rules and no path allowlist, so every file is scanned (`.svg`,
   `go.sum`, `node_modules/`, images, lock files); UTF-16 files are transcoded to UTF-8 and scanned too.
-- **Security headers on previews (AA-879)**: `vercel-deploy.yml` step "Check the preview security headers"
-  (`.github/scripts/check_security_headers.sh`, GET `/` through `vercel curl`). It needs the aa-tripplanner
-  project's "Protection Bypass for Automation" in Vercel (no GitHub secret). Until that exists the step runs
-  with `ALLOW_PROTECTED=1`: a Vercel-protection answer (401/403, SSO redirect, no bypass token) is a warning,
-  while a page the app answers without a header still fails (tests: `.github/scripts/test_check_security_headers.py`,
-  run in "Backend (pytest)"). Production keeps its own
-  header check on `https://aa-tripplanner.vercel.app/` (AA-876).
+- **Security headers (AA-879, AA-876)**: `.github/scripts/check_security_headers.sh` (plain curl, optional
+  `RESOLVE` pin) in `deploy-web-dev.yml`: on the PR's preview image (`/privacy`) and on the public host through the
+  distribution (`/`). A missing header or no answer fails (tests: `.github/scripts/test_check_security_headers.py`,
+  run in "Backend (pytest)"). The Vercel Deployment Protection branches left with the Vercel project (AA-1038).
 - **Releases (AA-891)**: release-please in manifest mode (`release-please-config.json`,
   `.release-please-manifest.json`, `CHANGELOG.md`, tags `vX.Y.Z`, `bump-minor-pre-major`), run by
   `.github/workflows/release-please.yml` on push to `main` in the environment `release` with an `aa-ecosys-ci-bot`
@@ -1078,7 +1077,7 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   has none). A release commit touches only root files, so it deploys nothing; a build reports the manifest version
   of its commit: Lambdas `version` next to `git_sha` on log lines and as a Sentry tag (`backend/VERSION`, written
   by `package_lambdas.sh`); web app `GET /api/health` → `{"status","service","version","git_sha"}` (`APP_VERSION` /
-  `GIT_SHA` set per deployment by `vercel-deploy.yml`).
+  `GIT_SHA` baked into the image by `deploy-web-dev.yml`).
 
 ## Contracts with other apps
 

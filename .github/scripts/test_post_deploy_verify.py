@@ -12,7 +12,8 @@ Stdlib only (this suite runs before Python dependencies are installed), so the w
   EXPECTED_SHA is echoed nowhere.
 - .github/scripts/expected_release.sh reads the manifest version of the expected commit and never echoes a bad SHA.
 - The workflows: post-deploy-verify.yml is callable + dispatchable (expected_sha, app) with a per-run concurrency
-  group on the call path and no `environment:` on the OIDC job; vercel-deploy.yml verifies production only;
+  group on the call path and no `environment:` on the OIDC job; deploy-web-dev.yml verifies the public host after
+  every verified ECS deploy (AA-1038: the Vercel deploy is retired);
   deploy-lambdas.yml lost its inline smoke, uploads the metadata the verify reads and calls the verify with
   `secrets: inherit`; each `result` step runs here with the `needs` JSON GitHub would pass.
 """
@@ -36,7 +37,8 @@ SCRIPT = HERE / "post_deploy_verify.sh"
 EXPECTED_RELEASE = HERE / "expected_release.sh"
 WORKFLOWS = ROOT / ".github" / "workflows"
 VERIFY_WF = (WORKFLOWS / "post-deploy-verify.yml").read_text()
-VERCEL_WF = (WORKFLOWS / "vercel-deploy.yml").read_text()
+WEB_WF = (WORKFLOWS / "deploy-web-dev.yml").read_text()
+PUBLIC = "https://tripplanner.lumiguides.it.com"
 LAMBDAS_WF = (WORKFLOWS / "deploy-lambdas.yml").read_text()
 
 SHA = "3f2a9c1e7b4d6a0f5e8c2b1d9a7f4e6c0b3d5a2e"
@@ -391,7 +393,7 @@ class VerifyWorkflowTest(unittest.TestCase):
             self.assertIn(f"|| 'post-deploy-verify-tripplanner-{app}' }}}}", block)
             self.assertIn("cancel-in-progress: false", block)
         # Never one of the deploy groups.
-        self.assertNotRegex(VERIFY_WF, r"group: *(deploy-lambdas|vercel-deploy)")
+        self.assertNotRegex(VERIFY_WF, r"group: *(deploy-lambdas|deploy-web-dev)")
 
     def test_unknown_app_cannot_skip_both_jobs(self) -> None:
         self.assertIn("if: inputs.app != 'lambdas'", _job(VERIFY_WF, "web"))
@@ -411,7 +413,8 @@ class VerifyWorkflowTest(unittest.TestCase):
             block = _job(VERIFY_WF, job)
             self.assertIn("bash .github/scripts/expected_release.sh", block)
             self.assertIn('bash .github/scripts/post_deploy_verify.sh "$APP"', block)
-            self.assertIn("BASE: https://aa-tripplanner.vercel.app", block)
+            self.assertIn(f"BASE: {PUBLIC}", block)
+            self.assertNotIn("vercel", block.lower())
             # Inputs reach the scripts through env, never `${{ }}` inside `run:`.
             for run in re.findall(r"run: (.*)", block):
                 self.assertNotIn("${{", run)
@@ -423,55 +426,50 @@ class VerifyWorkflowTest(unittest.TestCase):
             self.assertRegex(rows, rf"\|lambda\|{re.escape(fn)} [a-z]+\.zip\|Successful\|")
 
 
-class VercelDeployWorkflowTest(unittest.TestCase):
-    def test_verify_is_production_only_on_the_deployed_sha(self) -> None:
-        block = _job(VERCEL_WF, "verify")
-        self.assertIn("needs: deploy", block)
-        self.assertIn("if: needs.deploy.outputs.target == 'production'", block)
+class DeployWebDevWorkflowTest(unittest.TestCase):
+    """AA-1038: the web release verify moved from the retired vercel-deploy.yml to the ECS deploy."""
+
+    def test_release_runs_after_a_verified_deploy_on_this_commit(self) -> None:
+        block = _job(WEB_WF, "release")
+        self.assertIn("needs: verify", block)
+        self.assertIn("if: needs.verify.result == 'success'", block)
         self.assertIn("uses: ./.github/workflows/post-deploy-verify.yml", block)
         self.assertIn("app: web", block)
-        self.assertIn("expected_sha: ${{ needs.deploy.outputs.sha }}", block)
+        self.assertIn("expected_sha: ${{ github.sha }}", block)
         self.assertIn("from_deploy: true", block)
         self.assertNotIn("secrets: inherit", block)
-        # deploy.outputs.sha is steps.plan.outputs.sha, the GIT_SHA the deploy passes to Vercel.
-        self.assertIn("sha: ${{ steps.plan.outputs.sha }}", VERCEL_WF)
-        self.assertIn('--env "GIT_SHA=$SHA"', VERCEL_WF)
+        # The called workflow's lambdas job asks for id-token: write, checked even when its `if:` skips it.
+        self.assertIn("id-token: write", block)
+        # The image reports github.sha: deploy-web-dev builds with --build-arg GIT_SHA="${GITHUB_SHA}".
+        self.assertIn('--build-arg GIT_SHA="${GITHUB_SHA}"', WEB_WF)
 
-    def result(self, needs: dict, event: str, target: str = "") -> subprocess.CompletedProcess[str]:
-        job = _job(VERCEL_WF, "result")
-        self.assertIn("if: always()", job)
-        self.assertIn("needs: [deploy, verify]", job)
-        env = {"PATH": os.environ["PATH"], "NEEDS": json.dumps(needs), "EVENT": event, "INPUT_TARGET": target}
+    def result(self, needs: dict, running: str = "true") -> subprocess.CompletedProcess[str]:
+        job = _job(WEB_WF, "result")
+        self.assertIn("if: always() && github.event_name != 'pull_request'", job)
+        self.assertIn("needs: [config, deploy, verify, release]", job)
+        env = {"PATH": os.environ["PATH"], "NEEDS": json.dumps(needs), "RUNNING": running}
         return subprocess.run(["bash", "-c", _run_block(job)], env=env, capture_output=True, text=True, timeout=60)
 
     @staticmethod
-    def needs(deploy: str, verify: str) -> dict:
-        return {"deploy": {"result": deploy, "outputs": {}}, "verify": {"result": verify, "outputs": {}}}
+    def needs(**over: str) -> dict:
+        res = {j: "success" for j in ("config", "deploy", "verify", "release")} | over
+        return {j: {"result": r, "outputs": {}} for j, r in res.items()}
 
     @unittest.skipUnless(HAVE_TOOLS, "needs bash and jq")
-    def test_production_green_only_when_deployed_and_verified(self) -> None:
-        self.assertEqual(self.result(self.needs("success", "success"), "push").returncode, 0)
-        self.assertEqual(self.result(self.needs("success", "success"), "workflow_dispatch", "production").returncode, 0)
-        for deploy, verify in (("success", "skipped"), ("success", "failure"), ("failure", "skipped"),
-                               ("skipped", "skipped"), ("success", "cancelled")):
-            for event, target in (("push", ""), ("workflow_dispatch", "production")):
-                with self.subTest(deploy=deploy, verify=verify, event=event):
-                    r = self.result(self.needs(deploy, verify), event, target)
-                    self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-                    self.assertIn("is not deployed and verified", r.stdout)
+    def test_green_only_when_deployed_verified_and_released(self) -> None:
+        self.assertEqual(self.result(self.needs()).returncode, 0)
+        for over in ({"release": "failure"}, {"release": "skipped"}, {"verify": "failure", "release": "skipped"},
+                     {"deploy": "failure", "verify": "skipped", "release": "skipped"}, {"release": "cancelled"}):
+            with self.subTest(**over):
+                r = self.result(self.needs(**over))
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("Deploy Web Dev is not verified", r.stdout)
 
     @unittest.skipUnless(HAVE_TOOLS, "needs bash and jq")
-    def test_production_red_when_verify_result_is_missing(self) -> None:
-        needs = self.needs("success", "success")
-        del needs["verify"]
-        self.assertEqual(self.result(needs, "push").returncode, 1)
-
-    @unittest.skipUnless(HAVE_TOOLS, "needs bash and jq")
-    def test_preview_behaviour_is_unchanged(self) -> None:
-        self.assertEqual(self.result(self.needs("success", "skipped"), "pull_request").returncode, 0)
-        self.assertEqual(self.result(self.needs("skipped", "skipped"), "pull_request").returncode, 0)  # Dependabot
-        self.assertEqual(self.result(self.needs("success", "skipped"), "workflow_dispatch", "preview").returncode, 0)
-        self.assertEqual(self.result(self.needs("failure", "skipped"), "pull_request").returncode, 1)
+    def test_desired_count_zero_may_skip_verify_and_release_only(self) -> None:
+        self.assertEqual(self.result(self.needs(verify="skipped", release="skipped"), running="false").returncode, 0)
+        r = self.result(self.needs(deploy="failure", verify="skipped", release="skipped"), running="false")
+        self.assertEqual(r.returncode, 1)
 
 
 class DeployLambdasWorkflowTest(unittest.TestCase):

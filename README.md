@@ -14,7 +14,7 @@ AA-Booking app.
 ## Architecture
 
 ```
-Browser → Next.js (Vercel) → BFF /api/* (holds TRIPPLANNER_API_KEY)
+Browser → CloudFront + web ACL → Next.js (ECS Fargate) → BFF /api/* (holds TRIPPLANNER_API_KEY)
         → API Gateway HTTP v2 (X-TripPlanner-Key)
             ├─ Lambda A  browse    stateless reads: tiles, destinations, search (one embed call), routes
             └─ Lambda B  assembly  trip event log, sequencing, narration (Claude), send-to-advisor,
@@ -59,14 +59,16 @@ tests always; backend tests of the changed modules; migration lint; `npm run lin
 
 ## Deploy
 
-- **Frontend deploys:** CI-created via `.github/workflows/vercel-deploy.yml` (only when `frontend/**`
-  changes: PR → preview, `main` → production); the Vercel Git integration is off via
-  `frontend/vercel.json` (`git.deploymentEnabled: false`). Needs the repo secret `VERCEL_TOKEN`.
+- **Frontend deploys:** merge to `main` touching `frontend/**` → `.github/workflows/deploy-web-dev.yml` (image on an
+  arm64 runner → ECR → ECS service `aa-tripplanner-dev-web` → verify through CloudFront); on a PR its `preview` job
+  checks the image in the runner. The service, CloudFront and the web ACL rules are Terraform in AA-CIS-Infra
+  (`tripplanner_web.tf`, `tripplanner_web_edge.tf`). The Vercel project and `vercel-deploy.yml` were retired
+  (AA-1038).
 - **Lambdas:** merge to `main` touching `backend/**` → `.github/workflows/deploy-lambdas.yml`
   (OIDC role `aa-tripplanner-dev-app-deploy`, defined in AA-CIS-Infra; its ARN is the repo secret
   `AWS_DEPLOY_ROLE_ARN`, AA-902) updates both functions' code. The functions, API Gateway, S3 artifacts and secrets themselves are Terraform in
   `AA-CIS-Infra/accounts/aa365/tripplanner.tf`.
-- **Post-deploy verify (AA-993):** both deploy workflows end with `post-deploy-verify.yml` (production
+- **Post-deploy verify (AA-993):** both deploy workflows end with `post-deploy-verify.yml` (the public host's
   `/api/health` on the deployed commit + version; each Lambda's CodeSha256 = the zip of the deployed commit, plus
   browse/assembly reads). A failed or skipped verify turns the deploy run red (`result` job). Re-run by hand:
   Actions → "Post-deploy verify" → `app`, `expected_sha` (from `main`).
@@ -78,12 +80,12 @@ tests always; backend tests of the changed modules; migration lint; `npm run lin
 
 ## Environment variables
 
-Names only — values come from Secrets Manager / Lambda config (AA-CIS-Infra) or Vercel.
+Names only — values come from Secrets Manager / Lambda and ECS task config (AA-CIS-Infra) or image build args.
 
 | Where | Variables |
 |---|---|
 | Lambdas | `CIS_PUBLIC_API_BASE` (AA-812, photo URL base; defaults to the Dev CIS API), `TRIPPLANNER_DATABASE_URL` (or `TRIPPLANNER_DATABASE_URL_ARN`), `TRIPPLANNER_API_KEY`, `BEDROCK_REGION`, `BEDROCK_ACCT_PRIMARY`, `BEDROCK_ROLE_NAME_PRIMARY`, `BEDROCK_EXTERNAL_ID_PRIMARY` (acc3, the only LLM satellite since AA-998), `ADVISOR_NOTIFY_EMAIL` (optional log label, see below), `REQUIRE_REGISTRATION_BEFORE_HANDOFF` |
-| Frontend | `NEXT_PUBLIC_SITE_URL` (AA-812, canonical origin for metadata/sitemap), `NEXT_PUBLIC_MAPBOX_TOKEN` (also the static maps on tour/destination pages), `BROWSE_API_URL`, `TRIP_API_URL`, `TRIPPLANNER_API_KEY` (server-side only); AA-908 traveller sign-in (server-side only, Production + Preview, set by pipe): `TP_SESSION_SECRET` (at least 32 random characters, seals the session cookies) `TP_COGNITO_BFF_KEY` (= AA-CIS-Infra secret `tripplanner/<env>/cognito-bff-key`) and `TP_COGNITO_SIGNUP_PROOF_KEY` (= AA-CIS-Infra secret `tripplanner/<env>/cognito-signup-proof-key`; without it new addresses cannot sign up); without the first two sign-in answers "not available" and the planner works as a guest |
+| Frontend | `NEXT_PUBLIC_SITE_URL` (AA-812, canonical origin for metadata/sitemap), `NEXT_PUBLIC_MAPBOX_TOKEN` (also the static maps on tour/destination pages), `BROWSE_API_URL`, `TRIP_API_URL`, `TRIPPLANNER_API_KEY` (server-side only); `NEXT_PUBLIC_*` are image build args (`frontend/Dockerfile`), every other value is ECS task env or a Secrets Manager key (AA-CIS-Infra `tripplanner_web.tf`); AA-908 traveller sign-in (server-side only): `TP_SESSION_SECRET` (at least 32 random characters, seals the session cookies) `TP_COGNITO_BFF_KEY` (= AA-CIS-Infra secret `tripplanner/<env>/cognito-bff-key`) and `TP_COGNITO_SIGNUP_PROOF_KEY` (= AA-CIS-Infra secret `tripplanner/<env>/cognito-signup-proof-key`; without it new addresses cannot sign up); without the first two sign-in answers "not available" and the planner works as a guest |
 
 TripPlanner sends no e-mail: "Send to an advisor" writes the `inquiry.submitted` outbox row and AA-Booking
 e-mails staff when it opens the trip case (job `bk_notify_email`, AA-811). `assembly/notify.py` only logs the
@@ -121,17 +123,13 @@ Read them in the database, read-only, through the usual ECS exec pattern of the 
   (`x-tp-client-ip`) and the signed-in state (`x-tp-signed-in`, search only); the Lambdas trust them only with the
   right `x-tripplanner-key`. Without a trusted IP there is no per-IP limit; a counter that cannot be written lets the
   request through with an `ai_rate_counter_error` line (the spend cap still fails closed).
-- **Bot check (AA-1015, S262)** — Vercel BotID at the **Basic** level (free on every Vercel plan; Deep Analysis is
-  paid and pinned off per route) runs in the BFF before the two calls that can reach a model: the planner calls
-  `GET /api/browse/search` and `POST /api/trip/narrate` (their own paths, because the BotID client matches the
-  pathname; the old spellings `?resource=search` / `{op:"narrate"}` on `/api/browse` / `/api/trip` are checked too).
-  A failed check answers 403 `{"error":"bot_check_failed"}` before the Lambda (never counted by the limits), one
-  `bot_check_refused` line, and a calm EN / VI line in the planner. Switch: `TP_BOT_CHECK` on / off (Vercel env,
-  needs a redeploy); unset = on for a Vercel build, off for local `next dev` / `next start`, CI and tests. A check
-  that cannot run (Vercel API down, OIDC token missing) lets the request through with a `bot_check_error` line.
-  E2E: Playwright drives the real page, whose BotID client solves the challenge, so it passes on Vercel; a
-  headless `curl` gets the 403. To exempt a runner, use a Vercel Firewall bypass rule (BotID docs) or set
-  `TP_BOT_CHECK=off` on that environment and redeploy.
+- **Bot check (AA-1015, S262; AA-1038)** — the three TripPlanner rules of the ALB web ACL in front of the ECS task
+  (AA-CIS-Infra `modules/waf`): a rate rule per viewer IP, a tighter one and a silent JavaScript Challenge on the
+  protected paths `GET /api/browse/search`, `POST /api/trip/narrate` and `POST /api/trip/send`. The planner calls
+  those paths; the edge gate (`TP_EDGE_GATE=on`) answers the old spellings `?resource=search` / `{op:"narrate"|"send"}`
+  404 `use_protected_path`. A challenged call (202 `x-amzn-waf-action: challenge`) never reaches the app and shows a
+  calm EN / VI line. A real browser gets its token on the planner's document load, so Playwright passes; a headless
+  `curl` gets the 202. Vercel BotID did this until the Vercel retirement.
 - **Stage caps and the 80 % alert (AA-1015)** — `TP_DAILY_SPEND_CAP_SEARCH_USD` / `TP_DAILY_SPEND_CAP_COMPOSE_USD`
   (unset by default = only the combined `TP_DAILY_SPEND_CAP_USD`) stop one stage without touching the other. At 80 %
   and at 100 % of a cap each container prints one `llm_spend_alert` line a UTC day (`threshold` near / cap, `level`

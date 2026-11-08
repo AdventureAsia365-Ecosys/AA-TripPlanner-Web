@@ -283,11 +283,13 @@ test("sameOriginPhotoUrl rewrites only the photo CDN host and keeps path and que
   assert.equal(sameOriginPhotoUrl("not a url"), "not a url");
 });
 
-test("next.config.mjs proxies the same prefix to the same CDN host, with rewrite caching on", () => {
+test("next.config.mjs proxies the same prefix to the same CDN host", () => {
   const cfg = readFileSync(new URL("../next.config.mjs", import.meta.url), "utf8");
   assert.ok(cfg.includes(`const PHOTO_CDN_ORIGIN = "${PHOTO_CDN_ORIGIN}";`), "PHOTO_CDN_ORIGIN differs from next.config.mjs");
   assert.ok(cfg.includes(`const PHOTO_PROXY_PREFIX = "${PHOTO_PROXY_PREFIX}";`), "PHOTO_PROXY_PREFIX differs from next.config.mjs");
-  assert.match(cfg, /x-vercel-enable-rewrite-caching", value: "1"/);
+  // AA-1038: CloudFront caches /photo-cdn/* with its own cache policy (?v= in the key); the Vercel rewrite-caching
+  // header left with the Vercel project.
+  assert.doesNotMatch(cfg, /x-vercel-/);
 });
 
 test("sameFileAsHero matches a card photo that is one of the hero's files, compared on the resolved URL", () => {

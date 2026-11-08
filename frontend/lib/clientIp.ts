@@ -2,8 +2,9 @@
 // lib/tripProxy.ts) and the Cognito per-traveller WAF key (lib/cognito.ts). Which header carries it depends on the
 // edge in front of the server, so the source is a server env value, never something the request can choose:
 //
-//   TP_CLIENT_IP_SOURCE unset / "forwarded" (Vercel, local, CI): the first x-forwarded-for entry, else x-real-ip.
-//       The Vercel edge overwrites both, so a client cannot prepend to them there.
+//   TP_CLIENT_IP_SOURCE unset / "forwarded" (local `next dev` / `next start`, CI; no edge in front): the first
+//       x-forwarded-for entry, else x-real-ip. Only for a server no traveller reaches (it was the Vercel mode, where
+//       the edge overwrote both headers).
 //   TP_CLIENT_IP_SOURCE = "cloudfront" (the ECS task behind CloudFront, AA-CIS-Infra tripplanner_web.tf):
 //       CloudFront-Viewer-Address ("<ip>:<port>", IPv6 without brackets). CloudFront sets it from the TCP connection
 //       and a viewer cannot set it (forwarded by the origin request policy AllViewerAndCloudFrontHeaders); only
@@ -32,7 +33,7 @@ function asIp(value: string): string | null {
   return IPV4.test(v) || (v.includes(":") && IPV6.test(v)) ? v : null;
 }
 
-/** The configured source: only the exact "cloudfront" switches; anything else keeps the Vercel behaviour. */
+/** The configured source: only the exact "cloudfront" switches; anything else is the plain "forwarded" mode. */
 export function clientIpSource(env: Record<string, string | undefined> = process.env): ClientIpSource {
   return (env.TP_CLIENT_IP_SOURCE ?? "").trim().toLowerCase() === "cloudfront" ? "cloudfront" : "forwarded";
 }

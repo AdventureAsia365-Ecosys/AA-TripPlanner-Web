@@ -8,13 +8,14 @@ name: Deploy Web Dev
 # (env, secrets and size come from that revision, so a Terraform change reaches the task on the next deploy) -> update
 # the service -> wait stable -> check the running task has this image -> verify through CloudFront.
 #
-# Vercel keeps serving tripplanner.lumiguides.it.com until the DNS switch (root runbook
-# docs/ops/runbooks/tripplanner-web-ecs-cutover.md); vercel-deploy.yml keeps running until the Vercel retirement. Before
-# the switch the verify resolves the public host to the CloudFront distribution on this runner only (--resolve), so the
-# ECS copy is checked through the real edge (web ACL included) without touching DNS; after the switch it is the same
-# address.
+# This is the only deploy of the frontend: tripplanner.lumiguides.it.com points at the CloudFront distribution since the
+# S272 cut-over, and the Vercel project and its vercel-deploy.yml were retired (root runbook
+# docs/ops/runbooks/tripplanner-web-ecs-cutover.md section 4). The verify resolves the public host to the distribution
+# on this runner (--resolve: the same address public DNS gives), so the check goes through the real edge, web ACL
+# included. After it, `release` runs post-deploy-verify.yml (app web: health git_sha + the release-please version on the
+# public host) and `visual` runs visual.yml on the public host (report-only, never in `result`).
 #
-# Pull requests (frontend/** or this file): job `preview` replaces the per-PR Vercel preview for the image: it builds
+# Pull requests (frontend/** or this file): job `preview` checks the image of the PR head: it builds
 # the image from the PR head, starts it in the runner (the standalone `next start` server, with the ECS edge settings
 # TP_EDGE_GATE=on and TP_CLIENT_IP_SOURCE=cloudfront) and checks /api/health (this commit), a static page, the security
 # headers, the preview noindex header and the edge gate. No AWS, no secret, no push.
@@ -315,13 +316,44 @@ jobs:
           done
           echo "ECS serves ${PUBLIC_HOST} through CloudFront: health on ${GITHUB_SHA::7}, pages with catalog content, headers, the Challenge on search, narrate, send and the planner documents, ${TOUR} unchallenged, edge gate on the older spellings"
 
+  # AA-993 V4 (ADR 0016 D3), moved here from the retired vercel-deploy.yml (AA-1038): the public host answers
+  # /api/health with this commit and the release-please version of this commit. The called workflow's `lambdas` job asks
+  # for id-token: write, and GitHub checks a called workflow's job permissions against this caller even for a job its
+  # `if:` skips, so the ceiling here includes it; the `web` job that runs has contents: read only (no token, no secret).
+  release:
+    name: Post-deploy verify (release on the public host)
+    needs: verify
+    if: needs.verify.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/post-deploy-verify.yml
+    with:
+      app: web
+      expected_sha: ${{ github.sha }}
+      from_deploy: true
+
+  # AA-994 S5b, moved here from the retired vercel-deploy.yml (AA-1038): every public page at 1440 / 390, light / dark,
+  # on the public host. Report-only: `result` does not wait on it, so a red visual run never turns a deploy red.
+  visual:
+    name: Visual
+    needs: verify
+    if: needs.verify.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/visual.yml
+    with:
+      base_url: https://tripplanner.lumiguides.it.com
+      target: production
+      sha: ${{ github.sha }}
+
   result:
     name: Deploy Web Dev result
     runs-on: ubuntu-latest
     if: always() && github.event_name != 'pull_request'
-    needs: [config, deploy, verify]
+    needs: [config, deploy, verify, release]
     steps:
-      - name: Every job succeeded (verify may skip only when the service runs no task)
+      - name: Every job succeeded (verify and release may skip only when the service runs no task)
         env:
           NEEDS: ${{ toJSON(needs) }}
           RUNNING: ${{ needs.deploy.outputs.running }}
@@ -329,7 +361,7 @@ jobs:
           set -uo pipefail
           echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           BAD=$(echo "$NEEDS" | jq -r --arg running "$RUNNING" '[to_entries[]
-            | select(.value.result != "success" and ((.key == "verify" and .value.result == "skipped" and $running == "false") | not))
+            | select(.value.result != "success" and (((.key == "verify" or .key == "release") and .value.result == "skipped" and $running == "false") | not))
             | "\(.key)=\(.value.result)"] | join(", ")')
           if [ -n "$BAD" ]; then
             echo "::error::Deploy Web Dev is not verified: $BAD"

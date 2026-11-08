@@ -27,8 +27,8 @@ Mapbox's free tier covers map loads within monthly limits, which is enough for t
      datasets:read, vision:read) are enough for GL JS. Leave secret
      scopes unchecked.
    - Under **URL restrictions**, add your domains once they exist
-     (e.g. `http://localhost:3000`, and later the Vercel/production
-     domain). A URL-restricted public token only works for requests
+     (e.g. `http://localhost:3000` and the public host
+     `https://tripplanner.lumiguides.it.com`). A URL-restricted public token only works for requests
      coming from those origins, which limits abuse if the token leaks.
    - Note: you **cannot** add URL restrictions or secret scopes to the
      *default* public token — that's why we make a dedicated one for
@@ -39,13 +39,13 @@ Mapbox's free tier covers map loads within monthly limits, which is enough for t
 
 ## 3. Where the token goes
 
-### Frontend (Vercel / local)
+### Frontend (image build / local)
 `frontend/.env.local` (git-ignored):
 ```
 NEXT_PUBLIC_MAPBOX_TOKEN=pk.your_public_token_here
 ```
-In production these are set in the Vercel project's Environment
-Variables, not committed.
+On ECS the token is a build arg of the image (`frontend/Dockerfile`), from the repo secret `TP_MAPBOX_PUBLIC_TOKEN`
+(`.github/workflows/deploy-web-dev.yml`), never committed.
 
 ## 4. Free-tier limits to keep an eye on
 - Map loads (GL JS) have a monthly free allowance; beyond that they are

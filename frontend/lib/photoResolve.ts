@@ -76,8 +76,8 @@ export function preconnectOrigin(resolved: string | null | undefined, original: 
 }
 
 // AA-995 S256 (mobile LCP) — the LCP photo is served from the page's own origin. A CDN file URL is rewritten to
-// `/photo-cdn/<path>?<query>`, which next.config.mjs proxies to the CDN (Vercel external rewrite, cached at the edge on
-// the CDN's own `max-age`, the file URL being versioned by `?v=`). The browser then fetches the LCP image over the
+// `/photo-cdn/<path>?<query>`, which next.config.mjs proxies to the CDN (cached by CloudFront on the CDN's own
+// `max-age`, `?v=` in its cache key: the file URL is versioned by it). The browser then fetches the LCP image over the
 // HTTP/2 connection it already has for the HTML instead of opening a new one (DNS + TCP + TLS) to the CDN host:
 // measured with Lighthouse mobile on a local production build, see the root audit 2026-10-28-S256-aa995-lcp.
 // Only the CDN host is proxied (next.config.mjs keeps the same constant; lib/photoResolve.test.ts checks it), and
@@ -163,7 +163,7 @@ export async function resolveRedirect(url: string, signal?: AbortSignal): Promis
 // or inside the browser's lazy-load distance), each as an API Gateway round trip (~0.6 s observed) for the 302, then a
 // new connection to the CDN host. When the first paint came late, Lighthouse counted that chain before the LCP: the
 // same page measured 1.4 s or 3.4 s (LCP "render delay" 0.05 s or 2.5 s). Served same-origin from the resolved file,
-// those photos ride the HTML's HTTP/2 connection and the Vercel CDN cache like the LCP photo.
+// those photos ride the HTML's HTTP/2 connection and the CloudFront cache like the LCP photo.
 //
 // Resolves up to RESOLVE_MAX distinct catalog URLs in parallel under ONE shared deadline (RESOLVE_TIMEOUT_MS), so a
 // slow or failing catalog costs the ISR render at most that long, never one timeout per photo. Answer: catalog URL ->

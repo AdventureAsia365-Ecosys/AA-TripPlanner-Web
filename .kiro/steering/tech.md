@@ -1,8 +1,9 @@
 # Tech: AA_TripPlanner_AI
 
 ## Stack
-- Frontend: Next.js (App Router), TypeScript, Tailwind. Own Vercel
-  project, own domain — not a route inside AA-CIS-App. Map via Mapbox GL
+- Frontend: Next.js (App Router), TypeScript, Tailwind. Own ECS service
+  behind CloudFront (`aa-tripplanner-dev-web`, AA-1038; the Vercel project
+  was retired), own domain — not a route inside AA-CIS-App. Map via Mapbox GL
   JS (free tier, built-in clustering).
 - Backend: Python 3.12, TWO separate Lambda functions — not one. See
   "Why two Lambdas" below.
@@ -122,7 +123,7 @@ for the full picture. Deltas from the original plan above:
   Lambdas verify a shared secret header `X-TripPlanner-Key`
   (backend/shared/auth.py), which only the server-side BFF sends. Secret
   is `tripplanner/dev/api-key` (Terraform `random_password`), injected as
-  the Lambda env `TRIPPLANNER_API_KEY` and set in Vercel env. Disabled
+  the Lambda env `TRIPPLANNER_API_KEY` and in the web task env. Disabled
   when the env is empty (local/tests). A JWT/authorizer + CloudFront are
   still deferred.
 - **Compose model id**: `global.anthropic.claude-sonnet-4-6` (NOT `us.`).
@@ -138,13 +139,9 @@ for the full picture. Deltas from the original plan above:
   Semantic search only returns rows with a populated embedding.
 - **Search UI**: the FilterChips search box calls the semantic
   `/browse/search` endpoint (debounced); the map shows ranked results.
-- **Frontend deploy (Vercel, Root Directory = frontend)**: copy
-  `frontend/.vercel` to the repo root, then run
-  `vercel deploy --prod --yes --archive=tgz` FROM THE REPO ROOT (remote
-  build applies Root Directory correctly). Do NOT run `vercel --prod` from
-  `frontend/` (looks for `frontend/frontend` → ENOENT). Do NOT
-  `vercel pull` from the repo root (writes a bad microfrontends
-  vercel.json).
+- **Frontend deploy (ECS)**: `.github/workflows/deploy-web-dev.yml` on a
+  merge to `main` touching `frontend/**` (image → ECR → ECS service, verify
+  through CloudFront). No Vercel deploy any more (AA-1038).
 - **Local AWS + MFA**: terraform/boto3 under a non-interactive shell hit
   an MFA prompt for the assume-role profiles. Workaround:
   `aws configure export-credentials --profile <p> --format env`, eval the

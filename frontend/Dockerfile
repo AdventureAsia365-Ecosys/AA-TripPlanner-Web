@@ -18,10 +18,9 @@ COPY . .
 # (lib/renderMode.ts, NEXT_OUTPUT=standalone), never an empty or error page baked at build.
 ARG NEXT_PUBLIC_MAPBOX_TOKEN=""
 ARG NEXT_PUBLIC_SITE_URL="https://tripplanner.lumiguides.it.com"
-# BotID needs the Vercel edge: off in this image (lib/botCheck.ts); the web ACL's TripPlanner rules guard search and
-# narration (lib/wafChallenge.ts).
+# The bot check of search, narration and Send to advisor is the web ACL's TripPlanner rules (lib/botCheck.ts,
+# lib/wafChallenge.ts); nothing in the image.
 ENV NEXT_OUTPUT=standalone \
-    TP_BOT_CHECK=off \
     NEXT_PUBLIC_MAPBOX_TOKEN=${NEXT_PUBLIC_MAPBOX_TOKEN} \
     NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}
 RUN NODE_OPTIONS=--max-old-space-size=2048 npm run build
@@ -30,7 +29,7 @@ FROM node:22-alpine AS runtime
 ARG GIT_SHA=unknown
 ARG APP_VERSION=unknown
 # GET /api/health reports both (lib/health.ts); the deploy checks git_sha against the commit it built. Sentry tags its
-# events with the same commit (lib/sentryLite.ts; Vercel set VERCEL_GIT_COMMIT_SHA instead).
+# events with the same commit (lib/sentryLite.ts).
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     # Same render mode at run time as at build (lib/renderMode.ts).

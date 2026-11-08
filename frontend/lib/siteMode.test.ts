@@ -22,7 +22,7 @@ test("only SITE_INDEXING=on marks the live site", () => {
   for (const v of [undefined, "", "off", "true", "1", "yes", "production"]) {
     assert.equal(isLiveSite({ SITE_INDEXING: v }), false, String(v));
   }
-  // The Dev host is a Vercel production deployment: VERCEL_ENV alone must not make it live.
+  // A platform "production" marker alone must not make a host live (the Dev host was a Vercel production deployment).
   assert.equal(isLiveSite({ VERCEL_ENV: "production" }), false);
 });
 

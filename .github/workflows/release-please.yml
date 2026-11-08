@@ -10,7 +10,7 @@ name: Release Please
 # read in the environment "release" (deployment branch policy: main only). GITHUB_TOKEN itself is read-only.
 #
 # A release commit changes only CHANGELOG.md and .release-please-manifest.json (repo root), so neither
-# vercel-deploy.yml (frontend/**) nor deploy-lambdas.yml (backend/**) runs on it. The version a deployment reports
+# deploy-web-dev.yml (frontend/**) nor deploy-lambdas.yml (backend/**) runs on it. The version a deployment reports
 # is the manifest version of the commit it was built from (the Lambdas' `version` log field, the BFF /api/health).
 
 on:

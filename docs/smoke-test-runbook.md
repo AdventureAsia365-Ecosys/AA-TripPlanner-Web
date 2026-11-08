@@ -79,5 +79,5 @@ npm --prefix frontend run dev
 ## Deploy prerequisites (separate from the smoke test — human-gated)
 - Lambda packaging + Function URLs / API Gateway (Terraform)
 - CloudFront in front of Lambda A's read routes only (Terraform)
-- Vercel project + domain + env vars for the frontend
+- The ECS web service, CloudFront and the task env for the frontend (AA-CIS-Infra, AA-1038)
 - Merge the 7 stacked PRs (human-only)
