@@ -129,8 +129,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   once into a document (`lib/plannerNav.ts`). There is no JavaScript SDK (AWS WAF gives `challenge.js` only to a web
   ACL with a paid intelligent-threat group). A model call still challenged (`lib/wafChallenge.ts`: `202` +
   `x-amzn-waf-action: challenge`, e.g. after the 4 h token) triggers one planner reload per 5 minutes, then the
-  `botCheck` notice (never an empty answer); a challenged send never reloads (the lead form would be lost) and is
-  answered as the bot-check refusal ("reload the page"). `.github/workflows/deploy-web-dev.yml` builds on an arm64 runner, pushes the immutable git-SHA tag,
+  `botCheck` notice (never an empty answer), and none while a lead form holds typed input (`holdWafReload` in
+  `components/LeadForm.tsx`: the `botCheck` notice instead); a challenged send never reloads (the lead form would be
+  lost) and is answered as the bot-check refusal ("reload the page"). `.github/workflows/deploy-web-dev.yml` builds on an arm64 runner, pushes the immutable git-SHA tag,
   copies the family's latest task definition with only the image swapped and verifies through CloudFront
   (`/api/health` git_sha, pages with real catalog content, headers, `202` + `x-amzn-waf-action: challenge` without a
   token on search, narrate, send and the document load of `/plan` and `/aa-tripplanner/plan` (a 200 there means the
@@ -143,7 +144,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   BotID is off in the image (`TP_BOT_CHECK=off`); the web ACL takes its place, and the task env `TP_EDGE_GATE=on` makes
   the BFF answer search, narration and "Send to advisor" only on `/api/browse/search`, `/api/trip/narrate` and
   `/api/trip/send` (the paths the web ACL
-  sees after URL-decoding and normalizing, so a dot-segment spelling is caught at the edge too; the older spellings get
+  sees after URL-decoding and normalizing, matched with `CONTAINS` so a dot-segment spelling, a leading
+  `/%2e%2e/` included, is caught at the edge too; the older spellings get
   404 `use_protected_path`, `lib/edgeGate.ts`). `TP_CLIENT_IP_SOURCE=cloudfront` takes the
   traveller's address from `CloudFront-Viewer-Address` (`lib/clientIp.ts`): behind CloudFront the leftmost
   `x-forwarded-for` entry is the viewer's own words. CloudFront caches only `/_next/static/*` and `/photo-cdn/*` (the latter keyed on `?v=`); pages

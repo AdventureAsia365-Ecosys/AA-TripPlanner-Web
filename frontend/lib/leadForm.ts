@@ -43,6 +43,11 @@ export const EMPTY_LEAD: LeadForm = {
   marketing: false,
 };
 
+// The traveller typed or picked something: a page reload would lose it (the form keeps no copy outside React state).
+export function leadFormDirty(form: LeadForm): boolean {
+  return (Object.keys(EMPTY_LEAD) as (keyof LeadForm)[]).some((k) => form[k] !== EMPTY_LEAD[k]);
+}
+
 // The contract's Traveller rule (lead.submitted.v1), the SAME rule as backend/assembly/leads.py validate() and the
 // CRM's traveller_errors (AA-Partner): control characters removed, Unicode NFC, trimmed (the e-mail then lower-cased),
 // then the length in code points (not UTF-16 units) and the pattern. Shared test vectors: backend/tests/contracts/

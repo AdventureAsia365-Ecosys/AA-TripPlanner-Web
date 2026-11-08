@@ -57,8 +57,11 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
 - **Dot-segment spellings are the web ACL's job (review S272).** Next resolves the request path with WHATWG `new URL`,
   so `/api/browse/%2e/search` or `/api/trip/./narrate` reaches the model route and the gate as the protected path.
   The gate cannot tell them apart and does not try; the web ACL URL-decodes and normalizes every path match
-  (AA-CIS-Infra `tripplanner_web_edge.tf`), so they meet the same rate rule and Challenge. `lib/edgeGate.test.ts` pins
-  the resolution the infra side relies on.
+  (AA-CIS-Infra `tripplanner_web_edge.tf`), so they meet the same rate rule and Challenge. A leading dot segment
+  (`/%2e%2e/api/trip/send`, `/../api/browse/search`, `/./api/trip/narrate`) also resolves to the protected route here,
+  but AWS WAF's `NORMALIZE_PATH` keeps a back-reference at the start of the path, so the web ACL matches the protected
+  paths with `CONTAINS`, not `EXACTLY` (Infra `modules/waf`, second review S272). `lib/edgeGate.test.ts` pins the
+  resolution the infra side relies on; the Infra test compares it with a model of the WAF transformations.
 - **Client address behind CloudFront (`lib/clientIp.ts`, task env `TP_CLIENT_IP_SOURCE=cloudfront`).** CloudFront
   appends the viewer to the `x-forwarded-for` the viewer sent, so its first entry is forgeable there; the per-IP AI
   limits and the Cognito per-traveller WAF key would follow a forged value. CloudFront-Viewer-Address is set by
@@ -169,3 +172,9 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
   spelling `POST /api/trip {op: "send"}` 404 (`lib/edgeGate.ts` `PROTECTED_PATHS`, one gate call for narrate and
   send). A challenged send is answered as the bot-check refusal in `sendToAdvisor` (`leadResultMessage`: "Please
   reload the page and try again"); no automatic reload, which would drop the lead form.
+- **No automatic reload while the lead form holds input (second review S272).** The form lives only in React state
+  and sits next to Compose / Regenerate and the map search, so a challenged search or narration (token expired while
+  the traveller typed) would have reloaded the page and wiped it. `LeadForm` holds the reload while it differs from
+  `EMPTY_LEAD` (`leadFormDirty`, `holdWafReload` in an effect, released on unmount or when cleared);
+  `reloadForWafToken` refuses while any hold is set, without using up its 5-minute gap, so the caller shows the
+  `botCheck` notice and the traveller reloads when ready. Tested in `lib/wafChallenge.test.ts`.

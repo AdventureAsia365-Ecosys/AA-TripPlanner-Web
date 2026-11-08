@@ -51,17 +51,22 @@ test("every gated branch checks the gate, and search keeps its protected pathnam
 
 test("a dot-segment spelling reaches the gate as the protected path, so the web ACL must normalize too", () => {
   // Next builds req.nextUrl with WHATWG new URL. These spellings resolve to the model routes, and the gate lets them
-  // through: only the web ACL's URL_DECODE + NORMALIZE_PATH (tripplanner_web_edge.tf) puts them under rule 1 and 2.
+  // through: only the web ACL's URL_DECODE + NORMALIZE_PATH and its CONTAINS match (tripplanner_web_edge.tf,
+  // modules/waf) put them under rules 3 and 4. A leading back-reference survives NORMALIZE_PATH (review S272).
   const resolved = (raw: string) => new URL(raw, "http://tp.invalid").pathname;
   for (const raw of ["/api/browse/%2e/search", "/api/browse/%2E/search", "/api/browse/./search", "/api/x/../browse/search"]) {
     assert.equal(resolved(raw), SEARCH_PATH, raw);
     assert.equal(edgeGateRefusal("search", resolved(raw), true), null, raw);
   }
-  for (const raw of ["/api/trip/%2e/narrate", "/api/trip/./narrate"]) {
+  for (const raw of ["/../api/browse/search", "/%2e%2e/api/browse/search"]) {
+    assert.equal(resolved(raw), SEARCH_PATH, raw);
+    assert.equal(edgeGateRefusal("search", resolved(raw), true), null, raw);
+  }
+  for (const raw of ["/api/trip/%2e/narrate", "/api/trip/./narrate", "/./api/trip/narrate", "/%2e%2e/api/trip/narrate"]) {
     assert.equal(resolved(raw), NARRATE_PATH, raw);
     assert.equal(edgeGateRefusal("narrate", resolved(raw), true), null, raw);
   }
-  for (const raw of ["/api/trip/%2e/send", "/api/x/../trip/send"]) {
+  for (const raw of ["/api/trip/%2e/send", "/api/x/../trip/send", "/%2e%2e/api/trip/send", "/%2E%2E/api/trip/send"]) {
     assert.equal(resolved(raw), SEND_PATH, raw);
     assert.equal(edgeGateRefusal("send", resolved(raw), true), null, raw);
   }

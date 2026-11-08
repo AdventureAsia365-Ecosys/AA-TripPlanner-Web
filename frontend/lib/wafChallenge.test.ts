@@ -7,10 +7,13 @@ import {
   WAF_ACTION_HEADER,
   WAF_RELOAD_GAP_MS,
   WAF_RELOAD_KEY,
+  holdWafReload,
   isWafChallenge,
   reloadForWafToken,
   throughWafEdge,
+  wafReloadHeld,
 } from "./wafChallenge.ts";
+import { EMPTY_LEAD, leadFormDirty } from "./leadForm.ts";
 
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
 
@@ -58,6 +61,52 @@ test("the reload happens at most once per gap and never without storage", () => 
   const broken = { getItem: () => { throw new Error("blocked"); }, setItem: () => {} };
   assert.equal(reloadForWafToken(5, broken, reload), false);
   assert.equal(reloads, 2);
+});
+
+test("a held reload is refused without using up the gap, until every hold is released (review S272)", () => {
+  const store = new Map<string, string>();
+  const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+  let reloads = 0;
+  const reload = () => void (reloads += 1);
+  const releaseA = holdWafReload();
+  const releaseB = holdWafReload();
+  assert.equal(wafReloadHeld(), true);
+  assert.equal(reloadForWafToken(1_000_000, storage, reload), false);
+  assert.equal(store.has(WAF_RELOAD_KEY), false); // the gap is not used up by a refusal
+  releaseA();
+  releaseA(); // a second release of the same hold does not drop the other one
+  assert.equal(reloadForWafToken(1_000_000, storage, reload), false);
+  releaseB();
+  assert.equal(wafReloadHeld(), false);
+  assert.equal(reloadForWafToken(1_000_000, storage, reload), true);
+  assert.equal(reloads, 1);
+});
+
+test("a challenged call while a lead form holds input is returned for the botCheck notice, with no page reload", async () => {
+  let reloaded = false;
+  const release = holdWafReload();
+  try {
+    const res = await throughWafEdge(
+      async () => challenge(),
+      () => reloadForWafToken(1_000_000, { getItem: () => null, setItem: () => {} }, () => (reloaded = true)),
+    );
+    assert.equal(isWafChallenge(res), true);
+    assert.equal(reloaded, false);
+  } finally {
+    release();
+  }
+});
+
+test("the lead form holds the reload while it has typed input (a reload would lose it)", () => {
+  assert.equal(leadFormDirty(EMPTY_LEAD), false);
+  assert.equal(leadFormDirty({ ...EMPTY_LEAD }), false);
+  assert.equal(leadFormDirty({ ...EMPTY_LEAD, name: "A" }), true);
+  assert.equal(leadFormDirty({ ...EMPTY_LEAD, adults: 3 }), true);
+  assert.equal(leadFormDirty({ ...EMPTY_LEAD, consent: true }), true);
+  const form = read("../components/LeadForm.tsx");
+  assert.match(form, /import \{ holdWafReload \} from "@\/lib\/wafChallenge";/);
+  assert.match(form, /const dirty = leadFormDirty\(form\);/);
+  assert.match(form, /useEffect\(\(\) => \(dirty \? holdWafReload\(\) : undefined\), \[dirty\]\);/);
 });
 
 test("search and narrate go through the edge step and never read a challenge as an answer", () => {

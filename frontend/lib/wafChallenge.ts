@@ -11,7 +11,9 @@
 // page, a document load the rule challenges, at most once per WAF_RELOAD_GAP_MS; otherwise the caller shows the
 // botCheck notice. Never a silent empty answer. A challenged request never reached the app, so nothing is lost.
 // "Send to advisor" never reloads (the lead form would be lost): lib/api.ts sendToAdvisor answers it as the bot-check
-// refusal, whose line asks the traveller to reload the page.
+// refusal, whose line asks the traveller to reload the page. Nor does a challenged search or narration while a lead
+// form holds typed input (components/LeadForm.tsx holdWafReload, review S272): the form lives only in React state, so
+// the call is answered with the botCheck notice instead and the traveller reloads when they choose.
 // Off the edge (Vercel, local, CI) no answer is ever a challenge.
 //
 // No next/* import: `npm test` runs it.
@@ -32,14 +34,30 @@ export function isWafChallenge(res: ResponseLike): boolean {
 
 type SessionStore = Pick<Storage, "getItem" | "setItem">;
 
+// Holders that a reload would wipe (a lead form with typed input). Module state: one page, one planner.
+const reloadHolds = new Set<symbol>();
+
+// Hold the automatic reload until the returned release runs (a React effect's cleanup). Releasing twice is harmless.
+export function holdWafReload(): () => void {
+  const hold = Symbol("waf-reload-hold");
+  reloadHolds.add(hold);
+  return () => void reloadHolds.delete(hold);
+}
+
+export function wafReloadHeld(): boolean {
+  return reloadHolds.size > 0;
+}
+
 // One reload of the planner page per WAF_RELOAD_GAP_MS (the page's document load is challenged and issues the token;
-// the trip ids live in localStorage, so the trip survives it). False when it already reloaded recently or storage is
-// unavailable (no reload loop).
+// the trip ids live in localStorage, so the trip survives it). False when a hold is set (holdWafReload: typed input
+// would be lost), when it already reloaded recently or when storage is unavailable (no reload loop). A held refusal
+// does not use up the gap.
 export function reloadForWafToken(
   now: number = Date.now(),
   store?: SessionStore | null,
   reload: () => void = () => window.location.reload(),
 ): boolean {
+  if (wafReloadHeld()) return false;
   try {
     // Reading window.sessionStorage itself throws when site data is blocked.
     const storage = store === undefined ? (typeof window === "undefined" ? null : window.sessionStorage) : store;
