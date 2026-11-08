@@ -42,7 +42,14 @@ test("every gated branch checks the gate, and search keeps its protected pathnam
   const search = read("../app/api/browse/search/route.ts");
   assert.match(browse, /edgeGateRefusal\("search", req\.nextUrl\.pathname, edgeGateOn\(\)\)/);
   // One gate call for both ops of the shared branch (narrate and send), before the bot check and the Lambda.
-  assert.match(trip, /if \(b\.op === "narrate" \|\| b\.op === "send"\) \{\s*(\/\/.*\s*)*const gated = edgeGateRefusal\(b\.op, req\.nextUrl\.pathname, edgeGateOn\(\)\);/);
+  // Plain string search, no regex (CodeQL js/redos): only blank or comment lines may sit between the two.
+  const branch = 'if (b.op === "narrate" || b.op === "send") {';
+  const gateCall = "const gated = edgeGateRefusal(b.op, req.nextUrl.pathname, edgeGateOn());";
+  const at = trip.indexOf(branch);
+  const callAt = trip.indexOf(gateCall, at);
+  assert.ok(at >= 0 && callAt > at, "the shared narrate/send branch calls the gate");
+  const between = trip.slice(at + branch.length, callAt).split("\n").map((l) => l.trim());
+  assert.deepEqual(between.filter((l) => l !== "" && !l.startsWith("//")), []);
   assert.ok(trip.indexOf("edgeGateRefusal(b.op") < trip.indexOf("botCheckRefusal(b.op"));
   assert.ok(trip.indexOf("edgeGateRefusal(b.op") < trip.indexOf("await fetch(`${TRIP_API_URL}${path}`"));
   // The search route must not rewrite the pathname to /api/browse, or the gate would refuse every search.
