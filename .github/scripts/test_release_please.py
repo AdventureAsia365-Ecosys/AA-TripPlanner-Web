@@ -110,12 +110,12 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertRegex(self.text, r"\n    environment: release\n")
 
     def test_app_token_opens_the_release_pr(self) -> None:
-        self.assertIn("uses: actions/create-github-app-token@v3", self.text)
+        self.assertRegex(self.text, r"uses: actions/create-github-app-token@[0-9a-f]{40} # v3\.")
         for perm in ("permission-contents: write", "permission-pull-requests: write", "permission-issues: write"):
             self.assertIn(perm, self.text)
         self.assertIn("app-id: ${{ vars.AA_CI_BOT_APP_ID }}", self.text)
         self.assertIn("private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}", self.text)
-        self.assertIn("uses: googleapis/release-please-action@v5", self.text)
+        self.assertRegex(self.text, r"uses: googleapis/release-please-action@[0-9a-f]{40} # v5\.")
         self.assertIn("token: ${{ steps.app-token.outputs.token }}", self.text)
         self.assertNotIn("secrets.GITHUB_TOKEN", self.text)
         self.assertNotIn("github.token", self.text)
