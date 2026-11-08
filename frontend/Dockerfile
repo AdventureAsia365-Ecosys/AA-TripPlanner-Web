@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # AA-1038 R5 hosting (root ADR 0019 d23, S265 tech-lead decision) — TripPlanner web image: the Next.js standalone server,
 # run as the `web` container of the ECS Dev service aa-tripplanner-dev-web (AA-CIS-Infra
-# modules/environment/tripplanner_web.tf: Fargate Spot ARM64, port 3000, health check /api/health) behind CloudFront and
-# a CLOUDFRONT-scope web ACL (accounts/aa365/tripplanner_web_edge.tf). Built natively on an arm64 runner
+# modules/environment/tripplanner_web.tf: Fargate Spot ARM64, port 3000, health check /api/health) behind CloudFront
+# (accounts/aa365/tripplanner_web_edge.tf) and the TripPlanner rules of the ALB web ACL (modules/waf). Built natively on an arm64 runner
 # (.github/workflows/deploy-web-dev.yml). Same shape as the AA-Booking admin and AA-Partner web images.
 FROM node:22-alpine AS build
 WORKDIR /app
@@ -11,21 +11,19 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
 # Build-time values only. NEXT_PUBLIC_* are inlined into the browser bundle by `next build`, so they are build args:
-# the Mapbox PUBLIC token (pk..., URL-restricted, shipped to every browser by design), the canonical site URL and the
-# web ACL's JavaScript integration URL (public: every planner page loads challenge.js from it, lib/wafToken.ts).
+# the Mapbox PUBLIC token (pk..., URL-restricted, shipped to every browser by design) and the canonical site URL.
 # Every server value (BROWSE_API_URL, TRIP_API_URL, TRIPPLANNER_API_KEY, the session / revalidate keys) is read from
 # the task's environment at run time; no secret is ever a build arg. So the catalog cannot be read here: the routes
 # that would prerender catalog data (home, /destinations, sitemap.xml) render on request in this image
 # (lib/renderMode.ts, NEXT_OUTPUT=standalone), never an empty or error page baked at build.
 ARG NEXT_PUBLIC_MAPBOX_TOKEN=""
 ARG NEXT_PUBLIC_SITE_URL="https://tripplanner.lumiguides.it.com"
-ARG NEXT_PUBLIC_TP_WAF_INTEGRATION_URL=""
-# BotID needs the Vercel edge: off in this image (lib/botCheck.ts); the CloudFront web ACL guards search and narration.
+# BotID needs the Vercel edge: off in this image (lib/botCheck.ts); the web ACL's TripPlanner rules guard search and
+# narration (lib/wafChallenge.ts).
 ENV NEXT_OUTPUT=standalone \
     TP_BOT_CHECK=off \
     NEXT_PUBLIC_MAPBOX_TOKEN=${NEXT_PUBLIC_MAPBOX_TOKEN} \
-    NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL} \
-    NEXT_PUBLIC_TP_WAF_INTEGRATION_URL=${NEXT_PUBLIC_TP_WAF_INTEGRATION_URL}
+    NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}
 RUN NODE_OPTIONS=--max-old-space-size=2048 npm run build
 
 FROM node:22-alpine AS runtime

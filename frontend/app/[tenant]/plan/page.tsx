@@ -3,12 +3,16 @@
 // tenant opens the planner; an unknown slug, a tenant without the TripPlanner add-on or a suspended one is the 404
 // page; a lookup that cannot answer throws to app/[tenant]/error.tsx (retryable, never the 404). The planner then
 // names the tenant on every /api/trip call and the BFF signs it for the Lambda. The bare /plan stays the demo tenant.
-// Theme tokens and the tenant's own copy come with the kit brand token slice.
+// AA-1038 slice 3: the tenant's theme tokens (CIS site settings, through the view) go through the kit core brand-token
+// layer (ui/core/brandTheme.ts, root ADR 0016 amendment): one <style> block over the accent family of --aa-*, checked
+// for contrast, so every planner surface follows the agency's brand with no per-page variant. The agency's name and
+// the BO-8 badge flag reach the trip panel (lead form, "Powered by Adventure Asia" only when tp.branding is on).
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import PlannerApp from "../../plan/PlannerApp";
 import { parseIntent } from "@/lib/planIntent";
 import { isTenantSlug, resolveTenant } from "@/lib/tenantSite";
+import { brandThemeCss } from "@/ui/core/brandTheme";
 
 type Props = {
   params: Promise<{ tenant: string }>;
@@ -31,5 +35,15 @@ export default async function TenantPlanPage({ params, searchParams }: Props) {
   if (!isTenantSlug(tenant)) notFound();
   const site = await resolveTenant(tenant);
   if (!site) notFound();
-  return <PlannerApp intent={parseIntent(await searchParams)} tenantSlug={site.slug} />;
+  const brand = brandThemeCss(site.theme);
+  return (
+    <>
+      {brand && <style data-testid="tenant-brand">{brand}</style>}
+      <PlannerApp
+        intent={parseIntent(await searchParams)}
+        tenantSlug={site.slug}
+        agency={{ name: site.name, brandingBadge: site.branding_badge }}
+      />
+    </>
+  );
 }

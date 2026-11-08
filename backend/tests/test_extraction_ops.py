@@ -47,8 +47,9 @@ def test_no_backend_module_writes_place_data():
 # AA-712 X4: CIS 270 revokes every tripplanner grant on CIS objects except the catalog views and the model gateway
 # (CIS 254 already revoked raw_tours (179) and tour_atoms (180)); tp-018 drops the frozen place tables. So the only
 # schema-qualified objects a backend SQL string may name are these.
+# AA-1038 slice 3: a name followed by "/" is an OAuth scope (tripplanner.leads/deliver), not a table.
 _QUALIFIED = re.compile(r"\b(shared|gold_aa_internal|silver_aa_internal|acp_\w+|geo|tripplanner|catalog|booking|public)"
-                        r"\.(\w+)\b", re.IGNORECASE)
+                        r"\.(\w+)\b(?!/)", re.IGNORECASE)
 # AA-1027 E5 (TP-1): the gateway reads its route and spend through the catalog contract views only, so the
 # grandfathered shared.llm_role_config / shared.llm_model_catalog reads (CIS 173, revoked by CIS 351) and the tp-010
 # counter tripplanner.llm_spend_daily (dropped by tp-024) are no longer allowed; the ledger INSERT stays.

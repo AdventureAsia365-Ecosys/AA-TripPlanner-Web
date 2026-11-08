@@ -17,11 +17,12 @@ import type {
 import type { TourList, TourSort } from "./catalogTypes";
 import { readTourRoute, type TourRouteResult } from "./tourRoute";
 import { COOKIES_NOTICE, COOKIES_REQUIRED, resetGuestIds, showGuestNotice } from "./guestIds";
-import { NARRATE_PATH, SEARCH_PATH, isBotRefusal } from "./botCheck";
-// AA-1038 R5 hosting: the two model calls carry the AWS WAF token behind CloudFront (no-op elsewhere).
-import { isWafChallenge, throughWafEdge } from "./wafToken";
+import { NARRATE_PATH, SEARCH_PATH, SEND_PATH, isBotRefusal } from "./botCheck";
+// AA-1038 R5 hosting: the web ACL's Challenge answer on the two model calls behind CloudFront (none elsewhere).
+import { isWafChallenge, throughWafEdge } from "./wafChallenge";
 // AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
 import { tenantFetch } from "./plannerTenant";
+import type { LeadBody } from "./leadForm";
 
 function filterParams(f: BrowseFilters): string {
   const p = new URLSearchParams();
@@ -113,14 +114,15 @@ export async function fetchByCountry(
 }
 
 // `notice` (AA-1015): this visitor reached the per-IP search limit (429) or the bot check refused the request (403
-// bot_check_failed, or (AA-1038) the CloudFront web ACL still challenges it after a token refresh: HTTP 202, never
-// parsed as an answer); the caller keeps what the map shows and says why. Search has its own path for the bot check.
+// bot_check_failed, or (AA-1038) the web ACL challenged it: HTTP 202, never parsed as an answer; the planner then
+// reloads itself once per 5 minutes for a new token); the caller keeps what the map shows and says why. Search has its own path for the bot check.
 export async function search(
   q: string,
   filters: BrowseFilters,
 ): Promise<{ pins: DestinationPin[]; notice: AiNoticeKey | null }> {
   const qs = filterParams(filters);
-  const res = await throughWafEdge(() => fetch(
+  // AA-1038 slice 3: a /{slug} planner names its tenant on search too (its AI budget), via tenantFetch.
+  const res = await throughWafEdge(() => tenantFetch(
     `${SEARCH_PATH}?q=${encodeURIComponent(q)}&${qs}`,
   ));
   if (isWafChallenge(res)) return { pins: [], notice: "botCheck" };
@@ -157,8 +159,8 @@ export async function fetchTrip(tripId: string): Promise<TripResponse | null> {
 //   real answer. A second cookies_required means this browser does not keep the cookie: keep the ids,
 //   say cookies are needed. A refused mutation changed nothing, so the retry is safe.
 // `path`: POST /api/trip, or the narrate op's own path (AA-1015, the bot check: lib/botCheck.ts). The narrate path goes
-// through the CloudFront web ACL's token step (AA-1038, lib/wafToken.ts); `challenged` = the web ACL still answered
-// with its Challenge (HTTP 202, no app answer), never reported as ok.
+// through the web ACL's Challenge step (AA-1038, lib/wafChallenge.ts); `challenged` = the web ACL answered with its
+// Challenge (HTTP 202, no app answer), never reported as ok.
 async function postTrip<T = Record<string, unknown>>(
   body: Record<string, unknown> & { session_id: string; trip_id: string },
   path: string = "/api/trip",
@@ -268,13 +270,15 @@ export async function sendToAdvisor(
   tripId: string,
   sessionId: string,
   customer?: { name: string; phone: string; email: string; consent: boolean },
-): Promise<{ status: number; body: TripResponse & { error?: string } }> {
-  const { status, data } = await postTrip<TripResponse>({
+  lead?: LeadBody,
+): Promise<{ status: number; body: TripResponse & { error?: string; fields?: string[] } }> {
+  const { status, data } = await postTrip<TripResponse & { fields?: string[] }>({
     op: "send",
     trip_id: tripId,
     session_id: sessionId,
     customer,
-  });
+    lead,
+  }, SEND_PATH);
   return { status, body: data };
 }
 

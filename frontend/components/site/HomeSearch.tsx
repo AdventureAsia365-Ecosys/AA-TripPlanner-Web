@@ -10,7 +10,6 @@
 // md to xl: two columns — Where | Travellers, then How long and the button across the card. Below md: stacked.
 // The old "one row from md" left 133 px for the pills at 768 and 332 px at 1440: "14 days" cut, "Other" hidden.
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Icon, buttonClass } from "@/ui";
 import { formatDays } from "@/lib/text";
@@ -42,7 +41,6 @@ const TRAVELLERS_MIN = 1;
 const TRAVELLERS_MAX = 20;
 
 export default function HomeSearch({ countries }: { countries: CountryChoice[] }) {
-  const router = useRouter();
   const [country, setCountry] = useState("");
   // Raw strings while typing; numbers only on blur / submit.
   const [daysRaw, setDaysRaw] = useState("7");
@@ -55,7 +53,9 @@ export default function HomeSearch({ countries }: { countries: CountryChoice[] }
     e.preventDefault();
     setDaysRaw(String(days));
     setTravellersRaw(String(travellers));
-    router.push(planHref(country, days, travellers));
+    // AA-1038: a document load, never a client-side push: the web ACL hands the planner its AWS WAF token on the
+    // planner's own document load (lib/plannerNav.ts).
+    window.location.assign(planHref(country, days, travellers));
   };
 
   const field = "flex min-w-0 flex-col gap-1.5 px-1 py-2 xl:px-5 xl:py-1";

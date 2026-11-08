@@ -44,7 +44,7 @@ from backend.browse import shapes as shapes_mod
 from backend.browse import tenant_site as tenant_site_mod
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import TileError
-from backend.shared import observability, ratelimit
+from backend.shared import observability, ratelimit, tenant, tenant_assertion
 
 _TILE_RE = re.compile(r"^/browse/tiles/([^/]+)$")
 _DEST_RE = re.compile(r"^/browse/destinations/([^/]+)$")
@@ -275,14 +275,35 @@ def _handle(event, context):  # pragma: no cover - thin AWS adapter
         return denied
 
     method, path, query = _extract_request(event)
+    headers = auth._headers_lower(event)  # noqa: SLF001
     # AA-1015: the traveller's IP and signed-in state, trusted only with the right edge key (ratelimit.py).
-    client = ratelimit.client_from_headers(auth._headers_lower(event))  # noqa: SLF001
+    client = ratelimit.client_from_headers(headers)
+    # AA-1038 slice 3: a /{slug} planner's search names its tenant (the BFF's signed assertion, checked before any
+    # SQL), so the tenant's AI budget applies and the ledger row carries the tenant. No header = AA's own site.
+    picked = search_tenant(headers)
+    if "response" in picked:
+        return picked["response"]
 
     async def _run():
         pool = await get_pool()
-        return await route(method, path, query, pool=pool, client=client)
+        if picked["tenant_id"] is None:
+            return await route(method, path, query, pool=pool, client=client)
+        with tenant.using(picked["tenant_id"], source=tenant.SOURCE_ASSERTION):
+            return await route(method, path, query, pool=pool, client=client)
 
     return asyncio.get_event_loop().run_until_complete(_run())
+
+
+def search_tenant(headers: dict[str, str]) -> dict:
+    """{"tenant_id": <uuid> | None} from the request's tenant assertion, else {"response": 401 | 503}. The browse reads
+    are the same for every tenant (catalog views), so only the AI budget and the ledger row use it."""
+    try:
+        checked = tenant_assertion.from_headers(headers)
+    except tenant_assertion.AssertionRefused:
+        return {"response": tenant_assertion.refused_response()}
+    except tenant_assertion.AssertionKeyUnavailable:
+        return {"response": tenant_assertion.unavailable_response()}
+    return {"tenant_id": checked.tenant_id if checked else None}
 
 
 # AA-871: request id (BFF header > API Gateway requestId), one JSON request_completed line, Sentry when SENTRY_DSN set.

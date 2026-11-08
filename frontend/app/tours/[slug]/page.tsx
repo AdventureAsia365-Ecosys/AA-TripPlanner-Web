@@ -8,7 +8,8 @@
 // (>= 8 unique photos after the gallery's 3). Same single catalog read as before; "Similar tours" is not built (it would add
 // a browse read per tour page, spec R11).
 import type { Metadata } from "next";
-import Link from "next/link";
+// AA-1038: SiteLink = next/link, except a planner href renders a plain <a> (a document load, ui/SiteLink.tsx).
+import { SiteLink } from "@/ui/SiteLink";
 import { notFound, permanentRedirect } from "next/navigation";
 import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "@/components/AiLabel";
 import CtaBand, { CTA_REASSURANCES } from "@/components/site/CtaBand";
@@ -360,13 +361,13 @@ export default async function TourPage({ params }: Props) {
             priority) on this page while its own LCP photo loads; Lighthouse mobile LCP 4.8 s → 3.9 s without them.
             S256: LCP images no longer send preload hints (components/site/LcpImage.tsx); the eager home cards still do. */}
         <nav aria-label="Breadcrumb" className="mx-auto max-w-page px-gutter pb-3 pt-4 text-caption font-normal text-k-muted">
-          <Link href="/" prefetch={false} className="hover:text-k-accent-deep">Home</Link>
+          <SiteLink href="/" prefetch={false} className="hover:text-k-accent-deep">Home</SiteLink>
           <span aria-hidden> / </span>
-          <Link href="/destinations" prefetch={false} className="hover:text-k-accent-deep">Destinations</Link>
+          <SiteLink href="/destinations" prefetch={false} className="hover:text-k-accent-deep">Destinations</SiteLink>
           {t.country && (
             <>
               <span aria-hidden> / </span>
-              <Link href={`/destinations/${t.country_slug}`} prefetch={false} className="hover:text-k-accent-deep">{t.country}</Link>
+              <SiteLink href={`/destinations/${t.country_slug}`} prefetch={false} className="hover:text-k-accent-deep">{t.country}</SiteLink>
             </>
           )}
         </nav>
@@ -377,9 +378,9 @@ export default async function TourPage({ params }: Props) {
           <article className="min-w-0 lg:col-span-8">
             <div className="flex flex-wrap gap-2">
               {t.country && (
-                <Link href={`/destinations/${t.country_slug}`} className="rounded-full">
+                <SiteLink href={`/destinations/${t.country_slug}`} className="rounded-full">
                   <Badge tone="accent">{t.country}</Badge>
-                </Link>
+                </SiteLink>
               )}
               {t.lifecycle_stage === "retired" && <Badge tone="info">No longer offered as is</Badge>}
             </div>

@@ -7,7 +7,8 @@
 // Same single catalog read as before (getDestination); the hero adds one server-side redirect lookup per size, and the
 // tour cards one per distinct cover (S257, in parallel with the hero, one shared deadline).
 import type { Metadata } from "next";
-import Link from "next/link";
+// AA-1038: SiteLink = next/link, except a planner href renders a plain <a> (a document load, ui/SiteLink.tsx).
+import { SiteLink } from "@/ui/SiteLink";
 import { notFound, permanentRedirect } from "next/navigation";
 import CtaBand from "@/components/site/CtaBand";
 import { destinationMeta } from "@/components/site/DestinationTile";
@@ -163,9 +164,9 @@ export default async function DestinationRoute({ params }: Props) {
   });
   const seeAll =
     d.tour_count > d.tours.length ? (
-      <Link href={planHref} className="text-small font-semibold text-k-accent-deep">
+      <SiteLink href={planHref} className="text-small font-semibold text-k-accent-deep">
         <span className="tp-link">See them all in the planner</span> <span aria-hidden className="tp-link-arrow">→</span>
-      </Link>
+      </SiteLink>
     ) : undefined;
   const toursLead =
     d.tour_count > d.tours.length
@@ -198,9 +199,9 @@ export default async function DestinationRoute({ params }: Props) {
             <div className="max-w-[720px] text-white">
               <nav aria-label="Breadcrumb" className="text-caption font-normal">
                 {/* No prefetch on breadcrumbs: a prefetch of "/" runs the home hero preload on this page (S255). */}
-                <Link href="/" prefetch={false} className="underline-offset-2 hover:underline">Home</Link>
+                <SiteLink href="/" prefetch={false} className="underline-offset-2 hover:underline">Home</SiteLink>
                 <span aria-hidden> / </span>
-                <Link href="/destinations" prefetch={false} className="underline-offset-2 hover:underline">Destinations</Link>
+                <SiteLink href="/destinations" prefetch={false} className="underline-offset-2 hover:underline">Destinations</SiteLink>
               </nav>
               <h1 className="mt-3 text-h1 uppercase tracking-[0.08em] !text-white">{d.country}</h1>
               <p className="mt-2 text-small font-semibold">{destinationMeta(d)}</p>

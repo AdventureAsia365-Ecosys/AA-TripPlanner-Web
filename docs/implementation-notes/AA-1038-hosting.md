@@ -1,5 +1,11 @@
 # AA-1038 — R5 hosting slice: the TripPlanner frontend on ECS behind CloudFront + a CLOUDFRONT-scope web ACL
 
+> **S272 follow-up (tech-lead cost decision, lane l16):** no Bot Control and no CLOUDFRONT web ACL; the three rules
+> live in the ALB web ACL (AA-CIS-Infra `modules/waf`, scoped to the TripPlanner host). AWS WAF returns the JavaScript
+> integration URL only for a web ACL with a paid Bot Control / ATP / ACFP group, so the `challenge.js` design below
+> could not work. It is replaced by full page loads into the planner: see "S272 follow-up" at the end. Bullets marked
+> *superseded* describe the first design.
+
 Root ADR 0019 d23 and the S265 tech-lead decision (one Fargate Spot task + CloudFront + a CLOUDFRONT-scope WAF, about
 13-15 USD a month on Dev; the Fargate and WAF cost yeses are given in the AA-1038 description). Three PRs, in order:
 root runbook (`docs/ops/runbooks/tripplanner-web-ecs-cutover.md` + secrets register), AA-CIS-Infra
@@ -19,7 +25,7 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
 - **BotID off in the image, the web ACL in its place.** BotID needs the Vercel edge. The CLOUDFRONT-scope web ACL
   (Infra) rate-limits per viewer IP and Challenges the two model paths and a document load of a planner page. Catalog
   pages are never challenged.
-- **The planner's WAF token comes from the JavaScript integration (review S272, `lib/wafToken.ts`).** The first
+- *Superseded (S272 follow-up below):* **The planner's WAF token comes from the JavaScript integration (review S272, `lib/wafToken.ts`).** The first
   design relied on the challenged document load of `/plan`, but most ways into the planner are client-side Next
   navigations (header link, home search, tour and destination CTAs, all `next/link` or `router.push`): an RSC fetch
   with `sec-fetch-dest: empty`, never challenged, so search and narration then got the web ACL's 202, which `search()`
@@ -94,7 +100,7 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
   them by `s-maxage`). The task serves pages from its ISR cache, so the cost is one small origin hop per page view, not
   a render. Caching pages at CloudFront would need a CloudFront invalidation in the purge route (a paid call per path
   and an AWS grant on the task) — not worth it on Dev.
-- WAF token: `challenge.js` is a third-party script on the planner (AWS WAF's own host, the web ACL's integration
+- *Superseded:* WAF token: `challenge.js` is a third-party script on the planner (AWS WAF's own host, the web ACL's integration
   URL); it is what AWS designs for single-page apps and replaces BotID's same-origin script. Each token fetch is a
   billed challenge attempt (cents at Dev volume).
 - Home, `/destinations` and `sitemap.xml` render per request in the image (a few tens of ms of CPU on the 0.5 vCPU
@@ -104,10 +110,52 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
 ## Should know
 
 - Live order (orchestrator): root PR, Infra PR + bootstrap apply + Terraform Apply, repository settings
-  (`TP_WEB_ENABLED`, `TP_WEB_CLOUDFRONT_DNS`, `TP_WAF_INTEGRATION_URL`, secret `TP_MAPBOX_PUBLIC_TOKEN`), this PR, scale to 1, re-run the deploy,
+  (`TP_WEB_ENABLED`, `TP_WEB_CLOUDFRONT_DNS`, secret `TP_MAPBOX_PUBLIC_TOKEN`; no WAF variable since the S272 follow-up), this PR, scale to 1, re-run the deploy,
   then the runbook's checks and the DNS switch as its own approved step.
 - Local proof (S272): `NEXT_OUTPUT=standalone next build` and the standalone server with the ECS env: `/api/health`
   reports the given sha, `/privacy`, `/` and `/plan` 200 with all headers and `X-Robots-Tag: noindex`, the old search
   and narrate spellings 404 `use_protected_path`, `/api/browse/search` passes the gate (500 only because no backend ran).
 - Local proof (S272 review pass): the standalone build lists `/`, `/destinations` and `/sitemap.xml` as `ƒ` (on
   request), the integration URL is inlined into one client chunk, and the standalone server answers the three 200.
+
+## S272 follow-up — full page loads into the planner, no JavaScript SDK (lane l16)
+
+### Decisions
+
+- **The token comes from the Challenge on the planner's own document load.** Rule `TripPlannerChallengePlanner` of
+  the ALB web ACL challenges a GET with `sec-fetch-dest: document` on a path that ends with `/plan` or contains
+  `/plan/`; the interstitial solves silently and sets `aws-waf-token` for the host (4 h). So every in-site way into the
+  planner must be a document load:
+  - `ui/SiteLink.tsx`: the site's internal link. A planner href (`lib/plannerNav.ts` `isPlannerHref`, the same test
+    as the WAF rule) renders a plain `<a>`; anything else stays a `next/link`. `ui/Button.tsx` `ButtonLink` goes
+    through it, so every CTA (tour "Customise this trip" / "Ask", destination and `CtaBand` buttons, `not-found`,
+    My trips) is covered without a per-call-site rule. The header, footer, `WaysIn`, home, destination and tour pages
+    use `SiteLink` instead of `next/link` (consistent: one component, not a per-link prop).
+  - `components/site/HomeSearch.tsx` "Plan my trip": `window.location.assign` instead of `router.push`.
+  - Safety net, `PlannerApp` on mount (`reloadIntoPlannerDocument`): when the page shows a planner URL but the
+    document was loaded for another page (performance navigation entry), it replaces itself with a document load of
+    the same URL, once (after it the document IS the planner, so no loop). Covers the `/{tenant}` server redirect
+    followed client-side, back / forward, and any link a later change forgets.
+- **The 202 handling stays, simpler (`lib/wafChallenge.ts`, replaces `lib/wafToken.ts`).** A model call answered by
+  the Challenge (`isWafChallenge`) is never read as the app's answer; it asks for one planner reload per 5 minutes
+  (`reloadForWafToken`, sessionStorage), otherwise the `botCheck` notice. No token refresh and no second send (there
+  is no SDK to refresh with).
+- **Deploy:** no `TP_WAF_INTEGRATION_URL` variable, build arg or `challenge.js` check. The verify now asserts
+  `/api/browse/search` answers `202` + `x-amzn-waf-action: challenge` without a token, and `/plan` with
+  `sec-fetch-dest: document` answers `200` or the `202` Challenge on its first load.
+- **Merged `origin/main`** into this branch (it was 3 commits behind): `api.ts` keeps main's `tenantFetch` on search
+  inside `throughWafEdge`; `/api/trip` keeps main's BotID check on narrate + send, with the edge gate on narrate only.
+
+### Tradeoffs
+
+- A planner link is a full page load (no client-side transition, no prefetch of the planner): a short white flash and
+  the planner bundle fetched again from the CloudFront cache. Acceptable for one entry per visit; catalog navigation
+  stays client-side.
+- The reload safety net costs one extra load only when the planner was reached client-side, which the links no longer
+  do.
+
+### Should know
+
+- Off the edge (Vercel, local, CI) links behave the same (document loads), no request is ever challenged.
+- The new "Send to advisor" path of main (`/api/trip/send`) is guarded by BotID on Vercel only; on ECS it has the
+  per-IP rate rule of the web ACL and the Lambda's own limits, no Challenge (follow-up, outside this slice).

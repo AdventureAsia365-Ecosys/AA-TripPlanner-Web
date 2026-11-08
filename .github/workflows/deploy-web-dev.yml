@@ -1,7 +1,7 @@
 name: Deploy Web Dev
 
-# AA-1038 R5 hosting (root ADR 0019 d23, S265 tech-lead decision: one Fargate Spot task + CloudFront + a CLOUDFRONT-scope
-# web ACL) — the TripPlanner frontend (frontend/, Next.js standalone) to ECS Dev, service aa-tripplanner-dev-web
+# AA-1038 R5 hosting (root ADR 0019 d23, S265 tech-lead decision: one Fargate Spot task + CloudFront + WAF; S272: the
+# WAF rules live in the ALB web ACL, AA-CIS-Infra modules/waf) — the TripPlanner frontend (frontend/, Next.js standalone) to ECS Dev, service aa-tripplanner-dev-web
 # (AA-CIS-Infra modules/environment/tripplanner_web.tf; edge accounts/aa365/tripplanner_web_edge.tf). Same model as
 # AA-Booking deploy-admin-dev.yml and AA-Partner deploy-web-dev.yml: build on a native arm64 runner -> push to ECR
 # aa-tripplanner-dev-web with the immutable git-SHA tag -> copy the family's latest revision with only the image swapped
@@ -28,10 +28,8 @@ name: Deploy Web Dev
 #   vars.TP_WEB_ENABLED            "true" once tripplanner_web.tf is applied; otherwise a push run is red
 #   vars.TP_WEB_CLOUDFRONT_DNS     the distribution's *.cloudfront.net name (Terraform output tripplanner_web_edge;
 #                                  not secret): the --resolve target of the verify
-#   vars.TP_WAF_INTEGRATION_URL    the web ACL's JavaScript integration URL (Terraform output
-#                                  tripplanner_web_edge.waf_integration_url; public, every planner page loads
-#                                  challenge.js from it): built in as NEXT_PUBLIC_TP_WAF_INTEGRATION_URL, so the planner
-#                                  gets its WAF token however it was opened (frontend/lib/wafToken.ts)
+# No WAF variable: the planner gets its AWS WAF token from the Challenge on its own document load (every in-site link
+# into it is a full page load, frontend/lib/plannerNav.ts); there is no JavaScript integration URL (S272).
 # The cluster, service, family, container and repository names are fixed below (Terraform outputs tripplanner_web_*).
 
 on:
@@ -166,7 +164,6 @@ jobs:
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           MAPBOX_TOKEN: ${{ secrets.TP_MAPBOX_PUBLIC_TOKEN }}
-          WAF_URL: ${{ vars.TP_WAF_INTEGRATION_URL }}
         run: |
           set -euo pipefail
           IMAGE_TAG="${GITHUB_SHA}"
@@ -179,14 +176,9 @@ jobs:
               echo "::error::TP_MAPBOX_PUBLIC_TOKEN is not set: the map would not load. Nothing was built."
               exit 1
             fi
-            if ! printf '%s' "$WAF_URL" | grep -qE '^https://[A-Za-z0-9.-]+\.awswaf\.com/'; then
-              echo "::error::vars.TP_WAF_INTEGRATION_URL is not set to the web ACL's integration URL (Terraform output tripplanner_web_edge.waf_integration_url): search and narration would be challenged. Nothing was built."
-              exit 1
-            fi
             APP_VERSION=$(jq -r '."."' .release-please-manifest.json)
             docker build --build-arg GIT_SHA="${GITHUB_SHA}" --build-arg APP_VERSION="$APP_VERSION" \
               --build-arg NEXT_PUBLIC_MAPBOX_TOKEN="$MAPBOX_TOKEN" --build-arg NEXT_PUBLIC_SITE_URL="$SITE_URL" \
-              --build-arg NEXT_PUBLIC_TP_WAF_INTEGRATION_URL="$WAF_URL" \
               -t "$IMAGE" frontend
             docker image inspect "$IMAGE" --format '{{.Architecture}}' | grep -qx arm64
             docker push "$IMAGE"
@@ -250,7 +242,6 @@ jobs:
       - name: Health, pages, headers, edge gate and the web ACL challenge, served by ECS through CloudFront
         env:
           CF_DNS: ${{ vars.TP_WEB_CLOUDFRONT_DNS }}
-          WAF_URL: ${{ vars.TP_WAF_INTEGRATION_URL }}
         run: |
           set -euo pipefail
           [ -n "$CF_DNS" ] || { echo "::error::vars.TP_WEB_CLOUDFRONT_DNS is not set (Terraform output tripplanner_web_edge.distribution_domain)"; exit 1; }
@@ -280,18 +271,26 @@ jobs:
           grep -q 'href="/tours/' /tmp/home.html || { echo "::error::the home page lists no tour"; exit 1; }
           grep -q 'href="/destinations/' /tmp/dest.html || { echo "::error::/destinations lists no country"; exit 1; }
           curl -fsS "${R[@]}" "https://${PUBLIC_HOST}/sitemap.xml" | grep -q '/tours/' || { echo "::error::sitemap.xml lists no tour"; exit 1; }
-          # The planner's WAF token source (frontend/lib/wafToken.ts) answers.
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' "${WAF_URL%/}/challenge.js")
-          [ "$CODE" = "200" ] || { echo "::error::the web ACL integration script answered $CODE (vars.TP_WAF_INTEGRATION_URL)"; exit 1; }
           RESOLVE="${PUBLIC_HOST}:443:${IP}" bash .github/scripts/check_security_headers.sh "https://${PUBLIC_HOST}" /
-          # The web ACL: a model call without the browser's WAF token is challenged at the edge (HTTP 202 + the
-          # x-amzn-waf-action header), never answered by the app; the older spelling reaches the app's edge gate (404).
-          curl -sS -o /dev/null -D /tmp/c.h "${R[@]}" "https://${PUBLIC_HOST}/api/browse/search?q=temple"
-          grep -qiE '^x-amzn-waf-action: *challenge' /tmp/c.h || { echo "::error::/api/browse/search was not challenged by the web ACL"; head -5 /tmp/c.h; exit 1; }
+          # The web ACL (TripPlanner rules of the ALB web ACL): a model call without the browser's WAF token is
+          # challenged (HTTP 202 + the x-amzn-waf-action header), never answered by the app; the older spelling reaches
+          # the app's edge gate (404).
+          CODE=$(curl -sS -o /dev/null -D /tmp/c.h -w '%{http_code}' "${R[@]}" "https://${PUBLIC_HOST}/api/browse/search?q=temple")
+          { [ "$CODE" = "202" ] && grep -qiE '^x-amzn-waf-action: *challenge' /tmp/c.h; } \
+            || { echo "::error::/api/browse/search answered $CODE without the web ACL challenge"; head -5 /tmp/c.h; exit 1; }
+          # The planner's first document load (how a browser gets its token): the page itself (200) or the web ACL's
+          # Challenge interstitial (202 + x-amzn-waf-action: challenge); never an error.
+          CODE=$(curl -sS -o /dev/null -D /tmp/p.h -w '%{http_code}' "${R[@]}" -H 'sec-fetch-dest: document' \
+            -H 'accept: text/html' "https://${PUBLIC_HOST}/plan")
+          if [ "$CODE" = "202" ]; then
+            grep -qiE '^x-amzn-waf-action: *challenge' /tmp/p.h || { echo "::error::/plan answered 202 without the web ACL challenge"; exit 1; }
+          elif [ "$CODE" != "200" ]; then
+            echo "::error::/plan (document load) answered $CODE, expected 200 or the 202 challenge"; exit 1
+          fi
           CODE=$(curl -s -o /tmp/g.json -w '%{http_code}' "${R[@]}" "https://${PUBLIC_HOST}/api/browse?resource=search&q=temple")
           [ "$CODE" = "404" ] && jq -e '.error == "use_protected_path"' /tmp/g.json >/dev/null \
             || { echo "::error::GET /api/browse?resource=search answered $CODE, expected 404 use_protected_path"; exit 1; }
-          echo "ECS serves ${PUBLIC_HOST} through CloudFront: health on ${GITHUB_SHA::7}, pages with catalog content, headers, challenge, integration script, edge gate"
+          echo "ECS serves ${PUBLIC_HOST} through CloudFront: health on ${GITHUB_SHA::7}, pages with catalog content, headers, challenge on the model path, planner first load ($CODE), edge gate"
 
   result:
     name: Deploy Web Dev result

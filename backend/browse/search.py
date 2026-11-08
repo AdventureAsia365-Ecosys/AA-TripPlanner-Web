@@ -47,7 +47,7 @@ from typing import Any, Callable, Optional, Protocol
 
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import LINE_COLS, LINE_COLS_SQL, geo_fields
-from backend.shared import embedding_space, llm_gateway, observability, vector_topk
+from backend.shared import embedding_space, llm_gateway, observability, tenant_budget, vector_topk
 
 STAGE = "tp_search_embed"
 log = logging.getLogger(__name__)
@@ -112,8 +112,9 @@ def _log_embed(outcome: str, reason: Optional[str] = None) -> None:
 # AA-642 S0: keyword-fallback reasons where the model call was refused before it was made.
 REASON_BUDGET_CAP = "budget_cap"
 # AA-1025 H1b: + "ai_off", the app profile's AI switch is off (llm_gateway.load_route wrote the refused row).
+# AA-1038 slice 3: + the tenant budget that cannot be decided (no budget key, view unreadable): AI paused for that tenant.
 PAUSED_REASONS = (llm_gateway.REASON_SPEND_UNREADABLE, "route_unreadable", embedding_space.REASON_UNREADABLE,
-                  llm_gateway.REASON_AI_OFF)
+                  llm_gateway.REASON_AI_OFF, *tenant_budget.PAUSE_REASONS)
 
 
 async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Optional[str]]:
@@ -142,8 +143,8 @@ async def _query_vector(q: str, pool: _Pool) -> tuple[Optional[list[float]], Opt
         return None, "throttle_cooldown"
     budget = await llm_gateway.budget_status(pool, STAGE)  # AA-1015: + the search stage cap, when set
     if budget["exhausted"]:
-        if budget.get("reason") == llm_gateway.REASON_SPEND_UNREADABLE:
-            return None, llm_gateway.REASON_SPEND_UNREADABLE
+        if budget.get("reason") in PAUSED_REASONS:
+            return None, budget["reason"]
         return None, REASON_BUDGET_CAP
     text = llm_gateway.normalise_query(q)
     # One llm_call_log row per real embed (AA-805: and one per failed attempt).

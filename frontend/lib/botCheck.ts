@@ -1,5 +1,6 @@
 // AA-1015 (S262) — bot check before the two BFF calls that can reach a model: free-text search (an embedding call)
-// and narration (a chat model call). Vercel BotID at the **Basic** level only: free on every Vercel plan, no
+// and narration (a chat model call); AA-1038 slice 3 (S272 review) adds "Send to advisor", which stores a traveller's
+// contact for an agency (a script must not fill an agency's inbox or CRM). Vercel BotID at the **Basic** level only: free on every Vercel plan, no
 // third-party script (the challenge is served from this site's own origin by Vercel), invisible to travellers.
 // Deep Analysis (Kasada) is a paid add-on and is never used: every protected path pins `checkLevel: "basic"` on both
 // sides (the route-level setting overrides the project's dashboard setting, Vercel docs "Advanced configuration"),
@@ -10,8 +11,9 @@
 // tiles, trip edits) waits for the challenge:
 //   GET  /api/browse/search  -> the search branch of /api/browse
 //   POST /api/trip/narrate   -> the narrate op of /api/trip
-// The server check runs in the shared branch (`resource=search`, `op: "narrate"`) whatever the path, so the old
-// spelling (/api/browse?resource=search, POST /api/trip {op: "narrate"}) is refused too when the check is on.
+//   POST /api/trip/send      -> the send op of /api/trip
+// The server check runs in the shared branch (`resource=search`, `op: "narrate"` / `"send"`) whatever the path, so the
+// old spelling (/api/browse?resource=search, POST /api/trip {op: "narrate"}) is refused too when the check is on.
 //
 // On / off: one build-time value, NEXT_PUBLIC_TP_BOT_CHECK, set by next.config.mjs (`botCheckFlag`) from TP_BOT_CHECK
 // ("on" / "off") or, when unset, on for a build on Vercel and off elsewhere (local `next dev` / `next start`, CI,
@@ -21,6 +23,7 @@
 
 export const SEARCH_PATH = "/api/browse/search";
 export const NARRATE_PATH = "/api/trip/narrate";
+export const SEND_PATH = "/api/trip/send";
 
 // Free level only (see above). Must be the same on the client entry and in checkBotId().
 export const BOT_CHECK_LEVEL = "basic" as const;
@@ -35,6 +38,7 @@ export interface BotProtectEntry {
 export const BOT_PROTECT: BotProtectEntry[] = [
   { path: SEARCH_PATH, method: "GET", advancedOptions: { checkLevel: BOT_CHECK_LEVEL } },
   { path: NARRATE_PATH, method: "POST", advancedOptions: { checkLevel: BOT_CHECK_LEVEL } },
+  { path: SEND_PATH, method: "POST", advancedOptions: { checkLevel: BOT_CHECK_LEVEL } },
 ];
 
 export const BOT_CHECK_FAILED = "bot_check_failed";
@@ -62,7 +66,7 @@ type Logger = Pick<Console, "log" | "error">;
 // the per-session / per-IP limits still bound the cost, and search / narration stay up (same fail-open rule as the
 // rate counter). One line per refusal, no address or session in it.
 export async function botCheckRefusal(
-  route: "search" | "narrate",
+  route: "search" | "narrate" | "send",
   on: boolean,
   check: () => Promise<BotVerdict>,
   log: Logger = console,
