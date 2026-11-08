@@ -4,7 +4,7 @@
 // The id is the caller's x-request-id when it is well formed (same rule as the Lambdas and AA-Booking:
 // [A-Za-z0-9._:-]{1,128}), else a new UUID. The BFF sends it to the Lambda as x-request-id (the Lambda
 // binds it to every log line and echoes it back) and returns it on its own response, so one id finds the
-// request in the Vercel logs and in CloudWatch. Never log query text, the guest token or the API key.
+// request in the web task's logs (/ecs/aa-tripplanner-dev-web) and in the Lambda logs. Never log query text, the guest token or the API key.
 
 export const REQUEST_ID_HEADER = "x-request-id";
 const VALID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -22,7 +22,7 @@ export function requestIdFor(headers: HeaderSource): string {
   return acceptRequestId(headers.get(REQUEST_ID_HEADER)) ?? crypto.randomUUID();
 }
 
-// One JSON line per upstream call (Vercel function logs). Fields are ids and names only.
+// One JSON line per upstream call (the web task's CloudWatch logs). Fields are ids and names only.
 export interface UpstreamLine {
   route: "browse" | "trip" | "booking";
   op: string;

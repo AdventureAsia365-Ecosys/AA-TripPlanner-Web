@@ -25,7 +25,7 @@ MANIFEST = ROOT / ".release-please-manifest.json"
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 # What a release commit touches (release-type "simple" also updates version.txt when one exists).
 RELEASE_FILES = ["CHANGELOG.md", ".release-please-manifest.json", "release-please-config.json", "version.txt"]
-DEPLOY_WORKFLOWS = ["vercel-deploy.yml", "deploy-lambdas.yml"]
+DEPLOY_WORKFLOWS = ["deploy-web-dev.yml", "deploy-lambdas.yml"]
 
 
 def _glob_re(pattern: str) -> re.Pattern[str]:

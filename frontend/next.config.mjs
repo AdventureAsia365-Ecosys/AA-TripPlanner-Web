@@ -17,13 +17,13 @@ const SECURITY_HEADERS = [
 // AA-995 S256 (mobile LCP) — the LCP photo of a page is served from this origin (lib/photoResolve.ts
 // sameOriginPhotoUrl): /photo-cdn/<path> proxies to the photo CDN, so the browser reuses the HTML connection instead of
 // opening one to another host. Keep PHOTO_CDN_ORIGIN / PHOTO_PROXY_PREFIX equal to lib/photoResolve.ts
-// (lib/photoResolve.test.ts reads this file). x-vercel-enable-rewrite-caching=1: the Vercel CDN caches the proxied
-// file on the CDN's own Cache-Control (public, max-age one year; the file URL is versioned by ?v=), so the CDN is
-// asked once per file and region, not once per visit.
+// (lib/photoResolve.test.ts reads this file). CloudFront caches the proxied file at the edge (AA-CIS-Infra
+// tripplanner_web_edge.tf, behaviour /photo-cdn/* with ?v= in the cache key), so the CDN is asked once per file and
+// edge location, not once per visit.
 const PHOTO_CDN_ORIGIN = "https://img.lumiguides.it.com";
 
-// TL-24 (S262) — until go-live every deployment is a preview: X-Robots-Tag noindex on every response unless the Vercel env
-// sets SITE_INDEXING=on. Same rule as isLiveSite() / PREVIEW_ROBOTS_HEADER in lib/siteMode.ts (lib/siteMode.test.ts
+// TL-24 (S262) — until go-live every deployment is a preview: X-Robots-Tag noindex on every response unless the
+// runtime env sets SITE_INDEXING=on. Same rule as isLiveSite() / PREVIEW_ROBOTS_HEADER in lib/siteMode.ts (lib/siteMode.test.ts
 // checks both). Read when Next loads the config (build and server start), like any other env-driven header.
 /** @param {Record<string, string | undefined>} [env] */
 export function previewHeaders(env = process.env) {
@@ -32,30 +32,15 @@ export function previewHeaders(env = process.env) {
 }
 const PHOTO_PROXY_PREFIX = "/photo-cdn";
 
-// AA-1015 (S262) — the BotID Basic check on search and narration (lib/botCheck.ts). One build-time value for the
-// browser bundle and the route handlers alike: TP_BOT_CHECK "on" / "off" wins; unset = on for a build on Vercel
-// (VERCEL=1, production and preview), off elsewhere (local dev / start, CI, tests). lib/botCheck.test.ts checks it.
-/** @param {Record<string, string | undefined>} [env] */
-export function botCheckFlag(env = process.env) {
-  const v = (env.TP_BOT_CHECK ?? "").trim().toLowerCase();
-  if (v === "on" || v === "off") return v;
-  return env.VERCEL === "1" ? "on" : "off";
-}
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  // AA-1038 R5 hosting: the ECS image (frontend/Dockerfile) builds the Next standalone server; the CI build and Vercel
-  // keep the default output. Same switch as the AA-Booking and AA-CIS-App admin images.
+  // AA-1038 R5 hosting: the ECS image (frontend/Dockerfile) builds the Next standalone server; the CI build keeps the
+  // default output. Same switch as the AA-Booking and AA-CIS-App admin images.
   ...(process.env.NEXT_OUTPUT === "standalone" ? { output: "standalone" } : {}),
-  // Inlined into client and server code at build (lib/botCheck.ts botCheckOn). Set TP_BOT_CHECK, never this name.
-  env: { NEXT_PUBLIC_TP_BOT_CHECK: botCheckFlag() },
   async headers() {
-    return [
-      { source: "/(.*)", headers: [...SECURITY_HEADERS, ...previewHeaders()] },
-      { source: `${PHOTO_PROXY_PREFIX}/:path*`, headers: [{ key: "x-vercel-enable-rewrite-caching", value: "1" }] },
-    ];
+    return [{ source: "/(.*)", headers: [...SECURITY_HEADERS, ...previewHeaders()] }];
   },
   async rewrites() {
     return [{ source: `${PHOTO_PROXY_PREFIX}/:path*`, destination: `${PHOTO_CDN_ORIGIN}/:path*` }];

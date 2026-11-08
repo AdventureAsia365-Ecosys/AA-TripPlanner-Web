@@ -30,13 +30,12 @@ function sign(secret: string, body: string, ts: number): string {
 }
 
 function recorder(overrides: Partial<PurgeDeps> = {}) {
-  const calls = { tags: [] as string[], paths: [] as [string, string | undefined][], cdn: [] as string[], logs: [] as string[] };
+  const calls = { tags: [] as string[], paths: [] as [string, string | undefined][], logs: [] as string[] };
   const deps: PurgeDeps = {
     secret: VECTOR_SECRET,
     nowS: VECTOR_TS + 10,
     revalidateTag: (t) => void calls.tags.push(t),
     revalidatePath: (p, type) => void calls.paths.push([p, type]),
-    deleteCdnTag: async (t) => void calls.cdn.push(t),
     log: (l) => void calls.logs.push(l),
     ...overrides,
   };
@@ -93,7 +92,7 @@ test("the notice body is checked field by field", () => {
   }
 });
 
-test("a valid notice purges the catalog tag, the page routes and the CDN tag, and logs ids only", async () => {
+test("a valid notice purges the catalog tag and the page routes, and logs ids only", async () => {
   const { deps, calls } = recorder();
   const answer = await handlePurge(VECTOR_SIGNATURE, VECTOR_BODY, deps);
   assert.equal(answer.status, 200);
@@ -102,7 +101,8 @@ test("a valid notice purges the catalog tag, the page routes and the CDN tag, an
   assert.deepEqual(calls.tags, [CATALOG_CACHE_TAG]);
   assert.deepEqual(calls.paths, PURGE_PATHS.map(([p, t]) => [p, t]));
   assert.ok(calls.paths.some(([p]) => p === "/tours/[slug]") && calls.paths.some(([p]) => p === "/destinations/[country]"));
-  assert.deepEqual(calls.cdn, [CATALOG_CACHE_TAG]);
+  // AA-1038: no CDN tag purge any more (the Vercel CDN left; CloudFront caches no catalog answer).
+  assert.deepEqual(answer.body.purged, { tags: [CATALOG_CACHE_TAG], paths: PURGE_PATHS.map(([p]) => p) });
   const line = JSON.parse(calls.logs[0]);
   assert.equal(line.evt, "catalog_purge");
   assert.equal(line.result, "ok");
@@ -116,14 +116,13 @@ test("a replay of the same notice gives the same answer and the same purges (ide
   const second = await handlePurge(VECTOR_SIGNATURE, VECTOR_BODY, deps);
   assert.deepEqual(first, second);
   assert.deepEqual(calls.tags, [CATALOG_CACHE_TAG, CATALOG_CACHE_TAG]);
-  assert.deepEqual(calls.cdn, [CATALOG_CACHE_TAG, CATALOG_CACHE_TAG]);
 });
 
 test("a secret with surrounding whitespace (an env set by piping) still verifies", async () => {
   const { deps, calls } = recorder({ secret: `${VECTOR_SECRET}\n` });
   const answer = await handlePurge(VECTOR_SIGNATURE, VECTOR_BODY, deps);
   assert.equal(answer.status, 200);
-  assert.deepEqual(calls.cdn, [CATALOG_CACHE_TAG]);
+  assert.deepEqual(calls.tags, [CATALOG_CACHE_TAG]);
 });
 
 test("refusals purge nothing", async () => {
@@ -140,20 +139,12 @@ test("refusals purge nothing", async () => {
     const { deps, calls } = recorder(over);
     const answer = await handlePurge(sig, body, deps);
     assert.equal(answer.status, status, JSON.stringify({ status, over }));
-    assert.deepEqual([calls.tags, calls.paths, calls.cdn], [[], [], []]);
+    assert.deepEqual([calls.tags, calls.paths], [[], []]);
     assert.equal(calls.logs.length, 1);
   }
 });
 
 test("a failed purge answers 502 so CIS retries", async () => {
-  const cdn = recorder({
-    deleteCdnTag: async () => {
-      throw new Error("purge api down");
-    },
-  });
-  const a = await handlePurge(VECTOR_SIGNATURE, VECTOR_BODY, cdn.deps);
-  assert.equal(a.status, 502);
-  assert.equal(a.body.step, "cdn");
   const next = recorder({
     revalidateTag: () => {
       throw new Error("no store");
@@ -162,20 +153,12 @@ test("a failed purge answers 502 so CIS retries", async () => {
   const b = await handlePurge(VECTOR_SIGNATURE, VECTOR_BODY, next.deps);
   assert.equal(b.status, 502);
   assert.equal(b.body.step, "next");
-  assert.deepEqual(next.calls.cdn, []);
+  assert.deepEqual(next.calls.paths, []);
 });
 
-test("a cacheable browse answer: CDN keeps the Lambda TTL under the tag, the browser at most a minute", () => {
-  assert.deepEqual(browseCacheHeaders("public, max-age=1800"), {
-    "cache-control": `public, max-age=${BROWSER_MAX_AGE_S}`,
-    "vercel-cdn-cache-control": "public, max-age=1800",
-    "vercel-cache-tag": CATALOG_CACHE_TAG,
-  });
-  assert.deepEqual(browseCacheHeaders("public, max-age=30"), {
-    "cache-control": "public, max-age=30",
-    "vercel-cdn-cache-control": "public, max-age=30",
-    "vercel-cache-tag": CATALOG_CACHE_TAG,
-  });
+test("a cacheable browse answer: the browser keeps it at most a minute; no Vercel CDN header (AA-1038)", () => {
+  assert.deepEqual(browseCacheHeaders("public, max-age=1800"), { "cache-control": `public, max-age=${BROWSER_MAX_AGE_S}` });
+  assert.deepEqual(browseCacheHeaders("public, max-age=30"), { "cache-control": "public, max-age=30" });
   for (const cc of ["no-store", "private, max-age=60", "public, max-age=0", "max-age=60", "public, no-cache, max-age=60"]) {
     assert.deepEqual(browseCacheHeaders(cc), { "cache-control": cc });
   }

@@ -7,8 +7,7 @@
 //     content-visibility section is painted (a full-page shot of a skipped section is a blank band; lessons, S255).
 // Each check result goes to results/report/<page>__<viewport>__<theme>.json; summary.mjs merges them into the job
 // summary and report.json. Read-only: the run only navigates (no click that changes data).
-// Preview deployments sit behind Vercel protection: with VERCEL_AUTOMATION_BYPASS_SECRET set, the bypass header is
-// sent to the BASE_URL origin only.
+// The public host has no deployment protection (the Vercel previews and their bypass left with AA-1038).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { PAGES, type VisualPage } from "./pages.ts";
@@ -22,22 +21,13 @@ const ALLOW = JSON.parse(readFileSync(new URL("./allowlist.json", import.meta.ur
 };
 const allowed = (list: { match: string }[], text: string) => list.some((a) => text.includes(a.match));
 
-async function bypass(page: Page, origin: string) {
-  const secret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-  if (!secret) return;
-  await page.route(`${origin}/**`, (route) =>
-    route.continue({ headers: { ...route.request().headers(), "x-vercel-protection-bypass": secret } }),
-  );
-}
-
 // A dynamic route's real path, read on its list page in a page of its own (closed after), so none of the list page's
 // requests can be cut off by the capture's navigation.
-async function resolvePath(page: Page, p: VisualPage, origin: string): Promise<string> {
+async function resolvePath(page: Page, p: VisualPage): Promise<string> {
   if (p.path) return p.path;
   const r = p.resolve!;
   const list = await page.context().newPage();
   try {
-    await bypass(list, origin);
     await list.goto(r.from, { waitUntil: "domcontentloaded" });
     const hrefs = await list.$$eval("a[href]", (as) => as.map((a) => a.getAttribute("href") ?? ""));
     const hit = hrefs.find((h) => h.startsWith(r.hrefPrefix) && h.length > r.hrefPrefix.length);
@@ -75,8 +65,7 @@ for (const p of PAGES) {
           /* storage blocked: the OS colour scheme (emulated above) gives the same theme */
         }
       }, theme);
-      await bypass(page, origin);
-      const path = await resolvePath(page, p, origin);
+      const path = await resolvePath(page, p);
       const docUrl = new URL(path, origin).toString();
 
       page.on("console", (m) => {

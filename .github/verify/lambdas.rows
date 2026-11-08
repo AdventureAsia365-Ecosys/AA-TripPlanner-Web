@@ -8,7 +8,7 @@
 #     (deploy-lambdas.yml "Upload artifacts to S3"). The Lambdas have no health endpoint; this is their sha check.
 #   kind public: target "GET <path>" on the production web host (the BFF calls the API Gateway with the edge key;
 #     the API host itself is not written in this public repo), expected = HTTP code, assertion = jq on the body.
-#     {cb} = a fresh cache-buster per try (the Vercel CDN would otherwise answer without touching the Lambda).
+#     {cb} = a fresh cache-buster per try (a cache on the way must never answer for the Lambda).
 #
 # The assembly reads use the all-zero trip UUID with no guest session. The Lambda answers both with 404
 # {"error": "not found"} (the trip read GETs check the guest token and never leak existence, AA-909):

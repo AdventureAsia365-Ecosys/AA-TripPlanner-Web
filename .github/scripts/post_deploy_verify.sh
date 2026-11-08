@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # AA-993 V4 (ADR 0016 D3) — post-deploy verify of one TripPlanner deploy unit, run by
-# .github/workflows/post-deploy-verify.yml after every production web deploy (vercel-deploy.yml) and every Lambda
+# .github/workflows/post-deploy-verify.yml after every web deploy (deploy-web-dev.yml) and every Lambda
 # deploy (deploy-lambdas.yml), and on dispatch. Red/green, no warnings: every check below must pass or the script
 # exits 1. Same shape as the AA-Booking / AA-Partner script, with Lambda rows instead of ECS checks.
 #
@@ -9,7 +9,7 @@
 # Rows (one per line, '#' comments): name|kind|target|expected|jq assertion
 #   kind public  target "GET <path>" on BASE; expected = HTTP code; the jq assertion runs on the body (empty = code
 #                only). Variables: $sha (EXPECTED_SHA), $version (EXPECTED_VERSION). A literal {cb} in the path is
-#                replaced by a fresh cache-buster on every try (the Vercel CDN would otherwise answer from cache).
+#                replaced by a fresh cache-buster on every try (a cache on the way must never answer).
 #   kind lambda  target "<function name> <artifact key>"; expected = LastUpdateStatus (Successful). The function must
 #                be Active, its update Successful, and its CodeSha256 must equal the code-sha256 metadata of the
 #                artifact s3://ARTIFACTS_BUCKET/<key>, whose git-sha / app-version metadata must equal EXPECTED_SHA /

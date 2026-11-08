@@ -13,8 +13,8 @@ import { REQUEST_ID_HEADER } from "./requestId.ts";
 // account that owns a trip open it from any browser and links the trips it edits. Never logged or echoed.
 export const ACCESS_TOKEN_HEADER = "x-tripplanner-access"; // backend config.ACCESS_TOKEN_HEADER
 
-// AA-1015: the per-IP / per-session AI limits. The Lambda only sees Vercel's address, so the BFF forwards the
-// traveller's (lib/cognito.ts travellerIp: the edge-set x-forwarded-for) and whether a traveller session is signed
+// AA-1015: the per-IP / per-session AI limits. The Lambda only sees the web server's address, so the BFF forwards the
+// traveller's (lib/cognito.ts travellerIp: CloudFront-Viewer-Address behind the edge) and whether a traveller session is signed
 // in (a higher allowance). The Lambda trusts both only together with the shared key (backend/shared/ratelimit.py).
 export const CLIENT_IP_HEADER = "x-tp-client-ip"; // backend config.CLIENT_IP_HEADER
 export const SIGNED_IN_HEADER = "x-tp-signed-in"; // backend config.SIGNED_IN_HEADER

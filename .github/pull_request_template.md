@@ -18,7 +18,7 @@ Refs AA-
 
 - Risk: low / medium / high (high: traveller data, guest tokens, edge key, migrations, deletes, Bedrock spend)
 - Blast radius: frontend / browse Lambda / assembly Lambda / migration:
-- Rollback: revert; redeploy the previous Lambda package or promote the previous Vercel deployment; or:
+- Rollback: revert; redeploy the previous Lambda package or the previous web image (Deploy Web Dev on the reverted commit); or:
 
 ## Cost
 
@@ -37,6 +37,6 @@ Refs AA-
 
 - [ ] CI green (Backend (pytest), Migrations (lint, PG 15 replay), Frontend (lint + build))
 - [ ] Migration `tp-NNN`: identical copy in AA-CIS-Infra `db/migrations/tripplanner/`, applied on Dev by DB Migrate before this merges; or N/A
-- [ ] Frontend change: Vercel preview checked on desktop and mobile; or N/A
+- [ ] Frontend change: the `Preview (image, next start in the runner)` check green and the page checked on desktop and mobile after the deploy; or N/A
 - [ ] After deploy: the changed `/browse` or `/trip` route verified live (status + shape) through the API Gateway, not only the Lambda
 - Evidence (commands, output, screenshots):

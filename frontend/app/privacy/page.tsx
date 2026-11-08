@@ -79,6 +79,12 @@ export default function PrivacyPage() {
             page cannot read them. Signing out removes them, together with the guest cookie of that browser.
           </li>
           <li>
+            <strong>Security cookie</strong> (set when you open the planner): a short-lived token from our website
+            firewall (Amazon Web Services) that shows the requests come from a real browser, so automated traffic cannot
+            use the AI search, the trip narration or &quot;Send to advisor&quot;. It lasts about 4 hours and holds no
+            personal details.
+          </li>
+          <li>
             <strong>Browser storage:</strong> the random ids of your current trip, so a reload restores it, and your
             light or dark display choice.
           </li>
@@ -118,11 +124,9 @@ export default function PrivacyPage() {
             trips you send and keeps the customer record. Advisors are notified of a new inquiry by email.
           </li>
           <li>
-            <strong>Amazon Web Services</strong> — hosting, database, the AI models above (Amazon Bedrock), sign-in
-            (Amazon Cognito) and the emails: advisor notifications and sign-in codes (Amazon SES).
-          </li>
-          <li>
-            <strong>Vercel</strong> — hosts and delivers this website.
+            <strong>Amazon Web Services</strong> — hosts and delivers this website (Amazon CloudFront and its website
+            firewall), the database, the AI models above (Amazon Bedrock), sign-in (Amazon Cognito) and the emails:
+            advisor notifications and sign-in codes (Amazon SES).
           </li>
           <li>
             <strong>Mapbox</strong> — map images and the interactive map. Your browser loads them from Mapbox, which
@@ -134,8 +138,8 @@ export default function PrivacyPage() {
 
       <LegalSection id="transfers" title="7. Where your data is stored">
         <p>
-          Our database and servers are in the United States (Amazon Web Services). Vercel and Mapbox serve the site and
-          maps from locations close to you. The safeguards for transfers outside your country are [to be confirmed].
+          Our database and servers are in the United States (Amazon Web Services). Amazon CloudFront and Mapbox serve
+          the site and maps from locations close to you. The safeguards for transfers outside your country are [to be confirmed].
         </p>
       </LegalSection>
 

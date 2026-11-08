@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { BOT_PROTECT, NARRATE_PATH, SEARCH_PATH, SEND_PATH } from "./botCheck.ts";
+import { NARRATE_PATH, SEARCH_PATH, SEND_PATH } from "./botCheck.ts";
 import { PROTECTED_PATHS, USE_PROTECTED_PATH, edgeGateOn, edgeGateRefusal } from "./edgeGate.ts";
 
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
@@ -15,7 +15,7 @@ test("only the exact value on turns the gate on", () => {
   assert.equal(edgeGateOn({ TP_EDGE_GATE: "1" }), false);
 });
 
-test("gate off: every spelling goes on (Vercel, local, CI)", () => {
+test("gate off: every spelling goes on (local next dev / start, CI)", () => {
   assert.equal(edgeGateRefusal("search", "/api/browse", false), null);
   assert.equal(edgeGateRefusal("narrate", "/api/trip", false), null);
   assert.equal(edgeGateRefusal("send", "/api/trip", false), null);
@@ -41,7 +41,7 @@ test("every gated branch checks the gate, and search keeps its protected pathnam
   const trip = read("../app/api/trip/route.ts");
   const search = read("../app/api/browse/search/route.ts");
   assert.match(browse, /edgeGateRefusal\("search", req\.nextUrl\.pathname, edgeGateOn\(\)\)/);
-  // One gate call for both ops of the shared branch (narrate and send), before the bot check and the Lambda.
+  // One gate call for both ops of the shared branch (narrate and send), before the Lambda.
   // Plain string search, no regex (CodeQL js/redos): only blank or comment lines may sit between the two.
   const branch = 'if (b.op === "narrate" || b.op === "send") {';
   const gateCall = "const gated = edgeGateRefusal(b.op, req.nextUrl.pathname, edgeGateOn());";
@@ -50,7 +50,6 @@ test("every gated branch checks the gate, and search keeps its protected pathnam
   assert.ok(at >= 0 && callAt > at, "the shared narrate/send branch calls the gate");
   const between = trip.slice(at + branch.length, callAt).split("\n").map((l) => l.trim());
   assert.deepEqual(between.filter((l) => l !== "" && !l.startsWith("//")), []);
-  assert.ok(trip.indexOf("edgeGateRefusal(b.op") < trip.indexOf("botCheckRefusal(b.op"));
   assert.ok(trip.indexOf("edgeGateRefusal(b.op") < trip.indexOf("await fetch(`${TRIP_API_URL}${path}`"));
   // The search route must not rewrite the pathname to /api/browse, or the gate would refuse every search.
   assert.doesNotMatch(search, /pathname\s*=/);
@@ -89,8 +88,9 @@ test("the web ACL paths of AA-CIS-Infra (local.tp_web_protected_paths) are the t
   assert.deepEqual(Object.values(PROTECTED_PATHS), ["/api/browse/search", "/api/trip/narrate", "/api/trip/send"]);
 });
 
-test("the edge gate covers every path BotID protects on Vercel (one replaces the other on ECS)", () => {
-  // Review S272: Send to advisor was protected by BotID but missing from the edge list. A path added to BOT_PROTECT
-  // must be added here and to AA-CIS-Infra local.tp_web_protected_paths in the same change.
-  assert.deepEqual(BOT_PROTECT.map((e) => e.path).sort(), Object.values(PROTECTED_PATHS).sort());
+test("the edge gate covers every protected path of lib/botCheck.ts (the web ACL is their only bot check)", () => {
+  // Review S272: Send to advisor was once missing from the edge list. A protected path added to lib/botCheck.ts must
+  // be added here and to AA-CIS-Infra local.tp_web_protected_paths in the same change.
+  const declared = [...read("./botCheck.ts").matchAll(/^export const \w+_PATH = "([^"]+)";$/gm)].map((m) => m[1]);
+  assert.deepEqual(declared.sort(), Object.values(PROTECTED_PATHS).sort());
 });

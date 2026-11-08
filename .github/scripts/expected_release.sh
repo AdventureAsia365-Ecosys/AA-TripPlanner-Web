@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # AA-993 V4 — what the expected commit ships, for .github/workflows/post-deploy-verify.yml: the release-please
-# manifest version of EXPECTED_SHA (the same file vercel-deploy.yml passes as APP_VERSION and package_lambdas.sh
+# manifest version of EXPECTED_SHA (the same file deploy-web-dev.yml bakes in as APP_VERSION and package_lambdas.sh
 # writes into the Lambda zip). Read from that commit, not from the checked-out tree, so a dispatch on main for an
 # older SHA compares against what that SHA shipped.
 #

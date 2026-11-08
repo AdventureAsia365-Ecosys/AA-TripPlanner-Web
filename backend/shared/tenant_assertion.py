@@ -10,7 +10,7 @@ Format: ``v1.<payload>.<signature>``, both parts base64url without padding; payl
 signature = HMAC-SHA256 over ``"v1." + payload`` (the ASCII text) with the assertion key.
 
 Key: HMAC-SHA256(edge key, ``KEY_LABEL``), where the edge key is the X-TripPlanner-Key secret both Lambdas already read
-(``tripplanner/<ENVIRONMENT>/api-key``, backend/shared/auth.py) and the BFF already holds (Vercel env
+(``tripplanner/<ENVIRONMENT>/api-key``, backend/shared/auth.py) and the BFF already holds (web task env
 ``TRIPPLANNER_API_KEY``). The label separates the two uses of one secret: the derived key never travels, and a leaked
 assertion does not reveal the edge key. No new secret, IAM grant or env var. Fail closed: when the edge key cannot be
 read, a request WITH an assertion is refused (503); a request without one keeps the default tenant.
@@ -72,7 +72,7 @@ def _unb64(text: str) -> bytes:
 
 
 # The whitespace both sides strip from the edge key before deriving (frontend/lib/tenantAssertion.ts EDGE_KEY_TRIM):
-# the HTTP whitespace a fetch() header value loses anyway. auth.py strips the Secrets Manager value and Vercel env
+# the HTTP whitespace a fetch() header value loses anyway. auth.py strips the Secrets Manager value and env
 # values can carry a trailing newline, so without this the edge check would pass and every assertion fail.
 EDGE_KEY_WHITESPACE = " \t\r\n"
 

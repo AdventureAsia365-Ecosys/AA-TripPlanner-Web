@@ -18,10 +18,10 @@ from) AA-CIS**.
 ## 1. Top-level shape
 
 ```
-                 Browser (Next.js app, Vercel)
+          Browser → CloudFront + web ACL (Next.js app, ECS)
                         │  (same-origin /api/* only)
                         ▼
-        Next.js BFF routes  (server-side, on Vercel)
+        Next.js BFF routes  (server-side, ECS task)
           /api/browse  ───────────┐        /api/trip
                         │          │            │
      adds X-TripPlanner-Key header │  (secret, server-side only)
@@ -46,7 +46,7 @@ from) AA-CIS**.
 ```
 
 Three deployable units + one offline pipeline:
-1. **Frontend** — Next.js app on Vercel (own project, own domain).
+1. **Frontend** — Next.js app on ECS Fargate behind CloudFront (AA-1038; was Vercel until S272).
 2. **Lambda A (Browse)** — stateless, cacheable reads.
 3. **Lambda B (Assembly)** — stateful per-visitor + LLM narration.
 4. **Extraction pipeline** — offline, run manually (NOT a service).
@@ -59,7 +59,7 @@ Bedrock and must never be cached across visitors).
 
 ## 2. Frontend (FE) — built by this project
 
-Next.js (App Router) + TypeScript + Tailwind, deployed to Vercel.
+Next.js (App Router) + TypeScript + Tailwind, deployed to ECS Dev behind CloudFront (`.github/workflows/deploy-web-dev.yml`).
 
 | Area | File(s) | Notes |
 |------|---------|-------|
@@ -73,8 +73,8 @@ Next.js (App Router) + TypeScript + Tailwind, deployed to Vercel.
 | API client | `lib/api.ts` | Talks only to the BFF routes. |
 | BFF (server-side) | `app/api/browse/route.ts`, `app/api/trip/route.ts` | Proxy to the Lambdas; hold `BROWSE_API_URL` / `TRIP_API_URL` + `TRIPPLANNER_API_KEY` server-side (never exposed to the browser). |
 
-Vercel env (Production): `BROWSE_API_URL`, `TRIP_API_URL` (both = API GW
-base), `TRIPPLANNER_API_KEY` (edge shared secret), `NEXT_PUBLIC_MAPBOX_TOKEN`.
+ECS task env (AA-CIS-Infra `tripplanner_web.tf`): `BROWSE_API_URL`, `TRIP_API_URL` (both = API GW
+base), `TRIPPLANNER_API_KEY` (edge shared secret); image build arg `NEXT_PUBLIC_MAPBOX_TOKEN`.
 
 ---
 

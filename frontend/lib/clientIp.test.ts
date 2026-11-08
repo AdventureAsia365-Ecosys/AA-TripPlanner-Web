@@ -1,4 +1,4 @@
-// AA-1038 R5 hosting: the traveller's address behind Vercel and behind CloudFront (ECS). Run: npm test.
+// AA-1038 R5 hosting: the traveller's address behind CloudFront (ECS) and in the plain mode (local, CI). Run: npm test.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CLOUDFRONT_XFF_HOPS, clientIp, clientIpSource, viewerAddressIp } from "./clientIp.ts";
@@ -13,10 +13,10 @@ test("only the exact env value cloudfront switches the source", () => {
   assert.equal(clientIpSource({ TP_CLIENT_IP_SOURCE: "cloudfront-ish" }), "forwarded");
 });
 
-test("forwarded (Vercel): the first x-forwarded-for entry, else x-real-ip; never CloudFront-Viewer-Address", () => {
+test("forwarded (local, CI; was Vercel): the first x-forwarded-for entry, else x-real-ip; never CloudFront-Viewer-Address", () => {
   assert.equal(clientIp(h({ "x-forwarded-for": "198.51.100.4, 10.0.0.1" }), "forwarded"), "198.51.100.4");
   assert.equal(clientIp(h({ "x-real-ip": "2001:db8::1" }), "forwarded"), "2001:db8::1");
-  // On Vercel a viewer can send any header: the CloudFront one is not trusted there.
+  // Without the edge a viewer can send any header: the CloudFront one is not trusted in this mode.
   assert.equal(clientIp(h({ "cloudfront-viewer-address": "203.0.113.9:443" }), "forwarded"), null);
   assert.equal(clientIp(h({ "x-forwarded-for": "not-an-ip" }), "forwarded"), null);
 });

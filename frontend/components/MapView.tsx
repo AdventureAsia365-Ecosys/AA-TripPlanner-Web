@@ -35,7 +35,7 @@ const SOURCE_ID = "destinations";
 // never a pin, a circle or hidden; the trip's stretch of a line is a gold "feature" leg.
 const LINES_SOURCE = "destination-lines";
 const TRIP_FEATURE_SOURCE = "trip-feature-line";
-// Kill switch: draw every line in the provisional (dashed ink) style. ⚠️ underscore env name — set by hand in Vercel.
+// Kill switch: draw every line in the provisional (dashed ink) style. ⚠️ underscore env name — a build arg of the image (inlined at build).
 const LINES_PROVISIONAL = ["1", "true", "on"].includes((process.env.NEXT_PUBLIC_MAP_LINES_PROVISIONAL ?? "").toLowerCase());
 
 // Extend bounds by a destination: its bbox for a line, its point otherwise.

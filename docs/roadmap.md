@@ -1,7 +1,7 @@
 # Roadmap — đưa AA-TripPlanner thành sản phẩm thị trường
 
 _Lập 14/09/2026. Trạng thái hiện tại: MVP chạy end-to-end trên prod
-(https://aa-tripplanner.vercel.app). Roadmap này để họp và quyết ưu tiên._
+(https://tripplanner.lumiguides.it.com). Roadmap này để họp và quyết ưu tiên._
 
 Ký hiệu cột "Ai làm":
 - **Agent**: thuần code, không cần tài nguyên ngoài / secret dùng chung —

@@ -52,7 +52,7 @@ classify_file() {
     frontend/*.md) ;;
     frontend/*) groups+=" fe" ;;
     # Read by frontend/lib/health.test.ts, which CI runs with `npm test` on every PR.
-    .release-please-manifest.json | .github/workflows/vercel-deploy.yml) groups+=" fe" ;;
+    .release-please-manifest.json | .github/workflows/deploy-web-dev.yml) groups+=" fe" ;;
     tools/docs/*) groups+=" docs docs_tools" ;;
     scripts/pre-push.sh | scripts/install-hooks.sh | .githooks/*) groups+=" hook" ;;
     # Marker (not a path): the diff deletes or renames a file, which can break a Markdown link.
@@ -180,8 +180,8 @@ self_test() {
     backend/package_lambdas.sh
   expect "release manifest -> targeted unit + frontend tests (both read it)" "$BASE_IDS unit-changed $FE" fast \
     .release-please-manifest.json
-  expect "Vercel deploy workflow -> frontend tests (health.test.ts reads it)" "$BASE_IDS $FE" fast \
-    .github/workflows/vercel-deploy.yml
+  expect "web deploy workflow -> frontend tests (health.test.ts reads it)" "$BASE_IDS $FE" fast \
+    .github/workflows/deploy-web-dev.yml
   expect "migration -> migration lint" "$BASE_IDS migration-lint" fast migrations/021_example.sql
   expect "migration test -> migration lint" "$BASE_IDS migration-lint" fast migrations/tests/migration_lint.py
   expect "frontend -> lint + tsc + node tests, never build" "$BASE_IDS $FE" fast frontend/app/page.tsx

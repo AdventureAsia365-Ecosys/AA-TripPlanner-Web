@@ -3,23 +3,24 @@
 //
 // CIS sends one signed notice per tour lifecycle event (CIS job `tripplanner_purge`, an outbox row of
 // gold_aa_internal.tour_lifecycle_event = catalog.v_tour_lifecycle_outbox) to POST /api/revalidate/catalog. This
-// module is the whole decision of that route, pure so `npm test` runs it (the route passes the Next / Vercel calls in):
+// module is the whole decision of that route, pure so `npm test` runs it (the route passes the Next.js calls in):
 //
 //   1. verify the HMAC-SHA256 signature `X-AA-Signature: t=<unix s>,v1=<hex>` over `${t}.${raw body}` with
 //      CATALOG_REVALIDATE_SECRET (constant-time compare; a timestamp more than SIGNATURE_TOLERANCE_S away is refused,
 //      so a captured notice cannot be replayed later);
 //   2. check the body (contract catalog.tour.lifecycle.v1: `events[]` with event_id, source_id, event);
 //   3. purge: the Next data cache + ISR pages that read the catalog (`revalidateTag(CATALOG_CACHE_TAG, { expire: 0 })`
-//      plus revalidatePath of the home, tour and destination routes, for a cached 404 that made no tagged fetch) and
-//      the Vercel CDN entries of the browse BFF tagged CATALOG_CACHE_TAG (dangerouslyDeleteByTag: the next request
-//      refetches instead of being served the stale list once more).
+//      plus revalidatePath of the home, tour and destination routes, for a cached 404 that made no tagged fetch).
+//      No CDN step: CloudFront in front of the ECS task caches no page and no /api/* answer (AA-CIS-Infra
+//      tripplanner_web_edge.tf: CachingDisabled except the immutable chunks and the versioned photos). The Vercel
+//      CDN tag purge left with the Vercel project (AA-1038).
 //
 // Idempotent: every step drops a cache, so a replay or a CIS retry gives the same state; nothing is recorded here.
 // A purge that fails answers 502 and CIS retries; if every retry fails, the time-based TTLs still bound the lag
 // (30 min) as before AA-987. The tour page's 410 comes from proxy.ts (lib/goneTours.ts), whose per-instance list is
 // at most GONE_MAX_STALE_MS old; this route cannot reach other instances' memory.
 //
-// No next/* or @vercel/* import here.
+// No next/* import here.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
@@ -109,7 +110,6 @@ export interface PurgeDeps {
   nowS: number;
   revalidateTag: (tag: string) => void;
   revalidatePath: (path: string, type?: "page" | "layout") => void;
-  deleteCdnTag: (tag: string) => Promise<void>;
   log: (line: string) => void;
 }
 
@@ -126,7 +126,7 @@ export async function handlePurge(
 ): Promise<PurgeAnswer> {
   const started = Date.now();
   const log = (fields: Record<string, unknown>) => deps.log(JSON.stringify({ evt: "catalog_purge", ...fields }));
-  // Trimmed like the CIS side (parse_secret): an env set by piping (`echo ... | vercel env add`) carries a trailing
+  // Trimmed like the CIS side (parse_secret): a value set by piping (`echo ... | <cli> put`) carries a trailing
   // newline, and an untrimmed key would refuse every notice with 401 (NonRetryable on CIS = the purge never runs).
   const secret = deps.secret.trim();
   if (!secret) {
@@ -160,13 +160,7 @@ export async function handlePurge(
     log({ result: "error", step: "next", error: errName(e), ...summary, ms: Date.now() - started });
     return { status: 502, body: { error: "purge_failed", step: "next" } };
   }
-  try {
-    await deps.deleteCdnTag(CATALOG_CACHE_TAG);
-  } catch (e) {
-    log({ result: "error", step: "cdn", error: errName(e), ...summary, ms: Date.now() - started });
-    return { status: 502, body: { error: "purge_failed", step: "cdn" } };
-  }
-  const purged = { tags: [CATALOG_CACHE_TAG], paths: PURGE_PATHS.map(([p]) => p), cdn_tags: [CATALOG_CACHE_TAG] };
+  const purged = { tags: [CATALOG_CACHE_TAG], paths: PURGE_PATHS.map(([p]) => p) };
   log({ result: "ok", ...summary, ms: Date.now() - started });
   return { status: 200, body: { ok: true, ...summary, purged } };
 }
@@ -177,14 +171,14 @@ function errName(e: unknown): string {
 
 // ── browse BFF cache headers ─────────────────────────────────────────────────────────────────────────────────────
 
-// The browser keeps a catalog answer at most this long (a purge cannot reach a browser cache); the Vercel CDN keeps
-// it for the Lambda's TTL and drops it on a purge (tag CATALOG_CACHE_TAG).
+// The browser keeps a catalog answer at most this long (a purge cannot reach a browser cache). No shared cache keeps
+// it: CloudFront does not cache /api/* (CachingDisabled), so a purge never has a CDN entry to drop.
 export const BROWSER_MAX_AGE_S = 60;
 
 /**
- * The cache headers of a /api/browse answer, from the Lambda's cache-control. A public answer with a max-age is
- * split: `cache-control` (browser) capped at BROWSER_MAX_AGE_S, `vercel-cdn-cache-control` (CDN only) with the
- * Lambda's TTL, and the CDN cache tag. Anything else (no-store, private, none) passes through unchanged.
+ * The cache headers of a /api/browse answer, from the Lambda's cache-control. A public answer with a max-age gets
+ * `cache-control` capped at BROWSER_MAX_AGE_S. Anything else (no-store, private, none) passes through unchanged.
+ * (The Vercel-only CDN cache-control and cache-tag headers left with the Vercel project, AA-1038.)
  */
 export function browseCacheHeaders(upstream: string | null | undefined): Record<string, string> {
   const passthrough = { "cache-control": upstream || "no-store" };
@@ -193,9 +187,5 @@ export function browseCacheHeaders(upstream: string | null | undefined): Record<
   if (!m || !/(?:^|[,\s])public(?:$|[,\s])/.test(cc) || /no-store|private|no-cache/.test(cc)) return passthrough;
   const ttl = Number(m[1]);
   if (ttl <= 0) return passthrough;
-  return {
-    "cache-control": `public, max-age=${Math.min(ttl, BROWSER_MAX_AGE_S)}`,
-    "vercel-cdn-cache-control": `public, max-age=${ttl}`,
-    "vercel-cache-tag": CATALOG_CACHE_TAG,
-  };
+  return { "cache-control": `public, max-age=${Math.min(ttl, BROWSER_MAX_AGE_S)}` };
 }

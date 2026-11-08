@@ -1,7 +1,7 @@
 """JSON log lines, request ids and Sentry for the two Lambdas (AA-871).
 
 **Request id.** Each invocation gets one id: the BFF's ``x-request-id`` header when it is well formed (the BFF
-forwards the id it echoes to the browser, so one id follows a request from Vercel to the Lambda), else API Gateway's
+forwards the id it echoes to the browser, so one id follows a request from the BFF to the Lambda), else API Gateway's
 ``requestContext.requestId``, else the Lambda ``aws_request_id``, else a new ``uuid4().hex``. It is bound to
 :mod:`structlog.contextvars` for the invocation, returned as ``x-request-id`` on the response and set as the Sentry tag
 ``request_id``. ``aws_request_id`` is bound too, to join the platform's START / END / REPORT lines.

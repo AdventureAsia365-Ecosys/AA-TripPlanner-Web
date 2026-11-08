@@ -89,5 +89,6 @@ export function getSitemap(): Promise<Result<SitemapData>> {
 
 // Canonical site origin for metadata, sitemap and JSON-LD.
 export function siteUrl(): string {
-  return (process.env.NEXT_PUBLIC_SITE_URL || "https://aa-tripplanner.vercel.app").replace(/\/$/, "");
+  // AA-1038: the public host (ECS behind CloudFront); the image build passes the same value (frontend/Dockerfile).
+  return (process.env.NEXT_PUBLIC_SITE_URL || "https://tripplanner.lumiguides.it.com").replace(/\/$/, "");
 }

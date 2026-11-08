@@ -22,7 +22,7 @@
 //
 // The client is public (no secret). The BFF marks its calls for the Cognito web ACL (AA-CIS-Infra identity.tf, rule
 // BffRatePerTravellerIp): `x-aa-traveller-bff` = TP_COGNITO_BFF_KEY and `X-AA-Traveller-IP` = the traveller's own
-// address, so the per-IP sign-in limits count each traveller, not the shared Vercel egress address. Both headers go
+// address, so the per-IP sign-in limits count each traveller, not the shared egress address of the web server. Both headers go
 // together or not at all: a keyed call without a traveller address would escape every per-person limit.
 //
 // Sign-up proof: the EXTERNAL pre sign-up trigger accepts a native SignUp only from this BFF (AA-CIS-Infra
@@ -119,8 +119,8 @@ export function errorCode(e: unknown): ErrorCode {
 
 export type { HeaderSource };
 
-// The traveller's own address (lib/clientIp.ts): on Vercel the edge-set x-forwarded-for, behind CloudFront on ECS
-// (TP_CLIENT_IP_SOURCE=cloudfront, AA-1038) CloudFront-Viewer-Address. A client cannot choose the source.
+// The traveller's own address (lib/clientIp.ts): behind CloudFront on ECS (TP_CLIENT_IP_SOURCE=cloudfront, AA-1038)
+// CloudFront-Viewer-Address. A client cannot choose the source.
 export function travellerIp(headers: HeaderSource, source: ClientIpSource = clientIpSource()): string | null {
   return clientIp(headers, source);
 }

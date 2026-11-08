@@ -34,7 +34,7 @@ export function isGuestToken(value: unknown): value is string {
   return typeof value === "string" && TOKEN_RE.test(value);
 }
 
-// Production (Vercel, https) uses the __Host- prefix, which requires Secure + Path=/ and no Domain;
+// Production (ECS behind CloudFront, https) uses the __Host- prefix, which requires Secure + Path=/ and no Domain;
 // local `next dev` over http uses a plain name without Secure.
 export function isSecureCookieEnv(): boolean {
   return process.env.NODE_ENV === "production";

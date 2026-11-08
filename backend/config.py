@@ -255,7 +255,7 @@ TP_RATE_SIGNED_IN_FACTOR = int(_get("TP_RATE_SIGNED_IN_FACTOR", "2"))
 # guest session and per traveller IP (signed-in factor as above). Counted only when the request would store a lead.
 TP_RATE_SEND_PER_HOUR = int(_get("TP_RATE_SEND_PER_HOUR", "5"))
 TP_RATE_SEND_IP_PER_HOUR = int(_get("TP_RATE_SEND_IP_PER_HOUR", "20"))
-# Sent by the BFF (Vercel) with the traveller's address and whether a traveller session is signed in. Trusted ONLY
+# Sent by the BFF (web task) with the traveller's address and whether a traveller session is signed in. Trusted ONLY
 # when the request also carries the right x-tripplanner-key (only the BFF has it); otherwise ignored.
 CLIENT_IP_HEADER = "x-tp-client-ip"
 SIGNED_IN_HEADER = "x-tp-signed-in"

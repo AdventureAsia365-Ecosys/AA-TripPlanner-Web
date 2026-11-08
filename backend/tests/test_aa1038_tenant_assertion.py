@@ -147,7 +147,7 @@ def test_the_key_comes_from_the_edge_key(monkeypatch):
 
 @pytest.mark.parametrize("padded", [EDGE + "\n", " " + EDGE + "\r\n", "\t" + EDGE + " "])
 def test_an_edge_key_with_surrounding_whitespace_derives_the_same_key(padded):
-    # The BFF derives from the raw Vercel env value, auth.py strips the Secrets Manager value: both normalise the same.
+    # The BFF derives from the raw env value, auth.py strips the Secrets Manager value: both normalise the same.
     assert ta.derive_key(padded) == _key()
     assert ta.verify(VECTOR_HEADER, ta.derive_key(padded), now=NOW).tenant_id == TENANT_A
 
