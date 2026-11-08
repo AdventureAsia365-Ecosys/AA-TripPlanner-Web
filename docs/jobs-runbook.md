@@ -105,6 +105,6 @@ close it. An override run never counts as the last live run: the daily tick stay
 
 ## What stays working after a redaction
 
-- AA-Booking reads `tripplanner.v_inquiry_outbox` by cursor and dedupes on `idempotency_key`
-  (`booking.inbox_events`); both keys are unchanged, and the view's columns did not change.
+- The keys `id` and `idempotency_key` are unchanged, and the columns of `tripplanner.v_inquiry_outbox` did not change.
+  (AA-Booking read that view by cursor until the inquiry.submitted contract was retired; tp-027 revoked its grant.)
 - A second hand-off with the same key is still refused by `outbox_idempotency_key_key` (`ON CONFLICT DO NOTHING`).
