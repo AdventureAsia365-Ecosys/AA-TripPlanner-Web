@@ -74,8 +74,17 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: e2e/visual/package-lock.json
+          package-manager-cache: false
+
+      # S273 (workflow_lint WL4): restore on every ref; only the default branch saves this cache
+      # (a pull request or merge-queue copy is readable only by that ref).
+      - name: Restore npm cache
+        id: npm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('e2e/visual/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-${{ runner.arch }}-
 
       # The home answers 200 before anything is captured (a few tries: a deploy may still be settling).
       - name: Can the deployment be read?
@@ -97,6 +106,13 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
+
+      - name: Save npm cache
+        if: github.ref == 'refs/heads/main' && steps.npm-cache.outputs.cache-hit != 'true' && steps.reach.outputs.ok == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: ${{ steps.npm-cache.outputs.cache-primary-key }}
 
       - name: Capture and check
         if: steps.reach.outputs.ok == 'true'
