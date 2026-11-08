@@ -67,6 +67,7 @@ for (const p of PAGES) {
       }, theme);
       const path = await resolvePath(page, p);
       const docUrl = new URL(path, origin).toString();
+      let docStatus: number | null = null;
 
       page.on("console", (m) => {
         if (m.type() !== "error" || allowed(ALLOW.console, m.text())) return;
@@ -86,10 +87,19 @@ for (const p of PAGES) {
         const url = r.url();
         if (!url.startsWith(origin) || allowed(ALLOW.requests, url)) return;
         const expected = url === docUrl ? (p.status ?? 200) : null;
+        if (expected !== null) docStatus = r.status();
+        // The WAF challenge of a challenged page answers its first document load with 202 (no token yet).
+        const wafChallenge = p.challenged && url === docUrl && r.status() === 202 && r.headers()["x-amzn-waf-action"] === "challenge";
+        if (wafChallenge) return;
         if (expected !== null ? r.status() !== expected : r.status() >= 400) failed.push(`${r.status()} ${url}`);
       });
 
       const res = await page.goto(path, { waitUntil: "load" });
+      if (p.challenged && res?.status() === 202) {
+        // The challenge script solves the token and reloads the page: wait for the reloaded document.
+        await page.waitForResponse((r) => r.url() === docUrl && r.status() !== 202, { timeout: 30_000 }).catch(() => {});
+        await page.waitForLoadState("load");
+      }
       await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
       await page.evaluate(() => document.fonts.ready.then(() => true));
       await renderWholePage(page);
@@ -127,7 +137,7 @@ for (const p of PAGES) {
         path,
         viewport,
         theme,
-        status: res?.status() ?? null,
+        status: docStatus ?? res?.status() ?? null,
         appliedTheme,
         overflow,
         consoleErrors,
@@ -136,7 +146,7 @@ for (const p of PAGES) {
       mkdirSync(REPORT_DIR, { recursive: true });
       writeFileSync(`${REPORT_DIR}/${name}.json`, JSON.stringify(result, null, 1));
 
-      expect.soft(res?.status(), "document status").toBe(p.status ?? 200);
+      expect.soft(docStatus ?? res?.status(), "document status").toBe(p.status ?? 200);
       expect.soft(appliedTheme, "data-theme on <html>").toBe(theme);
       expect.soft(overflow.doc, `page scrolls sideways: ${overflow.offenders.join(", ")}`).toBeLessThanOrEqual(overflow.vw + 1);
       expect.soft(consoleErrors, "console errors").toEqual([]);
