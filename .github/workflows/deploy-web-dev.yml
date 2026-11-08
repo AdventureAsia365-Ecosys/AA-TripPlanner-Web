@@ -272,25 +272,45 @@ jobs:
           grep -q 'href="/destinations/' /tmp/dest.html || { echo "::error::/destinations lists no country"; exit 1; }
           curl -fsS "${R[@]}" "https://${PUBLIC_HOST}/sitemap.xml" | grep -q '/tours/' || { echo "::error::sitemap.xml lists no tour"; exit 1; }
           RESOLVE="${PUBLIC_HOST}:443:${IP}" bash .github/scripts/check_security_headers.sh "https://${PUBLIC_HOST}" /
-          # The web ACL (TripPlanner rules of the ALB web ACL): a model call without the browser's WAF token is
-          # challenged (HTTP 202 + the x-amzn-waf-action header), never answered by the app; the older spelling reaches
-          # the app's edge gate (404).
-          CODE=$(curl -sS -o /dev/null -D /tmp/c.h -w '%{http_code}' "${R[@]}" "https://${PUBLIC_HOST}/api/browse/search?q=temple")
-          { [ "$CODE" = "202" ] && grep -qiE '^x-amzn-waf-action: *challenge' /tmp/c.h; } \
-            || { echo "::error::/api/browse/search answered $CODE without the web ACL challenge"; head -5 /tmp/c.h; exit 1; }
-          # The planner's first document load (how a browser gets its token): the page itself (200) or the web ACL's
-          # Challenge interstitial (202 + x-amzn-waf-action: challenge); never an error.
-          CODE=$(curl -sS -o /dev/null -D /tmp/p.h -w '%{http_code}' "${R[@]}" -H 'sec-fetch-dest: document' \
-            -H 'accept: text/html' "https://${PUBLIC_HOST}/plan")
-          if [ "$CODE" = "202" ]; then
-            grep -qiE '^x-amzn-waf-action: *challenge' /tmp/p.h || { echo "::error::/plan answered 202 without the web ACL challenge"; exit 1; }
-          elif [ "$CODE" != "200" ]; then
-            echo "::error::/plan (document load) answered $CODE, expected 200 or the 202 challenge"; exit 1
-          fi
+          # The web ACL (TripPlanner rules of the ALB web ACL). These requests carry no aws-waf-token, so a working
+          # Challenge rule ALWAYS answers them itself: HTTP 202 + x-amzn-waf-action: challenge, never the app. A 200
+          # here means the rule did not match (header not forwarded, path or method match broken, rule order) and every
+          # traveller's search, narration and send would be challenged with no way to get a token: fail the deploy.
+          challenged() { # <label> <curl args...>: require the web ACL's Challenge answer
+            local label=$1; shift
+            local code
+            code=$(curl -sS -o /dev/null -D /tmp/w.h -w '%{http_code}' "${R[@]}" "$@")
+            { [ "$code" = "202" ] && grep -qiE '^x-amzn-waf-action: *challenge' /tmp/w.h; } \
+              || { echo "::error::${label} answered ${code}, expected 202 with x-amzn-waf-action: challenge"; head -5 /tmp/w.h; exit 1; }
+          }
+          # The protected calls: the two model calls and Send to advisor (on ECS the web ACL is their only bot check).
+          challenged "GET /api/browse/search" "https://${PUBLIC_HOST}/api/browse/search?q=temple"
+          challenged "POST /api/trip/narrate" -X POST -H 'content-type: application/json' \
+            --data '{"op":"narrate","trip_id":"verify","session_id":"verify"}' "https://${PUBLIC_HOST}/api/trip/narrate"
+          challenged "POST /api/trip/send" -X POST -H 'content-type: application/json' \
+            --data '{"op":"send","trip_id":"verify","session_id":"verify"}' "https://${PUBLIC_HOST}/api/trip/send"
+          # The planner's document load (how a browser gets its token): the Challenge interstitial, on /plan and on a
+          # tenant's planner. (The plain /plan above, without sec-fetch-dest, answered 200: not a document navigation.)
+          challenged "/plan (document load)" -H 'sec-fetch-dest: document' -H 'accept: text/html' "https://${PUBLIC_HOST}/plan"
+          challenged "/aa-tripplanner/plan (document load)" -H 'sec-fetch-dest: document' -H 'accept: text/html' \
+            "https://${PUBLIC_HOST}/aa-tripplanner/plan"
+          # A catalog page loaded as a document is never challenged (no interstitial outside the planner).
+          TOUR=$(grep -oE 'href="/tours/[^"?#]+"' /tmp/home.html | head -1 | sed -E 's/^href="(.*)"$/\1/')
+          [ -n "$TOUR" ] || { echo "::error::no tour link on the home page"; exit 1; }
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "${R[@]}" -H 'sec-fetch-dest: document' -H 'accept: text/html' \
+            "https://${PUBLIC_HOST}${TOUR}")
+          [ "$CODE" = "200" ] || { echo "::error::${TOUR} (document load) answered $CODE, expected 200 (never challenged)"; exit 1; }
+          # The older spellings reach the app's edge gate (404 use_protected_path), never the Lambda.
           CODE=$(curl -s -o /tmp/g.json -w '%{http_code}' "${R[@]}" "https://${PUBLIC_HOST}/api/browse?resource=search&q=temple")
           [ "$CODE" = "404" ] && jq -e '.error == "use_protected_path"' /tmp/g.json >/dev/null \
             || { echo "::error::GET /api/browse?resource=search answered $CODE, expected 404 use_protected_path"; exit 1; }
-          echo "ECS serves ${PUBLIC_HOST} through CloudFront: health on ${GITHUB_SHA::7}, pages with catalog content, headers, challenge on the model path, planner first load ($CODE), edge gate"
+          for op in narrate send; do
+            CODE=$(curl -s -o /tmp/g.json -w '%{http_code}' "${R[@]}" -X POST -H 'content-type: application/json' \
+              --data "{\"op\":\"${op}\",\"trip_id\":\"verify\",\"session_id\":\"verify\"}" "https://${PUBLIC_HOST}/api/trip")
+            [ "$CODE" = "404" ] && jq -e '.error == "use_protected_path"' /tmp/g.json >/dev/null \
+              || { echo "::error::POST /api/trip {op: ${op}} answered $CODE, expected 404 use_protected_path"; exit 1; }
+          done
+          echo "ECS serves ${PUBLIC_HOST} through CloudFront: health on ${GITHUB_SHA::7}, pages with catalog content, headers, the Challenge on search, narrate, send and the planner documents, ${TOUR} unchallenged, edge gate on the older spellings"
 
   result:
     name: Deploy Web Dev result

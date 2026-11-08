@@ -140,11 +140,16 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
   the Challenge (`isWafChallenge`) is never read as the app's answer; it asks for one planner reload per 5 minutes
   (`reloadForWafToken`, sessionStorage), otherwise the `botCheck` notice. No token refresh and no second send (there
   is no SDK to refresh with).
-- **Deploy:** no `TP_WAF_INTEGRATION_URL` variable, build arg or `challenge.js` check. The verify now asserts
-  `/api/browse/search` answers `202` + `x-amzn-waf-action: challenge` without a token, and `/plan` with
-  `sec-fetch-dest: document` answers `200` or the `202` Challenge on its first load.
+- **Deploy:** no `TP_WAF_INTEGRATION_URL` variable, build arg or `challenge.js` check. The verify asserts `202` +
+  `x-amzn-waf-action: challenge` without a token on `GET /api/browse/search`, `POST /api/trip/narrate`,
+  `POST /api/trip/send` and the document load (`sec-fetch-dest: document`) of `/plan` and `/aa-tripplanner/plan`;
+  a tour page loaded as a document answers `200`; the older spellings answer 404 `use_protected_path`. *Fix pass
+  (review S272):* the first version accepted `200` for the `/plan` document load, but a request with no token can
+  only get `200` when the rule does not match, which is exactly the failure that leaves every traveller challenged
+  with no way to get a token: now only the `202` passes (the plain `/plan` without `sec-fetch-dest` keeps `200`).
 - **Merged `origin/main`** into this branch (it was 3 commits behind): `api.ts` keeps main's `tenantFetch` on search
-  inside `throughWafEdge`; `/api/trip` keeps main's BotID check on narrate + send, with the edge gate on narrate only.
+  inside `throughWafEdge`; `/api/trip` keeps main's BotID check on narrate + send (the edge gate covers both since
+  the fix pass).
 
 ### Tradeoffs
 
@@ -157,5 +162,10 @@ workflow, edge-aware BFF). Vercel stays the live host until the DNS switch, whic
 ### Should know
 
 - Off the edge (Vercel, local, CI) links behave the same (document loads), no request is ever challenged.
-- The new "Send to advisor" path of main (`/api/trip/send`) is guarded by BotID on Vercel only; on ECS it has the
-  per-IP rate rule of the web ACL and the Lambda's own limits, no Challenge (follow-up, outside this slice).
+- **"Send to advisor" is a protected path on ECS too (fix pass, review S272).** On Vercel BotID guards
+  `POST /api/trip/send`; the image builds BotID off, so the first version left it with only the 3000 / 5 min per-IP
+  rule and the Lambda's limits while it stores a traveller's contact for an agency. Now the web ACL challenges and
+  rate-limits it with the model calls (Infra `local.tp_web_protected_paths`), and the edge gate answers the older
+  spelling `POST /api/trip {op: "send"}` 404 (`lib/edgeGate.ts` `PROTECTED_PATHS`, one gate call for narrate and
+  send). A challenged send is answered as the bot-check refusal in `sendToAdvisor` (`leadResultMessage`: "Please
+  reload the page and try again"); no automatic reload, which would drop the lead form.

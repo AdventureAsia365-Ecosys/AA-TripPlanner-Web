@@ -1,7 +1,7 @@
-// AA-1038 R5 hosting (S272) — the AWS WAF Challenge on the two model calls once the site runs behind CloudFront.
+// AA-1038 R5 hosting (S272) — the AWS WAF Challenge on the protected calls once the site runs behind CloudFront.
 //
 // The ALB web ACL (AA-CIS-Infra modules/waf, rule TripPlannerChallengePlanner, scoped to this host) answers a call to
-//   GET /api/browse/search   or   POST /api/trip/narrate
+//   GET /api/browse/search,   POST /api/trip/narrate   or   POST /api/trip/send
 // that carries no valid aws-waf-token with HTTP 202 + `x-amzn-waf-action: challenge`; the app never sees it. The same
 // rule challenges a document load of a planner page, which is how a browser gets its token: every in-site way into
 // the planner is a full page load (ui/SiteLink.tsx, lib/plannerNav.ts), so the planner's first model call already
@@ -10,6 +10,8 @@
 // A call that is still challenged (the token expired after its 4 h, or cookies were cleared): one reload of the planner
 // page, a document load the rule challenges, at most once per WAF_RELOAD_GAP_MS; otherwise the caller shows the
 // botCheck notice. Never a silent empty answer. A challenged request never reached the app, so nothing is lost.
+// "Send to advisor" never reloads (the lead form would be lost): lib/api.ts sendToAdvisor answers it as the bot-check
+// refusal, whose line asks the traveller to reload the page.
 // Off the edge (Vercel, local, CI) no answer is ever a challenge.
 //
 // No next/* import: `npm test` runs it.

@@ -1,13 +1,14 @@
-// AA-1038 R5 hosting — the edge gate of the two BFF calls that can reach a model (search: an embedding call,
-// narration: a chat model call) once the site runs on ECS behind CloudFront.
+// AA-1038 R5 hosting — the edge gate of the BFF calls a script must not reach unchecked, once the site runs on ECS
+// behind CloudFront: the two that can reach a model (search: an embedding call, narration: a chat model call) and
+// "Send to advisor" (stores a traveller's contact and delivers it to an agency; review S272).
 //
-// On ECS the BotID check is off (it needs the Vercel edge; lib/botCheck.ts) and the CLOUDFRONT-scope web ACL takes
-// its place (AA-CIS-Infra tripplanner_web_edge.tf): a rate rule and a Challenge on the URI paths
-//   GET  /api/browse/search   and   POST /api/trip/narrate.
+// On ECS the BotID check is off (it needs the Vercel edge; lib/botCheck.ts) and the TripPlanner rules of the ALB web
+// ACL take its place (AA-CIS-Infra tripplanner_web_edge.tf, modules/waf): a rate rule and a Challenge on the URI paths
+//   GET  /api/browse/search,   POST /api/trip/narrate   and   POST /api/trip/send.
 // A WAF rule sees the path, not the query string or the JSON body, so the older spellings of the same calls
-// (GET /api/browse?resource=search, POST /api/trip {op: "narrate"}) would pass the edge unchallenged. With the gate on,
-// the BFF answers those spellings 404 `use_protected_path` before any Lambda call, so every model call has passed
-// the edge rules. The planner already calls only the two protected paths (AA-1015).
+// (GET /api/browse?resource=search, POST /api/trip {op: "narrate" | "send"}) would pass the edge unchallenged. With the
+// gate on, the BFF answers those spellings 404 `use_protected_path` before any Lambda call, so every model call and
+// every lead has passed the edge rules. The planner already calls only the protected paths (AA-1015, AA-1038).
 //
 // The pathname here is the one Next resolved with WHATWG `new URL`: a dot segment, plain or percent-encoded
 // (/api/browse/%2e/search, /api/trip/./narrate), is already gone, so such a spelling reaches the route as the
@@ -20,7 +21,7 @@
 //
 // No next/* import: `npm test` runs it.
 
-import { NARRATE_PATH, SEARCH_PATH } from "./botCheck.ts";
+import { NARRATE_PATH, SEARCH_PATH, SEND_PATH } from "./botCheck.ts";
 
 export const USE_PROTECTED_PATH = "use_protected_path";
 
@@ -33,9 +34,17 @@ export interface EdgeGateRefusal {
   body: { error: typeof USE_PROTECTED_PATH };
 }
 
-/** The refusal for a model call that did not come through its protected pathname, or null to go on. */
-export function edgeGateRefusal(route: "search" | "narrate", pathname: string, on: boolean): EdgeGateRefusal | null {
+export type GatedRoute = "search" | "narrate" | "send";
+
+// Each gated call and the only pathname it is answered on behind the edge (the web ACL's protected paths).
+export const PROTECTED_PATHS: Record<GatedRoute, string> = {
+  search: SEARCH_PATH,
+  narrate: NARRATE_PATH,
+  send: SEND_PATH,
+};
+
+/** The refusal for a gated call that did not come through its protected pathname, or null to go on. */
+export function edgeGateRefusal(route: GatedRoute, pathname: string, on: boolean): EdgeGateRefusal | null {
   if (!on) return null;
-  const protectedPath = route === "search" ? SEARCH_PATH : NARRATE_PATH;
-  return pathname === protectedPath ? null : { status: 404, body: { error: USE_PROTECTED_PATH } };
+  return pathname === PROTECTED_PATHS[route] ? null : { status: 404, body: { error: USE_PROTECTED_PATH } };
 }

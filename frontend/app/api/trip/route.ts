@@ -193,15 +193,14 @@ export async function POST(req: NextRequest) {
 
   const requestId = requestIdFor(req.headers);
   if (b.op === "narrate" || b.op === "send") {
-    if (b.op === "narrate") {
-      // AA-1038: behind the web ACL (ECS), narration is answered only on its protected path (lib/edgeGate.ts).
-      const gated = edgeGateRefusal("narrate", req.nextUrl.pathname, edgeGateOn());
-      if (gated) {
-        return NextResponse.json(gated.body, {
-          status: gated.status,
-          headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
-        });
-      }
+    // AA-1038: behind the web ACL (ECS), narration and "Send to advisor" are answered only on their protected paths
+    // (lib/edgeGate.ts): there the web ACL's rate rule and Challenge are their bot check (BotID is off on ECS).
+    const gated = edgeGateRefusal(b.op, req.nextUrl.pathname, edgeGateOn());
+    if (gated) {
+      return NextResponse.json(gated.body, {
+        status: gated.status,
+        headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
+      });
     }
     // AA-1015 (S262): BotID Basic (free) before the Lambda, so a refused narration is never counted by the
     // per-session limit and never reaches a model. The planner calls POST /api/trip/narrate (lib/botCheck.ts).

@@ -17,7 +17,7 @@ import type {
 import type { TourList, TourSort } from "./catalogTypes";
 import { readTourRoute, type TourRouteResult } from "./tourRoute";
 import { COOKIES_NOTICE, COOKIES_REQUIRED, resetGuestIds, showGuestNotice } from "./guestIds";
-import { NARRATE_PATH, SEARCH_PATH, SEND_PATH, isBotRefusal } from "./botCheck";
+import { BOT_CHECK_FAILED, NARRATE_PATH, SEARCH_PATH, SEND_PATH, isBotRefusal } from "./botCheck";
 // AA-1038 R5 hosting: the web ACL's Challenge answer on the two model calls behind CloudFront (none elsewhere).
 import { isWafChallenge, throughWafEdge } from "./wafChallenge";
 // AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
@@ -158,9 +158,10 @@ export async function fetchTrip(tripId: string): Promise<TripResponse | null> {
 //   Retry once: if the cookie was only lost, the browser now holds the new one and the retry gets the
 //   real answer. A second cookies_required means this browser does not keep the cookie: keep the ids,
 //   say cookies are needed. A refused mutation changed nothing, so the retry is safe.
-// `path`: POST /api/trip, or the narrate op's own path (AA-1015, the bot check: lib/botCheck.ts). The narrate path goes
-// through the web ACL's Challenge step (AA-1038, lib/wafChallenge.ts); `challenged` = the web ACL answered with its
-// Challenge (HTTP 202, no app answer), never reported as ok.
+// `path`: POST /api/trip, or the narrate / send op's own path (AA-1015, the bot check: lib/botCheck.ts). The narrate
+// path goes through the web ACL's Challenge step (AA-1038, lib/wafChallenge.ts: one reload of the planner); the send
+// path is challenged too, but never reloads (sendToAdvisor). `challenged` = the web ACL answered with its Challenge
+// (HTTP 202, no app answer), never reported as ok.
 async function postTrip<T = Record<string, unknown>>(
   body: Record<string, unknown> & { session_id: string; trip_id: string },
   path: string = "/api/trip",
@@ -272,13 +273,17 @@ export async function sendToAdvisor(
   customer?: { name: string; phone: string; email: string; consent: boolean },
   lead?: LeadBody,
 ): Promise<{ status: number; body: TripResponse & { error?: string; fields?: string[] } }> {
-  const { status, data } = await postTrip<TripResponse & { fields?: string[] }>({
+  const { status, challenged, data } = await postTrip<TripResponse & { fields?: string[] }>({
     op: "send",
     trip_id: tripId,
     session_id: sessionId,
     customer,
     lead,
   }, SEND_PATH);
+  // AA-1038 (review S272): behind the edge the web ACL challenges a send without a valid WAF token (HTTP 202, the app
+  // never saw it, so nothing was stored). Answered as the bot-check refusal, whose line asks the traveller to reload
+  // the page (that document load issues the token). No automatic reload here: it would lose the form they typed.
+  if (challenged) return { status: 403, body: { error: BOT_CHECK_FAILED } as TripResponse & { error?: string } };
   return { status, body: data };
 }
 

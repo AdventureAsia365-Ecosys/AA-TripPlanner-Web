@@ -69,6 +69,16 @@ test("search and narrate go through the edge step and never read a challenge as 
   assert.match(api, /if \(challenged \|\| isBotRefusal\(status, data\)\)/);
 });
 
+test("a challenged Send to advisor is the bot-check refusal, without a reload that would lose the form", () => {
+  const api = read("./api.ts");
+  const send = api.slice(api.indexOf("export async function sendToAdvisor"), api.indexOf("export interface Suggestion"));
+  // Only the narrate path reloads the planner; the send path never goes through throughWafEdge.
+  assert.doesNotMatch(send, /throughWafEdge|reloadForWafToken/);
+  assert.match(api, /path === NARRATE_PATH \? await throughWafEdge\(post\) : await post\(\)/);
+  assert.match(send, /\}, SEND_PATH\);/);
+  assert.match(send, /if \(challenged\) return \{ status: 403, body: \{ error: BOT_CHECK_FAILED \}/);
+});
+
 test("no AWS WAF JavaScript SDK: no challenge.js loader, no integration URL in the build or the deploy", () => {
   assert.equal(existsSync(new URL("./wafToken.ts", import.meta.url)), false);
   const files = [
