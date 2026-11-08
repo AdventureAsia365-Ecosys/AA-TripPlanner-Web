@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { NARRATE_PATH, SEARCH_PATH, SEND_PATH } from "./botCheck.ts";
+import { BOT_PROTECT, NARRATE_PATH, SEARCH_PATH, SEND_PATH } from "./botCheck.ts";
 import { PROTECTED_PATHS, USE_PROTECTED_PATH, edgeGateOn, edgeGateRefusal } from "./edgeGate.ts";
 
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
@@ -75,4 +75,10 @@ test("the web ACL paths of AA-CIS-Infra (local.tp_web_protected_paths) are the t
   assert.equal(NARRATE_PATH, "/api/trip/narrate");
   assert.equal(SEND_PATH, "/api/trip/send");
   assert.deepEqual(Object.values(PROTECTED_PATHS), ["/api/browse/search", "/api/trip/narrate", "/api/trip/send"]);
+});
+
+test("the edge gate covers every path BotID protects on Vercel (one replaces the other on ECS)", () => {
+  // Review S272: Send to advisor was protected by BotID but missing from the edge list. A path added to BOT_PROTECT
+  // must be added here and to AA-CIS-Infra local.tp_web_protected_paths in the same change.
+  assert.deepEqual(BOT_PROTECT.map((e) => e.path).sort(), Object.values(PROTECTED_PATHS).sort());
 });
