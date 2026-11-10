@@ -42,8 +42,8 @@ Each run, in this order (ids, counts and error codes only in the result, DM-6.3)
    refuses such a route before storing (``leads.channel_ready``), so only rows stored before the URL changed get
    here.
 
-The jobs Lambda binds no tenant (backend/jobs/handler.py): it reads the rows of every tenant through the tp-025 shadow
-policy's unset branch. Its role needs the webhook key and SES send as well as the assembly role (AA-CIS-Infra, a
+The jobs Lambda binds no tenant (backend/jobs/handler.py): it reads the rows of every tenant under the system scope
+(``tenant.system_scope``, tp-028 policy ``outbox_system``). Its role needs the webhook key and SES send as well as the assembly role (AA-CIS-Infra, a
 deploy prerequisite of the webhook / e-mail channels); without them every retry stops at the channel breaker and the
 expiry still ends the hold on time, loudly.
 """
@@ -58,7 +58,7 @@ from typing import Any, Callable, Optional
 from backend.assembly import leads
 from backend.jobs.queue import Job
 from backend.jobs.runner import PermanentError
-from backend.shared import observability
+from backend.shared import observability, tenant
 
 KIND = "tp_lead_deliver"
 # A failed run is re-queued for the next tick (the expiry is idempotent) and reported as attention at once.
@@ -244,7 +244,9 @@ async def run(pool: Any, job: Job, *, now: Optional[datetime] = None,
     dry_run = payload.get("dry_run") is True
     at = now or datetime.now(timezone.utc)
     cutoff = leads.hold_cutoff(at)
-    async with pool.acquire() as conn:
+    # AA-1038 (tp-028, FORCE row-level security): expiry, the rejected count and the retries read and write the leads
+    # of every tenant, so the run opens the system scope (policy outbox_system); without it it would see no lead.
+    async with pool.acquire() as conn, tenant.system_scope(conn, op=KIND):
         if not await conn.fetchval(MIGRATED_SQL):
             # The code can deploy before tp-026 is applied (MIG-4 order is migration first, but a rollback of the
             # migration must not fail every daily tick): no lead row can exist without it.

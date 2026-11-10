@@ -1,15 +1,18 @@
-"""AA-1038 R5 slice 1 integration — the assembly Lambda's tenant context against the real tp-025 shadow policy.
+"""AA-1038 R5 integration — the assembly and jobs Lambdas' tenant context against the real tp-028 policies (FORCE row-level
+security; slice 1 ran this module on the tp-025 shadow policy).
 
 Runs only with ``pytest --pg-dsn postgresql://postgres@127.0.0.1:<port>/postgres`` (a SUPERUSER DSN of a throwaway
-LOCAL Postgres; other hosts are refused). The database is built by the same replay as the migration tests
-(``migrations/tests/test_tp025_pg.py``: tp-001 … tp-024 as the live roles, invented rows in the four tables, then
-tp-025 as ``tp_owner``); the code then runs ``handler.serve`` as the logged-in runtime role ``tripplanner``, so row
-security applies to it exactly as on the Lambda.
+LOCAL Postgres; other hosts are refused). The database is built by the migration replays
+(``migrations/tests/test_tp028_pg.forced_database``: tp-001 … tp-024 as the live roles, invented rows in the four
+tables, tp-025 … tp-028 as ``tp_owner``); the code then runs ``handler.serve`` and the job kinds as the logged-in
+runtime role ``tripplanner``, so row security applies to it exactly as on the Lambdas.
 
 Checks: a trip created under the demo tenant is stored with the demo tenant, answers 200 from GET /trip/{id} under the
 demo tenant and the same 404 as an unknown trip under a forged tenant; a mutation under a forged tenant reaches no
-session (401) and writes nothing; a trip written before tp-025 (backfilled) still loads with its guest token; and the
-connection carries no tenant context after the request (unbind, not only the pool's RESET ALL).
+session (401) and writes nothing; a trip written before tp-025 (backfilled) still loads with its guest token; the
+connection carries no tenant context after the request (unbind, not only the pool's RESET ALL) and then sees no row;
+the outbox redaction and the lead expiry of the jobs Lambda reach every tenant's rows through the system scope and
+leave the connection without it.
 """
 from __future__ import annotations
 
@@ -30,10 +33,13 @@ MIGRATION_TESTS = Path(__file__).resolve().parents[2] / "migrations" / "tests"
 if str(MIGRATION_TESTS) not in sys.path:
     sys.path.insert(0, str(MIGRATION_TESTS))
 
-import test_tp025_pg as replay  # noqa: E402  (the tp-025 replay fixture: same database the migration test builds)
+import test_tp025_pg as replay  # noqa: E402  (the tp-025 replay helpers: _drop)
+import test_tp028_pg as forced  # noqa: E402  (the tp-028 database: same one the migration test builds)
 
 from backend import config  # noqa: E402
 from backend.assembly import handler  # noqa: E402
+from backend.jobs import lead_deliver, outbox_redact  # noqa: E402
+from backend.jobs.queue import Job  # noqa: E402
 from backend.shared import tenant  # noqa: E402
 
 DEMO = config.DEMO_TENANT_ID
@@ -53,8 +59,8 @@ def pg_dsn(request):
 
 @pytest.fixture(scope="module")
 def db(pg_dsn):
-    """tp-024 + seeded rows + tp-025 (sync: the replay helpers run their own event loop)."""
-    ctx, error = replay._database(pg_dsn)
+    """tp-024 + seeded rows + tp-025 … tp-028 (sync: the replay helpers run their own event loop)."""
+    ctx, error = forced.forced_database(pg_dsn)
     try:
         assert error is None, error
         yield ctx
@@ -194,8 +200,84 @@ async def test_the_connection_has_no_tenant_context_after_a_request(db, tp_conn,
     status, _ = await _serve(tp_conn, "GET", f"/trip/{uuid.uuid4()}", token=_token())
     assert status == 404
     assert await _guc(tp_conn) in (None, "")
-    # no context = the lenient branch of the shadow policy: the runtime role sees every row again
-    total = await tp_conn.fetchval("SELECT count(*) AS n FROM tripplanner.sessions")
+    # tp-028: no context = no row (the shadow policy's unset branch is gone); the demo context sees the demo rows
+    assert await tp_conn.fetchval("SELECT count(*) AS n FROM tripplanner.sessions") == 0
     async with tenant.bound(tp_conn, FORGED):
         assert await tp_conn.fetchval("SELECT count(*) AS n FROM tripplanner.sessions") == 0
-    assert await tp_conn.fetchval("SELECT count(*) AS n FROM tripplanner.sessions") == total > 0
+    async with tenant.bound(tp_conn, DEMO):
+        assert await tp_conn.fetchval("SELECT count(*) AS n FROM tripplanner.sessions") > 0
+    assert await tp_conn.fetchval("SELECT count(*) AS n FROM tripplanner.sessions") == 0
+
+
+class _Pool:
+    def __init__(self, conn):
+        self.acquire = _acquire(conn)
+
+
+async def _scope(conn) -> str | None:
+    return await conn.fetchval("SELECT current_setting('app.tenant_scope', true) AS scope")
+
+
+_INQUIRY = {"contract": "inquiry.submitted", "version": 1.4, "idempotency_key": "k", "source": "tripplanner",
+            "customer": {"customer_id": None, "name": "Synthetic Traveller", "email": "synthetic@example.test",
+                         "phone": "+1 555 0100", "consent": True, "consent_at": None, "verified": False,
+                         "identity": None},
+            "itinerary": {"legs": [], "days": [], "custom_days": []}}
+
+
+async def test_the_outbox_redaction_reaches_every_tenant_through_the_system_scope(db, tp_conn):
+    """The jobs Lambda binds no tenant: without the system scope it would see no outbox row under FORCE."""
+    su = await asyncpg.connect(db["su_dsn"])
+    try:
+        ids = []
+        for tid in (DEMO, FORGED):
+            trip = uuid.uuid4()
+            ids.append(await su.fetchval(
+                "INSERT INTO tripplanner.outbox (event, schema_version, idempotency_key, aggregate_id, payload, "
+                "tenant_id, created_at) VALUES ('inquiry.submitted', 1, $1, $2, $3::jsonb, $4::uuid, "
+                "now() - interval '120 days') RETURNING id", f"{trip}:aa1038", trip, json.dumps(_INQUIRY), tid))
+        assert await tp_conn.fetchval("SELECT count(*) AS n FROM tripplanner.outbox") == 0   # no context, no row
+        res = await outbox_redact.run(_Pool(tp_conn), Job(id="j1", kind=outbox_redact.KIND,
+                                                          payload={"dry_run": False, "max_rows": 100, "pause_ms": 0}),
+                                      environ={})
+        assert res["mode"] == "live" and res["affected_total"] >= 2, res
+        rows = await su.fetch("SELECT tenant_id::text AS t, redacted_at, payload -> 'customer' ->> 'name' AS name "
+                              "FROM tripplanner.outbox WHERE id = ANY($1::bigint[]) ORDER BY id", ids)
+        assert [(r["t"], r["redacted_at"] is not None, r["name"]) for r in rows] == [(DEMO, True, None),
+                                                                                       (FORGED, True, None)]
+    finally:
+        await su.close()
+    assert await _scope(tp_conn) in (None, "")
+    assert await tp_conn.fetchval("SELECT count(*) AS n FROM tripplanner.outbox") == 0
+
+
+async def test_the_lead_expiry_reaches_every_tenant_and_resets_the_scope(db, tp_conn):
+    su = await asyncpg.connect(db["su_dsn"])
+    try:
+        ids = []
+        for tid in (DEMO, FORGED):
+            trip = uuid.uuid4()
+            ids.append(await su.fetchval(
+                "INSERT INTO tripplanner.outbox (event, schema_version, idempotency_key, aggregate_id, payload, "
+                "tenant_id, delivery_channel, created_at) VALUES ('lead.submitted', 1, $1, $2, $3::jsonb, $4::uuid, "
+                "'crm', now() - interval '6 days') RETURNING id",
+                f"{trip}:lead", trip, json.dumps({"lead_id": str(uuid.uuid4()), "traveller": {"name": "Synthetic"}}),
+                tid))
+        res = await lead_deliver.run(_Pool(tp_conn), Job(id="j2", kind=lead_deliver.KIND,
+                                                         payload={"trigger": "schedule"}), deliver=None)
+        assert res["expire"]["expired"] >= 2 and res["expire"]["left"] == 0, res
+        rows = await su.fetch("SELECT tenant_id::text AS t, delivery_error FROM tripplanner.outbox "
+                              "WHERE id = ANY($1::bigint[]) ORDER BY id", ids)
+        assert [(r["t"], r["delivery_error"]) for r in rows] == [(DEMO, "expired"), (FORGED, "expired")]
+    finally:
+        await su.close()
+    assert await _scope(tp_conn) in (None, "")
+
+
+async def test_a_job_that_raises_still_leaves_the_connection_without_the_scope(db, tp_conn):
+    with pytest.raises(RuntimeError):
+        async with tenant.system_scope(tp_conn, op="test"):
+            assert await tp_conn.fetchval("SELECT count(*) AS n FROM tripplanner.sessions") > 0
+            raise RuntimeError("synthetic")
+    assert await _scope(tp_conn) in (None, "")
+    assert await tp_conn.fetchval("SELECT count(*) AS n FROM tripplanner.sessions") == 0

@@ -4,6 +4,8 @@ The Postgres behaviour (tp-025 shadow policy as the runtime role) is in test_ten
 connections: set_config is the first statement of a request and RESET the last, on success and when route() raises;
 a tenant id that is not a uuid runs no SQL at all (and fails the cold start when it comes from the env); an unbind
 that fails never hides the answer and discards the connection; the jobs Lambda logs its tenant-less system context.
+tp-028 (FORCE slice): ``system_scope`` opens the jobs Lambda's cross-tenant path first and resets it last, also when the
+body raises, and a reset that fails discards the connection.
 """
 from __future__ import annotations
 
@@ -245,3 +247,36 @@ async def test_jobs_lambda_refuses_an_unknown_op_before_logging_a_context(capsys
     out = await jobs_handler.serve({"op": "nope"}, pool=None, worker="w", time_left=lambda: 600.0)
     assert "error" in out
     assert not any(ln["evt"] == "tenant_context" for ln in _lines(capsys))
+
+
+# --- the system scope (tp-028, the jobs Lambda) -----------------------------------------------------------------------
+
+async def test_system_scope_sets_then_resets_and_logs_no_tenant(capsys):
+    conn = RecordingConn()
+    async with tenant.system_scope(conn, op="tp_lead_deliver"):
+        conn.statements.append(("BODY", ()))
+    assert [q for q, _ in conn.statements] == [tenant.SYSTEM_SCOPE_SQL, "BODY", tenant.UNSCOPE_SQL]
+    assert tenant.SYSTEM_SCOPE_SQL == "SELECT set_config('app.tenant_scope', 'system', false)"
+    assert tenant.current() is None                       # no tenant is named for the run
+    line = [x for x in _lines(capsys) if x.get("evt") == "tenant_context"][-1]
+    assert line["tenant_id"] is None and line["source"] == "system" and line["scope"] == "system"
+    assert line["op"] == "tp_lead_deliver"
+
+
+async def test_system_scope_resets_when_the_body_raises():
+    conn = RecordingConn()
+    with pytest.raises(RuntimeError):
+        async with tenant.system_scope(conn, op="x"):
+            raise RuntimeError("synthetic")
+    assert [q for q, _ in conn.statements] == [tenant.SYSTEM_SCOPE_SQL, tenant.UNSCOPE_SQL]
+    assert conn.terminated is False
+
+
+async def test_a_failed_scope_reset_discards_the_connection_and_keeps_the_body_error(capsys):
+    conn = RecordingConn(fail_on="RESET app.tenant_scope")
+    with pytest.raises(RuntimeError):
+        async with tenant.system_scope(conn, op="x"):
+            raise RuntimeError("synthetic")
+    assert conn.terminated is True
+    assert any(x.get("evt") == "tenant_scope_reset_failed" and x["error"] == "ConnectionError"
+               for x in _lines(capsys))

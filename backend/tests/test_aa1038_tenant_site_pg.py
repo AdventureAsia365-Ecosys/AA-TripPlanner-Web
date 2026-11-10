@@ -1,8 +1,9 @@
-"""AA-1038 R5 slice 2 integration — the /{slug} path end to end on the tp-025 replay, as the runtime role.
+"""AA-1038 R5 slice 2 integration — the /{slug} path end to end on the tp-028 replay (FORCE row-level security), as the
+runtime role.
 
 Runs only with ``pytest --pg-dsn postgresql://postgres@127.0.0.1:<port>/postgres`` (a SUPERUSER DSN of a throwaway
 LOCAL Postgres; other hosts are refused). The database is the tp-025 replay of ``migrations/tests/test_tp025_pg.py``
-plus a stand-in for the CIS contract view ``catalog.v_tenant_tripplanner_v1`` (CIS 379) with the exact column list the
+then tp-026 … tp-028 (``test_tp028_pg.forced_database``), plus a stand-in for the CIS contract view ``catalog.v_tenant_tripplanner_v1`` (CIS 379) with the exact column list the
 CIS test pins (``CIS_379_COLUMNS``), granted to ``tripplanner`` the way CIS 379 grants it.
 
 Checks: the lookup SQL answers as ``tripplanner`` (served tenants only); two synthetic agencies each create a trip
@@ -29,6 +30,7 @@ if str(MIGRATION_TESTS) not in sys.path:
     sys.path.insert(0, str(MIGRATION_TESTS))
 
 import test_tp025_pg as replay  # noqa: E402
+import test_tp028_pg as forced  # noqa: E402
 
 from backend import config  # noqa: E402
 from backend.assembly import handler  # noqa: E402
@@ -77,7 +79,7 @@ def pg_dsn(request):
 
 @pytest.fixture(scope="module")
 def db(pg_dsn):
-    ctx, error = replay._database(pg_dsn, extra_sql=VIEW_STANDIN)
+    ctx, error = forced.forced_database(pg_dsn, extra_sql=VIEW_STANDIN)
     try:
         assert error is None, error
         yield ctx
