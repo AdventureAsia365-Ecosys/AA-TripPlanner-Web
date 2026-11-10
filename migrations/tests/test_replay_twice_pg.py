@@ -54,6 +54,9 @@ SUPERSEDED_BY_DROP = {
     "013": "transfers ownership of tripplanner.itinerary_components / tour_*, which tp-018 dropped (tp-001, the only "
            "file creating itinerary_components, is NOT_RERUNNABLE); its own re-run as the master is covered by "
            "test_tp013_pg.py::test_rerun_as_the_master_is_a_no_op",
+    "025": "creates the shadow policies <table>_tenant_shadow and the demo-fallback tenant_id default, which tp-028 "
+           "dropped and replaced (AA-1038 FORCE slice); a re-run would bring them back, and its guard refuses the "
+           "forced tables tp-028 leaves (it fails on the final state)",
 }
 
 # Everything a re-run could change in the two schemas the files touch. One text line per fact; set equality.

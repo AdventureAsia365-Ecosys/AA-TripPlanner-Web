@@ -105,11 +105,10 @@ async def serve(event: dict[str, Any], *, pool: Any, worker: str, time_left: Cal
     if op not in OPS:
         return {"error": f"unknown op; one of {list(OPS)}"}
     emit = observability.emit
-    # AA-1038 (R5 slice 1): tenant-less ON PURPOSE. The retention kinds (outbox redaction, rate-counter purge) work
-    # across every tenant, so this Lambda binds no app.tenant_id and reads/writes tripplanner.outbox through the
-    # shadow policy's unset-GUC branch of tp-025 (ENABLE, not FORCE). The FORCE slice removes that branch: before it
-    # ships, this Lambda needs a per-tenant loop (bind each tenant in turn) or a system role / policy of its own,
-    # else the redaction sees 0 rows and silently does nothing.
+    # AA-1038: tenant-less ON PURPOSE. The kinds that touch tripplanner.outbox (the outbox redaction and the lead
+    # delivery) work across every tenant: since tp-028 (FORCE row-level security, strict tenant policies) a connection
+    # without a tenant context sees no row there, so each of them opens tenant.system_scope (policy outbox_system)
+    # for its run. The queue (tripplanner.job) and the rate-counter purge read tables without row-level security.
     tenant.system_context(op)
     if op == "status":
         async with pool.acquire() as conn:

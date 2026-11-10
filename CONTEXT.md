@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-11-07
+last_reviewed: 2026-11-10
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -559,9 +559,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   enforces this: `migrations/tests/migration_lint.py` (TripPlanner rules), the AA-CIS-Infra
   `db/run_migration.py --inspect` lint at a pinned commit (`test_infra_runner.py`) and a replay of
   tp-001…013 on PostgreSQL 15 + pgvector (`test_tp013_pg.py`; `test_tp015_pg.py` continues it with tp-014/015 as
-  `tp_owner`, `test_tp016_pg.py` with tp-016, `test_tp017_pg.py` / `test_tp018_pg.py` / `test_tp019_pg.py` / `test_tp022_pg.py` with tp-017 / tp-018 / tp-019 / tp-022, `test_tp025_pg.py` with tp-025: tenant_id and the shadow RLS policies, checked as the logged-in runtime role). `test_replay_twice_pg.py` (AA-849) applies every file twice: the second run must not error and
+  `tp_owner`, `test_tp016_pg.py` with tp-016, `test_tp017_pg.py` / `test_tp018_pg.py` / `test_tp019_pg.py` / `test_tp022_pg.py` with tp-017 / tp-018 / tp-019 / tp-022, `test_tp025_pg.py` with tp-025: tenant_id and the shadow RLS policies, checked as the logged-in runtime role; `test_tp028_pg.py` with tp-026 … tp-028: FORCE row-level security and the enforcing policies, as the runtime role, the owner and cis_app). `test_replay_twice_pg.py` (AA-849) applies every file twice: the second run must not error and
   must change nothing, and the registered `tp-NNN` keys must equal the files, so **every new file must be
-  safe to run again** (a file whose objects a later file dropped — tp-003, tp-004, tp-013 after the tp-018 drop — is
+  safe to run again** (a file whose objects a later file dropped — tp-003, tp-004, tp-013 after the tp-018 drop, tp-025 after tp-028 replaced its shadow policies — is
   listed in `SUPERSEDED_BY_DROP` with the dropping file, and must still fail or change the state when re-run) (`IF NOT EXISTS`, `CREATE OR REPLACE`, `ON CONFLICT (version) DO NOTHING`, no
   unguarded seed rows). Nothing in that job may be skipped (`--fail-on-skip`). Undoing tp-013 is the prepared Infra
   `roles/` file (branch `feat/x1-s7-tp013-undo`) run as the master, never a `tripplanner/` file.
@@ -638,44 +638,60 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 
 #### Tenancy (R5, AA-1038)
 
-Slice 1 of root ADR 0019 d10 (the "shadow" phase): the trip state has an owning tenant and the database can filter by
-it, while every request still runs as one tenant.
+Root ADR 0019 d10. Slice 1 (tp-025, the "shadow" phase) gave the trip state an owning tenant; the FORCE slice (tp-028,
+S276) makes the database enforce it: a connection without a tenant context sees and writes no tenant row.
 
 - **Tables.** `tripplanner.sessions`, `trip_drafts`, `trip_events` and `outbox` have `tenant_id uuid NOT NULL`
   (tp-025), a soft key to `shared.tenants.tenant_id` (no FK: `shared` is CIS's). Every row written before tp-025 was
   backfilled to the demo tenant `00000000-0000-0000-0000-000000000002` (slug `aa-tripplanner`, kind `demo`).
-  Not tenant-scoped yet, on purpose: `narration_cache` and `ai_rate_counter` (keys change in the per-tenant AI cap
-  slice), `customers` and `traveller_accounts` (frozen since R0, retired later), `job` (system queue) and
-  `component_id_map` (global catalog ids).
-- **Column default** `COALESCE(NULLIF(current_setting('app.tenant_id', true), '')::uuid, <demo>)`: an INSERT
-  without `tenant_id` takes the bound tenant, or the demo tenant when none is bound. The code's INSERTs name no
-  `tenant_id`.
-- **Shadow policy.** Row security is ENABLED, not FORCED. One permissive policy `<table>_tenant_shadow` FOR ALL TO
-  `tripplanner`: no tenant context (GUC `app.tenant_id` unset or `''`) = every row; a context = that tenant's rows
-  only, for reads and writes (a row naming another tenant fails WITH CHECK). A context that is not a uuid fails the
-  statement; it never widens access.
+  Not tenant-scoped, on purpose: `narration_cache` and `ai_rate_counter` (hash keys, no tenant column), `customers`
+  and `traveller_accounts` (frozen since R0, retired later), `job` (system queue) and `component_id_map` (global
+  catalog ids).
+- **Column default** (tp-028) `NULLIF(current_setting('app.tenant_id', true), '')::uuid`: an INSERT without
+  `tenant_id` takes the bound tenant; with none bound it fails (the row fails the policy's WITH CHECK, and the column
+  is NOT NULL). The demo fallback of tp-025 is gone. The code's INSERTs name no `tenant_id`.
+- **Policies (tp-028).** Row security is ENABLED and FORCED on the four tables, with three permissive policies each:
+  - `<table>_tenant` FOR ALL TO `tripplanner`: `tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid`
+    for reads and writes. No context (unset or `''`) = no row; a row naming another tenant fails WITH CHECK; a
+    context that is not a uuid fails the statement, it never widens access.
+  - `<table>_system` FOR ALL TO `tripplanner`, `tp_owner`: every row while the GUC `app.tenant_scope` is `'system'`
+    (nothing else spelled like it). Only the jobs Lambda opens it (below); a later tp- file that rewrites rows as the
+    owner opens it with `set_config('app.tenant_scope', 'system', true)` first, else its UPDATE reaches no row.
+  - `<table>_owner_read` FOR SELECT TO `tp_owner`: every row when the session binds no tenant, the bound tenant's rows
+    when it does. FORCE puts the owner under row security, so this is what the owner-owned views read through:
+    `v_ops_traffic_daily`, `v_ops_data_totals`, `v_ops_pin_components`, `v_ops_inquiry_keys` (granted to `cis_app`,
+    which binds no TripPlanner tenant) keep every row. The runtime role holds SELECT on them too (the tp_owner default
+    privileges); they carry counts and keys, no traveller data.
+  - `v_inquiry_outbox` (retired inquiry view, no consumer since tp-027) is a `security_invoker` view since tp-028: the
+    caller's own policies apply through it, so it is no way around `outbox_tenant`.
 - **Binding (assembly Lambda).** `backend/shared/tenant.py`: `bound(conn, tenant_id)` runs
   `SELECT set_config('app.tenant_id', $1, false)` right after the pooled connection is acquired, before `route()`,
-  and `RESET app.tenant_id` in a `finally`, also when `route()` raises (`handler.serve`, and `local_server.py` the
-  same way). Session level, not `SET LOCAL`, because the handler mostly runs in autocommit on one pooled connection;
-  asyncpg's `RESET ALL` on release is a second safety. An unbind that fails terminates the connection (log line
-  `tenant_unbind_failed`) instead of returning it to the pool. The tenant is `config.DEFAULT_TENANT_ID` (the demo
-  constant; env override `TP_DEFAULT_TENANT_ID`, validated as a uuid at import, so a bad value fails the cold start
-  and a non-uuid is never bound). There is no tenant header or path yet, so this adds no trust surface. Each request
-  logs one line `tenant_context` `{tenant_id, source: "default"}` (no request values).
-- **Owner-bypass views.** `tp_owner` owns the tables and the views, and row security is not forced, so the views
-  read by other apps (`v_ops_traffic_daily`, `v_ops_data_totals`, `v_ops_pin_components`, `v_ops_inquiry_keys` for
-  `cis_app`) keep every row whatever the context. An owner view that carries traveller data across tenants is
-  therefore never granted to another app: `v_inquiry_outbox` was read by `booking` until tp-027 (AA-1046) revoked
-  that grant and `booking`'s USAGE on the schema with it.
-- **Jobs path.** The jobs Lambda (same login role `tripplanner`) binds no tenant on purpose: the retention kinds work
-  across tenants through the policy's unset-GUC branch, and each invocation logs `tenant_context`
-  `{tenant_id: null, source: "system", op}`. The browse Lambda is unchanged (it reads no tenant-scoped table).
-- **What the FORCE slice changes (S276 in the plan).** FORCE ROW LEVEL SECURITY, strict policies (no unset branch),
-  the column default without the demo fallback, and a system path for the jobs Lambda (a per-tenant loop or a
-  system role / policy), else its redaction sees 0 rows. Tests: `backend/tests/test_aa1038_tenant.py`
-  (bind order, unbind on error, invalid id runs no SQL) and `backend/tests/test_tenant_rls_pg.py` (on the tp-025
-  replay, as `tripplanner`: a demo trip is 200 under the demo tenant and 404 under a forged one).
+  and `RESET app.tenant_id` in a `finally`, also when `route()` raises (`handler.serve`, `handler.serve_m2m` and
+  `local_server.py` the same way). Session level, not `SET LOCAL`, because the handler mostly runs in autocommit on
+  one pooled connection; asyncpg's `RESET ALL` on release is a second safety. An unbind that fails terminates the
+  connection (log line `tenant_unbind_failed`) instead of returning it to the pool. The bare path's tenant is
+  `config.DEFAULT_TENANT_ID` (the demo constant; env override `TP_DEFAULT_TENANT_ID`, validated as a uuid at import,
+  so a bad value fails the cold start and a non-uuid is never bound). Each request logs one line `tenant_context`
+  `{tenant_id, source}` (no request values). `backend/tests/test_aa1038_force_rls.py` fails when a connection in
+  `backend/assembly/` is acquired without `tenant.bound` in the same `async with`.
+- **Jobs path (system scope).** The jobs Lambda (same login role `tripplanner`) binds no tenant. The two kinds that
+  touch a tenant table, `tp_retention_outbox_redact` and `tp_lead_deliver`, open `tenant.system_scope(conn, op=KIND)`
+  for their run (`SELECT set_config('app.tenant_scope', 'system', false)`, `RESET app.tenant_scope` in a `finally`; a
+  reset that fails terminates the connection, log `tenant_scope_reset_failed`); each logs `tenant_context`
+  `{tenant_id: null, source: "system", scope: "system", op}`. `test_aa1038_force_rls.py` fails when any module outside
+  `backend/jobs/` opens the scope, when `app.tenant_scope` is spelled outside `shared/tenant.py`, or when a job module
+  that names a tenant table acquires a connection without it. The queue (`tripplanner.job`) and the rate-counter
+  purge read tables without row-level security. The browse Lambda reads no tenant table (guarded too).
+- **Order of the FORCE slice.** The code (jobs system scope) works under tp-025 too, so it deploys first; tp-028 is
+  applied after. Applied before that code is live, the two job kinds would see no outbox row (nothing redacted, no
+  error) until it deploys.
+- **Tests.** `backend/tests/test_aa1038_tenant.py` (bind order, unbind on error, invalid id runs no SQL, the system
+  scope's set / reset / discard), `backend/tests/test_tenant_rls_pg.py` (on the tp-028 replay, as `tripplanner`: a
+  demo trip is 200 under the demo tenant and 404 under a forged one, no context sees no row, the outbox redaction and
+  the lead expiry reach every tenant through the system scope), `test_aa1038_tenant_site_pg.py` and
+  `test_aa1038_leads_pg.py` (the slice 2 and 3 paths, also on the tp-028 replay), `migrations/tests/test_tp028_pg.py`
+  (the policies as the runtime role, the owner and cis_app). The nightly DB Isolation Probe of AA-CIS-Infra checks
+  the four tables through `tripplanner`'s own login (cell `tenant.tripplanner_isolation`, expected from tp-028).
 
 #### The /{slug} path (R5 slice 2, AA-1038)
 
@@ -714,13 +730,12 @@ it, while every request still runs as one tenant.
 - **What a tenant sees of the catalogue.** AA master rows only, whatever is bound: the tour views read
   `catalog._live_tour`, whose WHERE keeps the AA master tenant (decided in the 379 view contract). The tenant's own
   text comes with `catalog.v_tenant_tour_v1` (later slice).
-- **Isolation today (shadow mode).** Under tenant A's assertion only A's sessions and trips are visible (tp-025 policy):
+- **Isolation.** Under tenant A's assertion only A's sessions and trips are visible (tp-028 policy `<table>_tenant`):
   another tenant's trip is the same 404 as an unknown one and a mutation is 401 with no write
-  (`backend/tests/test_aa1038_tenant_site_pg.py`, two synthetic agencies). A request without an assertion still sees
-  every row through the unset branch until the FORCE slice; the bare path binds the demo tenant, so it sees demo rows
-  only.
+  (`backend/tests/test_aa1038_tenant_site_pg.py`, two synthetic agencies). The bare path binds the demo tenant, so it
+  sees demo rows only; a connection with no tenant bound sees no row (FORCE slice, tp-028).
 - **Not in this slice.** The tenant brand, `lead.submitted.v1` and the per-tenant AI caps came with slice 3
-  (below); the launcher snippet, FORCE RLS and the ECS + CloudFront hosting move are later slices.
+  (below); FORCE RLS (tp-028) and the ECS + CloudFront hosting move came after it; the launcher snippet is a later slice.
 
 #### Leads, brand and the per-tenant AI cap (R5 slice 3, AA-1038)
 

@@ -1,7 +1,8 @@
-"""AA-1038 R5 slice 3 integration — lead.submitted.v1 end to end on the tp-026 replay, as the runtime role.
+"""AA-1038 R5 slice 3 integration — lead.submitted.v1 end to end on the tp-028 replay, as the runtime role.
 
 Runs only with ``pytest --pg-dsn postgresql://postgres@127.0.0.1:<port>/postgres`` (a SUPERUSER DSN of a throwaway
-LOCAL Postgres). The database is the tp-025 replay of ``migrations/tests/test_tp025_pg.py`` plus tp-026, with stand-ins
+LOCAL Postgres). The database is the tp-025 replay of ``migrations/tests/test_tp025_pg.py`` plus tp-026 … tp-028 (FORCE
+row-level security, ``test_tp028_pg.forced_database``; the daily run goes through the jobs Lambda's system scope), with stand-ins
 for the CIS contract views ``catalog.v_tenant_tripplanner_v1`` (CIS 379 + 390 columns, ``CIS_390_COLUMNS`` copied from
 the CIS test) and ``catalog.v_tenant_ai_budget_v1``, granted to ``tripplanner`` as CIS grants them.
 
@@ -33,6 +34,7 @@ if str(MIGRATION_TESTS) not in sys.path:
     sys.path.insert(0, str(MIGRATION_TESTS))
 
 import test_tp025_pg as replay  # noqa: E402
+import test_tp028_pg as forced  # noqa: E402
 
 from backend import config  # noqa: E402
 from backend.assembly import handler, leads  # noqa: E402
@@ -44,7 +46,6 @@ DEMO = config.DEMO_TENANT_ID
 AGENCY_A = "4b1d7e57-0000-4000-8000-0000000001a1"
 AGENCY_B = "4b1d7e57-0000-4000-8000-0000000001b2"
 AGENCY_C = "4b1d7e57-0000-4000-8000-0000000001c3"
-TP026 = replay.MIGRATIONS / "026_lead_outbox_delivery.sql"
 SCHEMA = json.loads((Path(__file__).parent / "contracts" / "lead.submitted.v1.json").read_text())
 # Copied verbatim from AA-CIS-App tests/integration/test_aa1038_migration_390.py (COLUMNS, BUDGET_COLUMNS).
 CIS_390_COLUMNS = (
@@ -90,17 +91,9 @@ def pg_dsn(request):
 
 @pytest.fixture(scope="module")
 def db(pg_dsn):
-    ctx, error = replay._database(pg_dsn, extra_sql=VIEW_STANDIN)
+    ctx, error = forced.forced_database(pg_dsn, extra_sql=VIEW_STANDIN)
     try:
         assert error is None, error
-
-        async def apply():
-            admin = await asyncpg.connect(ctx["admin_dsn"])
-            try:
-                await replay._as_owner(admin, TP026)
-            finally:
-                await admin.close()
-        replay.run(apply())
         yield ctx
     finally:
         replay._drop(pg_dsn, ctx["name"])

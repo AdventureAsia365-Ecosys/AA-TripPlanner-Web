@@ -15,6 +15,7 @@ import pytest
 from backend.assembly import leads
 from backend.jobs import handler, lead_deliver
 from backend.jobs.queue import Job
+from backend.shared import tenant
 
 NOW = datetime(2026, 11, 7, 3, 0, tzinfo=timezone.utc)
 T_SLOW = "5a0e0000-0000-4000-8000-00000000000a"
@@ -40,12 +41,14 @@ class FakeConn:
         self.locked = set(locked)
         self.fail_picks = fail_picks
         self.log: list[str] = []
+        self.scope_log: list[str] = []
         self.committed: list[str] = []
         self.in_tx = False
         self.pick_limits: list[int] = []
 
     async def fetchval(self, sql, *args):
         if sql == lead_deliver.MIGRATED_SQL:
+            assert self.scope_log[-1:] == ["scope"], "the outbox was read outside the system scope"
             return self.migrated
         if sql == lead_deliver.COUNT_EXPIRED_SQL:
             return len(self.old_rows)
@@ -68,6 +71,10 @@ class FakeConn:
         raise AssertionError(sql)
 
     async def execute(self, sql, *args):
+        if sql in (tenant.SYSTEM_SCOPE_SQL, tenant.UNSCOPE_SQL):     # tp-028: the jobs Lambda's system scope
+            self.scope_log.append("scope" if sql == tenant.SYSTEM_SCOPE_SQL else "unscope")
+            return "SELECT 1" if sql == tenant.SYSTEM_SCOPE_SQL else "RESET"
+        assert self.scope_log[-1:] == ["scope"], "a tenant table was written outside the system scope"
         assert sql == lead_deliver.EXPIRE_SQL
         payload = json.loads(args[1])
         assert payload["redacted"] is True and "traveller" not in payload
@@ -298,7 +305,8 @@ class ScheduleConn(FakeConn):
         return await super().fetch(sql, *args)
 
     async def execute(self, sql, *args):
-        self.expired_by = self.run_at
+        if sql == lead_deliver.EXPIRE_SQL:
+            self.expired_by = self.run_at
         return await super().execute(sql, *args)
 
 
@@ -455,3 +463,25 @@ async def test_a_lead_the_crm_rejected_asks_for_attention(routes):
     assert out["rejected"] == {"count": 3, "by_reason": {"invalid_lead": 2, "unspecified": 1}}
     assert out["attention"] == ["lead_rejected_by_crm"]
     assert handler.attention([{"job_id": "j", "status": "succeeded", "result": out}]) == ["j"]
+
+
+@pytest.mark.asyncio
+async def test_the_run_opens_the_system_scope_first_and_resets_it_last(routes):
+    """tp-028 (FORCE row-level security): the jobs Lambda binds no tenant, so the run reads and writes the leads of
+    every tenant under the system scope, and the scope is reset when the run ends, also when it raises."""
+    conn = FakeConn(retry_rows=[_row(1, T_OK)], old_rows=[_old(7, "crm")])
+
+    async def deliver(*a):
+        return None
+
+    await lead_deliver.run(Pool(conn), _job(), now=NOW, deliver=deliver)
+    assert conn.scope_log == ["scope", "unscope"]
+
+    failing = FakeConn(old_rows=[_old(7, "crm")], fail_picks=lead_deliver.EXPIRE_TRIES)
+
+    async def sleep(_s):
+        return None
+
+    with pytest.raises(ConnectionError):
+        await lead_deliver.run(Pool(failing), _job(), now=NOW, deliver=None, sleep=sleep)
+    assert failing.scope_log == ["scope", "unscope"]

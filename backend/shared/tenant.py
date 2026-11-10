@@ -1,10 +1,16 @@
-"""AA-1038 R5 slice 1 (root ADR 0019 d10): the tenant context of a database connection.
+"""AA-1038 R5 (root ADR 0019 d10): the tenant context of a database connection.
 
-tp-025 gives tripplanner.sessions, trip_drafts, trip_events and outbox a ``tenant_id`` and one shadow policy each for
-the runtime role ``tripplanner``: with no tenant context (GUC ``app.tenant_id`` unset or ``''``) every row is
-visible; with a context only that tenant's rows are, for reads and writes, and an INSERT without ``tenant_id`` takes
-the context's tenant (column default). Row security is ENABLED, not FORCED, so the owner ``tp_owner`` and the
-owner-owned views (``v_inquiry_outbox``, ``v_ops_*``) keep every row.
+tp-025 gave tripplanner.sessions, trip_drafts, trip_events and outbox a ``tenant_id`` and shadow row-level security.
+tp-028 (the FORCE slice) makes it enforcing, FORCE ROW LEVEL SECURITY on the four tables:
+
+* ``<table>_tenant`` (runtime role ``tripplanner``): only the rows of the bound tenant (GUC ``app.tenant_id``), for
+  reads and writes. No tenant context (unset or ``''``) = no row, and an INSERT without one fails (the column default
+  is the bound tenant, with no demo fallback any more, and ``tenant_id`` is NOT NULL).
+* ``<table>_system`` (``tripplanner`` and the owner ``tp_owner``): every row while the GUC ``app.tenant_scope`` is
+  ``'system'``. Only the jobs Lambda opens it (:func:`system_scope`, the retention and lead-delivery kinds that work
+  across tenants); ``tests/test_aa1038_force_rls.py`` fails when any other module names it.
+* ``<table>_owner_read`` (``tp_owner``, SELECT): the owner-owned views read by CIS (``v_ops_*``) and the migration
+  guards keep every row when the session binds no tenant, and only the bound tenant's rows when it does.
 
 The assembly Lambda binds the tenant right after it acquires its pooled connection and unbinds it in a ``finally``
 (:func:`bound`). The setting is session level (``set_config(..., false)``), not transaction level, because the
@@ -31,12 +37,19 @@ from backend.shared import observability
 
 GUC = "app.tenant_id"
 SOURCE_DEFAULT = "default"  # config.DEFAULT_TENANT_ID (every assembly request in this slice)
-SOURCE_SYSTEM = "system"    # no tenant context on purpose (the jobs Lambda)
+SOURCE_SYSTEM = "system"    # no tenant context on purpose: the jobs Lambda, under the system scope (tp-028)
 SOURCE_ASSERTION = "assertion"  # AA-1038 slice 2: a /{slug} request, the BFF's verified tenant assertion
 SOURCE_M2M = "m2m"              # AA-1038 slice 3: the CRM's lead pull, the tenant of the path under a verified M2M token
 
 BIND_SQL = "SELECT set_config('app.tenant_id', $1, false)"
 UNBIND_SQL = "RESET app.tenant_id"
+
+# tp-028 (AA-1038 FORCE slice): the jobs Lambda's cross-tenant path, policy <table>_system. Session level for the same
+# reason as BIND_SQL; reset in a finally (asyncpg's RESET ALL on release is the second safety).
+SCOPE_GUC = "app.tenant_scope"
+SCOPE_SYSTEM = "system"
+SYSTEM_SCOPE_SQL = "SELECT set_config('app.tenant_scope', 'system', false)"
+UNSCOPE_SQL = "RESET app.tenant_scope"
 
 
 @dataclass(frozen=True)
@@ -138,9 +151,29 @@ async def bound(conn: Any, tenant_id: Any, *, source: str = SOURCE_DEFAULT) -> A
 
 
 def system_context(op: str | None = None) -> None:
-    """Log that this run uses no tenant context on purpose (the jobs Lambda): it reads and writes through the
-    policies' unset-GUC branch, so it sees every tenant's rows."""
+    """Log that this run binds no tenant on purpose (the jobs Lambda). Since tp-028 a connection without a tenant
+    context sees no row of the four tables: the kinds that work across tenants open :func:`system_scope`."""
     fields: dict[str, Any] = {"tenant_id": None, "source": SOURCE_SYSTEM}
     if op:
         fields["op"] = op
     observability.emit("tenant_context", **fields)
+
+
+@asynccontextmanager
+async def system_scope(conn: Any, *, op: str) -> AsyncIterator[None]:
+    """``async with system_scope(conn, op=KIND):`` the jobs Lambda's cross-tenant path (tp-028 policy
+    ``<table>_system``): every tenant's rows of the four tables for the body, then the scope is reset, also when the
+    body raises. A reset that fails terminates the connection (log ``tenant_scope_reset_failed``), as :func:`bound`
+    does, so a connection that may still be system-scoped is never used again.
+
+    Only ``backend/jobs/`` may open it (``tests/test_aa1038_force_rls.py``): a request path always binds a tenant."""
+    await conn.execute(SYSTEM_SCOPE_SQL)
+    observability.emit("tenant_context", tenant_id=None, source=SOURCE_SYSTEM, scope=SCOPE_SYSTEM, op=op)
+    try:
+        yield
+    finally:
+        try:
+            await conn.execute(UNSCOPE_SQL)
+        except Exception as e:  # noqa: BLE001
+            observability.emit("tenant_scope_reset_failed", error=type(e).__name__)
+            _discard(conn)

@@ -53,7 +53,7 @@ from typing import Any, Optional
 from backend.jobs import redact
 from backend.jobs.queue import Job
 from backend.jobs.runner import JobFailed, PermanentError
-from backend.shared import observability
+from backend.shared import observability, tenant
 
 KIND = "tp_retention_outbox_redact"
 TABLE = "tripplanner.outbox"
@@ -315,10 +315,13 @@ def summary_line(result: dict[str, Any]) -> str:
 
 
 async def run(pool: Any, job: Job, *, environ: Optional[Environ] = None) -> dict[str, Any]:
-    """The kind handler (runner signature). Holds the pool's connection for the whole run (advisory lock + batches)."""
+    """The kind handler (runner signature). Holds the pool's connection for the whole run (advisory lock + batches).
+
+    AA-1038 (tp-028, FORCE row-level security): the redaction works across every tenant, so the run opens the system
+    scope (policy ``outbox_system``); without it the connection, which binds no tenant, would see no outbox row."""
     payload = validate_payload(job.payload or {})
     environ = environ if environ is not None else os.environ
-    async with pool.acquire() as conn:
+    async with pool.acquire() as conn, tenant.system_scope(conn, op=KIND):
         if not await conn.fetchval(LOCK_SQL, KIND):
             raise PermanentError(f"another {KIND} run holds the lock; this one did nothing")
         try:
