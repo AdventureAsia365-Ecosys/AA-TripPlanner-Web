@@ -13,7 +13,7 @@
 //   (lib/itineraryOrder.ts), announced in a live region, and can be undone from the trip panel.
 // Everything is drawn with the k-* tokens, so an agency tenant's brand (R5 theme tokens) colours it.
 import { useEffect, useRef, useState } from "react";
-import { useTrip } from "@/lib/useTrip";
+import { useStopSync, useTrip } from "@/lib/useTrip";
 import { formatLeg, type RouteLeg } from "@/lib/mapbox";
 import { isLine, lineClass, stretchSubtitle } from "@/lib/lines";
 import {
@@ -61,11 +61,9 @@ export default function DayList({
     addDay,
     removeDay,
     stopDetails,
-    activeStopId,
-    selectedStop,
-    hoverStop,
-    selectStop,
   } = useTrip();
+  // AA-1041: the hover / selection sync has its own context (lib/useTrip.tsx), so a hover re-renders only its readers.
+  const { activeStopId, selectedStop, hoverStop, selectStop } = useStopSync();
   const listRef = useRef<HTMLOListElement | null>(null);
   const [openStop, setOpenStop] = useState<string | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);

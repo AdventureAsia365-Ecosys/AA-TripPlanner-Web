@@ -14,6 +14,7 @@ import * as api from "./api";
 import { isB2bOnly } from "./advisorDemo";
 import type { AiNoticeKey } from "./aiNotices";
 import { isUuid, randomUuid } from "./guestIds";
+import { whenIdle } from "./idle";
 import { reorderLocally } from "./itineraryOrder";
 import { createOrderSaver } from "./orderSaver";
 import { applySteps, type ChatProposal } from "./planChat";
@@ -84,11 +85,6 @@ interface TripState {
   reorderFailed: boolean;
   // AA-1041 (items 1, 2): the stops' catalog details (place photo, activity), by component id.
   stopDetails: Map<string, StopDetail>;
-  // AA-1041 (item 3): map / itinerary sync. The active stop is the hovered one, else the selected one.
-  activeStopId: string | null;
-  selectedStop: StopSelection | null;
-  hoverStop: (componentId: string | null) => void;
-  selectStop: (componentId: string | null, from: SyncSource) => void;
   // AA-1041 (item 7): the saved trip could not be read (5xx / network): the panel shows an error with a retry.
   loadFailed: boolean;
   retryLoad: () => void;
@@ -199,8 +195,6 @@ export function TripProvider({
   const [routePreview, setRoutePreview] = useState<RouteProposal | null>(null);
   const [undoOrder, setUndoOrder] = useState<string[] | null>(null);
   const [reorderFailed, setReorderFailed] = useState(false);
-  const [hoveredStop, setHoveredStop] = useState<string | null>(null);
-  const [selectedStop, setSelectedStop] = useState<StopSelection | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   // AA-1041: the stop details fetched, tagged with the id set they answer (derived, no setState in an effect body).
@@ -266,15 +260,20 @@ export function TripProvider({
 
   // AA-1041 (items 1, 2): the stops' place photos and activities, refetched when the SET of stops changes (a reorder
   // asks nothing). Missing ids only; the cache in lib/api.ts answers the rest.
+  // AA-1041 (first-load performance): asked for once the trip has painted and the main thread is idle (lib/idle.ts), so
+  // a returning visitor's trip draws first (icon tiles) and the photo answers never compete with the first render.
   const stopsKey = photoKey(itinerary);
   useEffect(() => {
     if (!stopsKey) return;
     let active = true;
-    api.fetchStops(stopsKey.split(",")).then(({ stops }) => {
-      if (active) setStopsFetched({ key: stopsKey, stops });
+    const cancel = whenIdle(() => {
+      void api.fetchStops(stopsKey.split(",")).then(({ stops }) => {
+        if (active) setStopsFetched({ key: stopsKey, stops });
+      });
     });
     return () => {
       active = false;
+      cancel();
     };
   }, [stopsKey]);
   const stopDetails = stopsFetched.stops;
@@ -440,14 +439,6 @@ export function TripProvider({
     if (undoOrder) await saveOrder(undoOrder, true);
   }, [undoOrder, saveOrder]);
 
-  // AA-1041 (item 3): map / itinerary sync.
-  const selectSeq = useRef(0);
-  const selectStop = useCallback((componentId: string | null, from: SyncSource) => {
-    selectSeq.current += 1;
-    setSelectedStop(componentId ? { componentId, from, seq: selectSeq.current } : null);
-  }, []);
-  const activeStopId = pickActiveStop(hoveredStop, selectedStop);
-
   const runSearch = useCallback(async (q: string) => {
     const query = q.trim();
     setSearchQuery(q);
@@ -529,7 +520,10 @@ export function TripProvider({
     [tripId, sessionId],
   );
 
-  const value: TripState = {
+  // AA-1041 (performance): one value object per change of what it holds, so a provider render that changes none of it
+  // (a retry counter, the keys the suggestion fetch tracks) re-renders no consumer. The map / list hover lives in its
+  // own context (StopSyncProvider below): a hover re-renders the map and the day list only, not the whole planner.
+  const value = useMemo<TripState>(() => ({
     sessionId,
     tripId,
     itinerary,
@@ -560,10 +554,6 @@ export function TripProvider({
     undoReorder,
     reorderFailed,
     stopDetails,
-    activeStopId,
-    selectedStop,
-    hoverStop: setHoveredStop,
-    selectStop,
     loadFailed,
     retryLoad,
     narrate,
@@ -580,9 +570,94 @@ export function TripProvider({
     removeDay,
     intent,
     ready,
-  };
+  }), [
+    sessionId,
+    tripId,
+    itinerary,
+    filters,
+    status,
+    inTripComponentIds,
+    narration,
+    narrating,
+    narrationSource,
+    narrationNotice,
+    searchQuery,
+    searchResults,
+    searching,
+    searchNotice,
+    countries,
+    suggestions,
+    focusDestinationId,
+    setFocusDestinationId,
+    previewCountry,
+    setPreviewCountry,
+    setFilters,
+    runSearch,
+    clearSearch,
+    add,
+    remove,
+    reorder,
+    undoOrder,
+    undoReorder,
+    reorderFailed,
+    stopDetails,
+    loadFailed,
+    retryLoad,
+    narrate,
+    send,
+    sendLead,
+    coverage,
+    customDays,
+    unavailableStops,
+    routePreview,
+    setRoutePreview,
+    applyRoute,
+    applyChatProposal,
+    addDay,
+    removeDay,
+    intent,
+    ready,
+  ]);
 
-  return <TripContext.Provider value={value}>{children}</TripContext.Provider>;
+  return (
+    <TripContext.Provider value={value}>
+      <StopSyncProvider>{children}</StopSyncProvider>
+    </TripContext.Provider>
+  );
+}
+
+// AA-1041 (item 3): map / itinerary sync. The active stop is the hovered one, else the selected one. A context of its
+// own (first-load / interaction performance): hovering a stop row or a marker changes this state many times a second,
+// and only the map (MapView) and the day list (DayList) read it, so only they re-render.
+export interface StopSyncState {
+  activeStopId: string | null;
+  selectedStop: StopSelection | null;
+  hoverStop: (componentId: string | null) => void;
+  selectStop: (componentId: string | null, from: SyncSource) => void;
+}
+
+const StopSyncContext = createContext<StopSyncState | null>(null);
+
+function StopSyncProvider({ children }: { children: React.ReactNode }) {
+  const [hoveredStop, setHoveredStop] = useState<string | null>(null);
+  const [selectedStop, setSelectedStop] = useState<StopSelection | null>(null);
+  const selectSeq = useRef(0);
+  const selectStop = useCallback((componentId: string | null, from: SyncSource) => {
+    selectSeq.current += 1;
+    setSelectedStop(componentId ? { componentId, from, seq: selectSeq.current } : null);
+  }, []);
+  const activeStopId = pickActiveStop(hoveredStop, selectedStop);
+  const value = useMemo<StopSyncState>(
+    () => ({ activeStopId, selectedStop, hoverStop: setHoveredStop, selectStop }),
+    [activeStopId, selectedStop, selectStop],
+  );
+  return <StopSyncContext.Provider value={value}>{children}</StopSyncContext.Provider>;
+}
+
+export function useStopSync(): StopSyncState {
+  const ctx = useContext(StopSyncContext);
+  if (!ctx) throw new Error("useStopSync must be used within TripProvider");
+  return ctx;
 }
 
 export function useTrip(): TripState {

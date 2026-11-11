@@ -1,18 +1,40 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import Header from "@/components/Header";
-import MapView from "@/components/MapView";
 import FilterChips from "@/components/FilterChips";
 import TripPanel from "@/components/TripPanel";
-import PlanChat from "@/components/PlanChat";
 import TourListPane from "@/components/TourListPane";
 import PlanPrefill from "@/components/PlanPrefill";
 import GuestResetNotice from "@/components/GuestResetNotice";
 import { TripProvider, useTrip, type PlanIntent } from "@/lib/useTrip";
 import { setPlannerTenant, type PlannerAgency } from "@/lib/plannerTenant";
 import { reloadIntoPlannerDocument } from "@/lib/plannerNav";
+import { whenIdle } from "@/lib/idle";
 import { Icon } from "@/ui/Icon";
+import { LoadingState } from "@/ui/States";
+
+// AA-1041 (first-load performance, S277 Lighthouse check): the map and the Mapbox library (about 1.4 MB of script, the
+// bulk of the planner's first load) are their own chunk, asked for once the planner has hydrated, painted and gone idle
+// (`whenIdle`, lib/idle.ts). Before, the page could not hydrate (search box, route finder, trip panel) until Mapbox was
+// downloaded and evaluated, and its evaluation, the hydration and the map's construction could land in one long
+// main-thread task. The map area keeps its place with a neutral box until the map draws (absolute, so nothing moves).
+function MapPending() {
+  return <div aria-hidden data-testid="map-loading" className="absolute inset-0 bg-k-neutral-bg" />;
+}
+const MapView = dynamic(() => import("@/components/MapView"), { ssr: false, loading: MapPending });
+
+// AA-1041: the planning chat is fetched and mounted the first time its tab (or the phone's Chat view) opens, then
+// stays mounted so the conversation survives a tab switch. Nothing of it runs on the planner's first load.
+const PlanChat = dynamic(() => import("@/components/PlanChat"), {
+  ssr: false,
+  loading: () => (
+    <div className="p-4">
+      <LoadingState label="Loading the chat" rows={2} compact />
+    </div>
+  ),
+});
 
 // Below this width we stack map/trip and toggle between them, so neither
 // gets squeezed on a phone. Above it, the classic side-by-side layout.
@@ -74,7 +96,20 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
   const [isMobile, setIsMobile] = useState(false);
   const [mobileView, setMobileView] = useState<"map" | "trip" | "chat">(initialMobileView);
   const [sideTab, setSideTab] = useState<SideTab>("trip");
+  // AA-1041: the chat panel mounts on its first opening and stays mounted after (see PlanChat above).
+  const [chatOpened, setChatOpened] = useState(false);
+  const showSideTab = (t: SideTab) => {
+    if (t === "chat") setChatOpened(true);
+    setSideTab(t);
+  };
+  const showMobileView = (v: "map" | "trip" | "chat") => {
+    if (v === "chat") setChatOpened(true);
+    setMobileView(v);
+  };
   const [pane, setPane] = useState<"map" | "list">("map");
+  // AA-1041: the map is mounted (and its chunk fetched) after the first paint, when the main thread is idle.
+  const [mapWanted, setMapWanted] = useState(false);
+  useEffect(() => whenIdle(() => setMapWanted(true)), []);
   // "Ask an advisor" from a tour page: once its route is pinned, show the trip (send button).
   const onPrefilled = () => {
     if (initialMobileView === "trip") setMobileView("trip");
@@ -82,7 +117,7 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
   const mapArea = (
     <>
       <FilterChips />
-      <MapView />
+      {mapWanted ? <MapView /> : <MapPending />}
       {pane === "list" && <TourListPane />}
       <PaneToggle pane={pane} setPane={setPane} />
       <PlanPrefill onApplied={onPrefilled} />
@@ -111,14 +146,14 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
             className="border-l border-k-line bg-k-bg"
             style={{ height: "100%", width: "25rem", flexShrink: 0, display: "flex", flexDirection: "column" }}
           >
-            <SideTabs tab={sideTab} setTab={setSideTab} />
+            <SideTabs tab={sideTab} setTab={showSideTab} />
             <div id="side-panel-trip" role="tabpanel" aria-labelledby="side-tab-trip" hidden={sideTab !== "trip"}
               style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
               <TripPanel />
             </div>
             <div id="side-panel-chat" role="tabpanel" aria-labelledby="side-tab-chat" hidden={sideTab !== "chat"}
               style={{ flex: 1, minHeight: 0 }}>
-              <PlanChat />
+              {chatOpened && <PlanChat />}
             </div>
           </aside>
         </main>
@@ -162,7 +197,7 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
             visibility: mobileView === "chat" ? "visible" : "hidden",
           }}
         >
-          <PlanChat />
+          {chatOpened && <PlanChat />}
         </section>
       </main>
 
@@ -196,7 +231,7 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
           )}
         </button>
         <button
-          onClick={() => setMobileView("chat")}
+          onClick={() => showMobileView("chat")}
           data-testid="mobile-chat-tab"
           className={`aa-focus flex-1 py-3 text-sm font-semibold transition ${
             mobileView === "chat"

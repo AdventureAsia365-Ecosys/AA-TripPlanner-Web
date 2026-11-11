@@ -247,6 +247,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   it); days and stops reorder by a pointer drag of their handle (mouse and touch) or the arrow keys / Home / End on it,
   saved as the one `reorder` op the planner always used, with one step of undo (`lib/itineraryOrder.ts`); the panel
   and the place popup use the kit loading, empty and error states (a failed trip read offers "Try again").
+  First load (AA-1041 S277 perf): the map component and Mapbox GL are a lazy chunk (`next/dynamic`, `ssr: false`)
+  mounted once the planner has painted and gone idle (`lib/idle.ts` `whenIdle`), the planning chat mounts on its first
+  opening, and the map / list hover sync is its own context (`useStopSync()`), so a hover re-renders only the map and
+  the day list. Guards: `lib/plannerPerf.test.ts`.
 - `/plan/shared#v=1&s=<component ids>` and `/{slug}/plan/shared#…` (AA-1041): the read-only share / print view of a
   trip. The fragment carries component ids only (never text, no trip id or guest token; `lib/shareTrip.ts`), the
   page reads the stops from `/browse/stops`, prints with the browser ("Print or save as PDF") and builds an `.ics`
