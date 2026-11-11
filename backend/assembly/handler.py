@@ -33,6 +33,7 @@ the updated projection immediately.
 """
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
 import os
@@ -627,9 +628,16 @@ async def _chat(conn, trip_id: str, body: dict, guest_token: Optional[str], call
     itinerary = await events_mod.current_itinerary(conn, trip_id)
     offered = await chat_tools.countries(conn)
     calls: list = []
+    started = plan_chat.clock()
 
     def generate(system: str, user: str) -> str:
-        text, call = llm_gateway.generate_text(route_, system, user, plan_chat.MAX_TOKENS, failures=calls)
+        # The turn's wall time bounds every call: its route deadline is the time left (the HTTP API stops at 30 s).
+        left = plan_chat.TURN_DEADLINE_S - (plan_chat.clock() - started)
+        if left < plan_chat.MIN_CALL_S:
+            raise plan_chat.OutOfTime()
+        bounded = route_ if route_.deadline_s and route_.deadline_s <= left else dataclasses.replace(
+            route_, deadline_s=int(left))
+        text, call = llm_gateway.generate_text(bounded, system, user, plan_chat.MAX_TOKENS, failures=calls)
         calls.append(call)
         return text
 

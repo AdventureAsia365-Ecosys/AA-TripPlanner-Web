@@ -289,3 +289,66 @@ async def test_bad_requests_are_400_before_any_sql(body, error):
                                guest_token="t")
     assert resp["statusCode"] == 400 and json.loads(resp["body"])["error"] == error
     assert conn.sql == []
+
+
+# --- the turn's wall time ---------------------------------------------------------------------------------------------
+
+async def test_a_turn_out_of_time_ends_with_the_server_sentence():
+    calls = []
+
+    def generate(system, user):
+        calls.append(user)
+        if len(calls) == 2:
+            raise plan_chat.OutOfTime()
+        return json.dumps({"tool": "route_options", "args": {"country": "Norland", "days": 3}})
+
+    r = await plan_chat.run_turn(fakes.CatalogConn(), message="3 days", history=[], itinerary=[],
+                                 offered=fakes.OFFERED, generate=generate)
+    assert r.outcome == plan_chat.OUTCOME_FALLBACK and r.out_of_time and r.proposal is None
+    assert r.signal()["out_of_time"] is True and r.steps == 1
+
+
+async def test_each_call_gets_the_time_left_and_none_starts_too_late(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(plan_chat, "clock", lambda: now[0])
+    deadlines = []
+
+    def generate_text(route, system, user, max_tokens, *, failures=None, **kw):
+        deadlines.append(route.deadline_s)
+        now[0] += 15.0                                                  # a slow model
+        return json.dumps({"tool": "find_tours", "args": {}}), gw.Call("tp_plan_chat", "writer", "m", "acc3", 1, 1,
+                                                                       0.001, False)
+
+    async def ok(*a, **k):
+        return None
+
+    async def budget(db, stage=None):
+        return {"exhausted": False}
+
+    async def route(db, stage, *, borrow_from=None):
+        return gw.builtin_route("tp_plan_chat")
+
+    async def record(db, call, signal, *, tenant_id=None):
+        return None
+
+    async def itinerary(conn, trip_id):
+        return []
+
+    async def allowed(db, scope, kind, value, *, signed_in=False):
+        return ratelimit.Decision(True, scope, 20, 3600, 1)
+
+    monkeypatch.setattr(handler, "_guard", ok)
+    monkeypatch.setattr(handler, "_chat_gate", ok)
+    monkeypatch.setattr(gw, "budget_status", budget)
+    monkeypatch.setattr(gw, "load_route", route)
+    monkeypatch.setattr(gw, "generate_text", generate_text)
+    monkeypatch.setattr(gw, "record", record)
+    monkeypatch.setattr(ratelimit, "hit", allowed)
+    monkeypatch.setattr(handler.events_mod, "current_itinerary", itinerary)
+    resp = await handler.route("POST", "/trip/00000000-0000-4000-8000-0000000000c1/chat",
+                               {"session_id": "00000000-0000-4000-8000-0000000000c2", "message": "hi"},
+                               conn=fakes.CatalogConn(), guest_token="t")
+    body = json.loads(resp["body"])
+    # 24 s left for the first call, 9 s for the second (bounded to what is left), then -6 s: no third call.
+    assert deadlines == [24, 9]
+    assert body["status"] == "ok" and body["outcome"] == "fallback" and body["proposal"] is None

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
@@ -47,6 +48,11 @@ MAX_HISTORY_TURNS = 6
 MAX_HISTORY_CHARS = 600
 MAX_REPLY_CHARS = 700
 MAX_PROPOSAL_STOPS = 60      # apply-route takes 1-60 component ids
+# Wall time of one turn: the HTTP API answers 504 after 30 s, so every model call gets at most the time left of this
+# budget as its route deadline, and no call starts with less than MIN_CALL_S left (the turn then ends with the server
+# sentence). The handler applies both (handler._chat).
+TURN_DEADLINE_S = 24.0
+MIN_CALL_S = 4.0
 MAX_COUNTRIES_IN_PROMPT = 40
 FALLBACK_COUNTRIES = 8
 
@@ -55,8 +61,14 @@ OUTCOME_REFUSAL = "refusal"
 OUTCOME_FALLBACK = "fallback"
 OUTCOME_PAUSED = "paused"
 
-# Generate = (system, user) -> the model's text. Raises llm_gateway errors (the handler degrades on them).
+# Generate = (system, user) -> the model's text. Raises llm_gateway errors (the handler degrades on them), or
+# OutOfTime when too little of the turn's wall time is left to start a call.
 Generate = Callable[[str, str], str]
+clock: Callable[[], float] = time.monotonic
+
+
+class OutOfTime(Exception):
+    """Too little of TURN_DEADLINE_S is left to start another model call (no call was made)."""
 # Called before every model call of a turn; a reason stops the turn (a cap reached mid-turn).
 BeforeCall = Callable[[], Awaitable[Optional[str]]]
 
@@ -122,6 +134,7 @@ class TurnResult:
     dropped_refs: int = 0
     ungrounded: int = 0
     invalid_json: int = 0
+    out_of_time: bool = False
     paused_reason: Optional[str] = None
     from_model: bool = False      # the reply is the model's text (else a server sentence)
 
@@ -132,7 +145,7 @@ class TurnResult:
         if self.proposal:
             out["proposal_action"] = self.proposal["action"]
             out["proposal_stops"] = len(self.proposal["final_component_ids"])
-        for key in ("dropped_refs", "ungrounded", "invalid_json"):
+        for key in ("dropped_refs", "ungrounded", "invalid_json", "out_of_time"):
             if getattr(self, key):
                 out[key] = getattr(self, key)
         if self.paused_reason:
@@ -326,7 +339,11 @@ async def run_turn(conn: Any, *, message: str, history: list[dict], itinerary: l
                 result.outcome, result.paused_reason = OUTCOME_PAUSED, reason
                 return result
         last = step == MAX_STEPS
-        text = generate(_SYSTEM, _build_user(offered, trip, history, msg, steps, last))
+        try:
+            text = generate(_SYSTEM, _build_user(offered, trip, history, msg, steps, last))
+        except OutOfTime:
+            result.out_of_time = True
+            break
         result.steps = step
         obj = parse_object(text)
         if obj is None:
