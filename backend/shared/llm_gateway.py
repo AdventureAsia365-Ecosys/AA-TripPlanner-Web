@@ -105,6 +105,7 @@ is not a model call: no llm_call_log row, no spend.
 """
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
 import re
@@ -266,10 +267,13 @@ _SONNET = Model("sonnet", "anthropic", "anthropic_native",
                 {"acc3": "global.anthropic.claude-sonnet-4-6"}, 3.0, 15.0)
 _COHERE = Model("cohere-embed-v4", "cohere", "embed", {"acc2": "us.cohere.embed-v4:0"}, 0.12, 0.0)
 
-# The two live stages (tp_extract / tp_component_embed retired: no caller since AA-712, CIS 336, AA-1024 D8).
+# The live stages (tp_extract / tp_component_embed retired: no caller since AA-712, CIS 336, AA-1024 D8). AA-1041
+# slice 2: tp_plan_chat (the planning chat) runs on the tp_compose route's models until CIS seeds a row of its own
+# (`load_route(..., borrow_from=...)`), so its expected route is the same.
 BUILTIN_ROUTES = {
     "tp_compose": Route("tp_compose", "writer", (_SONNET,), "acc3"),
     "tp_search_embed": Route("tp_search_embed", "embed", (_COHERE,)),
+    "tp_plan_chat": Route("tp_plan_chat", "writer", (_SONNET,), "acc3"),
 }
 
 _cache: dict[str, tuple[Route, float]] = {}
@@ -302,6 +306,7 @@ class AiPaused(BedrockError):
     def __init__(self, reason: str, detail: str = "") -> None:
         super().__init__(f"AI paused ({reason}){': ' + detail if detail else ''}")
         self.reason = reason
+        self.no_route = False   # AA-1041: True when the view answered but has no active row for the stage
 
 
 def builtin_route(stage: str) -> Route:
@@ -477,25 +482,34 @@ async def _view_rows(db: Any, stage: str) -> list:
     return await db.fetch(contract.GATEWAY_CONFIG_SQL, stage)
 
 
+class NoActiveRoute(LookupError):
+    """The config view answered, but has no active row for the stage (as opposed to a view that cannot be read)."""
+
+
 async def _read_route(db: Any, stage: str) -> tuple[Any, tuple]:
     """(route config row, models in chain order) from catalog.v_llm_gateway_config_v1, the only config source since
     AA-1027 E5. A chain key that is not in the catalog (in_catalog false) is skipped, as before."""
     rows = await _view_rows(db, stage)
     if not rows:
-        raise LookupError(f"no active route for {stage!r} in {contract.GATEWAY_CONFIG_VIEW}")
+        raise NoActiveRoute(f"no active route for {stage!r} in {contract.GATEWAY_CONFIG_VIEW}")
     models = tuple(_model(r) for r in sorted(rows, key=lambda r: r["position"]) if r["in_catalog"])
     if not models:
         raise LookupError(f"none of the {stage!r} route models is in the catalog")
     return rows[0], models
 
 
-async def load_route(db: Any, stage: str) -> Route:
+async def load_route(db: Any, stage: str, *, borrow_from: Optional[str] = None) -> Route:
     """`db` is an asyncpg pool or connection. Raises AiPaused("route_unreadable") when the route
     cannot be read (AA-642 S0: fail closed, never the hard-coded BUILTIN_ROUTES models); the
     failure is not cached, so the next request reads again. AA-1025 H1b: every model call starts here, so the app
     profile's AI switch is checked here too (`refuse_if_ai_off`): AI off raises AiPaused("ai_off") after its 0 USD
-    refused row."""
-    route = await _load_route(db, stage)
+    refused row.
+
+    AA-1041 slice 2: `borrow_from` names a stage whose route serves `stage` while the view has NO active row for
+    `stage` (a new stage before its CIS route row): the lender's route is read (same fail-closed rules) and relabelled
+    to `stage`, so every ledger row, spend read and prompt version names the borrowing stage. A view that cannot be
+    read still pauses AI; once CIS seeds a row for `stage`, that row wins at the next cache refresh."""
+    route = await (_load_route(db, stage, borrow_from=borrow_from) if borrow_from else _load_route(db, stage))
     await refuse_if_ai_off(db, route)
     return route
 
@@ -526,11 +540,27 @@ async def refuse_if_ai_off(db: Any, route: Route) -> None:
     raise AiPaused(REASON_AI_OFF, f"AI is off for app {APP!r} in its app profile")
 
 
-async def _load_route(db: Any, stage: str) -> Route:
+_borrow_noted: set[tuple[str, str]] = set()
+
+
+async def _load_route(db: Any, stage: str, borrow_from: Optional[str] = None, borrowing: bool = False) -> Route:
     cached = _cache.get(stage)
     now = time.monotonic()
     if cached and now - cached[1] < _CACHE_TTL_SECONDS:
         return cached[0]
+    if borrow_from:
+        try:
+            return await _load_route(db, stage, borrowing=True)
+        except AiPaused as e:
+            if not e.no_route:
+                raise
+        lent = dataclasses.replace(await _load_route(db, borrow_from), stage=stage)
+        if (stage, borrow_from) not in _borrow_noted:
+            _borrow_noted.add((stage, borrow_from))
+            observability.emit("llm_gateway_note", stage=stage,
+                               detail=f"no route row for {stage!r} yet: running on the {borrow_from!r} route's models")
+        _cache[stage] = (lent, now)
+        return lent
     try:
         cfg, models = await _read_route(db, stage)
         shadow = cfg.get("shadow_model_id") if (cfg.get("shadow_sample_pct") or 0) > 0 else None
@@ -541,8 +571,11 @@ async def _load_route(db: Any, stage: str) -> Route:
         route = Route(stage, cfg["role"], models, cfg["account_route"], shadow,
                       _deadline_value(_get(cfg, "route_deadline_s")), _scopes(_get(cfg, "allowed_scopes")))
     except Exception as e:  # noqa: BLE001 — AA-642 S0: an unreadable route pauses AI (fail closed)
-        _error("route_unreadable", stage, e)
-        raise AiPaused("route_unreadable", str(e)[:200]) from None
+        paused = AiPaused("route_unreadable", str(e)[:200])
+        paused.no_route = isinstance(e, NoActiveRoute)       # AA-1041: a borrowing stage may use its lender's route
+        if not (borrowing and paused.no_route):
+            _error("route_unreadable", stage, e)
+        raise paused from None
     _cache[stage] = (route, now)
     return route
 
@@ -1236,6 +1269,13 @@ def _billed(call: Call) -> bool:
     return not call.failed or call.status == ledger.STATUS_TRUNCATED
 
 
+def billed_totals(calls: list) -> tuple[float, int]:
+    """AA-1041 slice 2: (billed cost, billed attempts) of a request's attempts, by the rule `record` charges the tenant
+    budget with; an attempt with no catalog price adds no cost."""
+    billed = [c for c in calls if _billed(c)]
+    return sum(float(c.cost_usd or 0) for c in billed), len(billed)
+
+
 def ledger_row(call: Call, signal: dict, tenant_id: Optional[str] = None) -> ledger.LedgerRow:
     """The ledger v2 row of one attempt (AA-642 S8). A billed attempt says how the core priced it (AA-1027 E3:
     `aa_llm.pricing.quote`'s mode: override / catalog / estimate); a failed attempt carries its status and error
@@ -1287,7 +1327,9 @@ async def record(db: Any, call: Call, quality_signal: dict, *,
 # --- Daily spend hard stop (AA-805) -------------------------------------------------------------
 
 # Customer-facing stages: the only ones counted against, and stopped by, the daily cap.
-ONLINE_STAGES: tuple[str, ...] = ("tp_compose", "tp_search_embed")
+# AA-1041 slice 2: tp_plan_chat (the planning chat) is customer-facing too; it also has its monthly caps
+# (backend/shared/monthly_spend.py).
+ONLINE_STAGES: tuple[str, ...] = ("tp_compose", "tp_search_embed", "tp_plan_chat")
 
 # AA-642 S0: after a failed ledger write of an online stage the spend view undercounts, so the cap could never be
 # reached. For this long (per container) budget_status reports "spend_unreadable" and AI pauses.

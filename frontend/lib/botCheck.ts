@@ -14,6 +14,7 @@
 //   GET  /api/browse/search  -> the search branch of /api/browse
 //   POST /api/trip/narrate   -> the narrate op of /api/trip
 //   POST /api/trip/send      -> the send op of /api/trip
+//   POST /api/trip/chat      -> the chat op of /api/trip (AA-1041: the planning chat, a model call per message)
 //
 // A challenged call (HTTP 202 from the web ACL, lib/wafChallenge.ts) is shown with the "botCheck" notice
 // (lib/aiNotices.ts); a challenged "Send to advisor" is answered to the form as BOT_CHECK_FAILED (lib/api.ts), whose
@@ -22,6 +23,7 @@
 export const SEARCH_PATH = "/api/browse/search";
 export const NARRATE_PATH = "/api/trip/narrate";
 export const SEND_PATH = "/api/trip/send";
+export const CHAT_PATH = "/api/trip/chat";
 
 export const BOT_CHECK_FAILED = "bot_check_failed";
 

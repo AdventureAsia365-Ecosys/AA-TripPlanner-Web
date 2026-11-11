@@ -287,12 +287,15 @@ jobs:
             { [ "$code" = "202" ] && grep -qiE '^x-amzn-waf-action: *challenge' /tmp/w.h; } \
               || { echo "::error::${label} answered ${code}, expected 202 with x-amzn-waf-action: challenge"; head -5 /tmp/w.h; exit 1; }
           }
-          # The protected calls: the two model calls and Send to advisor (on ECS the web ACL is their only bot check).
+          # The protected calls: the model calls and Send to advisor (on ECS the web ACL is their only bot check).
           challenged "GET /api/browse/search" "https://${PUBLIC_HOST}/api/browse/search?q=temple"
           challenged "POST /api/trip/narrate" -X POST -H 'content-type: application/json' \
             --data '{"op":"narrate","trip_id":"verify","session_id":"verify"}' "https://${PUBLIC_HOST}/api/trip/narrate"
           challenged "POST /api/trip/send" -X POST -H 'content-type: application/json' \
             --data '{"op":"send","trip_id":"verify","session_id":"verify"}' "https://${PUBLIC_HOST}/api/trip/send"
+          # AA-1041 slice 2: the planning chat (a model call per message), the fourth protected path.
+          challenged "POST /api/trip/chat" -X POST -H 'content-type: application/json' \
+            --data '{"op":"chat","trip_id":"verify","session_id":"verify","message":"verify"}' "https://${PUBLIC_HOST}/api/trip/chat"
           # The planner's document load (how a browser gets its token): the Challenge interstitial, on /plan and on a
           # tenant's planner. (The plain /plan above, without sec-fetch-dest, answered 200: not a document navigation.)
           challenged "/plan (document load)" -H 'sec-fetch-dest: document' -H 'accept: text/html' "https://${PUBLIC_HOST}/plan"

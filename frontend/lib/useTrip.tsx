@@ -16,6 +16,7 @@ import type { AiNoticeKey } from "./aiNotices";
 import { isUuid, randomUuid } from "./guestIds";
 import { reorderLocally } from "./itineraryOrder";
 import { createOrderSaver } from "./orderSaver";
+import { applySteps, type ChatProposal } from "./planChat";
 import { activeStop as pickActiveStop, photoKey, type StopSelection, type SyncSource } from "./stopSync";
 import { idsStorageKey } from "./plannerTenant";
 import type { LeadBody } from "./leadForm";
@@ -106,6 +107,8 @@ interface TripState {
   routePreview: RouteProposal | null;
   setRoutePreview: (p: RouteProposal | null) => void;
   applyRoute: (p: RouteProposal) => Promise<boolean>;
+  // AA-1041 slice 2: apply a planning chat proposal (removes, then apply-route); false when a step failed.
+  applyChatProposal: (p: ChatProposal) => Promise<boolean>;
   addDay: (kind: CustomDay["kind"], afterComponentId?: string) => Promise<void>;
   removeDay: (dayId: string) => Promise<void>;
   // AA-812: what the visitor asked for before reaching the planner (home search or a tour page),
@@ -354,6 +357,35 @@ export function TripProvider({
     [tripId, sessionId, orderSaver],
   );
 
+  const applyChatProposal = useCallback(
+    async (p: ChatProposal) => {
+      const steps = applySteps(p);
+      let latest: ItineraryDay[] | null = null;
+      let ok = true;
+      for (const id of steps.remove) {
+        const res = await api.removeComponent(tripId, sessionId, id);
+        if (!res.itinerary) {
+          ok = false;
+          break;
+        }
+        latest = res.itinerary;
+      }
+      if (ok && steps.route.length) {
+        const res = await api.applyRoute(tripId, sessionId, steps.route);
+        if (res?.itinerary) latest = res.itinerary;
+        else ok = false;
+      }
+      if (latest) {
+        orderSaver.invalidate();
+        setItinerary(latest);
+        setUndoOrder(null);
+        setUnavailableStops((stops) => stops.filter((s) => !steps.remove.includes(s.component_id)));
+      }
+      return ok;
+    },
+    [tripId, sessionId, orderSaver],
+  );
+
   const addDay = useCallback(
     async (kind: CustomDay["kind"], afterComponentId?: string) => {
       const days = await api.addDay(tripId, sessionId, kind, afterComponentId);
@@ -543,6 +575,7 @@ export function TripProvider({
     routePreview,
     setRoutePreview,
     applyRoute,
+    applyChatProposal,
     addDay,
     removeDay,
     intent,

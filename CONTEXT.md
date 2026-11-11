@@ -67,7 +67,8 @@ Two HTTP Python 3.12 Lambda functions
       ▼
 Postgres (the shared RDS in acc2)
   ├─ tripplanner.*        (owned here — customers, sessions, trip_events, trip_drafts, outbox,
-  │                        narration_cache, component_id_map, job, ai_rate_counter; llm_spend_daily dropped by tp-024)
+  │                        narration_cache, component_id_map, job, ai_rate_counter, ai_spend_month (tp-029);
+  │                        llm_spend_daily dropped by tp-024)
   ├─ catalog.v_llm_*      (CIS AI gateway contract views, CIS 323: route config + today's spend; CIS 347: app profile)
   ├─ shared.llm_call_log  (INSERT only: one ledger v2 row per attempt, app = 'tripplanner')
   └─ read-only: catalog.* views (CIS-owned: tours, places, tour graph, embeddings)
@@ -602,7 +603,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   used. The guard `backend/tests/test_extraction_ops.py` fails if a backend SQL string names any schema-qualified
   object outside `catalog.*`, the gateway ledger `shared.llm_call_log` and the live `tripplanner` tables (sessions,
   customers, trip_events, trip_drafts, outbox, narration_cache, component_id_map, traveller_accounts, job,
-  ai_rate_counter), or writes place data. (AA-1027 E5: `shared.llm_role_config`, `shared.llm_model_catalog` and
+  ai_rate_counter, ai_spend_month), or writes place data. (AA-1027 E5: `shared.llm_role_config`, `shared.llm_model_catalog` and
   `tripplanner.llm_spend_daily` left the allowlist.)
   The **browse** readers (tiles, countries, by-country, destination detail, search, routes, tour-route, shapes)
   read the CIS catalog views of CIS migration 228 and later (`catalog.v_tour_component`, `v_tour_stop`,
@@ -659,7 +660,9 @@ S276) makes the database enforce it: a connection without a tenant context sees 
 - **Tables.** `tripplanner.sessions`, `trip_drafts`, `trip_events` and `outbox` have `tenant_id uuid NOT NULL`
   (tp-025), a soft key to `shared.tenants.tenant_id` (no FK: `shared` is CIS's). Every row written before tp-025 was
   backfilled to the demo tenant `00000000-0000-0000-0000-000000000002` (slug `aa-tripplanner`, kind `demo`).
-  Not tenant-scoped, on purpose: `narration_cache` and `ai_rate_counter` (hash keys, no tenant column), `customers`
+  Not tenant-scoped, on purpose: `narration_cache` and `ai_rate_counter` (hash keys, no tenant column),
+  `ai_spend_month` (tp-029: the planning chat's month sums per scope `app` | `tenant:<uuid>`; the app sum is read
+  across tenants, no traveller data), `customers`
   and `traveller_accounts` (frozen since R0, retired later), `job` (system queue) and `component_id_map` (global
   catalog ids).
 - **Column default** (tp-028) `NULLIF(current_setting('app.tenant_id', true), '')::uuid`: an INSERT without
@@ -855,6 +858,10 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   `shared.prompt_version` (the `tripplanner` role cannot read that table).
   Stages:
   - `tp_compose`: assembly narration (Claude Sonnet 4.6 via the satellite role);
+  - `tp_plan_chat` (AA-1041 slice 2): the planning chat, `POST /trip/{id}/chat` (see "Planning chat" below). Until
+    AA-CIS-App seeds a route row for it, it runs on the `tp_compose` route's models, logged under its own stage
+    (`llm_gateway.load_route(..., borrow_from="tp_compose")`: only a view that answers with no row borrows; an
+    unreadable view still pauses AI). Prompt `_SYSTEM` / `_build_user` in `backend/assembly/plan_chat.py`;
   - `tp_search_embed`: browse free-text search, one Cohere Embed v4 call per distinct query (acc2
     first; on an acc2 throttle the route falls through to the satellite row `cohere-embed-v4-acc3`
     — same model and 1536-d, AA-862).
@@ -879,7 +886,7 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   a TripPlanner deploy; the Lambdas pick the change up within 60 s. Shadow config on a tp_* stage
   is not run here (a warning is printed): a consumer app does not pay for shadows.
 - **AI guards (AA-805, migration tp-010)**: a daily hard stop on **customer-facing** model spend
-  only — stages `tp_compose` + `tp_search_embed` (`llm_gateway.ONLINE_STAGES`,
+  only — stages `tp_compose` + `tp_search_embed` + `tp_plan_chat` (`llm_gateway.ONLINE_STAGES`,
   `TP_DAILY_SPEND_CAP_USD`, 5 USD on Dev, set by AA-CIS-Infra; today's spend is read through
   `catalog.v_llm_app_spend_today_v1` (CIS 323), the ledger sum, with no fallback since AA-1027 E5; the role cannot
   read `shared.llm_call_log` itself; an unreadable spend, or a lost ledger row of an online stage in the last 60 s,
@@ -902,8 +909,8 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   day per threshold, so TripPlanner's spend alert reaches CIS without a CloudWatch alarm.
 - **Per-visitor AI limits (AA-1015, migration tp-023)**: `backend/shared/ratelimit.py` counts each request that would
   call a model in `tripplanner.ai_rate_counter` (fixed windows, key = HMAC of scope + kind + value keyed with the edge
-  key: no IP, session or account stored): narrate 10 / hour / guest session, search 30 / minute / traveller IP, x2
-  signed in. Over the limit: 429 `rate_limited` with `retry_after_s` and a calm EN / VI line in the planner. The BFF
+  key: no IP, session or account stored): narrate 10 / hour / guest session, search 30 / minute / traveller IP, chat
+  (AA-1041) 20 / hour / guest session and 40 / hour / traveller IP, x2 signed in. Over the limit: 429 `rate_limited` with `retry_after_s` and a calm EN / VI line in the planner. The BFF
   forwards `x-tp-client-ip` (all trip calls and search) and `x-tp-signed-in` (search; narration uses the verified
   access token); both are trusted only with the right `x-tripplanner-key`. The counter fails open (ERROR line); the
   jobs Lambda kind `tp_retention_ai_rate_counter` deletes windows older than 2 days (DM-7.2). Optional stage caps
@@ -911,12 +918,24 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   line at 80 % and 100 % of a cap.
 - **Bot check (AA-1015, S262; AA-1038)**: the three TripPlanner rules of the ALB web ACL in front of the ECS task
   (rate per viewer IP, a tighter rate and a silent Challenge on the protected paths), never the app. The planner
-  calls the protected calls at their own paths, `GET /api/browse/search`, `POST /api/trip/narrate` and
-  `POST /api/trip/send` (`frontend/lib/botCheck.ts`), so map tiles and trip edits are never challenged; the edge gate
+  calls the protected calls at their own paths, `GET /api/browse/search`, `POST /api/trip/narrate`,
+  `POST /api/trip/send` and (AA-1041) `POST /api/trip/chat` (`frontend/lib/botCheck.ts`), so map tiles and trip edits are never challenged; the edge gate
   (`lib/edgeGate.ts`, task env `TP_EDGE_GATE=on`) answers the older spellings 404 so nothing skips the rules. A
   challenged call (202 `x-amzn-waf-action: challenge`) never reaches the app, is not counted by the limits and shows
   a calm EN / VI line (`botCheck` notice). Vercel BotID did this until the Vercel retirement (AA-1038): no `botid`
   package, build flag or client init is left.
+- **Planning chat (AA-1041 slice 2, `docs/implementation-notes/AA-1041.md`)**: `POST /trip/{id}/chat {session_id,
+  message, history}` (assembly; owner guard like narrate). The model answers one JSON object per call (a read-only
+  catalog tool of `backend/assembly/chat_tools.py`, or a reply with an optional proposal), at most 3 calls a message.
+  The server keeps it inside the catalog: a proposal names only references the turn's tools returned (or the trip's
+  stops) and is built from their catalog facts; a reply with a capitalised word the catalog did not give, a link, a
+  dropped reference or the prompt's own words becomes a server sentence pointing to what AA offers. The chat writes
+  no trip state: "Apply to my trip" runs `remove` + `apply-route`. Money gates before every model call: the chat's
+  month caps (tp-029 `tripplanner.ai_spend_month`, `TP_PLAN_CHAT_MONTHLY_CAP_USD` for the app and
+  `TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD` per tenant, 2 USD each by default), then `budget_status` (daily app caps, the
+  tenant's AI budget); fail closed. At a cap: 200 `{status: "paused", reason: "budget"}`, the planner closes the
+  composer with a plain line; AI off / provider down / unreadable spend: `reason: "unavailable"`. UI:
+  `components/PlanChat.tsx`, a "Plan with chat" tab of the desktop side panel and a "Chat" view on a phone.
 - **Fail closed + degrade mode (AA-642 S0, root ADR 0009 decisions 5 and 6)**: the gateway never calls a
   model it cannot account for. Spend counter unreadable (or a counter write failed in the last 60 s,
   `SPEND_UNREADABLE_HOLD_SECONDS`, per container) → `budget_status` is `exhausted` with reason

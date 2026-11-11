@@ -399,9 +399,10 @@ async def test_a_model_with_no_deployment_row_runs_on_its_catalog_profiles():
     assert (only.connection_key, only.wire_id, only.auth_mode) == ("acc3", "catalog.zz-writer", "assume_role")
 
 
-def test_the_route_table_has_only_the_two_live_stages():
-    assert set(gw.BUILTIN_ROUTES) == {"tp_compose", "tp_search_embed"}
-    assert gw.ONLINE_STAGES == ("tp_compose", "tp_search_embed")
+def test_the_route_table_has_only_the_live_stages():
+    # AA-1041 slice 2: + tp_plan_chat (on the tp_compose route's models until CIS seeds its own row).
+    assert set(gw.BUILTIN_ROUTES) == {"tp_compose", "tp_search_embed", "tp_plan_chat"}
+    assert gw.ONLINE_STAGES == ("tp_compose", "tp_search_embed", "tp_plan_chat")
 
 
 def test_no_supported_account_list_is_left():

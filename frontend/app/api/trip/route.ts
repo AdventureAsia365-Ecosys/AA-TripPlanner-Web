@@ -172,6 +172,11 @@ export async function POST(req: NextRequest) {
       path = `/trip/${tripId}/narrate`;
       payload = { session_id: b.session_id, mode: b.mode };
       break;
+    case "chat":
+      // AA-1041 slice 2: the planning chat (one model turn per message; the Lambda caps, limits and checks it).
+      path = `/trip/${tripId}/chat`;
+      payload = { session_id: b.session_id, message: b.message, history: b.history };
+      break;
     case "apply_route":
       path = `/trip/${tripId}/apply-route`;
       payload = { session_id: b.session_id, component_ids: b.component_ids };
@@ -190,11 +195,11 @@ export async function POST(req: NextRequest) {
   }
 
   const requestId = requestIdFor(req.headers);
-  if (b.op === "narrate" || b.op === "send") {
+  if (b.op === "narrate" || b.op === "send" || b.op === "chat") {
     // AA-1038: behind the web ACL (ECS), narration and "Send to advisor" are answered only on their protected paths
     // (lib/edgeGate.ts): there the web ACL's rate rule and Challenge are their bot check, before the Lambda is called
     // (so a challenged request is never counted by the per-session limit and never reaches a model). The Lambda then
-    // limits "Send to advisor" per session, per IP and per tenant per day.
+    // limits "Send to advisor" per session, per IP and per tenant per day, and the chat (AA-1041) per session and IP.
     const gated = edgeGateRefusal(b.op, req.nextUrl.pathname, edgeGateOn());
     if (gated) {
       return NextResponse.json(gated.body, {

@@ -1200,3 +1200,40 @@ async def test_aa1041_stops_read_over_the_views(pool):
         else:
             assert s["photo_url"] is None and s["destination_name"] == "Vientiane"
         assert s["source_tour_id"] in ("src-a", "src-b") and isinstance(s["source_day_index"], int)
+
+
+async def test_aa1041_chat_tools_read_over_the_views(pool):
+    """AA-1041 slice 2: the planning chat's catalog tools run their SQL over the catalog views (column names from the
+    live dump: v_tour.summary / lifecycle_stage, v_tour_component, v_destination); a retired tour is never offered,
+    search words match title + summary (tours) and name + activity + place (experiences), and the route tools hand the
+    model references, never component ids."""
+    from backend.assembly import chat_tools
+
+    await pool.execute("ALTER TABLE catalog.v_tour ADD COLUMN summary text, ADD COLUMN lifecycle_stage text")
+    await pool.execute("UPDATE catalog.v_tour SET summary = 'Slow river days and old town food' "
+                       "WHERE source_id = 'src-a'")
+    await pool.execute("UPDATE catalog.v_tour SET lifecycle_stage = 'retired' WHERE source_id = 'src-c'")
+
+    offered = await chat_tools.countries(pool)
+    assert [c["country"] for c in offered] == ["Laos"]                        # Vietnam's only tour is retired
+    assert offered[0]["tours"] == 2 and offered[0]["min_days"] == 3 and offered[0]["max_days"] == 4
+
+    refs = chat_tools.Refs()
+    tours = await chat_tools.run(pool, "find_tours", {"country": "laos", "text": "river food"}, refs, offered)
+    assert [t["title"] for t in tours["tours"]] == ["Mekong Valley"]
+    assert (await chat_tools.run(pool, "find_tours", {"max_days": 3}, refs, offered))["tours"][0]["title"] == \
+        "North to South"
+
+    exp = await chat_tools.run(pool, "find_experiences", {"text": "luang culinary", "country": "Laos"}, refs, offered)
+    assert exp["experiences"] and all(e["place"] == "Luang Prabang" and e["activity"] == "culinary"
+                                      for e in exp["experiences"])
+    assert len({(e["name"], e["place"]) for e in exp["experiences"]}) == len(exp["experiences"])   # one per name+place
+
+    route = await chat_tools.run(pool, "route_options", {"country": "Laos", "days": 3}, refs, offered)
+    assert route["options"] and all(d.get("ref", "c").startswith("c") for o in route["options"] for d in o["days"])
+    days = await chat_tools.run(pool, "tour_route", {"tour": "t1"}, refs, offered)
+    assert days["on_map"] is True and days["days"][0]["place"] == "Vientiane"
+    assert "-" not in json.dumps([d.get("ref") for d in days["days"]])          # refs, not uuids
+    first = refs.component_id(days["days"][0]["ref"])
+    names = await pool.fetch(chat_tools.COMPONENT_NAMES_SQL, [first])
+    assert names[0]["place"] == "Vientiane"

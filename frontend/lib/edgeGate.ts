@@ -24,7 +24,7 @@
 //
 // No next/* import: `npm test` runs it.
 
-import { NARRATE_PATH, SEARCH_PATH, SEND_PATH } from "./botCheck.ts";
+import { CHAT_PATH, NARRATE_PATH, SEARCH_PATH, SEND_PATH } from "./botCheck.ts";
 
 export const USE_PROTECTED_PATH = "use_protected_path";
 
@@ -37,13 +37,15 @@ export interface EdgeGateRefusal {
   body: { error: typeof USE_PROTECTED_PATH };
 }
 
-export type GatedRoute = "search" | "narrate" | "send";
+// AA-1041 slice 2: + the planning chat (a model call per message), POST /api/trip/chat.
+export type GatedRoute = "search" | "narrate" | "send" | "chat";
 
 // Each gated call and the only pathname it is answered on behind the edge (the web ACL's protected paths).
 export const PROTECTED_PATHS: Record<GatedRoute, string> = {
   search: SEARCH_PATH,
   narrate: NARRATE_PATH,
   send: SEND_PATH,
+  chat: CHAT_PATH,
 };
 
 /** The refusal for a gated call that did not come through its protected pathname, or null to go on. */
