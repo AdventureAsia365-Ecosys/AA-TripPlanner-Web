@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-11
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -238,6 +238,18 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   → photo ribbon → navy footer (trust strip inside). Still two catalog reads.
 - `/plan` the map planner (moved from `/`), with a Map | List-of-tours toggle; `?tour=<tour_id>`
   pins that tour's whole route through the existing apply-route flow (`&ask=1` opens the trip).
+  **R7 planner UX (AA-1041 slice 1, `docs/implementation-notes/AA-1041.md`):** the trip panel's days
+  (`components/DayList.tsx`) show a photo per day and per stop (the place's CIS cover photo from `/browse/stops`, the
+  stop's icon on the brand tint when there is none) and an icon per stop and leg (`lib/placeIcon.ts`, ~30 classes);
+  trip stops on the map are DOM markers (buttons named "Day N: …", k-* tokens) synced with the list through `useTrip`
+  (`activeStopId`: hover / focus highlights both sides, a click selects: the map eases to it or the list scrolls to
+  it); days and stops reorder by a pointer drag of their handle (mouse and touch) or the arrow keys / Home / End on it,
+  saved as the one `reorder` op the planner always used, with one step of undo (`lib/itineraryOrder.ts`); the panel
+  and the place popup use the kit loading, empty and error states (a failed trip read offers "Try again").
+- `/plan/shared#v=1&s=<component ids>` and `/{slug}/plan/shared#…` (AA-1041): the read-only share / print view of a
+  trip. The fragment carries component ids only (never text, no trip id or guest token; `lib/shareTrip.ts`), the
+  page reads the stops from `/browse/stops`, prints with the browser ("Print or save as PDF") and builds an `.ics`
+  from a start date the traveller picks. noindex; the tenant page resolves and brands like `/{slug}/plan`.
 - `/tours/[slug]` and `/destinations/[country]`: Server Components with ISR (30 min, the browse
   CDN TTL), JSON-LD (`TouristTrip`, `TouristDestination`), `sitemap.xml`, `robots.txt`.
 - **Preview until go-live (TL-24, S262):** every deployment, the Dev host included, is a preview unless its runtime
@@ -320,6 +332,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   them, runs ≤ 4 requests at a time and has a request budget (AA-812 hotfix). Its one model
   call is the embedding for free-text search (`/browse/search`; the response is no-store, the query
   embedding is cached in the container and a failed embed falls back to keyword ranking, AA-856).
+  `/browse/stops?ids=<component uuid>,…` (≤ 50, AA-1041) serves the planner's stops by id with their place photo
+  (`catalog.v_tour_component` joined to `catalog.v_destination`, `cover_photo_path` as the CIS photo URL), no point,
+  CDN-cacheable: the trip panel's photos and icons and the share view read it.
 - **assembly Lambda** — **stateful**, owns all trip mutations, and is the only side that calls
   **Claude**. Building/AI-narrating a trip is a write that also incurs model cost, so it is
   deliberately isolated from the cacheable read path. Keep anything that writes trip state or

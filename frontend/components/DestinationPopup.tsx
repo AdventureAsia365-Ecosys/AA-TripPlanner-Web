@@ -9,6 +9,7 @@ import GeocodeAttribution from "./GeocodeAttribution";
 import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "./AiLabel";
 import { AiNotice } from "@/ui/AiNotice";
 import { TERMS_AI_PATH } from "@/lib/legal";
+import { ErrorState, LoadingState } from "@/ui/States";
 
 interface Props {
   destinationId: string;
@@ -60,7 +61,7 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
       <div className="flex items-start justify-between gap-3 border-b border-k-line bg-k-bg px-4 py-3">
         <div className="min-w-0">
           <h3 className="truncate text-base font-semibold text-k-ink">
-            {detail?.name ?? "Loading…"}
+            {detail?.name ?? (loading ? "Loading…" : "Place")}
           </h3>
           {detail?.country && (
             <p className="mt-0.5 flex items-center gap-1 text-xs text-k-muted">
@@ -81,8 +82,13 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
       </div>
 
       <div className="px-4 py-3">
-        {loading && (
-          <p className="py-6 text-center text-sm text-k-muted">Loading experiences…</p>
+        {/* AA-1041 (R7 item 7): kit loading and error states. */}
+        {loading && <LoadingState label="Loading experiences" rows={2} compact />}
+
+        {!loading && !detail && (
+          <ErrorState title="We couldn't load this place">
+            Close it and pick the marker again, or try another place.
+          </ErrorState>
         )}
 
         {!loading && detail && detail.components.length === 0 && (

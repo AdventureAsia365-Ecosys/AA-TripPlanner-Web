@@ -29,6 +29,7 @@ import { COUNTRY_BBOX, COUNTRY_ISO, needsGeocodeAttribution } from "@/lib/types"
 import GeocodeAttribution from "./GeocodeAttribution";
 import { useTrip } from "@/lib/useTrip";
 import DestinationPopup from "./DestinationPopup";
+import { markerLabel, markerOf, markerStops } from "@/lib/stopSync";
 
 const SOURCE_ID = "destinations";
 // AA-847 slice 6d (owner decision S246, D1): rivers, roads and trails are drawn as lines (unclustered, deduped by id),
@@ -61,7 +62,6 @@ function extendBy(b: mapboxgl.LngLatBounds, p: DestinationPin) {
 }
 const TRIP_LINE_SOURCE = "trip-line";
 const TRIP_FLIGHT_SOURCE = "trip-flight-line";
-const TRIP_STOP_SOURCE = "trip-stops";
 const TRIP_GATEWAY_SOURCE = "trip-gateways";
 const COUNTRY_SOURCE = "country-boundaries";
 // AA-674: preview of a proposed AA route (hovered in the route planner).
@@ -124,7 +124,15 @@ export default function MapView() {
     focusDestination,
     previewCountry,
     routePreview,
+    activeStopId,
+    selectedStop,
+    hoverStop,
+    selectStop,
   } = useTrip();
+  // AA-1041 (R7 item 3): the trip's stop markers (DOM buttons: focusable, named, branded by the k-* tokens), by key.
+  const stopMarkersRef = useRef<Map<string, { marker: mapboxgl.Marker; el: HTMLButtonElement; ids: string[] }>>(
+    new Map(),
+  );
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pinsRef = useRef<Map<string, DestinationPin>>(new Map());
@@ -470,10 +478,6 @@ export default function MapView() {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
       });
-      map.addSource(TRIP_STOP_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
       // A soft white casing under a solid gold line reads cleanly over the
       // map (like a highlighted route).
       map.addLayer({
@@ -556,29 +560,8 @@ export default function MapView() {
         },
         paint: { "text-color": "#7A5210", "text-halo-color": "#ffffff", "text-halo-width": 1.4 },
       });
-      map.addLayer({
-        id: "trip-stop-dot",
-        type: "circle",
-        source: TRIP_STOP_SOURCE,
-        paint: {
-          "circle-color": "#DB9628",
-          "circle-radius": 13,
-          "circle-stroke-width": 3.5,
-          "circle-stroke-color": "#ffffff",
-        },
-      });
-      map.addLayer({
-        id: "trip-stop-label",
-        type: "symbol",
-        source: TRIP_STOP_SOURCE,
-        layout: {
-          "text-field": ["get", "day"],
-          "text-size": 12,
-          "text-font": ["DIN Offc Pro Bold", "Arial Unicode MS Bold"],
-          "text-allow-overlap": true,
-        },
-        paint: { "text-color": "#ffffff" },
-      });
+      // AA-1041 (R7 item 3): the numbered trip stops are DOM markers now (see the "trip stop markers" effect), so a
+      // stop can be hovered, focused and selected on the map like its row in the trip panel.
 
       // --- Gateway airports: arrival (fly in, near the first stop) and
       // departure (fly out, near the last stop). Drawn as a small ✈ marker so
@@ -803,23 +786,10 @@ export default function MapView() {
     const lineSrc = map.getSource(TRIP_LINE_SOURCE) as
       | mapboxgl.GeoJSONSource
       | undefined;
-    const stopSrc = map.getSource(TRIP_STOP_SOURCE) as
-      | mapboxgl.GeoJSONSource
-      | undefined;
     const featureSrc = map.getSource(TRIP_FEATURE_SOURCE) as mapboxgl.GeoJSONSource | undefined;
-    if (!lineSrc || !stopSrc) return;
+    if (!lineSrc) return;
 
     const plan = planTrip(itinerary);
-    // Day number of each stop (the first day it is reached), for the numbered markers.
-    const dayOf = new Map(itinerary.map((d) => [d.component_id, d.day]));
-    stopSrc.setData({
-      type: "FeatureCollection",
-      features: plan.stops.map((p) => ({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: p.coord },
-        properties: { day: String(dayOf.get(p.componentId) ?? "") },
-      })),
-    });
 
     const flightSrc = map.getSource(TRIP_FLIGHT_SOURCE) as
       | mapboxgl.GeoJSONSource
@@ -942,6 +912,73 @@ export default function MapView() {
       cancelled = true;
     };
   }, [itinerary, mapReady]);
+
+  // AA-1041 (R7 item 3): the trip stop markers. One button per place visit (lib/stopSync.ts markerStops, the same
+  // grouping as planTrip's stops), numbered with its day, named "Day 2: <stop>". Hover / focus highlights the stop in
+  // the trip panel too; a click (or Enter) selects it there (the panel scrolls to it).
+  useEffect(() => {
+    // Markers need the map, not its style: they are drawn while tiles still load (or when some fail).
+    const map = mapRef.current;
+    if (!map) return;
+    const markers = stopMarkersRef.current;
+    for (const m of markers.values()) m.marker.remove();
+    markers.clear();
+    for (const s of markerStops(itinerary)) {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "tp-stop-marker aa-focus group rounded-full";
+      el.setAttribute("aria-label", markerLabel(s));
+      el.dataset.testid = "trip-stop-marker";
+      el.dataset.componentIds = s.componentIds.join(" ");
+      el.dataset.active = "false";
+      const dot = document.createElement("span");
+      dot.className =
+        "flex h-7 w-7 items-center justify-center rounded-full border-[3px] border-k-card bg-k-accent text-xs font-bold " +
+        "text-k-on-accent shadow-aa transition group-data-[active=true]:scale-125 group-data-[active=true]:bg-k-accent-deep " +
+        "group-data-[active=true]:ring-4 group-data-[active=true]:ring-k-accent-border";
+      dot.textContent = String(s.day);
+      el.appendChild(dot);
+      const id = s.componentIds[0];
+      el.addEventListener("mouseenter", () => hoverStop(id));
+      el.addEventListener("mouseleave", () => hoverStop(null));
+      el.addEventListener("focus", () => hoverStop(id));
+      el.addEventListener("blur", () => hoverStop(null));
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        selectStop(id, "map");
+      });
+      const marker = new mapboxgl.Marker({ element: el }).setLngLat(s.coord).addTo(map);
+      markers.set(s.key, { marker, el, ids: s.componentIds });
+    }
+  }, [itinerary, mapReady, hoverStop, selectStop]);
+  useEffect(
+    () => () => {
+      for (const m of stopMarkersRef.current.values()) m.marker.remove();
+      stopMarkersRef.current.clear();
+    },
+    [],
+  );
+
+  // The active stop (hovered or selected, from either side) is drawn larger and darker on the map.
+  useEffect(() => {
+    for (const m of stopMarkersRef.current.values()) {
+      const on = activeStopId !== null && m.ids.includes(activeStopId);
+      m.el.dataset.active = on ? "true" : "false";
+      if (on) m.el.style.zIndex = "2";
+      else m.el.style.removeProperty("z-index");
+    }
+  }, [activeStopId, itinerary, mapReady]);
+
+  // A stop selected in the trip panel ("Show on map"): ease the camera to its marker.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !selectedStop || selectedStop.from !== "list") return;
+    const m = markerOf(markerStops(itinerary), selectedStop.componentId);
+    if (!m) return;
+    map.easeTo({ center: m.coord, zoom: Math.max(map.getZoom(), 8), ...camReduced() });
+    // itinerary is read for the marker's point only; a reorder must not move the camera again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStop, mapReady]);
 
   // AA-674: draw (or clear) the previewed AA route and frame it.
   useEffect(() => {

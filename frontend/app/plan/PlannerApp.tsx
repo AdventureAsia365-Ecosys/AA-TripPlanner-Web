@@ -111,7 +111,8 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
             visibility: mobileView === "trip" ? "visible" : "hidden",
           }}
         >
-          <TripPanel />
+          {/* AA-1041: "Show on map" on a phone switches to the map, where the stop is highlighted. */}
+          <TripPanel onShowOnMap={() => setMobileView("map")} />
         </aside>
       </main>
 

@@ -71,6 +71,12 @@ export interface ItineraryDay extends SegmentFields {
   // AA-847: as DestinationPin (cis places source only).
   located_by?: LocatedBy | null;
   precision?: GeoPrecision | null;
+  // The component row the assembly Lambda returns with each stop (backend/assembly/events.py COMPONENTS_SQL):
+  // AA-1041 reads the activity and the place name (stop icon) and the AA tour day (which stops share a day).
+  activity?: string | null;
+  destination_name?: string | null;
+  source_tour_id?: string | null;
+  source_day_index?: number | null;
   // AA-986 L6: GET /trip marks every served stop available (mutation answers leave it out).
   available?: true;
   reason?: null;

@@ -28,3 +28,25 @@ export function ErrorState({ title = "Something went wrong", children }: { title
     </div>
   );
 }
+
+// AA-1041 (R7 item 7): the loading state of the kit: grey bars in the card's shape, a status for screen readers, no
+// spinner. Under reduced motion (html[data-motion="reduce"], app/globals.css) the shimmer stops.
+export function LoadingState({ label = "Loading", rows = 3, compact = false }: { label?: string; rows?: number; compact?: boolean }) {
+  return (
+    <div role="status" aria-live="polite" aria-busy="true" data-testid="loading-state"
+      className={`rounded-card border border-k-line bg-k-card ${compact ? "p-3" : "px-5 py-6"}`}>
+      <span className="sr-only">{label}…</span>
+      <div aria-hidden className="space-y-3">
+        {Array.from({ length: rows }, (_, i) => (
+          <div key={i} className="flex items-center gap-3">
+            <span className="tp-skeleton h-10 w-10 shrink-0 rounded-tile" />
+            <span className="flex-1 space-y-1.5">
+              <span className="tp-skeleton block h-3 w-3/4 rounded-pill" />
+              <span className="tp-skeleton block h-2.5 w-1/2 rounded-pill" />
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

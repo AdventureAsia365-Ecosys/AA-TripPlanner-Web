@@ -6,6 +6,7 @@
 // lib/types.ts and DestinationPopup.tsx).
 
 import type { JSX, SVGProps } from "react";
+import { PLACE_GLYPHS, type PlaceKind } from "@/lib/placeIcon";
 
 type IconProps = { size?: number } & SVGProps<SVGSVGElement>;
 
@@ -138,4 +139,24 @@ export default function ActivityIcon({
     );
   }
   return <Cmp size={size} {...rest} />;
+}
+
+/** AA-1041 (R7 item 2): the icon of a stop, a leg or a day, from lib/placeIcon.ts (~30 classes: place types, the
+ *  transport of a leg, meals, the catalog's activities). Line glyphs, colour from text colour (so the tenant's brand
+ *  tokens apply). Decorative unless `title` is given (then it is an image with that name). */
+export function PlaceIcon({
+  kind,
+  size = 16,
+  title,
+  ...rest
+}: { kind: PlaceKind; size?: number; title?: string } & SVGProps<SVGSVGElement>) {
+  const paths = PLACE_GLYPHS[kind] ?? PLACE_GLYPHS.pin;
+  const named = title ? { role: "img", "aria-label": title } : { "aria-hidden": true };
+  return (
+    <svg {...base(size)} {...named} focusable="false" {...rest}>
+      {paths.map((d) => (
+        <path key={d} d={d} />
+      ))}
+    </svg>
+  );
 }

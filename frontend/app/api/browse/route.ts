@@ -59,6 +59,10 @@ export async function GET(req: NextRequest) {
     // AA-847 slice 6d: line geometry by id (CDN-cacheable upstream).
     const r = new URLSearchParams({ ids: q.get("ids") ?? "", level: q.get("level") ?? "lo" });
     upstreamPath = `/browse/shapes?${r}`;
+  } else if (resource === "stops") {
+    // AA-1041: the trip's stops by component id with their place photo (CDN-cacheable upstream).
+    const r = new URLSearchParams({ ids: q.get("ids") ?? "" });
+    upstreamPath = `/browse/stops?${r}`;
   } else if (resource === "countries") {
     upstreamPath = `/browse/countries`;
   } else if (resource === "routes") {
