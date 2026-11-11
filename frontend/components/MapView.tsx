@@ -917,8 +917,9 @@ export default function MapView() {
   // grouping as planTrip's stops), numbered with its day, named "Day 2: <stop>". Hover / focus highlights the stop in
   // the trip panel too; a click (or Enter) selects it there (the panel scrolls to it).
   useEffect(() => {
+    // Markers need the map, not its style: they are drawn while tiles still load (or when some fail).
     const map = mapRef.current;
-    if (!map || !mapReady) return;
+    if (!map) return;
     const markers = stopMarkersRef.current;
     for (const m of markers.values()) m.marker.remove();
     markers.clear();
@@ -971,7 +972,7 @@ export default function MapView() {
   // A stop selected in the trip panel ("Show on map"): ease the camera to its marker.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady || !selectedStop || selectedStop.from !== "list") return;
+    if (!map || !selectedStop || selectedStop.from !== "list") return;
     const m = markerOf(markerStops(itinerary), selectedStop.componentId);
     if (!m) return;
     map.easeTo({ center: m.coord, zoom: Math.max(map.getZoom(), 8), ...camReduced() });

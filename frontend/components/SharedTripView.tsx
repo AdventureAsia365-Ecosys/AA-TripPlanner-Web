@@ -83,7 +83,7 @@ export default function SharedTripView({ planHref, agencyName }: { planHref: str
     a.href = URL.createObjectURL(blob);
     a.download = "trip.ics";
     a.click();
-    URL.revokeObjectURL(a.href);
+    window.setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
 
   let body: React.ReactNode;

@@ -123,7 +123,11 @@ export default function DayList({
       const b = r.getBoundingClientRect();
       return b.top + b.height / 2;
     });
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* a pointer the browser no longer tracks: the drag still follows this element's own events */
+    }
     setDrag({ kind, from: index, to: index, startY: e.clientY, dy: 0, centres, moved: false });
   };
   const onPointerMove = (e: React.PointerEvent) => {
@@ -368,7 +372,8 @@ export default function DayList({
                   <span className="text-k-accent-deep">
                     <PlaceIcon kind={legKind(leg.mode, leg.stretch ? lineClass(leg.stretch.name) : null)} size={14} />
                   </span>
-                  <span>{formatLeg(leg)}</span>
+                  {/* The icon says the mode, so the label's own leading emoji / glyph is left out. */}
+                  <span>{formatLeg(leg).replace(/^[^\p{L}\p{N}]+/u, "")}</span>
                 </div>
               )}
               {!leg && gi < groups.length - 1 && <div className="h-2" aria-hidden />}

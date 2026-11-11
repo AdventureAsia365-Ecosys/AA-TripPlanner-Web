@@ -123,6 +123,13 @@ jobs:
           [ -n "$GREP" ] && ARGS+=(--grep "$GREP")
           npx playwright test "${ARGS[@]}"
 
+      # AA-1041 (R7 slice 1): the planner interactions (reorder by keyboard and touch at 390, map / list sync, stop
+      # photos and icons, kit error state, share view). Every /api/* answer is mocked by the spec: it writes no trip and
+      # reads no catalog row; only the map is real (the deployment's Mapbox token). Report-only like the captures.
+      - name: Planner interactions (e2e/visual/planner.spec.ts)
+        if: always() && steps.reach.outputs.ok == 'true' && inputs.pages == ''
+        run: npx playwright test -c planner.config.ts
+
       - name: Summary
         if: always() && steps.reach.outputs.ok == 'true'
         run: |

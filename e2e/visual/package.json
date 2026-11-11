@@ -5,6 +5,7 @@
   "description": "AA-994 S5b: Playwright visual run of the public TripPlanner pages (see visual.spec.ts).",
   "scripts": {
     "visual": "playwright test -c playwright.config.ts",
+    "planner": "playwright test -c planner.config.ts",
     "summary": "node summary.mjs"
   },
   "devDependencies": {
