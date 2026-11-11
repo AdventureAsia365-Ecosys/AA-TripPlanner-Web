@@ -14,7 +14,8 @@ import * as api from "./api";
 import { isB2bOnly } from "./advisorDemo";
 import type { AiNoticeKey } from "./aiNotices";
 import { isUuid, randomUuid } from "./guestIds";
-import { orderOf, reorderLocally } from "./itineraryOrder";
+import { reorderLocally } from "./itineraryOrder";
+import { createOrderSaver } from "./orderSaver";
 import { activeStop as pickActiveStop, photoKey, type StopSelection, type SyncSource } from "./stopSync";
 import { idsStorageKey } from "./plannerTenant";
 import type { LeadBody } from "./leadForm";
@@ -320,17 +321,37 @@ export function TripProvider({
     };
   }, [coverageKey, tripEmpty, tripId]);
 
+  // AA-1041 (item 4): the new order shows at once (days renumbered like the server does), then the server's answer
+  // replaces it. A refused or failed save puts the last saved order back and says so. Saved the way the planner always
+  // saved an order: one reorder event with every component id (PATCH /trip/{id}/reorder). Quick moves (arrow keys
+  // pressed fast) are saved one after another and only the latest answer is drawn (lib/orderSaver.ts), so an older
+  // answer never draws over a newer move and the order stored is the one on screen.
+  const orderSaver = useMemo(
+    () =>
+      createOrderSaver<ItineraryDay>({
+        send: async (ids) => (await api.reorder(tripId, sessionId, ids)).itinerary,
+        local: reorderLocally,
+        show: setItinerary,
+        settled: (outcome) => {
+          if (outcome.ok) setUndoOrder(outcome.undo);
+          else setReorderFailed(true);
+        },
+      }),
+    [tripId, sessionId],
+  );
+
   const applyRoute = useCallback(
     async (p: RouteProposal) => {
       const ids = p.days.map((d) => d.component_id).filter((x): x is string => !!x);
       if (ids.length === 0) return false;
       const res = await api.applyRoute(tripId, sessionId, ids);
       if (!res?.itinerary) return false;
+      orderSaver.invalidate();
       setItinerary(res.itinerary);
       setRoutePreview(null);
       return true;
     },
-    [tripId, sessionId],
+    [tripId, sessionId, orderSaver],
   );
 
   const addDay = useCallback(
@@ -353,44 +374,34 @@ export function TripProvider({
     async (componentId: string) => {
       const res = await api.addComponent(tripId, sessionId, componentId);
       if (res.itinerary) {
+        orderSaver.invalidate();
         setItinerary(res.itinerary);
         setUndoOrder(null);
       }
     },
-    [tripId, sessionId],
+    [tripId, sessionId, orderSaver],
   );
 
   const remove = useCallback(
     async (componentId: string) => {
       const res = await api.removeComponent(tripId, sessionId, componentId);
       if (res.itinerary) {
+        orderSaver.invalidate();
         setItinerary(res.itinerary);
         setUndoOrder(null);
         // AA-986 L6: removing a stop AA no longer serves takes it off the greyed list too.
         setUnavailableStops((stops) => stops.filter((s) => s.component_id !== componentId));
       }
     },
-    [tripId, sessionId],
+    [tripId, sessionId, orderSaver],
   );
 
-  // AA-1041 (item 4): the new order shows at once (days renumbered like the server does), then the server's answer
-  // replaces it. A refused or failed save puts the saved order back and says so. Saved the way the planner always
-  // saved an order: one reorder event with every component id (PATCH /trip/{id}/reorder).
   const saveOrder = useCallback(
     async (orderedIds: string[], isUndo: boolean) => {
-      const before = itineraryRef.current;
-      setItinerary(reorderLocally(before, orderedIds));
       setReorderFailed(false);
-      const res = await api.reorder(tripId, sessionId, orderedIds).catch(() => ({ itinerary: undefined }));
-      if (res.itinerary) {
-        setItinerary(res.itinerary);
-        setUndoOrder(isUndo ? null : orderOf(before));
-      } else {
-        setItinerary(before);
-        setReorderFailed(true);
-      }
+      await orderSaver.save(itineraryRef.current, orderedIds, isUndo);
     },
-    [tripId, sessionId],
+    [orderSaver],
   );
   const reorder = useCallback((orderedIds: string[]) => saveOrder(orderedIds, false), [saveOrder]);
   const undoReorder = useCallback(async () => {
