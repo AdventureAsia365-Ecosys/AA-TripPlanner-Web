@@ -82,6 +82,13 @@ export function readChatAnswer(status: number, challenged: boolean, body: ChatBo
   };
 }
 
+/** True when a conversation line carries the AI label: an assistant reply whose text the model wrote
+ * (`ai_generated: true`). A server sentence (the grounding rule's fallback, a refusal written by the server) and the
+ * panel's own notices get none (S277 smoke: the panel header labelled every reply as AI-written). */
+export function showsAiLabel(m: Pick<ChatMessage, "role" | "aiGenerated"> & { notice?: boolean }): boolean {
+  return m.role === "assistant" && m.aiGenerated === true && !m.notice;
+}
+
 /** The last turns the server gets as context (the pending message is sent apart, notices are not turns). */
 export function historyForRequest(messages: ChatMessage[]): { role: "user" | "assistant"; text: string }[] {
   return messages
@@ -139,8 +146,8 @@ export const CHAT_COPY: Record<AiNoticeLang, ChatCopy> = {
   en: {
     title: "Plan with chat",
     intro:
-      "Ask for a route and the planner suggests one from Adventure Asia's own tours and places. Nothing changes " +
-      "in your trip until you apply a suggestion.",
+      "Ask for a route and the planner's AI assistant suggests one from Adventure Asia's own tours and places. " +
+      "Nothing changes in your trip until you apply a suggestion.",
     examples: ["A 5-day route at an easy pace", "Add a cooking class", "Make my trip one day shorter"],
     placeholder: "Ask about a country, a number of days or an activity",
     send: "Send",
@@ -170,8 +177,8 @@ export const CHAT_COPY: Record<AiNoticeLang, ChatCopy> = {
   vi: {
     title: "Lên kế hoạch bằng trò chuyện",
     intro:
-      "Hãy hỏi một lộ trình, trợ lý sẽ gợi ý từ chính các tour và địa điểm của Adventure Asia. Chuyến đi của bạn " +
-      "chỉ thay đổi khi bạn áp dụng gợi ý.",
+      "Hãy hỏi một lộ trình, trợ lý AI sẽ gợi ý từ chính các tour và địa điểm của Adventure Asia. Chuyến đi của " +
+      "bạn chỉ thay đổi khi bạn áp dụng gợi ý.",
     examples: ["Lộ trình 5 ngày, nhịp nhẹ nhàng", "Thêm một lớp học nấu ăn", "Rút ngắn chuyến đi một ngày"],
     placeholder: "Hỏi về một quốc gia, số ngày hoặc một hoạt động",
     send: "Gửi",

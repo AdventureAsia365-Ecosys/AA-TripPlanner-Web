@@ -21,6 +21,16 @@
         "_build_user"
       ],
       "prompt_sha256": "8f5e9fe45e32c488a6c41e9fb6ddc113cec2a033f1d75c0b8d05feaa3110e519"
+    },
+    {
+      "stage": "tp_plan_chat",
+      "version": "v2",
+      "source_path": "backend/assembly/plan_chat.py",
+      "symbols": [
+        "_SYSTEM",
+        "_build_user"
+      ],
+      "prompt_sha256": "dda4e67fba2ed3cbca3c66ead18a5a231339519e4c9752cc9cf84a8e7f7e412a"
     }
   ]
 }

@@ -414,10 +414,12 @@ test("planning chat: a suggestion from the catalog is applied with the planner's
   await openPlanner(page, mobile);
   await openChat(page, mobile);
   const chat = page.getByTestId("plan-chat").last();
-  await expect(chat.getByTestId("chat-ai-notice")).toBeVisible();
+  await expect(chat.getByTestId("chat-ai-notice")).toHaveCount(0);
   await chat.getByTestId("chat-input").fill("Make it one day shorter");
   await chat.getByTestId("chat-input").press("Enter");
   await expect(chat.getByTestId("chat-assistant")).toContainText("Here is a shorter plan without the lake day.");
+  // The reply was written by the model (ai_generated: true): the AI notice sits under it.
+  await expect(chat.getByTestId("chat-assistant").getByTestId("chat-ai-notice")).toBeVisible();
   expect(asked).toHaveLength(1);
   expect(asked[0]).toMatchObject({ op: "chat", trip_id: IDS.tripId, message: "Make it one day shorter", history: [] });
   const card = chat.getByTestId("chat-proposal");
@@ -432,6 +434,25 @@ test("planning chat: a suggestion from the catalog is applied with the planner's
   if (mobile) await page.getByRole("button", { name: /Your trip/ }).click();
   else await page.getByRole("tab", { name: "Your trip" }).click();
   await expect.poll(() => stopNames(page)).toEqual(["Morning market walk", "Old town temple visit", "Cooking class with a family"]);
+});
+
+test("planning chat: a server sentence carries no AI label", async ({ page }, info) => {
+  await mockApis(page);
+  await page.route("**/api/trip/chat", (route: Route) =>
+    route.fulfill({
+      json: {
+        trip_id: IDS.tripId, status: "ok", outcome: "refusal", ai_generated: false, proposal: null,
+        reply: "I can only plan with Adventure Asia's own tours and places.",
+      },
+    }));
+  const mobile = isMobile(info.project.name);
+  await openPlanner(page, mobile);
+  await openChat(page, mobile);
+  const chat = page.getByTestId("plan-chat").last();
+  await chat.getByTestId("chat-input").fill("Plan five days somewhere else");
+  await chat.getByTestId("chat-send").click();
+  await expect(chat.getByTestId("chat-assistant")).toContainText("I can only plan with Adventure Asia's own tours");
+  await expect(chat.getByTestId("chat-ai-notice")).toHaveCount(0);
 });
 
 test("planning chat: at the monthly cap the chat pauses with a plain message", async ({ page }, info) => {

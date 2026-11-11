@@ -13,6 +13,7 @@ import {
   noticeFor,
   proposalSummary,
   readChatAnswer,
+  showsAiLabel,
   type ChatMessage,
   type ChatProposal,
 } from "./planChat.ts";
@@ -106,4 +107,17 @@ test("the chat goes through its protected path and never reloads the planner on 
   const chat = api.slice(api.indexOf("export async function sendChat"), api.indexOf("export interface Suggestion"));
   assert.match(chat, /\}, CHAT_PATH\);/);
   assert.doesNotMatch(chat, /throughWafEdge|reloadForWafToken/);
+});
+
+test("S277: only a reply the model wrote carries the AI label; server sentences and notices get none", () => {
+  assert.equal(showsAiLabel({ role: "assistant", aiGenerated: true }), true);
+  assert.equal(showsAiLabel({ role: "assistant", aiGenerated: false }), false);
+  assert.equal(showsAiLabel({ role: "assistant" }), false);
+  assert.equal(showsAiLabel({ role: "assistant", aiGenerated: true, notice: true }), false);
+  assert.equal(showsAiLabel({ role: "user", aiGenerated: true }), false);
+  const panel = read("../components/PlanChat.tsx");
+  const header = panel.slice(panel.indexOf("<header"), panel.indexOf("</header>"));
+  assert.doesNotMatch(header, /AiNotice/, "the header carries no AI notice");
+  assert.match(panel, /\{showsAiLabel\(l\) && \(\s*<AiNotice[^>]*variant="narration"/, "the notice sits under an AI-written reply");
+  assert.match(CHAT_COPY.en.intro, /AI assistant/);
 });
