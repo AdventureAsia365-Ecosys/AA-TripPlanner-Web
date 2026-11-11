@@ -17,7 +17,8 @@ import type {
 import type { TourList, TourSort } from "./catalogTypes";
 import { readTourRoute, type TourRouteResult } from "./tourRoute";
 import { COOKIES_NOTICE, COOKIES_REQUIRED, resetGuestIds, showGuestNotice } from "./guestIds";
-import { BOT_CHECK_FAILED, NARRATE_PATH, SEARCH_PATH, SEND_PATH, isBotRefusal } from "./botCheck";
+import { BOT_CHECK_FAILED, CHAT_PATH, NARRATE_PATH, SEARCH_PATH, SEND_PATH, isBotRefusal } from "./botCheck";
+import { readChatAnswer, type ChatAnswer } from "./planChat";
 // AA-1038 R5 hosting: the web ACL's Challenge answer on the two model calls behind CloudFront (none elsewhere).
 import { isWafChallenge, throughWafEdge } from "./wafChallenge";
 // AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
@@ -346,6 +347,28 @@ export async function sendToAdvisor(
   // the page (that document load issues the token). No automatic reload here: it would lose the form they typed.
   if (challenged) return { status: 403, body: { error: BOT_CHECK_FAILED } as TripResponse & { error?: string } };
   return { status, body: data };
+}
+
+// AA-1041 slice 2: one planning chat message (POST /api/trip/chat, its own protected path). A web ACL Challenge is
+// answered as the bot-check line without a planner reload (the conversation would be lost); the traveller reloads.
+export async function sendChat(
+  tripId: string,
+  sessionId: string,
+  message: string,
+  history: { role: "user" | "assistant"; text: string }[],
+): Promise<ChatAnswer> {
+  try {
+    const { status, challenged, data } = await postTrip<Record<string, unknown>>({
+      op: "chat",
+      trip_id: tripId,
+      session_id: sessionId,
+      message,
+      history,
+    }, CHAT_PATH);
+    return readChatAnswer(status, challenged, data);
+  } catch {
+    return { kind: "error" };
+  }
 }
 
 export interface Suggestion {

@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { NARRATE_PATH, SEARCH_PATH, SEND_PATH } from "./botCheck.ts";
+import { CHAT_PATH, NARRATE_PATH, SEARCH_PATH, SEND_PATH } from "./botCheck.ts";
 import { PROTECTED_PATHS, USE_PROTECTED_PATH, edgeGateOn, edgeGateRefusal } from "./edgeGate.ts";
 
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
@@ -41,13 +41,13 @@ test("every gated branch checks the gate, and search keeps its protected pathnam
   const trip = read("../app/api/trip/route.ts");
   const search = read("../app/api/browse/search/route.ts");
   assert.match(browse, /edgeGateRefusal\("search", req\.nextUrl\.pathname, edgeGateOn\(\)\)/);
-  // One gate call for both ops of the shared branch (narrate and send), before the Lambda.
+  // One gate call for every op of the shared branch (narrate, send and, AA-1041, chat), before the Lambda.
   // Plain string search, no regex (CodeQL js/redos): only blank or comment lines may sit between the two.
-  const branch = 'if (b.op === "narrate" || b.op === "send") {';
+  const branch = 'if (b.op === "narrate" || b.op === "send" || b.op === "chat") {';
   const gateCall = "const gated = edgeGateRefusal(b.op, req.nextUrl.pathname, edgeGateOn());";
   const at = trip.indexOf(branch);
   const callAt = trip.indexOf(gateCall, at);
-  assert.ok(at >= 0 && callAt > at, "the shared narrate/send branch calls the gate");
+  assert.ok(at >= 0 && callAt > at, "the shared narrate/send/chat branch calls the gate");
   const between = trip.slice(at + branch.length, callAt).split("\n").map((l) => l.trim());
   assert.deepEqual(between.filter((l) => l !== "" && !l.startsWith("//")), []);
   assert.ok(trip.indexOf("edgeGateRefusal(b.op") < trip.indexOf("await fetch(`${TRIP_API_URL}${path}`"));
@@ -72,6 +72,10 @@ test("a dot-segment spelling reaches the gate as the protected path, so the web 
     assert.equal(resolved(raw), NARRATE_PATH, raw);
     assert.equal(edgeGateRefusal("narrate", resolved(raw), true), null, raw);
   }
+  for (const raw of ["/api/trip/%2e/chat", "/api/trip/./chat", "/%2e%2e/api/trip/chat"]) {
+    assert.equal(resolved(raw), CHAT_PATH, raw);
+    assert.equal(edgeGateRefusal("chat", resolved(raw), true), null, raw);
+  }
   for (const raw of ["/api/trip/%2e/send", "/api/x/../trip/send", "/%2e%2e/api/trip/send", "/%2E%2E/api/trip/send"]) {
     assert.equal(resolved(raw), SEND_PATH, raw);
     assert.equal(edgeGateRefusal("send", resolved(raw), true), null, raw);
@@ -81,11 +85,13 @@ test("a dot-segment spelling reaches the gate as the protected path, so the web 
   assert.notEqual(edgeGateRefusal("search", resolved("/api/browse/%73earch"), true), null);
 });
 
-test("the web ACL paths of AA-CIS-Infra (local.tp_web_protected_paths) are the three protected paths", () => {
+test("the web ACL paths of AA-CIS-Infra (local.tp_web_protected_paths) are the four protected paths", () => {
   assert.equal(SEARCH_PATH, "/api/browse/search");
   assert.equal(NARRATE_PATH, "/api/trip/narrate");
   assert.equal(SEND_PATH, "/api/trip/send");
-  assert.deepEqual(Object.values(PROTECTED_PATHS), ["/api/browse/search", "/api/trip/narrate", "/api/trip/send"]);
+  assert.equal(CHAT_PATH, "/api/trip/chat");
+  assert.deepEqual(Object.values(PROTECTED_PATHS),
+    ["/api/browse/search", "/api/trip/narrate", "/api/trip/send", "/api/trip/chat"]);
 });
 
 test("the edge gate covers every protected path of lib/botCheck.ts (the web ACL is their only bot check)", () => {

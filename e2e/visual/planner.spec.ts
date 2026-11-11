@@ -6,7 +6,9 @@
 //     "Show on map" on a phone switches to the map with the stop highlighted;
 //   - photos and icons: a stop with a CIS photo shows it, one without shows its icon tile;
 //   - kit states: an error with a retry when the saved trip cannot be read; the read-only share view, which prints in
-//     the light theme for a viewer on the dark theme.
+//     the light theme for a viewer on the dark theme;
+//   - planning chat (AA-1041 slice 2): a suggestion is applied with the planner's own mutations (remove, then
+//     apply-route), and a paused chat (a money cap) says so and closes the composer.
 // Every /api/* call is answered by the test (page.route): no trip is written, no catalog row is read, the fixture
 // names are invented. The map itself is real (Mapbox, the deployment's token), so the sync tests need a build with
 // NEXT_PUBLIC_MAPBOX_TOKEN. Run: BASE_URL=<host> npx playwright test -c planner.config.ts
@@ -59,6 +61,9 @@ interface Mock {
   // With holdReorders: lets reorder answer n leave the mock (0-based, in the order the requests arrived).
   release: (n: number) => void;
   tripStatus: number;
+  // AA-1041 slice 2: the mutations a planning chat suggestion ran.
+  removed: string[];
+  applied: string[][];
 }
 
 // holdReorders: each reorder answer waits until the test calls mock.release(n), however long the page takes (no
@@ -79,6 +84,8 @@ async function mockApis(page: Page, opts: { tripStatus?: number; holdReorders?: 
     heldAtArrival: [],
     release: (n) => gate(n).open(),
     tripStatus: opts.tripStatus ?? 200,
+    removed: [],
+    applied: [],
   };
   let order = STOPS.map((s) => s.component_id);
   await page.addInitScript((ids) => {
@@ -98,7 +105,22 @@ async function mockApis(page: Page, opts: { tripStatus?: number; holdReorders?: 
       if (mock.tripStatus !== 200) return route.fulfill({ status: mock.tripStatus, json: { error: "unavailable" } });
       return route.fulfill({ json: { trip_id: IDS.tripId, itinerary: withDays(order), custom_days: [], unavailable_stops: [] } });
     }
-    const body = req.postDataJSON() as { op: string; ordered_component_ids?: string[] };
+    const body = req.postDataJSON() as {
+      op: string;
+      ordered_component_ids?: string[];
+      component_id?: string;
+      component_ids?: string[];
+    };
+    if (body.op === "remove" && body.component_id) {
+      mock.removed.push(body.component_id);
+      order = order.filter((id) => id !== body.component_id);
+      return route.fulfill({ json: { trip_id: IDS.tripId, itinerary: withDays(order) } });
+    }
+    if (body.op === "apply_route" && body.component_ids) {
+      mock.applied.push(body.component_ids);
+      order = [...body.component_ids, ...order.filter((id) => !body.component_ids!.includes(id))];
+      return route.fulfill({ json: { trip_id: IDS.tripId, itinerary: withDays(order) } });
+    }
     if (body.op === "reorder" && body.ordered_component_ids) {
       const n = mock.reorders.push(body.ordered_component_ids) - 1;
       const mine = body.ordered_component_ids;
@@ -357,4 +379,73 @@ test("a share link without a trip shows the kit empty state", async ({ page }) =
   const res = await page.goto("/plan/shared", { waitUntil: "load" });
   if (res?.status() === 202) await page.waitForLoadState("load");
   await expect(page.getByText("This link has no trip in it")).toBeVisible({ timeout: 20_000 });
+});
+
+// --- AA-1041 slice 2: the planning chat ----------------------------------------------------------------------------
+
+const stop = (id: string, isNew = false) => {
+  const s = STOPS.find((x) => x.component_id === id)!;
+  return { component_id: id, name: s.name, place: s.destination_name, new: isNew };
+};
+
+async function openChat(page: Page, mobile: boolean) {
+  if (mobile) await page.getByTestId("mobile-chat-tab").click();
+  else await page.getByRole("tab", { name: "Plan with chat" }).click();
+  await expect(page.getByTestId("plan-chat").last()).toBeVisible();
+}
+
+test("planning chat: a suggestion from the catalog is applied with the planner's own mutations", async ({ page }, info) => {
+  const mock = await mockApis(page);
+  const asked: Record<string, unknown>[] = [];
+  await page.route("**/api/trip/chat", async (route: Route) => {
+    asked.push(route.request().postDataJSON());
+    return route.fulfill({
+      json: {
+        trip_id: IDS.tripId, status: "ok", outcome: "answer", ai_generated: true,
+        reply: "Here is a shorter plan without the lake day.",
+        proposal: {
+          action: "remove", final_component_ids: [A, B, C], add_component_ids: [], remove_component_ids: [D],
+          stops: [stop(A), stop(B), stop(C)], removed: [stop(D)],
+        },
+      },
+    });
+  });
+  const mobile = isMobile(info.project.name);
+  await openPlanner(page, mobile);
+  await openChat(page, mobile);
+  const chat = page.getByTestId("plan-chat").last();
+  await expect(chat.getByTestId("chat-ai-notice")).toBeVisible();
+  await chat.getByTestId("chat-input").fill("Make it one day shorter");
+  await chat.getByTestId("chat-input").press("Enter");
+  await expect(chat.getByTestId("chat-assistant")).toContainText("Here is a shorter plan without the lake day.");
+  expect(asked).toHaveLength(1);
+  expect(asked[0]).toMatchObject({ op: "chat", trip_id: IDS.tripId, message: "Make it one day shorter", history: [] });
+  const card = chat.getByTestId("chat-proposal");
+  await expect(card).toContainText("Removes 1 stop.");
+  await expect(card).toContainText("Kayaking on Lake Miren");
+  await info.attach(`chat-proposal-${info.project.name}`, { body: await page.screenshot(), contentType: "image/png" });
+  await card.getByTestId("chat-apply").click();
+  await expect(card).toContainText("Applied to your trip");
+  expect(mock.removed).toEqual([D]);
+  expect(mock.applied).toEqual([[A, B, C]]);
+  // The trip panel shows the new trip.
+  if (mobile) await page.getByRole("button", { name: /Your trip/ }).click();
+  else await page.getByRole("tab", { name: "Your trip" }).click();
+  await expect.poll(() => stopNames(page)).toEqual(["Morning market walk", "Old town temple visit", "Cooking class with a family"]);
+});
+
+test("planning chat: at the monthly cap the chat pauses with a plain message", async ({ page }, info) => {
+  await mockApis(page);
+  await page.route("**/api/trip/chat", (route: Route) =>
+    route.fulfill({ json: { trip_id: IDS.tripId, status: "paused", reason: "budget" } }));
+  const mobile = isMobile(info.project.name);
+  await openPlanner(page, mobile);
+  await openChat(page, mobile);
+  const chat = page.getByTestId("plan-chat").last();
+  await chat.getByTestId("chat-input").fill("Plan five days");
+  await chat.getByTestId("chat-send").click();
+  await expect(chat.getByRole("status").filter({ hasText: "this month's chat limit is reached" })).toBeVisible();
+  await expect(chat.getByTestId("chat-input")).toBeDisabled();
+  await expect(chat.getByTestId("chat-send")).toBeDisabled();
+  await info.attach(`chat-paused-${info.project.name}`, { body: await page.screenshot(), contentType: "image/png" });
 });

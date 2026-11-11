@@ -5,6 +5,7 @@ import Header from "@/components/Header";
 import MapView from "@/components/MapView";
 import FilterChips from "@/components/FilterChips";
 import TripPanel from "@/components/TripPanel";
+import PlanChat from "@/components/PlanChat";
 import TourListPane from "@/components/TourListPane";
 import PlanPrefill from "@/components/PlanPrefill";
 import GuestResetNotice from "@/components/GuestResetNotice";
@@ -39,10 +40,40 @@ function PaneToggle({ pane, setPane }: { pane: "map" | "list"; setPane: (p: "map
   );
 }
 
+// AA-1041 slice 2: the desktop side panel holds the trip and the planning chat as two tabs. Both stay mounted (the
+// chat keeps its conversation while the traveller looks at the trip); the hidden one is `hidden`.
+type SideTab = "trip" | "chat";
+
+function SideTabs({ tab, setTab }: { tab: SideTab; setTab: (t: SideTab) => void }) {
+  const btn = (t: SideTab, label: string, icon: string) => (
+    <button
+      type="button"
+      role="tab"
+      id={`side-tab-${t}`}
+      aria-selected={tab === t}
+      aria-controls={`side-panel-${t}`}
+      onClick={() => setTab(t)}
+      className={`aa-focus flex flex-1 items-center justify-center gap-1.5 py-2.5 text-xs font-semibold transition ${
+        tab === t ? "border-b-2 border-k-accent text-k-ink" : "border-b-2 border-transparent text-k-muted hover:text-k-ink"
+      }`}
+    >
+      <Icon name={icon} className="h-4 w-4" />
+      {label}
+    </button>
+  );
+  return (
+    <div role="tablist" aria-label="Trip panel" className="flex border-b border-k-line bg-k-card">
+      {btn("trip", "Your trip", "route")}
+      {btn("chat", "Plan with chat", "chat")}
+    </div>
+  );
+}
+
 function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
   const { itinerary } = useTrip();
   const [isMobile, setIsMobile] = useState(false);
-  const [mobileView, setMobileView] = useState<"map" | "trip">(initialMobileView);
+  const [mobileView, setMobileView] = useState<"map" | "trip" | "chat">(initialMobileView);
+  const [sideTab, setSideTab] = useState<SideTab>("trip");
   const [pane, setPane] = useState<"map" | "list">("map");
   // "Ask an advisor" from a tour page: once its route is pinned, show the trip (send button).
   const onPrefilled = () => {
@@ -78,9 +109,17 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
           </section>
           <aside
             className="border-l border-k-line bg-k-bg"
-            style={{ height: "100%", width: "25rem", flexShrink: 0, overflowY: "auto" }}
+            style={{ height: "100%", width: "25rem", flexShrink: 0, display: "flex", flexDirection: "column" }}
           >
-            <TripPanel />
+            <SideTabs tab={sideTab} setTab={setSideTab} />
+            <div id="side-panel-trip" role="tabpanel" aria-labelledby="side-tab-trip" hidden={sideTab !== "trip"}
+              style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+              <TripPanel />
+            </div>
+            <div id="side-panel-chat" role="tabpanel" aria-labelledby="side-tab-chat" hidden={sideTab !== "chat"}
+              style={{ flex: 1, minHeight: 0 }}>
+              <PlanChat />
+            </div>
           </aside>
         </main>
       </div>
@@ -114,6 +153,17 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
           {/* AA-1041: "Show on map" on a phone switches to the map, where the stop is highlighted. */}
           <TripPanel onShowOnMap={() => setMobileView("map")} />
         </aside>
+        {/* AA-1041 slice 2: the planning chat, its own view on a phone (mounted, so the conversation stays). */}
+        <section
+          aria-label="Plan with chat"
+          style={{
+            position: "absolute",
+            inset: 0,
+            visibility: mobileView === "chat" ? "visible" : "hidden",
+          }}
+        >
+          <PlanChat />
+        </section>
       </main>
 
       {/* Bottom toggle */}
@@ -144,6 +194,18 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
               {new Set(itinerary.map((d) => d.day)).size}
             </span>
           )}
+        </button>
+        <button
+          onClick={() => setMobileView("chat")}
+          data-testid="mobile-chat-tab"
+          className={`aa-focus flex-1 py-3 text-sm font-semibold transition ${
+            mobileView === "chat"
+              ? "bg-k-accent-tint text-k-accent-deep"
+              : "text-k-muted"
+          }`}
+        >
+          <Icon name="chat" className="mr-1 inline h-4 w-4 align-[-3px]" />
+          Chat
         </button>
       </nav>
     </div>
