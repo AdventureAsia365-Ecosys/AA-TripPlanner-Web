@@ -5,6 +5,8 @@ Routes:
   GET /browse/destinations/{destination_id}
   GET /browse/search?q=...
   GET /browse/shapes?ids=<uuid>,…&level=lo|mid   (AA-847 slice 6d: line geometry by id, CIS 256)
+  GET /browse/stops?ids=<component uuid>,…    (AA-1041: stops by id with their place photo, for the trip panel
+      and the read-only share / print view)
   GET /browse/routes?country=Nepal&days=10   (AA-674: whole-route proposals from real tours)
   GET /browse/tour-route?tour_id=<uuid>&source_id=<id>  (AA-812: one tour's whole route, for
       "Customise"; source_id, when known, resolves the current tour_id)
@@ -17,7 +19,7 @@ Routes:
   GET /browse/tenant/{slug}                  (AA-1038 R5 slice 2: the served tenant of a /{slug} path, for the BFF)
 
 Every read uses only the CIS catalog views (ADR 0001): /browse/catalog/* the tour views of CIS migration 225, the
-place / tour-graph reads (tiles, countries, by-country, destinations, search, routes, tour-route, shapes) the
+place / tour-graph reads (tiles, countries, by-country, destinations, search, routes, tour-route, shapes, stops) the
 place and graph views of migration 228 and later (AA-712 slice 6b). The PLACES_SOURCE switch and the frozen
 tripplanner place tables it chose between are gone (AA-712 X4).
 
@@ -41,6 +43,7 @@ from backend.browse import routes as routes_mod
 from backend.browse import tiles as tiles_mod
 from backend.browse import search as search_mod
 from backend.browse import shapes as shapes_mod
+from backend.browse import stops as stops_mod
 from backend.browse import tenant_site as tenant_site_mod
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import TileError
@@ -54,6 +57,7 @@ _BY_COUNTRY_RE = re.compile(r"^/browse/by-country$")
 _ROUTES_RE = re.compile(r"^/browse/routes$")
 _TOUR_ROUTE_RE = re.compile(r"^/browse/tour-route$")
 _SHAPES_RE = re.compile(r"^/browse/shapes$")
+_STOPS_RE = re.compile(r"^/browse/stops$")
 # catalog source ids are uuids today; accept any short id-like token, never free text.
 _SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _CAT_TOURS_RE = re.compile(r"^/browse/catalog/tours$")
@@ -216,6 +220,16 @@ async def route(
             return _resp(400, {"error": str(e)}, _NO_STORE_HEADERS)
         return _resp(200, data, _CACHE_HEADERS)
 
+    if _STOPS_RE.match(path):
+        ids = query.get("ids")
+        if isinstance(ids, list):
+            ids = ids[0] if ids else None
+        try:
+            data = await stops_mod.stops(ids, pool=pool)
+        except stops_mod.StopsError as e:
+            return _resp(400, {"error": str(e)}, _NO_STORE_HEADERS)
+        return _resp(200, data, _CACHE_HEADERS)
+
     if _SEARCH_RE.match(path):
         q = query.get("q")
         if isinstance(q, list):
@@ -251,6 +265,7 @@ def _extract_request(event: dict) -> tuple[str, str, dict]:
 _ROUTE_NAMES: tuple[tuple[re.Pattern, str], ...] = (
     (_TILE_RE, "tiles"), (_DEST_RE, "destination"), (_SEARCH_RE, "search"), (_COUNTRIES_RE, "countries"),
     (_BY_COUNTRY_RE, "by_country"), (_ROUTES_RE, "routes"), (_TOUR_ROUTE_RE, "tour_route"), (_SHAPES_RE, "shapes"),
+    (_STOPS_RE, "stops"),
     (_CAT_TOURS_RE, "catalog_tours"), (_CAT_TOUR_RE, "catalog_tour"), (_CAT_DESTS_RE, "catalog_destinations"),
     (_CAT_DEST_RE, "catalog_destination"), (_CAT_SITEMAP_RE, "catalog_sitemap"), (_CAT_RETIRED_RE, "catalog_retired"),
     (_TENANT_RE, "tenant"),

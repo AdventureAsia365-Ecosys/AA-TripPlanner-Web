@@ -14,6 +14,8 @@ import * as api from "./api";
 import { isB2bOnly } from "./advisorDemo";
 import type { AiNoticeKey } from "./aiNotices";
 import { isUuid, randomUuid } from "./guestIds";
+import { orderOf, reorderLocally } from "./itineraryOrder";
+import { activeStop as pickActiveStop, photoKey, type StopSelection, type SyncSource } from "./stopSync";
 import { idsStorageKey } from "./plannerTenant";
 import type { LeadBody } from "./leadForm";
 import type {
@@ -26,7 +28,7 @@ import type {
   RouteProposal,
   UnavailableStop,
 } from "./types";
-import type { Suggestion } from "./api";
+import type { StopDetail, Suggestion } from "./api";
 
 interface TripState {
   sessionId: string;
@@ -73,6 +75,21 @@ interface TripState {
   add: (componentId: string) => Promise<void>;
   remove: (componentId: string) => Promise<void>;
   reorder: (orderedIds: string[]) => Promise<void>;
+  // AA-1041 (item 4): the order before the last reorder (one step of undo; cleared by an add or a remove), and
+  // whether the last reorder could not be saved (the list went back to the saved order).
+  undoOrder: string[] | null;
+  undoReorder: () => Promise<void>;
+  reorderFailed: boolean;
+  // AA-1041 (items 1, 2): the stops' catalog details (place photo, activity), by component id.
+  stopDetails: Map<string, StopDetail>;
+  // AA-1041 (item 3): map / itinerary sync. The active stop is the hovered one, else the selected one.
+  activeStopId: string | null;
+  selectedStop: StopSelection | null;
+  hoverStop: (componentId: string | null) => void;
+  selectStop: (componentId: string | null, from: SyncSource) => void;
+  // AA-1041 (item 7): the saved trip could not be read (5xx / network): the panel shows an error with a retry.
+  loadFailed: boolean;
+  retryLoad: () => void;
   narrate: (mode?: "compose" | "renarrate") => Promise<void>;
   send: (customer?: { name: string; phone: string; email: string; consent: boolean }) => Promise<
     { ok: boolean; needsRegistration: boolean; demo?: boolean }
@@ -176,6 +193,22 @@ export function TripProvider({
   const [customDays, setCustomDays] = useState<CustomDay[]>([]);
   const [unavailableStops, setUnavailableStops] = useState<UnavailableStop[]>([]);
   const [routePreview, setRoutePreview] = useState<RouteProposal | null>(null);
+  const [undoOrder, setUndoOrder] = useState<string[] | null>(null);
+  const [reorderFailed, setReorderFailed] = useState(false);
+  const [hoveredStop, setHoveredStop] = useState<string | null>(null);
+  const [selectedStop, setSelectedStop] = useState<StopSelection | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  // AA-1041: the stop details fetched, tagged with the id set they answer (derived, no setState in an effect body).
+  const [stopsFetched, setStopsFetched] = useState<{ key: string; stops: Map<string, StopDetail> }>({
+    key: "",
+    stops: new Map(),
+  });
+  // The itinerary the reorder callbacks start from (AA-906: synced after each commit, never written during render).
+  const itineraryRef = useRef<ItineraryDay[]>([]);
+  useLayoutEffect(() => {
+    itineraryRef.current = itinerary;
+  }, [itinerary]);
   // The latest filters for the suggestion fetch and runSearch without making them dependencies.
   // AA-906 (React Compiler lint: no ref writes during render): synced after each commit, in a layout
   // effect so every passive effect below already sees the new value.
@@ -202,21 +235,45 @@ export function TripProvider({
 
   // Restore a previously-built trip on mount (persisted trip_id). The backend
   // rebuilds the itinerary from its event log, so a reload brings it back.
+  // AA-1041 (item 7): a read that failed (5xx / network) is told apart from a new trip; retryLoad reads again.
   useEffect(() => {
     let active = true;
-    api.fetchTrip(tripId).catch(() => null).then((res) => {
-      if (active && res?.itinerary && res.itinerary.length > 0) {
+    api.loadTrip(tripId).then(({ trip: res, failed }) => {
+      if (!active) return;
+      if (res?.itinerary && res.itinerary.length > 0) {
         setItinerary(res.itinerary);
         if (res.status) setStatus(res.status);
       }
-      if (active && res?.custom_days) setCustomDays(res.custom_days);
-      if (active && res?.unavailable_stops) setUnavailableStops(res.unavailable_stops);
-      if (active) setReady(true);
+      if (res?.custom_days) setCustomDays(res.custom_days);
+      if (res?.unavailable_stops) setUnavailableStops(res.unavailable_stops);
+      setLoadFailed(failed);
+      setReady(true);
     });
     return () => {
       active = false;
     };
-  }, [tripId]);
+  }, [tripId, loadAttempt]);
+
+  const retryLoad = useCallback(() => {
+    setReady(false);
+    setLoadFailed(false);
+    setLoadAttempt((n) => n + 1);
+  }, []);
+
+  // AA-1041 (items 1, 2): the stops' place photos and activities, refetched when the SET of stops changes (a reorder
+  // asks nothing). Missing ids only; the cache in lib/api.ts answers the rest.
+  const stopsKey = photoKey(itinerary);
+  useEffect(() => {
+    if (!stopsKey) return;
+    let active = true;
+    api.fetchStops(stopsKey.split(",")).then(({ stops }) => {
+      if (active) setStopsFetched({ key: stopsKey, stops });
+    });
+    return () => {
+      active = false;
+    };
+  }, [stopsKey]);
+  const stopDetails = stopsFetched.stops;
 
   // Refresh next-to-pin suggestions whenever the trip's component set
   // changes. Keyed on the sorted component ids so a reorder doesn't refetch.
@@ -295,7 +352,10 @@ export function TripProvider({
   const add = useCallback(
     async (componentId: string) => {
       const res = await api.addComponent(tripId, sessionId, componentId);
-      if (res.itinerary) setItinerary(res.itinerary);
+      if (res.itinerary) {
+        setItinerary(res.itinerary);
+        setUndoOrder(null);
+      }
     },
     [tripId, sessionId],
   );
@@ -305,6 +365,7 @@ export function TripProvider({
       const res = await api.removeComponent(tripId, sessionId, componentId);
       if (res.itinerary) {
         setItinerary(res.itinerary);
+        setUndoOrder(null);
         // AA-986 L6: removing a stop AA no longer serves takes it off the greyed list too.
         setUnavailableStops((stops) => stops.filter((s) => s.component_id !== componentId));
       }
@@ -312,13 +373,37 @@ export function TripProvider({
     [tripId, sessionId],
   );
 
-  const reorder = useCallback(
-    async (orderedIds: string[]) => {
-      const res = await api.reorder(tripId, sessionId, orderedIds);
-      if (res.itinerary) setItinerary(res.itinerary);
+  // AA-1041 (item 4): the new order shows at once (days renumbered like the server does), then the server's answer
+  // replaces it. A refused or failed save puts the saved order back and says so. Saved the way the planner always
+  // saved an order: one reorder event with every component id (PATCH /trip/{id}/reorder).
+  const saveOrder = useCallback(
+    async (orderedIds: string[], isUndo: boolean) => {
+      const before = itineraryRef.current;
+      setItinerary(reorderLocally(before, orderedIds));
+      setReorderFailed(false);
+      const res = await api.reorder(tripId, sessionId, orderedIds).catch(() => ({ itinerary: undefined }));
+      if (res.itinerary) {
+        setItinerary(res.itinerary);
+        setUndoOrder(isUndo ? null : orderOf(before));
+      } else {
+        setItinerary(before);
+        setReorderFailed(true);
+      }
     },
     [tripId, sessionId],
   );
+  const reorder = useCallback((orderedIds: string[]) => saveOrder(orderedIds, false), [saveOrder]);
+  const undoReorder = useCallback(async () => {
+    if (undoOrder) await saveOrder(undoOrder, true);
+  }, [undoOrder, saveOrder]);
+
+  // AA-1041 (item 3): map / itinerary sync.
+  const selectSeq = useRef(0);
+  const selectStop = useCallback((componentId: string | null, from: SyncSource) => {
+    selectSeq.current += 1;
+    setSelectedStop(componentId ? { componentId, from, seq: selectSeq.current } : null);
+  }, []);
+  const activeStopId = pickActiveStop(hoveredStop, selectedStop);
 
   const runSearch = useCallback(async (q: string) => {
     const query = q.trim();
@@ -428,6 +513,16 @@ export function TripProvider({
     add,
     remove,
     reorder,
+    undoOrder,
+    undoReorder,
+    reorderFailed,
+    stopDetails,
+    activeStopId,
+    selectedStop,
+    hoverStop: setHoveredStop,
+    selectStop,
+    loadFailed,
+    retryLoad,
     narrate,
     send,
     sendLead,

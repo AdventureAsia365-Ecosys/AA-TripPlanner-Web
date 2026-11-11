@@ -3,11 +3,15 @@
 import { useEffect, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { fetchTripLegs, formatLeg, nearestGateway, type RouteLeg } from "@/lib/mapbox";
-import { isLine, planTrip, stretchSubtitle } from "@/lib/lines";
+import { isLine, planTrip } from "@/lib/lines";
 import { COUNTRY_GATEWAY } from "@/lib/types";
 import RoutePlanner from "@/components/RoutePlanner";
-import StopActivities from "@/components/StopActivities";
+import DayList from "@/components/DayList";
+import ShareTrip from "@/components/ShareTrip";
+import { PlaceIcon } from "@/components/ActivityIcon";
 import { Icon } from "@/ui/Icon";
+import { EmptyState, ErrorState, LoadingState } from "@/ui/States";
+import { Button } from "@/ui/Button";
 import { AiNotice } from "@/ui/AiNotice";
 import AiLabel from "@/components/AiLabel";
 import { aiNotice, narrationNoticeVariant } from "@/lib/aiNotices";
@@ -82,7 +86,7 @@ function transferHint(km: number): string {
   return "a domestic flight, then an overland transfer";
 }
 
-export default function TripPanel() {
+export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } = {}) {
   const {
     itinerary,
     status,
@@ -93,7 +97,6 @@ export default function TripPanel() {
     suggestions,
     focusDestination,
     remove,
-    reorder,
     narrate,
     send,
     sendLead,
@@ -102,13 +105,16 @@ export default function TripPanel() {
     addDay,
     removeDay,
     unavailableStops,
+    ready,
+    loadFailed,
+    retryLoad,
+    undoOrder,
+    undoReorder,
+    reorderFailed,
   } = useTrip();
-  // AA-674: which day card has its activity list open.
-  const [openStop, setOpenStop] = useState<string | null>(null);
   // Several activities of one AA tour day share a day (AA-674), so count distinct days.
   const tripDays = new Set(itinerary.map((d) => d.day)).size;
   const totalDays = tripDays + customDays.length;
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [showReg, setShowReg] = useState(false);
   const [reg, setReg] = useState({ name: "", phone: "", email: "", consent: false });
   // AA-908: a signed-in traveller's email comes from the account (verified by the code), never typed. The
@@ -180,8 +186,6 @@ export default function TripPanel() {
   const allLegs = [...legs.values()].flatMap((l) => [l, ...(l.joins ?? [])]);
   const totalRoadKm = allLegs.reduce((s, l) => s + (l.mode === "road" ? l.distanceKm ?? 0 : 0), 0);
   const hasFlightLeg = allLegs.some((l) => l.mode === "flight");
-  // AA-847 slice 6d: the list subtitle of a line day names its two stops ("Huay Xai → Pak Beng · ≈ 88 km")
-  const nameOfDestination = (id: string) => itinerary.find((x) => x.destination_id === id && !isLine(x))?.name ?? null;
 
   // Arrival (fly into the gateway nearest the first stop) and departure (fly
   // out from the gateway nearest the last stop). Purely informative — an
@@ -208,15 +212,6 @@ export default function TripPanel() {
       })
       .filter(Boolean) as string[],
   );
-
-  const onDrop = async (index: number) => {
-    if (dragIndex === null || dragIndex === index) return;
-    const ids = itinerary.map((d) => d.component_id);
-    const [moved] = ids.splice(dragIndex, 1);
-    ids.splice(index, 0, moved);
-    setDragIndex(null);
-    await reorder(ids);
-  };
 
   const handleSend = async (withCustomer: boolean) => {
     setSentMsg(null);
@@ -302,19 +297,27 @@ export default function TripPanel() {
         </div>
       )}
 
-      {itinerary.length === 0 ? (
-        <div className="flex flex-1 flex-col justify-center px-5 py-8">
+      {/* AA-1041 (R7 item 7): kit loading and error states while the saved trip is read. */}
+      {!ready ? (
+        <div className="px-4 py-4" data-testid="trip-loading">
+          <LoadingState label="Loading your trip" rows={3} compact />
+        </div>
+      ) : loadFailed && itinerary.length === 0 ? (
+        <div className="px-4 py-4" data-testid="trip-load-error">
+          <ErrorState title="We couldn't load your trip">
+            <p>Your trip is saved. Check your connection and try again.</p>
+            <Button variant="secondary" size="sm" className="mt-3" onClick={retryLoad}>
+              <Icon name="refresh" className="h-3.5 w-3.5" />
+              Try again
+            </Button>
+          </ErrorState>
+        </div>
+      ) : itinerary.length === 0 ? (
+        <div className="flex flex-1 flex-col justify-center px-5 py-8" data-testid="trip-empty">
           <RoutePlanner />
-          <div className="text-center">
-            <Icon name="map" className="mx-auto h-8 w-8 text-k-accent-deep" />
-            <p className="mt-3 text-sm font-semibold text-k-ink">
-              Start building your trip
-            </p>
-            <p className="mt-1 text-xs leading-relaxed text-k-muted">
-              Pin experiences from the map and watch your day-by-day itinerary
-              take shape here.
-            </p>
-          </div>
+          <EmptyState title="Start building your trip" icon="map">
+            Pin experiences from the map and watch your day-by-day itinerary take shape here.
+          </EmptyState>
 
           <ol className="mt-6 space-y-3">
             {[
@@ -331,7 +334,7 @@ export default function TripPanel() {
               {
                 n: "3",
                 title: "Reorder & send",
-                body: "Drag to reorder days, then send the draft to an AA advisor.",
+                body: "Drag the handles to reorder days and stops, then send the draft to an advisor.",
               },
             ].map((step) => (
               <li key={step.n} className="flex items-start gap-3">
@@ -386,7 +389,29 @@ export default function TripPanel() {
               </div>
             </div>
 
+            {/* AA-1041 (R7 item 6): a read-only link to the trip, and its print view. */}
+            <ShareTrip />
+
             <RoutePlanner compact />
+
+            {/* AA-1041 (R7 item 4): the last reorder can be undone; a reorder that could not be saved says so. */}
+            {reorderFailed && (
+              <p role="alert" data-testid="reorder-failed"
+                className="mb-2 rounded-lg border border-k-danger-border bg-k-danger-soft px-2.5 py-1.5 text-xs text-k-danger">
+                We couldn&apos;t save the new order, so your days are back as they were. Please try again.
+              </p>
+            )}
+            {undoOrder && !reorderFailed && (
+              <div role="status" data-testid="reorder-saved"
+                className="tp-no-print mb-2 flex items-center justify-between gap-2 rounded-lg border border-k-line bg-k-card px-2.5 py-1.5 text-xs text-k-body">
+                <span>New order saved.</span>
+                <button type="button" onClick={() => void undoReorder()} data-testid="reorder-undo"
+                  className="aa-focus inline-flex items-center gap-1 font-semibold text-k-accent-deep">
+                  <Icon name="undo" className="h-3.5 w-3.5" />
+                  Undo
+                </button>
+              </div>
+            )}
 
             {/* AA-674: the real Adventure Asia tours this trip is built from. */}
             {coverage && coverage.legs.length > 0 && (
@@ -438,7 +463,9 @@ export default function TripPanel() {
             {/* Arrival: fly into the nearest gateway, then transfer to day 1. */}
             {arrival && (
               <div className="mb-2 flex items-start gap-3 rounded-xl border border-dashed border-k-line bg-k-bg p-3">
-                <span aria-hidden className="mt-0.5 text-lg">✈️</span>
+                <span className="mt-0.5 text-k-accent-deep">
+                  <PlaceIcon kind="flight" size={18} />
+                </span>
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-semibold text-k-ink">
                     Getting there
@@ -453,91 +480,8 @@ export default function TripPanel() {
               </div>
             )}
 
-            <ol className="space-y-0">
-              {itinerary.map((d, index) => (
-                <li key={d.component_id}>
-                  <div
-                    draggable
-                    onDragStart={() => setDragIndex(index)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => onDrop(index)}
-                    className={`group flex items-start gap-3 rounded-xl border bg-k-card p-3 shadow-aa-sm transition ${
-                      dragIndex === index
-                        ? "border-k-accent opacity-60"
-                        : "border-k-line hover:border-k-accent-border"
-                    }`}
-                  >
-                    <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-k-accent text-xs font-bold text-k-on-accent">
-                      {d.day}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-k-ink">
-                        {isLine(d) && (
-                          // The SVG wave, not the "〰" glyph: it is missing from Poppins and most system fonts.
-                          <span role="img" aria-label="Route" className="mr-1 inline-block align-[-3px] text-k-accent-deep">
-                            <Icon name="wave" className="h-4 w-4" />
-                          </span>
-                        )}
-                        {d.name}
-                      </p>
-                      {isLine(d) && (
-                        <p className="mt-0.5 text-xs text-k-muted">{stretchSubtitle(d, nameOfDestination)}</p>
-                      )}
-                      {d.rationale && (
-                        <p className="mt-0.5 text-xs leading-relaxed text-k-muted">
-                          {d.rationale}
-                        </p>
-                      )}
-                      <div className="mt-1 flex gap-3">
-                        {d.destination_id && (
-                          <button
-                            onClick={() => setOpenStop(openStop === d.component_id ? null : d.component_id)}
-                            className="aa-focus text-[11px] font-medium text-k-accent-deep"
-                          >
-                            {openStop === d.component_id ? "Hide activities" : "Activities here"}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => addDay("extra_night", d.component_id)}
-                          className="aa-focus text-[11px] text-k-muted hover:text-k-ink"
-                        >
-                          + extra night
-                        </button>
-                      </div>
-                      {openStop === d.component_id && d.destination_id && (
-                        <StopActivities destinationId={d.destination_id} />
-                      )}
-                      {customDays
-                        .filter((c) => c.kind === "extra_night" && c.after_component_id === d.component_id)
-                        .map((c) => (
-                          <p key={c.day_id} className="mt-1 text-[11px] text-k-body">
-                            🌙 Extra night here <span className="text-k-muted">(your addition)</span>{" "}
-                            <button onClick={() => removeDay(c.day_id)} className="aa-focus text-k-muted hover:text-k-danger">
-                              remove
-                            </button>
-                          </p>
-                        ))}
-                    </div>
-                    <button
-                      onClick={() => remove(d.component_id)}
-                      aria-label={`Remove day ${d.day}`}
-                      className="aa-focus shrink-0 rounded-md px-1.5 py-0.5 text-xs text-k-muted opacity-0 transition group-hover:opacity-100 hover:text-k-danger"
-                    >
-                      Remove
-                    </button>
-                  </div>
-
-                  {/* Travel connector to the next day. Road legs show real
-                      driving distance/time; flight legs say so (no fake km). */}
-                  {index < itinerary.length - 1 && legs.get(d.component_id) && (
-                    <div className="flex flex-wrap items-center gap-x-1.5 py-1 pl-3.5 text-[11px] text-k-muted">
-                      <span aria-hidden className="text-k-accent-deep">↓</span>
-                      <span>{formatLeg(legs.get(d.component_id) as RouteLeg)}</span>
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ol>
+            {/* AA-1041 (R7 slice 1): days with photos and icons, map sync, drag / keyboard reorder. */}
+            <DayList legs={legs} onShowOnMap={onShowOnMap} />
 
             {/* AA-674 / PR-11 point 3: days added on top of the AA tours. */}
             <div className="mt-2 rounded-xl border border-dashed border-k-line p-2.5">
@@ -570,7 +514,9 @@ export default function TripPanel() {
             {/* Departure: transfer from the last stop to its nearest gateway. */}
             {departure && (
               <div className="mt-2 flex items-start gap-3 rounded-xl border border-dashed border-k-line bg-k-bg p-3">
-                <span aria-hidden className="mt-0.5 text-lg">🛫</span>
+                <span className="mt-0.5 text-k-accent-deep">
+                  <PlaceIcon kind="flight" size={18} />
+                </span>
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-semibold text-k-ink">Heading home</p>
                   <p className="mt-0.5 text-[11px] leading-relaxed text-k-muted">
@@ -584,7 +530,7 @@ export default function TripPanel() {
             )}
 
             <p className="mt-2 px-1 text-[11px] text-k-muted">
-              Drag day cards to reorder. Distances are rough estimates and
+              Drag a handle, or use the arrow keys on it, to reorder days and stops. Distances are rough estimates and
               travel modes are suggestions — your advisor arranges the real
               transfers, boats and flights for an adventure route.
             </p>

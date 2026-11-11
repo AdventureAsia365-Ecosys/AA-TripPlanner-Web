@@ -33,6 +33,12 @@ const PATHS: Record<string, string> = {
   minus: "M5 12h14",
   // AA-995: a river / road / trail in a place list (the "〰" glyph is missing from Poppins and many system fonts).
   wave: "M3 12c2-3 4-3 6 0s4 3 6 0 4-3 6 0",
+  // AA-1041 (R7): reorder handle, undo, share, print, calendar download.
+  grip: "M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01",
+  undo: "M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11",
+  share: "M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm12 7a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM8.6 13.5l6.8 4M15.4 6.5l-6.8 4",
+  print: "M6 9V3h12v6M6 18H4a1 1 0 0 1-1-1v-6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6a1 1 0 0 1-1 1h-2M6 14h12v7H6v-7Z",
+  download: "M12 4v11m-5-5 5 5 5-5M4 20h16",
 };
 
 export type IconName = keyof typeof PATHS;

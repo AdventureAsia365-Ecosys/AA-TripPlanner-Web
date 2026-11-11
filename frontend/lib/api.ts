@@ -85,6 +85,55 @@ export async function fetchShapes(ids: string[], level: "lo" | "mid"): Promise<M
   return out;
 }
 
+// AA-1041 (items 1, 2, 6): the trip's stops by component id with their place photo and activity (GET /browse/stops,
+// CDN-cacheable). Cached per id for the page's lifetime; ids already cached are not asked again. A failed batch gives
+// no photo now (the icon tile shows) and is asked again on the next change of the trip.
+export interface StopDetail {
+  id: string;
+  name: string;
+  activity: string | null;
+  duration_hint: string | null;
+  source_tour_id: string | null;
+  source_day_index: number | null;
+  destination_id: string | null;
+  destination_name: string | null;
+  country: string | null;
+  precision: string | null;
+  photo_url: string | null;
+  photo_url_small: string | null;
+}
+const STOP_BATCH = 50;
+const stopCache = new Map<string, StopDetail>();
+
+export async function fetchStops(ids: string[]): Promise<{ stops: Map<string, StopDetail>; failed: boolean }> {
+  const out = new Map<string, StopDetail>();
+  const missing: string[] = [];
+  let failed = false;
+  for (const id of new Set(ids)) {
+    const hit = stopCache.get(id);
+    if (hit) out.set(id, hit);
+    else missing.push(id);
+  }
+  for (let i = 0; i < missing.length; i += STOP_BATCH) {
+    const batch = missing.slice(i, i + STOP_BATCH).sort();
+    try {
+      const res = await fetch(`/api/browse?resource=stops&ids=${batch.map(encodeURIComponent).join(",")}`);
+      if (!res.ok) {
+        failed = true;
+        continue;
+      }
+      const data = await res.json();
+      for (const st of (data.stops ?? []) as StopDetail[]) {
+        stopCache.set(st.id, st);
+        out.set(st.id, st);
+      }
+    } catch {
+      failed = true;
+    }
+  }
+  return { stops: out, failed };
+}
+
 export async function fetchDestination(
   id: string,
 ): Promise<DestinationDetail | null> {
@@ -148,6 +197,18 @@ export async function fetchTrip(tripId: string): Promise<TripResponse | null> {
   const res = await tenantFetch(`/api/trip?trip_id=${encodeURIComponent(tripId)}`);
   if (!res.ok) return null;
   return res.json();
+}
+
+// AA-1041 (item 7): the restore read with its failure told apart. A new trip (404: no draft yet, or not this
+// browser's) is an empty trip; a 5xx or a network failure is an error the panel shows with a retry.
+export async function loadTrip(tripId: string): Promise<{ trip: TripResponse | null; failed: boolean }> {
+  try {
+    const res = await tenantFetch(`/api/trip?trip_id=${encodeURIComponent(tripId)}`);
+    if (res.ok) return { trip: (await res.json()) as TripResponse, failed: false };
+    return { trip: null, failed: res.status >= 500 };
+  } catch {
+    return { trip: null, failed: true };
+  }
 }
 
 // AA-827: every trip mutation goes through here (body always carries session_id + trip_id).

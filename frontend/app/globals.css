@@ -429,3 +429,34 @@ html[data-motion="reduce"] *::after {
 html:not([data-motion]) img[data-near-view]:not([src]) {
   display: none;
 }
+
+/* ── AA-1041 (R7 item 7): kit loading bars. Still under reduced motion (only opacity moves, M-rules). ── */
+.tp-skeleton {
+  background-color: var(--aa-line);
+}
+@keyframes tp-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+html[data-motion="ok"] .tp-skeleton {
+  animation: tp-skeleton-pulse 1.4s var(--aa-ease-std) infinite;
+}
+
+/* ── AA-1041 (R7 item 6): the share / print view prints on white with no page chrome. ── */
+@media print {
+  .tp-no-print {
+    display: none !important;
+  }
+  .tp-print-sheet {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .tp-print-day {
+    break-inside: avoid;
+  }
+}

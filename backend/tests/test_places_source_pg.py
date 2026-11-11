@@ -1182,3 +1182,21 @@ async def test_route_candidates_views_read_once(views_pool):
         assert set(ctes) == {"CTE near", "CTE stops", "CTE nxt", "CTE comp", "CTE dest"} and set(ctes.values()) == {1}
         assert all(n["Actual Loops"] == 1 for n, _ in plan if n["Node Type"] == "Seq Scan"
                    and n.get("Relation Name") in ("published_tours", "raw_tours"))
+
+
+async def test_aa1041_stops_read_over_the_views(pool):
+    """AA-1041: /browse/stops runs its join over the catalog views; a place photo becomes the CIS photo URL, a place
+    without one gives None (the planner shows the activity icon), an unknown id is simply absent."""
+    await pool.execute("UPDATE catalog.v_destination SET cover_photo_path = '/content/photos/abc' "
+                       "WHERE destination_id = $1", D["LPB"])
+    rows = await pool.fetch("SELECT component_id, destination_id FROM catalog.v_tour_component "
+                            "WHERE destination_id = ANY($1::uuid[]) ORDER BY component_id", [D["LPB"], D["VTE"]])
+    ids = [str(r["component_id"]) for r in rows][:3] + [str(uuid.UUID(int=999))]
+    status, body = await _get(pool, "/browse/stops", {"ids": ",".join(ids)})
+    assert status == 200 and len(body["stops"]) == 3
+    for s in body["stops"]:
+        if s["destination_id"] == str(D["LPB"]):
+            assert s["photo_url"].endswith("/content/photos/abc?size=large") and s["destination_name"] == "Luang Prabang"
+        else:
+            assert s["photo_url"] is None and s["destination_name"] == "Vientiane"
+        assert s["source_tour_id"] in ("src-a", "src-b") and isinstance(s["source_day_index"], int)

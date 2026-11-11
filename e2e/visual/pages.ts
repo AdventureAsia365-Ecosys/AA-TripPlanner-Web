@@ -36,6 +36,10 @@ export const PAGES: VisualPage[] = [
   { slug: "plan", route: "/plan", path: "/plan", challenged: true },
   // AA-1038 R5 slice 2: the demo tenant's planner on its slug path (404 page until CIS 379 is applied on Dev).
   { slug: "tenant-plan", route: "/[tenant]/plan", path: "/aa-tripplanner/plan", challenged: true },
+  // AA-1041 (R7 item 6): the read-only share / print view. A link without a trip in it shows the kit empty state (the
+  // run reads no catalog id it could put in a fragment).
+  { slug: "plan-shared", route: "/plan/shared", path: "/plan/shared", challenged: true },
+  { slug: "tenant-plan-shared", route: "/[tenant]/plan/shared", path: "/aa-tripplanner/plan/shared", challenged: true },
   { slug: "trips", route: "/trips", path: "/trips" },
   { slug: "sign-in", route: "/sign-in", path: "/sign-in" },
   { slug: "privacy", route: "/privacy", path: "/privacy" },
