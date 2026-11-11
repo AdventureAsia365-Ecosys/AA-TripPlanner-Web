@@ -4,8 +4,11 @@
 // send one reorder (the full component id list). Without an order on those saves, an answer that lands late would
 // draw an older order over a newer one, the next move would start from that older order, and two saves reaching the
 // trip Lambda out of order could store an order the screen does not show. So:
-//   - the saves run one after another (a promise chain): the server receives them in the order they were made, and
-//     the last one sent is the one stored;
+//   - the saves run one after another (a promise chain): one is on the wire at a time, the server receives them in
+//     the order they were made, and the last one sent is the one stored;
+//   - a save still waiting for the previous answer is dropped when a newer move or invalidate() comes first: every
+//     move sends the full order, so the newest waiting move already carries it (a burst of quick moves costs two
+//     round trips, the first and the last, and a stale order is never sent after an add or a remove);
 //   - each move starts from the latest order drawn (not from a server answer that may be older);
 //   - only the answer of the latest move is drawn; the answers of earlier moves only update the order known to be
 //     stored;
@@ -60,6 +63,13 @@ export function createOrderSaver<T extends { component_id: string }>(deps: Order
       drawn = optimistic;
       deps.show(optimistic);
       const run = chain.then(async () => {
+        if (mine < seq || mine <= floor) {
+          // Superseded while it waited for the previous answer: a newer move (which started from this one's drawn
+          // order and carries the full order) or a change by another way replaces it, so it never leaves.
+          pending -= 1;
+          if (pending === 0) drawn = null;
+          return;
+        }
         let answer: T[] | null | undefined;
         try {
           answer = await deps.send(orderedIds);

@@ -51,13 +51,35 @@ const PNG = Buffer.from(
 
 interface Mock {
   reorders: string[][];
-  // When each reorder answer left the mock, in the order the requests arrived.
-  answered: number[];
+  // How many reorder answers had left the mock, by the order the requests arrived.
+  answered: number;
+  // For each reorder request: how many earlier reorder requests were still unanswered when it arrived (0 = the
+  // planner waited for the previous answer before sending; more = two saves on the wire at once).
+  heldAtArrival: number[];
+  // With holdReorders: lets reorder answer n leave the mock (0-based, in the order the requests arrived).
+  release: (n: number) => void;
   tripStatus: number;
 }
 
-async function mockApis(page: Page, opts: { tripStatus?: number; reorderDelayMs?: number[] } = {}): Promise<Mock> {
-  const mock: Mock = { reorders: [], answered: [], tripStatus: opts.tripStatus ?? 200 };
+// holdReorders: each reorder answer waits until the test calls mock.release(n), however long the page takes (no
+// timer: the deployed host at 1440 draws the real map beside the list and is slower than a local `next start`).
+async function mockApis(page: Page, opts: { tripStatus?: number; holdReorders?: boolean } = {}): Promise<Mock> {
+  const gates: { open: () => void; opened: Promise<void> }[] = [];
+  const gate = (n: number) => {
+    while (gates.length <= n) {
+      let open = () => {};
+      const opened = new Promise<void>((r) => (open = r));
+      gates.push({ open, opened });
+    }
+    return gates[n];
+  };
+  const mock: Mock = {
+    reorders: [],
+    answered: 0,
+    heldAtArrival: [],
+    release: (n) => gate(n).open(),
+    tripStatus: opts.tripStatus ?? 200,
+  };
   let order = STOPS.map((s) => s.component_id);
   await page.addInitScript((ids) => {
     try {
@@ -80,10 +102,10 @@ async function mockApis(page: Page, opts: { tripStatus?: number; reorderDelayMs?
     if (body.op === "reorder" && body.ordered_component_ids) {
       const n = mock.reorders.push(body.ordered_component_ids) - 1;
       const mine = body.ordered_component_ids;
-      const delay = opts.reorderDelayMs?.[n] ?? 0;
-      if (delay) await new Promise((r) => setTimeout(r, delay));
+      mock.heldAtArrival[n] = n - mock.answered;
+      if (opts.holdReorders) await gate(n).opened;
       order = mine;
-      mock.answered[n] = Date.now();
+      mock.answered += 1;
       return route.fulfill({ json: { trip_id: IDS.tripId, itinerary: withDays(mine) } });
     }
     return route.fulfill({ status: 400, json: { error: "not mocked" } });
@@ -147,21 +169,27 @@ test("reorder by keyboard is saved as one reorder op, and undo puts it back", as
 });
 
 test("two quick key presses with a slow first answer: saved in order, the list never jumps back", async ({ page }, info) => {
-  const mock = await mockApis(page, { reorderDelayMs: [1500, 0] });
+  const mock = await mockApis(page, { holdReorders: true });
   await openPlanner(page, isMobile(info.project.name));
   await page.locator(`[data-handle="${D}"]`).focus();
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("ArrowUp");
   const target = ["Morning market walk", "Kayaking on Lake Miren", "Old town temple visit", "Cooking class with a family"];
-  // The second move shows at once, while the first save is still waiting for its answer.
+  // The second move shows at once, while the first save is still waiting for its answer (held by the mock).
   await expect.poll(() => stopNames(page)).toEqual(target);
-  expect(mock.reorders.length).toBeLessThanOrEqual(1);
-  // The second save goes out only after the first answer, and the first answer does not draw its older order.
-  await expect.poll(() => mock.reorders.length, { timeout: 10_000 }).toBe(2);
+  await expect.poll(() => mock.reorders.length).toBe(1);
+  expect(mock.reorders[0]).toEqual([A, B, D, C]);
+  // The first answer leaves; the second save goes out only now. Its answer is held: if the first answer (the older
+  // order) were drawn, the list would show it here.
+  mock.release(0);
+  await expect.poll(() => mock.reorders.length).toBe(2);
   expect(mock.reorders).toEqual([[A, B, D, C], [A, D, B, C]]);
   expect(await stopNames(page)).toEqual(target);
-  await expect.poll(() => mock.answered.length).toBe(2);
-  expect(await stopNames(page)).toEqual(target);
+  mock.release(1);
+  await expect.poll(() => mock.answered).toBe(2);
+  await expect.poll(() => stopNames(page)).toEqual(target);
+  // Never two saves on the wire at once, however slow the host is.
+  expect(mock.heldAtArrival).toEqual([0, 0]);
   await expect(page.locator(`[data-handle="${D}"]`)).toBeFocused();
 });
 
