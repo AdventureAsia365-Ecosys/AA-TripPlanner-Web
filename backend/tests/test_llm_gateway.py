@@ -500,7 +500,8 @@ async def test_offline_stages_never_exhaust_the_customer_budget(monkeypatch):
 
 
 def test_online_stages_are_the_customer_facing_routes():
-    assert set(gw.ONLINE_STAGES) == {"tp_compose", "tp_search_embed"}
+    # AA-1041 slice 2: the planning chat is customer-facing too.
+    assert set(gw.ONLINE_STAGES) == {"tp_compose", "tp_search_embed", "tp_plan_chat"}
     assert all(s in gw.BUILTIN_ROUTES for s in gw.ONLINE_STAGES)
 
 

@@ -9,6 +9,8 @@ answers whether it may go on:
   search   per traveller IP,  1 minute window, ``config.TP_RATE_SEARCH_PER_MINUTE`` (30)
   send     per guest session, 1 hour window, ``config.TP_RATE_SEND_PER_HOUR`` (5)      AA-1038: a lead to an agency
   send_ip  per traveller IP,  1 hour window, ``config.TP_RATE_SEND_IP_PER_HOUR`` (20)  (no model, but personal data)
+  chat     per guest session, 1 hour window, ``config.TP_RATE_CHAT_PER_HOUR`` (20)     AA-1041: the planning chat
+  chat_ip  per traveller IP,  1 hour window, ``config.TP_RATE_CHAT_IP_PER_HOUR`` (40)
 
 A signed-in traveller gets ``config.TP_RATE_SIGNED_IN_FACTOR`` (2) times the allowance. A refused request is counted
 too (a client that keeps hammering stays refused until the window ends) and answers 429 with ``retry_after_s``.
@@ -50,6 +52,8 @@ SCOPE_NARRATE = "narrate"
 SCOPE_SEARCH = "search"
 SCOPE_SEND = "send"
 SCOPE_SEND_IP = "send_ip"
+SCOPE_CHAT = "chat"
+SCOPE_CHAT_IP = "chat_ip"
 SCOPE_CRM_PULL = "crm_pull"
 KIND_SESSION = "session"
 KIND_IP = "ip"
@@ -58,6 +62,7 @@ KIND_TENANT = "tenant"
 NARRATE_WINDOW_SECONDS = 3600
 SEARCH_WINDOW_SECONDS = 60
 SEND_WINDOW_SECONDS = 3600
+CHAT_WINDOW_SECONDS = 3600
 BEACON_WINDOW_SECONDS = 300
 
 # Used to key the HMAC only where the edge gate is disabled (local dev, unit tests): there is no secret to use.
@@ -112,6 +117,10 @@ def rule_for(scope: str, *, signed_in: bool) -> Rule:
         return Rule(scope, SEND_WINDOW_SECONDS, int(config.TP_RATE_SEND_PER_HOUR) * factor)
     if scope == SCOPE_SEND_IP:
         return Rule(scope, SEND_WINDOW_SECONDS, int(config.TP_RATE_SEND_IP_PER_HOUR) * factor)
+    if scope == SCOPE_CHAT:
+        return Rule(scope, CHAT_WINDOW_SECONDS, int(config.TP_RATE_CHAT_PER_HOUR) * factor)
+    if scope == SCOPE_CHAT_IP:
+        return Rule(scope, CHAT_WINDOW_SECONDS, int(config.TP_RATE_CHAT_IP_PER_HOUR) * factor)
     raise ValueError(f"unknown rate-limit scope {scope!r}")
 
 

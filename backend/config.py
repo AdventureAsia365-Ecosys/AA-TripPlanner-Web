@@ -255,6 +255,18 @@ TP_RATE_SIGNED_IN_FACTOR = int(_get("TP_RATE_SIGNED_IN_FACTOR", "2"))
 # guest session and per traveller IP (signed-in factor as above). Counted only when the request would store a lead.
 TP_RATE_SEND_PER_HOUR = int(_get("TP_RATE_SEND_PER_HOUR", "5"))
 TP_RATE_SEND_IP_PER_HOUR = int(_get("TP_RATE_SEND_IP_PER_HOUR", "20"))
+# AA-1041 slice 2: the planning chat (POST /trip/{id}/chat, stage tp_plan_chat), per hour: messages per guest session
+# and per traveller IP (signed-in factor as above). Counted only when the message would reach a model.
+TP_RATE_CHAT_PER_HOUR = int(_get("TP_RATE_CHAT_PER_HOUR", "20"))
+TP_RATE_CHAT_IP_PER_HOUR = int(_get("TP_RATE_CHAT_IP_PER_HOUR", "40"))
+
+# --- Planning chat money caps (AA-1041 slice 2, migration tp-029) ---
+# Per UTC month, from tripplanner.ai_spend_month (backend/shared/monthly_spend.py): the whole app's chat spend and each
+# tenant's own (the AA demo tenant included). Tech lead, S277: 2 USD a month on Dev. At a cap the chat pauses with a
+# plain message; the rest of the planner is untouched. The daily app cap and an agency tenant's AI budget
+# (llm_gateway.budget_status) apply too.
+TP_PLAN_CHAT_MONTHLY_CAP_USD = float(_get("TP_PLAN_CHAT_MONTHLY_CAP_USD", "2.0"))
+TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD = float(_get("TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD", "2.0"))
 # Sent by the BFF (web task) with the traveller's address and whether a traveller session is signed in. Trusted ONLY
 # when the request also carries the right x-tripplanner-key (only the BFF has it); otherwise ignored.
 CLIENT_IP_HEADER = "x-tp-client-ip"

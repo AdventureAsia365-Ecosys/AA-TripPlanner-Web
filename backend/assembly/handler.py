@@ -10,6 +10,7 @@ Routes:
   PATCH  /trip/{trip_id}/reorder                  reorder
   POST   /trip/{trip_id}/send-to-advisor          sent (+ registration)
   POST   /trip/{trip_id}/narrate                  compose/renarrate (LLM)
+  POST   /trip/{trip_id}/chat                     planning chat bound to AA tours (LLM, AA-1041 slice 2)
   POST   /me/claim                                sign-in: link this browser's guest sessions to the account
   GET    /me/trips                                My Trips: the signed-in traveller's trips
 
@@ -42,6 +43,8 @@ from typing import Any, Optional
 
 from backend import config
 from backend.assembly import agent as agent_mod
+from backend.assembly import chat_tools
+from backend.assembly import plan_chat
 from backend.assembly import events as events_mod
 from backend.assembly import grounding as grounding_mod
 from backend.assembly import guest_session
@@ -56,7 +59,7 @@ from backend.assembly import activities as activities_mod
 from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
 from backend.shared import component_ids, llm_gateway, m2m_auth, observability, ratelimit, tenant, tenant_assertion
-from backend.shared import tenant_budget
+from backend.shared import monthly_spend, tenant_budget
 
 _COMPONENTS_RE = re.compile(r"^/trip/([^/]+)/components$")
 _COMPONENT_ITEM_RE = re.compile(r"^/trip/([^/]+)/components/([^/]+)$")
@@ -67,6 +70,7 @@ B2B_ONLY_DETAIL = (
     "This planner is a demo: Adventure Asia works with travel agencies, so trips are not sent to an advisor here."
 )
 _NARRATE_RE = re.compile(r"^/trip/([^/]+)/narrate$")
+_CHAT_RE = re.compile(r"^/trip/([^/]+)/chat$")
 _SUGGEST_RE = re.compile(r"^/trip/([^/]+)/suggestions$")
 _COVERAGE_RE = re.compile(r"^/trip/([^/]+)/coverage$")
 _DAYS_RE = re.compile(r"^/trip/([^/]+)/days$")
@@ -86,6 +90,7 @@ _ROUTE_NAMES = (
     ("PATCH", _REORDER_RE, "reorder"),
     ("POST", _SEND_RE, "send"),
     ("POST", _NARRATE_RE, "narrate"),
+    ("POST", _CHAT_RE, "chat"),
     ("GET", _SUGGEST_RE, "suggestions"),
     ("POST", _APPLY_ROUTE_RE, "apply_route"),
     ("POST", _DAYS_RE, "add_day"),
@@ -386,6 +391,10 @@ async def route(
             observability.emit("narration_degraded", reason=paused, source=source, days=len(itinerary))
         return _resp(200, out)
 
+    m = _CHAT_RE.match(path)
+    if m and method == "POST":
+        return await _chat(conn, m.group(1), body, guest_token, caller, client)
+
     m = _SUGGEST_RE.match(path)
     if m and method == "GET":
         trip_id = m.group(1)
@@ -555,6 +564,102 @@ async def _me(method: str, path: str, *, conn, guest_token: Optional[str],
         claimed = await account_mod.claim(conn, caller.principal, token_hash)
     observability.emit("traveller_account", route=route_name, outcome="ok", claimed=claimed)
     return _resp(200, {"claimed": claimed})
+
+
+# AA-1041 slice 2: the planning chat. The reasons a turn is not run, by what the planner tells the traveller.
+_CHAT_BUDGET_REASONS = frozenset({monthly_spend.REASON_APP_CAP, monthly_spend.REASON_TENANT_CAP,
+                                  llm_gateway.REASON_CAP, tenant_budget.REASON_CAP})
+
+
+def _chat_paused(trip_id: str, reason: Optional[str]) -> dict:
+    """200 `status: paused`: the chat does not answer now. `reason` is "budget" (a money cap is reached: the planner
+    says the chat is paused until next month / later) or "unavailable" (AI paused, the provider down, a spend read
+    failed); the detail code goes to the log line only."""
+    kind = "budget" if reason in _CHAT_BUDGET_REASONS else "unavailable"
+    observability.emit("plan_chat_paused", reason=kind, detail=reason)
+    return _resp(200, {"trip_id": trip_id, "status": "paused", "reason": kind})
+
+
+async def _chat_gate(conn) -> Optional[str]:
+    """None when a chat model call may run now, else why not: the chat's monthly caps (app, then tenant), then the
+    daily app caps and the tenant's AI budget (`budget_status`). Fails closed."""
+    tid = tenant.current_id()
+    reason = await monthly_spend.check(conn, plan_chat.STAGE, tid,
+                                       app_cap_usd=config.TP_PLAN_CHAT_MONTHLY_CAP_USD,
+                                       tenant_cap_usd=config.TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD)
+    if reason is not None:
+        return reason
+    budget = await llm_gateway.budget_status(conn, plan_chat.STAGE)
+    if budget.get("exhausted"):
+        return budget.get("tenant_reason") or budget.get("reason") or llm_gateway.REASON_CAP
+    return None
+
+
+async def _chat(conn, trip_id: str, body: dict, guest_token: Optional[str], caller: account_mod.Caller,
+                client: ratelimit.Client) -> dict:
+    """POST /trip/{id}/chat {session_id, message, history?} (backend/assembly/plan_chat.py). The session must own the
+    trip (_guard: a chat turn costs model spend). Order, so that nothing that cannot reach a model is counted: the
+    money gates (monthly, daily, tenant budget), the route (AI switch), then the per-session and per-IP limits (429),
+    then the turn. The chat writes no trip state: the planner applies a proposal through the existing mutations."""
+    session_id, message = body.get("session_id"), body.get("message")
+    if not session_id or not isinstance(message, str) or not message.strip():
+        return _resp(400, {"error": "session_id and message required"})
+    if len(message.strip()) > plan_chat.MAX_MESSAGE_CHARS:
+        return _resp(400, {"error": "message_too_long", "max_chars": plan_chat.MAX_MESSAGE_CHARS})
+    if denied := await _guard(conn, trip_id, session_id, guest_token, "chat", caller):
+        return denied
+    reason = await _chat_gate(conn)
+    if reason is not None:
+        return _chat_paused(trip_id, reason)
+    try:
+        route_ = await llm_gateway.load_route(conn, plan_chat.STAGE, borrow_from=plan_chat.LENDER_STAGE)
+    except llm_gateway.AiPaused as e:
+        return _chat_paused(trip_id, e.reason)
+    limits = [(ratelimit.SCOPE_CHAT, ratelimit.KIND_SESSION, session_id)]
+    if client.ip:
+        limits.append((ratelimit.SCOPE_CHAT_IP, ratelimit.KIND_IP, client.ip))
+    for scope, kind, value in limits:
+        decision = await ratelimit.hit(conn, scope, kind, value, signed_in=caller.signed_in or client.signed_in)
+        if not decision.allowed:
+            return {"statusCode": 429, "headers": ratelimit.limited_headers(decision, _HEADERS),
+                    "body": json.dumps(ratelimit.limited_body(decision))}
+
+    itinerary = await events_mod.current_itinerary(conn, trip_id)
+    offered = await chat_tools.countries(conn)
+    calls: list = []
+
+    def generate(system: str, user: str) -> str:
+        text, call = llm_gateway.generate_text(route_, system, user, plan_chat.MAX_TOKENS, failures=calls)
+        calls.append(call)
+        return text
+
+    gated_once = False
+
+    async def before_call() -> Optional[str]:
+        nonlocal gated_once
+        if not gated_once:            # the gate above already passed for the first call
+            gated_once = True
+            return None
+        return await _chat_gate(conn)
+
+    tid = tenant.current_id()
+    try:
+        result = await plan_chat.run_turn(conn, message=message, history=plan_chat.clean_history(body.get("history")),
+                                          itinerary=itinerary, offered=offered, generate=generate,
+                                          before_call=before_call)
+    except llm_gateway.BedrockError as e:
+        # Every attempt failed, the route deadline passed or a circuit is open: each attempt is a ledger row, billed
+        # ones count against the month; the traveller gets the "unavailable" pause.
+        await _record_calls(conn, calls, {"feature": "plan_chat", "degraded": True})
+        await monthly_spend.charge(conn, plan_chat.STAGE, tid, *llm_gateway.billed_totals(calls))
+        return _chat_paused(trip_id, getattr(e, "reason", None) or "provider_unavailable")
+    await _record_calls(conn, calls, result.signal())
+    await monthly_spend.charge(conn, plan_chat.STAGE, tid, *llm_gateway.billed_totals(calls))
+    if result.outcome == plan_chat.OUTCOME_PAUSED:
+        return _chat_paused(trip_id, result.paused_reason)
+    observability.emit("plan_chat_turn", **{k: v for k, v in result.signal().items() if k != "feature"})
+    return _resp(200, {"trip_id": trip_id, "status": "ok", "outcome": result.outcome, "reply": result.reply,
+                       "ai_generated": result.from_model, "proposal": result.proposal})
 
 
 async def _resolve_narrator(mode: str, narrator: Optional[Any], conn, calls: list):
