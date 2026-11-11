@@ -44,7 +44,7 @@ def _call(cost: float = 0.004, failed: bool = False) -> llm_gateway.Call:
 @pytest.fixture
 def world(monkeypatch):
     conn = fakes.CatalogConn()
-    seen: dict = {"prompts": [], "records": [], "calls": 0, "rate": True, "daily": {"exhausted": False},
+    seen: dict = {"prompts": [], "records": [], "calls": 0, "billed": 0, "rate": True, "daily": {"exhausted": False},
                   "route_paused": None, "flip_after_first": None, "script": []}
 
     async def guard(*a, **k):
@@ -72,6 +72,10 @@ def world(monkeypatch):
         if isinstance(out, dict) and "raise" in out:
             failures.append(_call(failed=True))
             raise llm_gateway.BedrockError(out["raise"])
+        if isinstance(out, dict) and "raise_deadline" in out:      # the route deadline passed: a 0 USD row, no reply
+            failures.append(_call(failed=True))
+            raise llm_gateway.RouteDeadlineExceeded(out["raise_deadline"])
+        seen["billed"] += 1
         return (out if isinstance(out, str) else json.dumps(out)), _call()
 
     async def record(db, call, signal, *, tenant_id=None):
@@ -112,6 +116,10 @@ def _arrange(case: dict, conn: fakes.CatalogConn, seen: dict, monkeypatch) -> No
     seen["rate"] = not state.get("rate_limited")
     seen["route_paused"] = state.get("route_paused")
     seen["flip_after_first"] = state.get("month_app_usd_after_first_call")
+    if state.get("tool_fails"):                 # a defect in a tool after a billed model call (a SQL error, a timeout)
+        async def broken(*a, **k):
+            raise RuntimeError(state["tool_fails"])
+        monkeypatch.setattr(chat_tools.routes_mod, "proposals", broken)
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])
@@ -130,6 +138,13 @@ async def test_case(case, world, monkeypatch):
     assert len(seen["records"]) == exp.get("ledger_rows", seen["calls"])        # one ledger row per model attempt
     if resp["statusCode"] == 429:
         assert out["error"] == "rate_limited" and out["scope"] == "chat"
+        return
+    if resp["statusCode"] == 502:
+        # The turn failed after billed calls: no detail leaks, and every billed call is still charged to the month.
+        assert out == {"error": "chat_failed"}
+        assert conn.month[(STAGE, "app")][1] == month_before[1] + seen["billed"] > month_before[1]
+        assert conn.month[(STAGE, f"tenant:{TENANT}")][1] == seen["billed"]
+        assert all(s.get("failed_turn") for _, s in seen["records"])
         return
     assert out["status"] == exp["status"]
     if exp["status"] == "paused":
@@ -169,8 +184,8 @@ async def test_case(case, world, monkeypatch):
         assert exp["prompt_excludes"] not in prompts
     # Every billed call of the turn is charged to this month, for the app and the tenant.
     app = conn.month.get((STAGE, "app"), (0.0, 0))
-    assert app[1] == month_before[1] + seen["calls"]
-    assert conn.month[(STAGE, f"tenant:{TENANT}")][1] >= seen["calls"]
+    assert app[1] == month_before[1] + seen["billed"]
+    assert conn.month[(STAGE, f"tenant:{TENANT}")][1] >= seen["billed"]
     # The ledger signal carries counts and codes, never the traveller's or the model's words.
     signal_text = json.dumps([s for _, s in seen["records"]])
     assert case["message"][:20] not in signal_text and reply[:20] not in signal_text

@@ -158,7 +158,7 @@ def _int_arg(args: dict, key: str, lo: int, hi: int, required: bool = False) -> 
         return None
     try:
         value = int(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: int(inf) from a non-finite JSON number
         raise ToolError(f"{key} must be a whole number") from None
     if not lo <= value <= hi:
         raise ToolError(f"{key} must be between {lo} and {hi}")

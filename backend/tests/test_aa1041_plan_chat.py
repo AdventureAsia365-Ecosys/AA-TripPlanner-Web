@@ -65,6 +65,8 @@ async def test_a_country_aa_does_not_sell_is_answered_not_offered():
     ("route_options", {"country": "Norland"}, "days is required"),
     ("route_options", {"country": "Norland", "days": 99}, "between 1 and 30"),
     ("route_options", {"country": "Norland", "days": "many"}, "whole number"),
+    ("route_options", {"country": "Norland", "days": float("inf")}, "whole number"),
+    ("route_options", {"country": "Norland", "days": float("nan")}, "whole number"),
     ("tour_route", {"tour": "c1"}, "tour reference"),
     ("find_experiences", {"text": "!!"}, "at least one word"),
     ("find_tours", ["not", "an", "object"], "must be an object"),
@@ -155,6 +157,13 @@ def test_parse_object_finds_the_first_object():
                                                                                          "args": {}}
     assert plan_chat.parse_object("{broken {\"reply\": \"x\"}") == {"reply": "x"}
     assert plan_chat.parse_object("[1, 2]") is None and plan_chat.parse_object("") is None
+
+
+@pytest.mark.parametrize("number", ["Infinity", "-Infinity", "NaN", "1e309"])
+def test_parse_object_refuses_non_finite_numbers(number):
+    text = '{"tool": "route_options", "args": {"country": "Norland", "days": %s}}' % number
+    assert plan_chat.parse_object(text) is None
+    assert plan_chat.parse_object('{"reply": "ok", "score": 2.5}') == {"reply": "ok", "score": 2.5}
 
 
 def test_history_is_capped_cleaned_and_relabelled():

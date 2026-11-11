@@ -8,7 +8,7 @@
 //   - kit states: an error with a retry when the saved trip cannot be read; the read-only share view, which prints in
 //     the light theme for a viewer on the dark theme;
 //   - planning chat (AA-1041 slice 2): a suggestion is applied with the planner's own mutations (remove, then
-//     apply-route), and a paused chat (a money cap) says so and closes the composer.
+//     apply-route); a paused chat at a money cap says so and closes the composer, an outage keeps it open.
 // Every /api/* call is answered by the test (page.route): no trip is written, no catalog row is read, the fixture
 // names are invented. The map itself is real (Mapbox, the deployment's token), so the sync tests need a build with
 // NEXT_PUBLIC_MAPBOX_TOKEN. Run: BASE_URL=<host> npx playwright test -c planner.config.ts
@@ -448,4 +448,20 @@ test("planning chat: at the monthly cap the chat pauses with a plain message", a
   await expect(chat.getByTestId("chat-input")).toBeDisabled();
   await expect(chat.getByTestId("chat-send")).toBeDisabled();
   await info.attach(`chat-paused-${info.project.name}`, { body: await page.screenshot(), contentType: "image/png" });
+});
+
+test("planning chat: a passing outage says so and keeps the composer open", async ({ page }, info) => {
+  await mockApis(page);
+  await page.route("**/api/trip/chat", (route: Route) =>
+    route.fulfill({ json: { trip_id: IDS.tripId, status: "paused", reason: "unavailable" } }));
+  const mobile = isMobile(info.project.name);
+  await openPlanner(page, mobile);
+  await openChat(page, mobile);
+  const chat = page.getByTestId("plan-chat").last();
+  await chat.getByTestId("chat-input").fill("Plan five days");
+  await chat.getByTestId("chat-send").click();
+  await expect(chat.getByRole("status").filter({ hasText: "please try the chat again later" })).toBeVisible();
+  await expect(chat.getByTestId("chat-input")).toBeEnabled();
+  await chat.getByTestId("chat-input").fill("Plan four days");
+  await expect(chat.getByTestId("chat-send")).toBeEnabled();
 });

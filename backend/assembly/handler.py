@@ -628,6 +628,7 @@ async def _chat(conn, trip_id: str, body: dict, guest_token: Optional[str], call
     itinerary = await events_mod.current_itinerary(conn, trip_id)
     offered = await chat_tools.countries(conn)
     calls: list = []
+    answered: list = []           # the calls of this turn that returned a reply
     started = plan_chat.clock()
 
     def generate(system: str, user: str) -> str:
@@ -637,8 +638,16 @@ async def _chat(conn, trip_id: str, body: dict, guest_token: Optional[str], call
             raise plan_chat.OutOfTime()
         bounded = route_ if route_.deadline_s and route_.deadline_s <= left else dataclasses.replace(
             route_, deadline_s=int(left))
-        text, call = llm_gateway.generate_text(bounded, system, user, plan_chat.MAX_TOKENS, failures=calls)
+        try:
+            text, call = llm_gateway.generate_text(bounded, system, user, plan_chat.MAX_TOKENS, failures=calls)
+        except llm_gateway.RouteDeadlineExceeded:
+            # A later step that ran past the turn's time (its 'deadline' row is in `calls`): the traveller gets the
+            # server's fallback reply, as when too little time is left to start it, not the "unavailable" pause.
+            if answered:
+                raise plan_chat.OutOfTime() from None
+            raise
         calls.append(call)
+        answered.append(call)
         return text
 
     gated_once = False
@@ -658,11 +667,13 @@ async def _chat(conn, trip_id: str, body: dict, guest_token: Optional[str], call
     except llm_gateway.BedrockError as e:
         # Every attempt failed, the route deadline passed or a circuit is open: each attempt is a ledger row, billed
         # ones count against the month; the traveller gets the "unavailable" pause.
-        await _record_calls(conn, calls, {"feature": "plan_chat", "degraded": True})
-        await monthly_spend.charge(conn, plan_chat.STAGE, tid, *llm_gateway.billed_totals(calls))
+        await _settle_chat_calls(conn, tid, calls, {"feature": "plan_chat", "degraded": True})
         return _chat_paused(trip_id, getattr(e, "reason", None) or "provider_unavailable")
-    await _record_calls(conn, calls, result.signal())
-    await monthly_spend.charge(conn, plan_chat.STAGE, tid, *llm_gateway.billed_totals(calls))
+    except Exception as e:  # noqa: BLE001 — a defect after a billed call (a tool's SQL, odd model args): still counted
+        await _settle_chat_calls(conn, tid, calls, {"feature": "plan_chat", "failed_turn": True})
+        observability.emit("plan_chat_failed", error=type(e).__name__, calls=len(calls))
+        return _resp(502, {"error": "chat_failed"})
+    await _settle_chat_calls(conn, tid, calls, result.signal())
     if result.outcome == plan_chat.OUTCOME_PAUSED:
         return _chat_paused(trip_id, result.paused_reason)
     observability.emit("plan_chat_turn", **{k: v for k, v in result.signal().items() if k != "feature"})
@@ -823,6 +834,13 @@ async def _trip_owner(conn, trip_id: str) -> Optional[str]:
     or None when the trip has no draft yet."""
     row = await conn.fetchrow("SELECT session_id FROM tripplanner.trip_drafts WHERE id = $1", trip_id)
     return row["session_id"] if row else None
+
+
+async def _settle_chat_calls(conn, tenant_id: Optional[str], calls: list, signal: dict) -> None:
+    """A chat turn's ledger rows (one per attempt, failed ones included) and its monthly charge. Both writes never
+    raise (a failed write is an ERROR line and holds the stage closed), so every exit of a turn runs them."""
+    await _record_calls(conn, calls, signal)
+    await monthly_spend.charge(conn, plan_chat.STAGE, tenant_id, *llm_gateway.billed_totals(calls))
 
 
 async def _record_calls(conn, calls: list, signal: dict) -> None:

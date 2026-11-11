@@ -9,6 +9,7 @@ import {
   applySteps,
   chatCopy,
   historyForRequest,
+  locksComposer,
   noticeFor,
   proposalSummary,
   readChatAnswer,
@@ -49,6 +50,15 @@ test("pauses, limits, the bot check and errors are told apart", () => {
   assert.deepEqual(readChatAnswer(500, false, { error: "internal" }), { kind: "error" });
   assert.deepEqual(readChatAnswer(200, false, { status: "ok", reply: "  " }), { kind: "error" });
   assert.deepEqual(readChatAnswer(200, false, null), { kind: "error" });
+});
+
+test("only a money cap closes the composer; an unavailable pause or an error leaves it open", () => {
+  assert.equal(locksComposer(readChatAnswer(200, false, { status: "paused", reason: "budget" })), true);
+  assert.equal(locksComposer(readChatAnswer(200, false, { status: "paused", reason: "unavailable" })), false);
+  assert.equal(locksComposer(readChatAnswer(200, false, { status: "paused" })), false);
+  assert.equal(locksComposer(readChatAnswer(502, false, { error: "chat_failed" })), false);
+  assert.equal(locksComposer(readChatAnswer(429, false, { retry_after_s: 30 })), false);
+  assert.equal(locksComposer(readChatAnswer(200, false, { status: "ok", reply: "Here it is." })), false);
 });
 
 test("the history sent back is the last turns, capped", () => {

@@ -206,6 +206,13 @@ export function chatCopy(lang?: string | null): ChatCopy {
   return CHAT_COPY[noticeLang(tag)];
 }
 
+/** True when the answer closes the composer for the rest of the visit: only a money cap (it holds until the cap
+ * resets). "unavailable" (AI off, a provider outage, a turn that ran out of time) and errors keep it open, so the
+ * traveller can try again without reloading and losing the conversation. */
+export function locksComposer(answer: ChatAnswer): boolean {
+  return answer.kind === "paused" && answer.reason === "budget";
+}
+
 /** The line a non-reply answer leaves in the conversation. */
 export function noticeFor(answer: Exclude<ChatAnswer, { kind: "reply" }>, copy: ChatCopy): string {
   if (answer.kind === "paused") return answer.reason === "budget" ? copy.pausedBudget : copy.pausedUnavailable;

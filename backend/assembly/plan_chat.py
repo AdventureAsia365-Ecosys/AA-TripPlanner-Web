@@ -28,6 +28,7 @@ block, and e-mail addresses and phone numbers are redacted first (``scrub_text``
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -68,7 +69,8 @@ clock: Callable[[], float] = time.monotonic
 
 
 class OutOfTime(Exception):
-    """Too little of TURN_DEADLINE_S is left to start another model call (no call was made)."""
+    """Too little of TURN_DEADLINE_S is left to start another model call, or a later step's call ran past it (its
+    failed attempt is already in the caller's ledger list): the turn ends with the server's fallback reply."""
 # Called before every model call of a turn; a reason stops the turn (a cap reached mid-turn).
 BeforeCall = Callable[[], Awaitable[Optional[str]]]
 
@@ -181,6 +183,22 @@ def trip_refs(itinerary: list[dict], refs: chat_tools.Refs) -> list[dict]:
     return out
 
 
+def _non_finite(token: str) -> Any:
+    raise ValueError(f"non-finite JSON number {token}")
+
+
+def _finite_float(token: str) -> float:
+    value = float(token)
+    if not math.isfinite(value):          # 1e309 overflows to inf
+        raise ValueError("non-finite JSON number")
+    return value
+
+
+# Strict JSON numbers: `Infinity`, `NaN` and overflowing floats make the object unreadable (an injected tool argument
+# never reaches int()).
+_DECODER = json.JSONDecoder(parse_constant=_non_finite, parse_float=_finite_float)
+
+
 def parse_object(text: str) -> Optional[dict]:
     """The first JSON object in the model's text (code fences and prose around it ignored), else None."""
     if not text:
@@ -188,7 +206,7 @@ def parse_object(text: str) -> Optional[dict]:
     start = text.find("{")
     while start >= 0:
         try:
-            obj, _ = json.JSONDecoder().raw_decode(text[start:])
+            obj, _ = _DECODER.raw_decode(text[start:])
         except ValueError:
             start = text.find("{", start + 1)
             continue

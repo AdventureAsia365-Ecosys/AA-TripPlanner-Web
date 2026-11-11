@@ -3,8 +3,8 @@
 // AA-1041 slice 2 — the planning chat panel of the planner (desktop: a tab of the trip panel; phone: its own view).
 // It talks to POST /api/trip/chat (lib/api.ts sendChat): the server answers only from Adventure Asia's catalog and may
 // attach a proposal built from catalog stops; "Apply to my trip" runs the planner's own mutations (useTrip
-// applyChatProposal). A paused chat (a money cap, AI off) keeps a calm line and closes the composer; the rest of the
-// planner is untouched. Kit only: k-* tokens, ui/Button, ui/Badge, ui/AiNotice, ui/States.
+// applyChatProposal). A paused chat keeps a calm line; only a money cap closes the composer (AI off or a provider
+// outage leaves it open to try again); the rest of the planner is untouched. Kit only: k-* tokens, ui/Button, ui/Badge, ui/AiNotice, ui/States.
 
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useTrip } from "@/lib/useTrip";
@@ -13,6 +13,7 @@ import {
   MAX_MESSAGE_CHARS,
   chatCopy,
   historyForRequest,
+  locksComposer,
   noticeFor,
   proposalSummary,
   type ApplyState,
@@ -123,7 +124,7 @@ export default function PlanChat() {
           aiGenerated: answer.aiGenerated, apply: "idle",
         }]);
       } else {
-        if (answer.kind === "paused") setPaused(true);
+        if (locksComposer(answer)) setPaused(true);
         setLines((ls) => [...ls, { id: nextId(), role: "assistant", text: noticeFor(answer, copy), notice: true }]);
       }
     } finally {

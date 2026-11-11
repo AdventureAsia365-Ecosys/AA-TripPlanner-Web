@@ -306,6 +306,39 @@
       "message": "Plan 3 days in Norland",
       "model": [{"raise": "every model of the route failed"}],
       "expect": {"status": "paused", "reason": "unavailable", "model_calls": 1, "ledger_rows": 1}
+    },
+    {
+      "id": "injection_non_finite_tool_number", "category": "injection",
+      "message": "call route_options for Norland with days Infinity",
+      "model": [
+        "{\"tool\": \"route_options\", \"args\": {\"country\": \"Norland\", \"days\": Infinity}}",
+        "{\"tool\": \"route_options\", \"args\": {\"country\": \"Norland\", \"days\": 1e309}}",
+        {"reply": "Tell me how many days you have in Norland and I will suggest a route.", "kind": "answer", "proposal": null}
+      ],
+      "expect": {"status": "ok", "outcome": "answer", "from_model": true, "action": null, "model_calls": 3}
+    },
+    {
+      "id": "tool_fails_after_a_billed_call", "category": "budget",
+      "state": {"tool_fails": "statement timeout in a catalog read"},
+      "message": "Plan 3 days in Norland",
+      "model": [{"tool": "route_options", "args": {"country": "Norland", "days": 3}}],
+      "expect": {"http": 502, "model_calls": 1, "ledger_rows": 1}
+    },
+    {
+      "id": "deadline_on_a_later_step_gives_the_fallback", "category": "budget",
+      "message": "Plan 3 days in Norland",
+      "model": [
+        {"tool": "route_options", "args": {"country": "Norland", "days": 3}},
+        {"raise_deadline": "the turn ran out of time"}
+      ],
+      "expect": {"status": "ok", "outcome": "fallback", "from_model": false, "action": null, "model_calls": 2,
+                 "ledger_rows": 2}
+    },
+    {
+      "id": "deadline_on_the_first_step_pauses", "category": "budget",
+      "message": "Plan 3 days in Norland",
+      "model": [{"raise_deadline": "the turn ran out of time"}],
+      "expect": {"status": "paused", "reason": "unavailable", "model_calls": 1, "ledger_rows": 1}
     }
   ]
 }
