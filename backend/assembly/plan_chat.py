@@ -16,8 +16,9 @@ What the server guarantees, whatever the model writes (the model is never truste
   countries AA sells) or plain words. A capitalised word that is none of these (an invented place, a hotel, an
   airline, a country AA does not sell) replaces the whole reply by a server sentence that points to what AA offers
   (:func:`ungrounded_words`). A dropped reference does the same: a reply never describes a change the server refused.
-  Ordinary English words pass whatever their case (a capitalised "Day", "Lagoon" for a catalog "Lagoons", a demonym
-  of a country AA sells): only a word that is nothing but a name has to come from the catalog.
+  The check reads whole capitalised runs: one ordinary word passes in capitals ("Day 2", "Lagoon" for a catalog
+  "Lagoons"), but a name of two or more words needs the catalog ("Glass Lagoon", "Northern Norland" pass; "Hidden
+  Valley Temple", "Royal Palace" do not).
 * **A route ask ends with a plan.** When the turn's last tool was ``route_options`` and the model answered without a
   proposal (it listed the options and asked which one), the server proposes the first option itself and says so in
   one appended sentence (:data:`SERVER_PROPOSAL_NOTE`); the traveller still decides whether to apply it.
@@ -268,11 +269,12 @@ def build_proposal(raw: Any, refs: chat_tools.Refs, itinerary: list[dict]) -> tu
 
 
 # Ordinary English words a grounded reply may capitalise without the catalog naming them (AA-1041 S277 smoke: the
-# grounding rule replaced correct replies). A word in lower case is never checked, so an ordinary word in capitals
-# ("Day 2", "the Old Town Walk", "Northern" trails) adds no risk; the distinctive word of an invented name ("Zorbu" of
-# "Palace of Zorbu", "Skyreach" of "Skyreach Island") is in no list and still trips the rule. Words that name a travel
-# service AA does not sell (hotel, airline, flight, airport, resort) are left out on purpose. Compared through
-# _key (lower case, possessive / contraction and plural "s" dropped), like the catalog's words.
+# grounding rule replaced correct replies). One such word alone passes ("Day 2", "Option 1", a "Temple"); a NAME of two
+# or more of them does not ("Hidden Valley Temple", "Old Town Night Market"): :func:`ungrounded_words` checks whole
+# capitalised runs, and a run passes only where the turn's catalog accounts for it. Adjectives that mostly build names
+# (grand, hidden, great, royal, sacred, holy, express, explorer, discovery, classic, scenic) are in no list, nor words
+# that name a travel service AA does not sell (hotel, resort, airline, flight, airport). Compared through _key (lower
+# case, possessive / contraction and plural "s" dropped), like the catalog's words.
 _ALWAYS_OK_WORDS = """
 adventure asia aa ai i ok okay
 january february march april may june july august september october november december
@@ -284,8 +286,7 @@ class cooking food market night temple temples monastery pagoda shrine stupa pal
 river lake mount mountain mountains hill hills valley gorge canyon cave caves fall falls waterfall lagoon island
 islands beach bay coast park national garden gardens village villages town city old new quarter centre center
 bridge road street square rice field fields terrace terraces farm dairy tea forest jungle desert plateau pass
-camp homestay heritage world unesco royal ancient sacred holy buddhist hindu festival ceremony culture cultural
-classic discovery explorer express grand tour highlight scenic hidden great little upper lower
+camp homestay heritage world unesco ancient buddhist hindu festival ceremony culture cultural little upper lower
 north south east west northern southern eastern western central northeast northwest southeast southwest
 """.split()
 _SENTENCE_STARTER_WORDS = """
@@ -367,21 +368,99 @@ def _sentence_start(before: str) -> bool:
             or before.endswith((" -", " –", " —")) or before in ("-", "–", "—"))
 
 
+# Names a reply may use although no catalog row of the turn has them.
+_OWN_PHRASES = ("Adventure Asia", "UNESCO World Heritage Site")
+# Lower-case words that keep two capitalised words in one name ("Palace of the Winds", "Coast and Hills").
+_JOINERS = (("of", "the"), ("of",), ("and",))
+# What may separate two words of one name: spaces, or a hyphen with no space ("Ban Na-Lao").
+_NAME_GAP_RE = re.compile(r"[ \t\u00a0]+|-")
+_NGRAM_MAX = 8
+
+
+def _phrases(texts: list[str]) -> set[tuple[str, ...]]:
+    """Every run of 2 to _NGRAM_MAX consecutive word keys of the catalog texts (and _OWN_PHRASES)."""
+    grams: set[tuple[str, ...]] = set()
+    for t in [*texts, *_OWN_PHRASES]:
+        keys = [_key(w) for w in _NAME_RE.findall(str(t))]
+        for i in range(len(keys)):
+            for j in range(i + 2, min(len(keys), i + _NGRAM_MAX) + 1):
+                grams.add(tuple(keys[i:j]))
+    return grams
+
+
+def _capital(m: "re.Match[str]") -> bool:
+    w = m.group(0)
+    return w[0].isupper() and len(_key(w)) >= 2
+
+
+def _name_runs(reply: str) -> list[list["re.Match[str]"]]:
+    """The reply's capitalised runs: consecutive capitalised words, kept together across _JOINERS ("Palace of Zorbu",
+    "Norland Coast and Hills"). Joiner words stay in the run (lower case) so a catalog phrase matches whole."""
+    toks = list(_NAME_RE.finditer(reply))
+    runs: list[list[re.Match[str]]] = []
+    i = 0
+    while i < len(toks):
+        if not _capital(toks[i]):
+            i += 1
+            continue
+        run, j = [toks[i]], i + 1
+        while j < len(toks):
+            if _NAME_GAP_RE.fullmatch(reply[run[-1].end():toks[j].start()]) and _capital(toks[j]):
+                run.append(toks[j])
+                j += 1
+                continue
+            for joiner in _JOINERS:
+                k = j + len(joiner)
+                seq = toks[j:k + 1]
+                if (len(seq) == k + 1 - j and [m.group(0) for m in seq[:-1]] == list(joiner) and _capital(seq[-1])
+                        and all(reply[a.end():b.start()] == " " for a, b in zip([run[-1], *seq[:-1]], seq))):
+                    run.extend(seq)
+                    j = k + 1
+                    break
+            else:
+                break
+        runs.append(run)
+        i = j
+    return runs
+
+
 def ungrounded_words(reply: str, vocabulary: list[str]) -> list[str]:
-    """Capitalised words of the reply that neither the catalog of this turn nor the plain-word lists account for. A
-    sentence's first word may also be an ordinary sentence starter."""
+    """Capitalised words of the reply that the catalog of this turn does not account for (AA-1041 slice 2, S277
+    review). The check works on whole capitalised runs, not single words, so a name made only of ordinary words is not
+    waved through word by word:
+
+    * a word is accounted for when it is a distinctive catalog word of the turn (in the vocabulary and not an ordinary
+      word: "Norland", "Mistral", a sold country's demonym), when it sits in a stretch of two or more words that a
+      catalog name (or _OWN_PHRASES) contains in the same order ("Glass Lagoon" of "Glass Lagoons 1"), or when it is
+      the run's first word at a sentence start and an ordinary sentence starter ("Then", "Visit");
+    * what is left of a run (split at accounted words and at "and") is grounded only when it is one ordinary word
+      ("Day", "Temple", the "Northern" of "Northern Norland"). Two or more words left over ("Hidden Valley Temple",
+      "Royal Palace" beside a catalog name) or any word in no list ("Zorbu", "Hotel") flag that leftover name, and the
+      words of it are returned."""
     allowed = _vocab(vocabulary)
+    grams = _phrases(vocabulary)
     bad: list[str] = []
-    for m in _NAME_RE.finditer(reply):
-        w = m.group(0)
-        if not w[0].isupper():
-            continue
-        low = _key(w)
-        if len(low) < 2 or low in _ALWAYS_OK or low in allowed:
-            continue
-        if _sentence_start(reply[:m.start()]) and low in _SENTENCE_STARTERS:
-            continue
-        bad.append(w)
+    for run in _name_runs(reply):
+        words = [m.group(0) for m in run]
+        keys = [_key(w) for w in words]
+        name = [w[0].isupper() for w in words]        # joiners are lower case
+        ok = [n and k in allowed and k not in _ALWAYS_OK for n, k in zip(name, keys)]
+        for i in range(len(run)):
+            for j in range(min(len(run), i + _NGRAM_MAX), i + 1, -1):
+                if sum(name[i:j]) >= 2 and tuple(keys[i:j]) in grams:
+                    ok[i:j] = [True] * (j - i)
+                    break
+        if not ok[0] and _sentence_start(reply[:run[0].start()]) and keys[0] in _SENTENCE_STARTERS:
+            ok[0] = True
+        part: list[int] = []
+        for idx in [*range(len(run)), None]:
+            if idx is not None and not ok[idx] and words[idx] != "and":
+                if name[idx]:
+                    part.append(idx)
+                continue
+            if part and (len(part) >= 2 or (keys[part[0]] not in _ALWAYS_OK and keys[part[0]] not in allowed)):
+                bad.extend(words[p] for p in part)
+            part = []
     return bad
 
 

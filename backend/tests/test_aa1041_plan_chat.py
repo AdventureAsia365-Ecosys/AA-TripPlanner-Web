@@ -141,7 +141,7 @@ def test_grounding_flags_invented_capitalised_words_only():
     assert plan_chat.ungrounded_words("Start at Lantern Market Walk in Port Selby on Monday.", vocab) == []
     assert plan_chat.ungrounded_words("You will love it. Then visit Port Selby.", vocab) == []
     assert plan_chat.ungrounded_words("Adventure Asia's walks are in Norland.", vocab) == []
-    assert plan_chat.ungrounded_words("Then fly to Skyreach Island.", vocab) == ["Skyreach"]
+    assert plan_chat.ungrounded_words("Then fly to Skyreach Island.", vocab) == ["Skyreach", "Island"]
     assert plan_chat.ungrounded_words("Kyoto has temples.", vocab) == ["Kyoto"]
     assert plan_chat.ungrounded_words("we love the Ritz", vocab) == ["Ritz"]
 
@@ -165,22 +165,35 @@ _CATALOG_WORDS = ["Norland", "Norland Coast and Hills", "Lantern Market Walk", "
     "I've added the Ember Hills Tea Trail. Don't miss the Lantern Market Walk on Day 1.",
     "Try a Norlandic dinner at the Saffron Kitchen Cooking Class in UNESCO-listed Port Selby.",
     "Option 1 keeps the River and Temple days; Option 2 adds the Old Town walk in Port Selby - Mistral Bay comes last.",
+    "Adventure Asia's Port Selby Old Town Walk is on Day 1. See a UNESCO World Heritage Site in Mistral Bay.",
+    "Walk the Coast and Hills of Norland, then the Ember Hills Tea Trail.",
 ])
 def test_grounded_replies_with_ordinary_capitals_survive(reply, monkeypatch):
     monkeypatch.setattr(plan_chat, "DEMONYMS", {"Norland": ("Norlandic",), "Tavora": ("Tavoran",)})
-    vocab = _CATALOG_WORDS + plan_chat.demonyms(fakes.OFFERED)
+    # "Old Town" passes only because a catalog name of the turn has it in that order.
+    vocab = _CATALOG_WORDS + ["Port Selby Old Town Walk"] + plan_chat.demonyms(fakes.OFFERED)
     assert plan_chat.ungrounded_words(reply, vocab) == []
 
 
 @pytest.mark.parametrize("reply,bad", [
-    ("Visit the Palace of Zorbu on Day 2.", ["Zorbu"]),
+    ("Visit the Palace of Zorbu on Day 2.", ["Palace", "Zorbu"]),
     ("Zorbu awaits you after Port Selby.", ["Zorbu"]),
-    ("Stay at the Grand Harbour Hotel in Port Selby.", ["Harbour", "Hotel"]),
+    ("Stay at the Grand Harbour Hotel in Port Selby.", ["Grand", "Harbour", "Hotel"]),
     ("Fly with Skyline Airways to Mistral Bay.", ["Skyline", "Airways"]),
     ("Then continue to Kyoto.", ["Kyoto"]),
     ("Add a Zorbu-style palace night.", ["Zorbu"]),
     ("Try Tavoran food in Port Selby.", ["Tavoran"]),          # demonym of a country not on the offered list
     ("Visit Peru instead.", ["Peru"]),
+    # S277 review: a name built only of ordinary words is checked as a whole run, not word by word.
+    ("Visit the Royal Palace and the Hidden Valley Temple, then the Grand Old Town Night Market.",
+     ["Royal", "Palace", "Hidden", "Valley", "Temple", "Grand", "Old", "Town", "Night", "Market"]),
+    ("Ride the Northern Explorer Express to the Sacred Lake.", ["Northern", "Explorer", "Express", "Sacred", "Lake"]),
+    ("Then take the Express Night Cruise on the Holy River.", ["Express", "Night", "Cruise", "Holy", "River"]),
+    ("Then visit the Old Town Night Market in Mistral Bay.", ["Old", "Town", "Night", "Market"]),
+    # A catalog name beside an invented one does not vouch for it (across "and", "of" or in one run).
+    ("Visit Port Selby and Royal Palace.", ["Royal", "Palace"]),
+    ("See the Royal Palace of Norland.", ["Royal", "Palace"]),
+    ("See the Norland Temple Museum.", ["Temple", "Museum"]),
 ])
 def test_invented_names_still_trip_the_rule(reply, bad, monkeypatch):
     monkeypatch.setattr(plan_chat, "DEMONYMS", {"Norland": ("Norlandic",), "Tavora": ("Tavoran",)})
