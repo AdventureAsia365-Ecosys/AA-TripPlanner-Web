@@ -27,7 +27,7 @@ import { TileLoader, planTiles } from "@/lib/tileLoader";
 import type { BrowseFilters, DestinationPin } from "@/lib/types";
 import { COUNTRY_BBOX, COUNTRY_ISO, needsGeocodeAttribution } from "@/lib/types";
 import GeocodeAttribution from "./GeocodeAttribution";
-import { useTrip } from "@/lib/useTrip";
+import { useStopSync, useTrip } from "@/lib/useTrip";
 import DestinationPopup from "./DestinationPopup";
 import { markerLabel, markerOf, markerStops } from "@/lib/stopSync";
 
@@ -124,11 +124,9 @@ export default function MapView() {
     focusDestination,
     previewCountry,
     routePreview,
-    activeStopId,
-    selectedStop,
-    hoverStop,
-    selectStop,
   } = useTrip();
+  // AA-1041: the hover / selection sync has its own context (lib/useTrip.tsx), so a hover re-renders only its readers.
+  const { activeStopId, selectedStop, hoverStop, selectStop } = useStopSync();
   // AA-1041 (R7 item 3): the trip's stop markers (DOM buttons: focusable, named, branded by the k-* tokens), by key.
   const stopMarkersRef = useRef<Map<string, { marker: mapboxgl.Marker; el: HTMLButtonElement; ids: string[] }>>(
     new Map(),

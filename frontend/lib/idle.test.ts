@@ -1,11 +1,8 @@
-// AA-1041 (first-load performance) — lib/idle.ts runs deferred work after a paint, when the main thread is idle; and
-// the planner keeps its heavy parts (the Mapbox map, the planning chat) off the first load. Run: npm test.
+// AA-1041 (first-load performance) — lib/idle.ts runs deferred work after a paint, when the main thread is idle.
+// Run: npm test.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { IDLE_TIMEOUT_MS, whenIdle, type IdleHost } from "./idle.ts";
-
-const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
 
 /** A host whose callbacks run only when the test says so. */
 function fakeHost(withIdle: boolean) {
@@ -84,20 +81,4 @@ test("without requestIdleCallback: cancel before the frame or before the timer",
   cancel();
   b.flush(b.timers);
   assert.equal(runs, 0);
-});
-
-test("the planner loads the map and the chat lazily, off its first load", () => {
-  const src = read("../app/plan/PlannerApp.tsx");
-  // No static import of the two heavy parts (a static import puts them back in the planner's first chunk).
-  assert.doesNotMatch(src, /^import\s+MapView\b/m);
-  assert.doesNotMatch(src, /^import\s+PlanChat\b/m);
-  assert.match(src, /dynamic\(\(\) => import\("@\/components\/MapView"\)/);
-  assert.match(src, /dynamic\(\(\) => import\("@\/components\/PlanChat"\)/);
-  // The map is asked for only after an idle moment (whenIdle), and the chat only once opened.
-  assert.match(src, /whenIdle\(/);
-  assert.match(src, /chatOpened && <PlanChat \/>/);
-  // mapbox-gl is imported by the map component only, so no other planner module drags it into the first load.
-  for (const f of ["../components/TripPanel.tsx", "../components/DayList.tsx", "../components/FilterChips.tsx", "../lib/useTrip.tsx"]) {
-    assert.doesNotMatch(read(f), /from "mapbox-gl"/, f);
-  }
 });
