@@ -1,10 +1,12 @@
 // AA-1041 (R7 slice 1) — planner interactions at 1440 x 900 and 390 x 844 (touch), on any deployment (BASE_URL):
-//   - reorder: keyboard on a stop handle (Home), a touch drag of a stop handle (390), undo; each saved as ONE reorder
-//     op carrying every component id (the way the planner saves an order);
+//   - reorder: keyboard on a stop handle (Home), a touch drag of a stop handle (390), a tap on the handle and a menu
+//     item (390, no drag), undo; each saved as ONE reorder op carrying every component id (the way the planner saves
+//     an order); two quick key presses with a slow first answer are saved in order and never jump back;
 //   - map / list sync: hover of a stop row highlights its map marker, hover / click of a marker highlights the row,
 //     "Show on map" on a phone switches to the map with the stop highlighted;
 //   - photos and icons: a stop with a CIS photo shows it, one without shows its icon tile;
-//   - kit states: an error with a retry when the saved trip cannot be read; the read-only share view.
+//   - kit states: an error with a retry when the saved trip cannot be read; the read-only share view, which prints in
+//     the light theme for a viewer on the dark theme.
 // Every /api/* call is answered by the test (page.route): no trip is written, no catalog row is read, the fixture
 // names are invented. The map itself is real (Mapbox, the deployment's token), so the sync tests need a build with
 // NEXT_PUBLIC_MAPBOX_TOKEN. Run: BASE_URL=<host> npx playwright test -c planner.config.ts
@@ -49,11 +51,13 @@ const PNG = Buffer.from(
 
 interface Mock {
   reorders: string[][];
+  // When each reorder answer left the mock, in the order the requests arrived.
+  answered: number[];
   tripStatus: number;
 }
 
-async function mockApis(page: Page, opts: { tripStatus?: number } = {}): Promise<Mock> {
-  const mock: Mock = { reorders: [], tripStatus: opts.tripStatus ?? 200 };
+async function mockApis(page: Page, opts: { tripStatus?: number; reorderDelayMs?: number[] } = {}): Promise<Mock> {
+  const mock: Mock = { reorders: [], answered: [], tripStatus: opts.tripStatus ?? 200 };
   let order = STOPS.map((s) => s.component_id);
   await page.addInitScript((ids) => {
     try {
@@ -74,9 +78,13 @@ async function mockApis(page: Page, opts: { tripStatus?: number } = {}): Promise
     }
     const body = req.postDataJSON() as { op: string; ordered_component_ids?: string[] };
     if (body.op === "reorder" && body.ordered_component_ids) {
-      mock.reorders.push(body.ordered_component_ids);
-      order = body.ordered_component_ids;
-      return route.fulfill({ json: { trip_id: IDS.tripId, itinerary: withDays(order) } });
+      const n = mock.reorders.push(body.ordered_component_ids) - 1;
+      const mine = body.ordered_component_ids;
+      const delay = opts.reorderDelayMs?.[n] ?? 0;
+      if (delay) await new Promise((r) => setTimeout(r, delay));
+      order = mine;
+      mock.answered[n] = Date.now();
+      return route.fulfill({ json: { trip_id: IDS.tripId, itinerary: withDays(mine) } });
     }
     return route.fulfill({ status: 400, json: { error: "not mocked" } });
   });
@@ -138,6 +146,44 @@ test("reorder by keyboard is saved as one reorder op, and undo puts it back", as
   await expect(page.getByTestId("reorder-undo")).toHaveCount(0);
 });
 
+test("two quick key presses with a slow first answer: saved in order, the list never jumps back", async ({ page }, info) => {
+  const mock = await mockApis(page, { reorderDelayMs: [1500, 0] });
+  await openPlanner(page, isMobile(info.project.name));
+  await page.locator(`[data-handle="${D}"]`).focus();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  const target = ["Morning market walk", "Kayaking on Lake Miren", "Old town temple visit", "Cooking class with a family"];
+  // The second move shows at once, while the first save is still waiting for its answer.
+  await expect.poll(() => stopNames(page)).toEqual(target);
+  expect(mock.reorders.length).toBeLessThanOrEqual(1);
+  // The second save goes out only after the first answer, and the first answer does not draw its older order.
+  await expect.poll(() => mock.reorders.length, { timeout: 10_000 }).toBe(2);
+  expect(mock.reorders).toEqual([[A, B, D, C], [A, D, B, C]]);
+  expect(await stopNames(page)).toEqual(target);
+  await expect.poll(() => mock.answered.length).toBe(2);
+  expect(await stopNames(page)).toEqual(target);
+  await expect(page.locator(`[data-handle="${D}"]`)).toBeFocused();
+});
+
+test("reorder by tap only at 390: the handle opens a move menu", async ({ page }, info) => {
+  test.skip(!isMobile(info.project.name), "tap runs on the 390 phone project");
+  const mock = await mockApis(page);
+  await openPlanner(page, true);
+  await page.locator(`[data-handle="${D}"]`).tap();
+  const menu = page.getByTestId("reorder-menu");
+  await expect(menu).toBeVisible();
+  await expect(menu.getByTestId("move-down")).toBeDisabled();
+  await menu.getByTestId("move-up").tap();
+  await expect.poll(() => mock.reorders.length).toBe(1);
+  expect(mock.reorders[0]).toEqual([A, B, D, C]);
+  await expect(menu).toHaveCount(0);
+  await page.locator(`[data-handle="${D}"]`).tap();
+  await page.getByTestId("reorder-menu").getByTestId("move-first").tap();
+  await expect.poll(() => mock.reorders.length).toBe(2);
+  expect(mock.reorders[1]).toEqual([D, A, B, C]);
+  await expect(page.getByTestId("reorder-announce")).toHaveText(/to position 1 of 4/);
+});
+
 test("a day with two stops moves as a whole (day handle, arrow key)", async ({ page }, info) => {
   const mock = await mockApis(page);
   await openPlanner(page, isMobile(info.project.name));
@@ -167,6 +213,10 @@ test("reorder by a touch drag of the handle at 390", async ({ page }, info) => {
   expect(mock.reorders[0]).toEqual([B, C, D, A]);
   await expect.poll(() => stopNames(page)).toEqual([
     "Old town temple visit", "Cooking class with a family", "Kayaking on Lake Miren", "Morning market walk"]);
+  // A drag does not open the move menu, and the next tap still does.
+  await expect(page.getByTestId("reorder-menu")).toHaveCount(0);
+  await page.locator(`[data-handle="${B}"]`).tap();
+  await expect(page.getByTestId("reorder-menu")).toBeVisible();
 });
 
 test("stop photos and icons: a CIS photo where there is one, the icon tile otherwise", async ({ page }, info) => {
@@ -235,6 +285,24 @@ test("the share view shows the shared stops read-only, with print and calendar",
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Add to calendar (.ics)" }).click();
   expect((await download).suggestedFilename()).toBe("trip.ics");
+});
+
+test("the share view prints in the light theme for a viewer on the dark theme", async ({ page }) => {
+  await mockApis(page);
+  await page.emulateMedia({ colorScheme: "dark" });
+  const frag = new URLSearchParams({ v: "1", s: [A, B].join(".") }).toString();
+  const res = await page.goto(`/plan/shared#${frag}`, { waitUntil: "load" });
+  if (res?.status() === 202) await page.waitForLoadState("load");
+  await expect(page.getByTestId("shared-days")).toBeVisible({ timeout: 20_000 });
+  const html = page.locator("html");
+  await expect(html).toHaveAttribute("data-theme", "dark");
+  const inkOf = () => page.getByTestId("shared-days").getByText("Morning market walk").evaluate((el) => getComputedStyle(el).color);
+  await page.emulateMedia({ media: "print", colorScheme: "dark" });
+  await expect(html).toHaveAttribute("data-theme", "light");
+  // --aa-ink of the light theme (#1F2933): dark text on white paper.
+  await expect.poll(inkOf).toBe("rgb(31, 41, 51)");
+  await page.emulateMedia({ media: "screen", colorScheme: "dark" });
+  await expect(html).toHaveAttribute("data-theme", "dark");
 });
 
 test("a share link without a trip shows the kit empty state", async ({ page }) => {

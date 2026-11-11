@@ -7,7 +7,9 @@
 //   selected on the map scrolls its stop into view here (lib/stopSync.ts, state in lib/useTrip.tsx);
 // - item 4: reorder of days (the day handle, when a day has several stops) and stops (the stop handle): drag with a
 //   mouse or a finger (pointer events; the handle has touch-action: none, the list still scrolls everywhere else), or
-//   the arrow keys / Home / End on a focused handle. Every move is saved the way the planner always saved an order
+//   the arrow keys / Home / End on a focused handle, or a tap / click / Enter on the handle, which opens a small menu
+//   (Move up, Move down, Move to start, Move to end: the single-pointer way, WCAG 2.5.7, for touch screen readers and
+//   anyone who cannot drag). Every move is saved the way the planner always saved an order
 //   (lib/itineraryOrder.ts), announced in a live region, and can be undone from the trip panel.
 // Everything is drawn with the k-* tokens, so an agency tenant's brand (R5 theme tokens) colours it.
 import { useEffect, useRef, useState } from "react";
@@ -70,6 +72,10 @@ export default function DayList({
   const [announce, setAnnounce] = useState("");
   // The handle to focus again once the moved row is drawn in its new place (keyboard moves keep focus on it).
   const refocus = useRef<string | null>(null);
+  // The handle whose move menu is open (a tap / click / Enter on a handle opens it).
+  const [menu, setMenu] = useState<string | null>(null);
+  // A drag that just ended: the click that follows the pointerup must not open the menu.
+  const dragEnded = useRef(false);
 
   const groups = groupByDay(itinerary);
   const nameOfDestination = (id: string) => itinerary.find((x) => x.destination_id === id && !isLine(x))?.name ?? null;
@@ -92,6 +98,18 @@ export default function DayList({
       refocus.current = null;
     }
   }, [itinerary]);
+
+  // An open move menu: focus its first item; a press outside closes it.
+  useEffect(() => {
+    if (!menu || !listRef.current) return;
+    listRef.current.querySelector<HTMLElement>("[data-reorder-menu] button:not(:disabled)")?.focus();
+    const close = (e: PointerEvent) => {
+      const target = e.target as Element | null;
+      if (!target?.closest("[data-reorder-menu]") && !target?.closest(`[data-handle="${CSS.escape(menu)}"]`)) setMenu(null);
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [menu]);
 
   // A marker selected on the map: bring its stop into view here.
   useEffect(() => {
@@ -118,6 +136,8 @@ export default function DayList({
 
   const onPointerDown = (e: React.PointerEvent, kind: SortKind, index: number) => {
     if (e.button !== 0 || !listRef.current) return;
+    // A drag on touch may end with no click: a new press starts clean.
+    dragEnded.current = false;
     const rows = listRef.current.querySelectorAll<HTMLElement>(kind === "stop" ? "[data-sort-stop]" : "[data-sort-day]");
     const centres = [...rows].map((r) => {
       const b = r.getBoundingClientRect();
@@ -140,7 +160,28 @@ export default function DayList({
     if (!drag) return;
     const d = drag;
     setDrag(null);
+    dragEnded.current = d.moved;
     if (d.moved && d.to !== d.from) void commit(d.kind, d.from, d.to, handleId, label);
+  };
+  const onHandleClick = (handleId: string) => {
+    if (dragEnded.current) {
+      dragEnded.current = false;
+      return;
+    }
+    setMenu(menu === handleId ? null : handleId);
+  };
+  const onMenuKey = (e: React.KeyboardEvent<HTMLElement>, handleId: string) => {
+    const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setMenu(null);
+      listRef.current?.querySelector<HTMLElement>(`[data-handle="${CSS.escape(handleId)}"]`)?.focus();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = (at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+      items[next]?.focus();
+    }
   };
 
   const dragStyle = (kind: SortKind, index: number): React.CSSProperties | undefined =>
@@ -155,23 +196,67 @@ export default function DayList({
       : "";
 
   // A render function, not a component: the handle keeps its DOM node (and its pointer capture) across re-renders.
-  const handle = (kind: SortKind, index: number, id: string, label: string) => (
-    <button
-      type="button"
-      data-handle={id}
-      data-testid={kind === "stop" ? "stop-handle" : "day-handle"}
-      aria-label={`Reorder ${label}`}
-      aria-describedby="tp-reorder-hint"
-      onKeyDown={(e) => onHandleKey(e, kind, index, id, label)}
-      onPointerDown={(e) => onPointerDown(e, kind, index)}
-      onPointerMove={onPointerMove}
-      onPointerUp={() => onPointerUp(id, label)}
-      onPointerCancel={() => setDrag(null)}
-      className="aa-focus tp-no-print -ml-1 inline-flex h-8 w-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-k-muted hover:bg-k-accent-tint hover:text-k-accent-deep active:cursor-grabbing"
-    >
-      <Icon name="grip" className="h-4 w-4" />
-    </button>
-  );
+  const handle = (kind: SortKind, index: number, id: string, label: string) => {
+    const length = kind === "stop" ? itinerary.length : groups.length;
+    const unit = kind === "stop" ? "stop" : "day";
+    const moves: { text: string; to: number; testId: string }[] = [
+      { text: "Move up", to: index - 1, testId: "move-up" },
+      { text: "Move down", to: index + 1, testId: "move-down" },
+      { text: "Move to start", to: 0, testId: "move-first" },
+      { text: "Move to end", to: length - 1, testId: "move-last" },
+    ];
+    const open = menu === id;
+    return (
+      <span className="tp-no-print relative -ml-1 shrink-0">
+        <button
+          type="button"
+          data-handle={id}
+          data-testid={kind === "stop" ? "stop-handle" : "day-handle"}
+          aria-label={`Reorder ${label}`}
+          aria-describedby="tp-reorder-hint"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onKeyDown={(e) => onHandleKey(e, kind, index, id, label)}
+          onClick={() => onHandleClick(id)}
+          onPointerDown={(e) => onPointerDown(e, kind, index)}
+          onPointerMove={onPointerMove}
+          onPointerUp={() => onPointerUp(id, label)}
+          onPointerCancel={() => setDrag(null)}
+          className="aa-focus inline-flex h-8 w-6 cursor-grab touch-none items-center justify-center rounded-md text-k-muted hover:bg-k-accent-tint hover:text-k-accent-deep active:cursor-grabbing aria-expanded:bg-k-accent-tint aria-expanded:text-k-accent-deep"
+        >
+          <Icon name="grip" className="h-4 w-4" />
+        </button>
+        {open && (
+          <span
+            role="menu"
+            aria-label={`Move ${label}`}
+            data-reorder-menu
+            data-testid="reorder-menu"
+            onKeyDown={(e) => onMenuKey(e, id)}
+            className="absolute left-0 top-full z-20 mt-1 flex w-40 flex-col rounded-lg border border-k-line bg-k-card p-1 shadow-e2"
+          >
+            {moves.map((m) => (
+              <button
+                key={m.testId}
+                type="button"
+                role="menuitem"
+                data-testid={m.testId}
+                disabled={m.to < 0 || m.to >= length || m.to === index}
+                onClick={() => {
+                  setMenu(null);
+                  void commit(kind, index, m.to, id, label);
+                }}
+                className="aa-focus rounded-md px-2.5 py-2 text-left text-xs text-k-ink hover:bg-k-accent-tint disabled:cursor-not-allowed disabled:text-k-muted disabled:hover:bg-transparent"
+              >
+                {m.text}
+                <span className="sr-only"> ({unit})</span>
+              </button>
+            ))}
+          </span>
+        )}
+      </span>
+    );
+  };
 
   const stopActions = (d: ItineraryDay) => (
     <>
@@ -265,7 +350,7 @@ export default function DayList({
     <>
       <p id="tp-reorder-hint" className="sr-only">
         Drag the handle, or press the up and down arrow keys on it, to move it. Home and End move it to the start or the
-        end.
+        end. Tap the handle, or press Enter on it, for a menu of moves.
       </p>
       <ol ref={listRef} aria-label="Your days" className="space-y-0" data-testid="day-list">
         {groups.map((g, gi) => {
