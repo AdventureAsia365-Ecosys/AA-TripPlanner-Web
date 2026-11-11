@@ -177,6 +177,8 @@ async def test_case(case, world, monkeypatch):
         assert seen["records"][-1][1]["tools"] == exp["tools"]
     if "dropped_refs" in exp:
         assert seen["records"][-1][1]["dropped_refs"] == exp["dropped_refs"]
+    for key, want in exp.get("signal", {}).items():          # null = the key is absent from the signal
+        assert seen["records"][-1][1].get(key) == want, (key, seen["records"][-1][1])
     prompts = "\n".join(seen["prompts"])
     if "prompt_contains" in exp:
         assert exp["prompt_contains"] in prompts

@@ -5,6 +5,8 @@
 // attach a proposal built from catalog stops; "Apply to my trip" runs the planner's own mutations (useTrip
 // applyChatProposal). A paused chat keeps a calm line; only a money cap closes the composer (AI off or a provider
 // outage leaves it open to try again); the rest of the planner is untouched. Kit only: k-* tokens, ui/Button, ui/Badge, ui/AiNotice, ui/States.
+// The AI notice sits under each reply the model wrote (`showsAiLabel`), never in the header: a server sentence
+// (`ai_generated: false`) is not AI-written and gets no label.
 
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useTrip } from "@/lib/useTrip";
@@ -16,6 +18,7 @@ import {
   locksComposer,
   noticeFor,
   proposalSummary,
+  showsAiLabel,
   type ApplyState,
   type ChatMessage,
   type ChatProposal,
@@ -157,7 +160,6 @@ export default function PlanChat() {
           <Icon name="chat" className="h-4 w-4 text-k-accent-deep" />
           {copy.title}
         </h2>
-        <AiNotice size="sm" variant="narration" termsHref={TERMS_AI_PATH} className="mt-2" testId="chat-ai-notice" />
       </header>
 
       <div ref={logRef} role="log" aria-live="polite" aria-relevant="additions" className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
@@ -198,6 +200,10 @@ export default function PlanChat() {
                     <span className="sr-only">{copy.assistant}: </span>
                     {l.text}
                   </p>
+                  {showsAiLabel(l) && (
+                    <AiNotice size="sm" variant="narration" termsHref={TERMS_AI_PATH} className="mt-1 px-1"
+                      testId="chat-ai-notice" />
+                  )}
                   {l.proposal && (
                     <ProposalCard proposal={l.proposal} state={l.apply ?? "idle"} lang={lang}
                       onApply={() => void apply(l.id, l.proposal as ChatProposal)} />

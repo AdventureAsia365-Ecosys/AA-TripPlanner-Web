@@ -929,7 +929,13 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   catalog tool of `backend/assembly/chat_tools.py`, or a reply with an optional proposal), at most 3 calls a message.
   The server keeps it inside the catalog: a proposal names only references the turn's tools returned (or the trip's
   stops) and is built from their catalog facts; a reply with a capitalised word the catalog did not give, a link, a
-  dropped reference or the prompt's own words becomes a server sentence pointing to what AA offers. The chat writes
+  dropped reference or the prompt's own words becomes a server sentence pointing to what AA offers (it names every
+  country AA sells, by name). The grounding check reads whole capitalised runs: one ordinary English word passes in
+  capitals ("Day 2", a plural or singular of a catalog word, a sold country's demonym), but a name of two or more words
+  passes only where the turn's catalog names it ("Hidden Valley Temple" or "Royal Palace" do not). When the turn's last
+  tool was `route_options` and the model answered without a proposal, the server proposes the first option and says so
+  (ledger signal `server_proposal`). The planner shows the AI notice under each reply with `ai_generated: true` only
+  (lane S277 l33, `docs/implementation-notes/AA-1041-l33.md`). The chat writes
   no trip state: "Apply to my trip" runs `remove` + `apply-route`. Money gates before every model call: the chat's
   month caps (tp-029 `tripplanner.ai_spend_month`, `TP_PLAN_CHAT_MONTHLY_CAP_USD` for the app and
   `TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD` per tenant, 2 USD each by default), then `budget_status` (daily app caps, the

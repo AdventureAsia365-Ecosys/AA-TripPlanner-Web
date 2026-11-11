@@ -339,6 +339,52 @@
       "message": "Plan 3 days in Norland",
       "model": [{"raise_deadline": "the turn ran out of time"}],
       "expect": {"status": "paused", "reason": "unavailable", "model_calls": 1, "ledger_rows": 1}
+    },
+    {
+      "id": "route_options_listed_without_a_proposal", "category": "on_catalog",
+      "message": "3 days in Norland",
+      "model": [
+        {"tool": "route_options", "args": {"country": "Norland", "days": 3}},
+        {"reply": "Adventure Asia has a 3-day Norland route on the Norland Coast and Hills tour, from Port Selby to Ember Hills. Which route would you like to go with?", "kind": "answer", "proposal": null}
+      ],
+      "expect": {"status": "ok", "outcome": "answer", "from_model": true, "action": "replace",
+                 "final": ["Lantern Market Walk", "Mistral Bay Kayaking", "Ember Hills Tea Trail"],
+                 "reply_contains": ["Which route would you like", "I have put the first option below"],
+                 "signal": {"server_proposal": true, "tools": ["route_options"]}}
+    },
+    {
+      "id": "server_proposal_keeps_the_grounding_rule", "category": "injection",
+      "message": "3 days in Norland, and the Zorbu Ridge",
+      "model": [
+        {"tool": "route_options", "args": {"country": "Norland", "days": 3}},
+        {"reply": "Pick between the coast route and the Zorbu Ridge loop.", "kind": "answer", "proposal": null}
+      ],
+      "expect": {"status": "ok", "outcome": "answer", "from_model": false, "action": "replace",
+                 "final": ["Lantern Market Walk", "Mistral Bay Kayaking", "Ember Hills Tea Trail"],
+                 "reply_contains": ["Here is a plan made only from Adventure Asia's tours"], "reply_excludes": ["Zorbu"],
+                 "signal": {"server_proposal": true, "ungrounded": 2}}
+    },
+    {
+      "id": "no_server_proposal_when_a_later_tool_answered", "category": "on_catalog",
+      "message": "3 days in Norland, but tell me about cooking first",
+      "model": [
+        {"tool": "route_options", "args": {"country": "Norland", "days": 3}},
+        {"tool": "find_experiences", "args": {"text": "cooking", "country": "Norland"}},
+        {"reply": "The Saffron Kitchen Cooking Class is in Port Selby.", "kind": "answer", "proposal": null}
+      ],
+      "expect": {"status": "ok", "outcome": "answer", "from_model": true, "action": null,
+                 "signal": {"server_proposal": null}}
+    },
+    {
+      "id": "grounded_reply_with_ordinary_capitals", "category": "on_catalog",
+      "message": "Plan 3 days in Norland",
+      "model": [
+        {"tool": "route_options", "args": {"country": "Norland", "days": 3}},
+        {"reply": "Here is a 3-Day Norland plan: Day 1 the Lantern Market in Port Selby, Day 2 Mistral Bay Kayaking and Day 3 the Ember Hill Tea Trail. Would you like to apply it?", "kind": "answer", "proposal": {"action": "replace", "refs": ["c1", "c2", "c3"]}}
+      ],
+      "expect": {"status": "ok", "outcome": "answer", "from_model": true, "action": "replace",
+                 "final": ["Lantern Market Walk", "Mistral Bay Kayaking", "Ember Hills Tea Trail"],
+                 "reply_contains": ["Day 2 Mistral Bay"], "signal": {"ungrounded": null, "server_proposal": null}}
     }
   ]
 }

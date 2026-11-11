@@ -16,6 +16,12 @@ What the server guarantees, whatever the model writes (the model is never truste
   countries AA sells) or plain words. A capitalised word that is none of these (an invented place, a hotel, an
   airline, a country AA does not sell) replaces the whole reply by a server sentence that points to what AA offers
   (:func:`ungrounded_words`). A dropped reference does the same: a reply never describes a change the server refused.
+  The check reads whole capitalised runs: one ordinary word passes in capitals ("Day 2", "Lagoon" for a catalog
+  "Lagoons"), but a name of two or more words needs the catalog ("Glass Lagoon", "Northern Norland" pass; "Hidden
+  Valley Temple", "Royal Palace" do not).
+* **A route ask ends with a plan.** When the turn's last tool was ``route_options`` and the model answered without a
+  proposal (it listed the options and asked which one), the server proposes the first option itself and says so in
+  one appended sentence (:data:`SERVER_PROPOSAL_NOTE`); the traveller still decides whether to apply it.
 * **The trip changes only when the traveller applies a proposal** (the planner calls the existing remove and
   apply-route mutations, which go through the guest guard). The chat route itself writes no trip state.
 * **Bounded:** message and history lengths, steps, tool rows, reply length and proposal size are capped here; the
@@ -55,7 +61,6 @@ MAX_PROPOSAL_STOPS = 60      # apply-route takes 1-60 component ids
 TURN_DEADLINE_S = 24.0
 MIN_CALL_S = 4.0
 MAX_COUNTRIES_IN_PROMPT = 40
-FALLBACK_COUNTRIES = 8
 
 OUTCOME_ANSWER = "answer"
 OUTCOME_REFUSAL = "refusal"
@@ -86,6 +91,9 @@ _SYSTEM = (
     "3. To change the trip, put a proposal in your reply: action \"replace\" (the trip becomes exactly these stops, "
     "in order), \"add\" (append these stops) or \"remove\" (drop these trip stops). refs may only be c<n> references "
     "from tool results on this turn or s<n> references of the trip. The traveller decides whether to apply it.\n"
+    "When the traveller names a country Adventure Asia sells and a number of days, call route_options, then answer "
+    "with the option that fits best as a \"replace\" proposal and mention the other options in one short sentence; "
+    "do not ask the traveller to choose first.\n"
     "4. If the traveller asks for something Adventure Asia does not offer (another country, flights, hotels, visas, "
     "anything outside the catalog), say politely that you can only plan with Adventure Asia's tours, name what it "
     "does offer from the country list, set kind \"refusal\" and no proposal.\n"
@@ -139,6 +147,7 @@ class TurnResult:
     out_of_time: bool = False
     paused_reason: Optional[str] = None
     from_model: bool = False      # the reply is the model's text (else a server sentence)
+    server_proposal: bool = False  # the server proposed the first route option (the model listed options only)
 
     def signal(self) -> dict:
         """The ledger quality signal of the turn: counts and codes only, never the traveller's or the model's text."""
@@ -147,7 +156,7 @@ class TurnResult:
         if self.proposal:
             out["proposal_action"] = self.proposal["action"]
             out["proposal_stops"] = len(self.proposal["final_component_ids"])
-        for key in ("dropped_refs", "ungrounded", "invalid_json", "out_of_time"):
+        for key in ("dropped_refs", "ungrounded", "invalid_json", "out_of_time", "server_proposal"):
             if getattr(self, key):
                 out[key] = getattr(self, key)
         if self.paused_reason:
@@ -259,14 +268,28 @@ def build_proposal(raw: Any, refs: chat_tools.Refs, itinerary: list[dict]) -> tu
             "stops": [stop(c) for c in final], "removed": [stop(c) for c in removed]}, dropped
 
 
-# Capitalised words a grounded reply may use without the catalog naming them: the company, calendar words, and words
-# that start an English sentence.
-_ALWAYS_OK = frozenset("""
+# Ordinary English words a grounded reply may capitalise without the catalog naming them (AA-1041 S277 smoke: the
+# grounding rule replaced correct replies). One such word alone passes ("Day 2", "Option 1", a "Temple"); a NAME of two
+# or more of them does not ("Hidden Valley Temple", "Old Town Night Market"): :func:`ungrounded_words` checks whole
+# capitalised runs, and a run passes only where the turn's catalog accounts for it. Adjectives that mostly build names
+# (grand, hidden, great, royal, sacred, holy, express, explorer, discovery, classic, scenic) are in no list, nor words
+# that name a travel service AA does not sell (hotel, resort, airline, flight, airport). Compared through _key (lower
+# case, possessive / contraction and plural "s" dropped), like the catalog's words.
+_ALWAYS_OK_WORDS = """
 adventure asia aa ai i ok okay
 january february march april may june july august september october november december
 monday tuesday wednesday thursday friday saturday sunday
-""".split())
-_SENTENCE_STARTERS = frozenset("""
+day days night nights week weeks weekend morning afternoon evening sunrise sunset
+option options route routes tour tours trip trips stop stops part step leg highlight highlights loop circuit
+trail walk walking trek trekking hike hiking ride cycling bike biking kayak kayaking rafting cruise boat
+class cooking food market night temple temples monastery pagoda shrine stupa palace fort museum gallery
+river lake mount mountain mountains hill hills valley gorge canyon cave caves fall falls waterfall lagoon island
+islands beach bay coast park national garden gardens village villages town city old new quarter centre center
+bridge road street square rice field fields terrace terraces farm dairy tea forest jungle desert plateau pass
+camp homestay heritage world unesco ancient buddhist hindu festival ceremony culture cultural little upper lower
+north south east west northern southern eastern western central northeast northwest southeast southwest
+""".split()
+_SENTENCE_STARTER_WORDS = """
 a an the this that these those here there it its i we our us you your they their he she if for with on in at from
 to of by as and but or so yes no sure great sorry unfortunately however also then after before day days each every
 both all start begin end finish enjoy explore visit spend take try add remove swap replace drop keep let would could
@@ -278,8 +301,30 @@ perhaps maybe alternatively instead otherwise absolutely certainly of course not
 everything there's here's it's i'm i'll we're we'll you'll you're let's that's what's apply check see look tell share
 want like love prefer choose pick pair combine mix go head travel fly drive walk ride sail cruise relax rest stay
 this's other another again still already both either neither our whole full short long easy gentle active
-""".split())
+afterwards along during over throughout since because once until unless though although whether shall will
+starting beginning ending following continuing heading visiting staying spending cycling trekking hiking walking
+continue discover wander experience return set cross wake ready alright okay got feel follow join meet see
+swim hop catch board climb sample taste watch learn stroll browse shop soak admire witness round wrap kick unwind
+savour savor paddle float cycle bike trek hike kayak raft sleep dine eat
+highlights includes include including stops day option along between within across around near beyond
+don't doesn't didn't isn't aren't wasn't won't can't wouldn't couldn't shouldn't haven't hasn't i'd i've you'd
+we'd we've you've they're they'll
+""".split()
 _WORD_RE = re.compile(r"[^\W\d_][\w'’-]*")
+# A name word for the grounding check: no hyphen, so "4-Day" is "Day" and "Prabang-based" is "Prabang" + "based".
+_NAME_RE = re.compile(r"[^\W\d_][\w'’]*")
+_CONTRACTION_RE = re.compile(r"(?:n['’]t|['’](?:s|d|ll|ve|re|m))$")
+# Demonyms of countries AA may sell: a reply's "Lao villages" or "Khmer temples" is grounded when the country itself is
+# on the offered list (the catalog's country names), never otherwise.
+DEMONYMS: dict[str, tuple[str, ...]] = {
+    "Bangladesh": ("Bangladeshi", "Bengali"), "Bhutan": ("Bhutanese",), "Cambodia": ("Cambodian", "Khmer"),
+    "China": ("Chinese",), "Hong Kong": ("Hongkonger",), "India": ("Indian",), "Indonesia": ("Indonesian",),
+    "Japan": ("Japanese",), "Kazakhstan": ("Kazakh",), "Kyrgyzstan": ("Kyrgyz",), "Laos": ("Lao", "Laotian"),
+    "Malaysia": ("Malaysian",), "Mongolia": ("Mongolian",), "Myanmar": ("Burmese",), "Nepal": ("Nepali", "Nepalese"),
+    "Pakistan": ("Pakistani",), "Philippines": ("Filipino", "Philippine"), "Russian Federation": ("Russian",),
+    "South Korea": ("Korean",), "Sri Lanka": ("Lankan",), "Taiwan": ("Taiwanese",),
+    "Tanzania": ("Tanzanian",), "Thailand": ("Thai",), "Uzbekistan": ("Uzbek",), "Vietnam": ("Vietnamese",),
+}
 
 
 def _word(w: str) -> str:
@@ -287,31 +332,135 @@ def _word(w: str) -> str:
     return re.sub(r"['’]s$", "", w.lower()).strip("'’-")
 
 
+def _key(w: str) -> str:
+    """A name word as the grounding check compares it: lower case, no possessive or contraction ("Asia's" -> "asia",
+    "don't" -> "do"), no plural "s" ("Lagoons" and "Lagoon" -> "lagoon", "Laos" -> "lao")."""
+    low = _CONTRACTION_RE.sub("", w.lower().strip("'’"))
+    if len(low) > 3 and low.endswith("s") and not low.endswith("ss"):
+        low = low[:-1]
+    return low
+
+
+def _keys(words: list[str]) -> frozenset[str]:
+    return frozenset(_key(k) for w in words for k in _NAME_RE.findall(w))
+
+
+_ALWAYS_OK = _keys(_ALWAYS_OK_WORDS)
+_SENTENCE_STARTERS = _keys(_SENTENCE_STARTER_WORDS)
+
+
 def _vocab(texts: list[str]) -> set[str]:
     words: set[str] = set()
     for t in texts:
-        for w in _WORD_RE.findall(str(t)):
-            words.add(_word(w))
+        for w in _NAME_RE.findall(str(t)):
+            words.add(_key(w))
     return words
 
 
+def demonyms(offered: list[dict]) -> list[str]:
+    """The demonyms of the countries AA sells now (grounded words of a reply)."""
+    return [d for c in offered for d in DEMONYMS.get(c["country"], ())]
+
+
+def _sentence_start(before: str) -> bool:
+    before = before.rstrip()
+    return (not before or before[-1] in ".!?:;\"'(“‘•*"
+            or before.endswith((" -", " –", " —")) or before in ("-", "–", "—"))
+
+
+# Names a reply may use although no catalog row of the turn has them.
+_OWN_PHRASES = ("Adventure Asia", "UNESCO World Heritage Site")
+# Lower-case words that keep two capitalised words in one name ("Palace of the Winds", "Coast and Hills").
+_JOINERS = (("of", "the"), ("of",), ("and",))
+# What may separate two words of one name: spaces, or a hyphen with no space ("Ban Na-Lao").
+_NAME_GAP_RE = re.compile(r"[ \t\u00a0]+|-")
+_NGRAM_MAX = 8
+
+
+def _phrases(texts: list[str]) -> set[tuple[str, ...]]:
+    """Every run of 2 to _NGRAM_MAX consecutive word keys of the catalog texts (and _OWN_PHRASES)."""
+    grams: set[tuple[str, ...]] = set()
+    for t in [*texts, *_OWN_PHRASES]:
+        keys = [_key(w) for w in _NAME_RE.findall(str(t))]
+        for i in range(len(keys)):
+            for j in range(i + 2, min(len(keys), i + _NGRAM_MAX) + 1):
+                grams.add(tuple(keys[i:j]))
+    return grams
+
+
+def _capital(m: "re.Match[str]") -> bool:
+    w = m.group(0)
+    return w[0].isupper() and len(_key(w)) >= 2
+
+
+def _name_runs(reply: str) -> list[list["re.Match[str]"]]:
+    """The reply's capitalised runs: consecutive capitalised words, kept together across _JOINERS ("Palace of Zorbu",
+    "Norland Coast and Hills"). Joiner words stay in the run (lower case) so a catalog phrase matches whole."""
+    toks = list(_NAME_RE.finditer(reply))
+    runs: list[list[re.Match[str]]] = []
+    i = 0
+    while i < len(toks):
+        if not _capital(toks[i]):
+            i += 1
+            continue
+        run, j = [toks[i]], i + 1
+        while j < len(toks):
+            if _NAME_GAP_RE.fullmatch(reply[run[-1].end():toks[j].start()]) and _capital(toks[j]):
+                run.append(toks[j])
+                j += 1
+                continue
+            for joiner in _JOINERS:
+                k = j + len(joiner)
+                seq = toks[j:k + 1]
+                if (len(seq) == k + 1 - j and [m.group(0) for m in seq[:-1]] == list(joiner) and _capital(seq[-1])
+                        and all(reply[a.end():b.start()] == " " for a, b in zip([run[-1], *seq[:-1]], seq))):
+                    run.extend(seq)
+                    j = k + 1
+                    break
+            else:
+                break
+        runs.append(run)
+        i = j
+    return runs
+
+
 def ungrounded_words(reply: str, vocabulary: list[str]) -> list[str]:
-    """Capitalised words of the reply that neither the catalog of this turn nor the plain-word lists account for. A
-    sentence's first word may also be an ordinary sentence starter."""
+    """Capitalised words of the reply that the catalog of this turn does not account for (AA-1041 slice 2, S277
+    review). The check works on whole capitalised runs, not single words, so a name made only of ordinary words is not
+    waved through word by word:
+
+    * a word is accounted for when it is a distinctive catalog word of the turn (in the vocabulary and not an ordinary
+      word: "Norland", "Mistral", a sold country's demonym), when it sits in a stretch of two or more words that a
+      catalog name (or _OWN_PHRASES) contains in the same order ("Glass Lagoon" of "Glass Lagoons 1"), or when it is
+      the run's first word at a sentence start and an ordinary sentence starter ("Then", "Visit");
+    * what is left of a run (split at accounted words and at "and") is grounded only when it is one ordinary word
+      ("Day", "Temple", the "Northern" of "Northern Norland"). Two or more words left over ("Hidden Valley Temple",
+      "Royal Palace" beside a catalog name) or any word in no list ("Zorbu", "Hotel") flag that leftover name, and the
+      words of it are returned."""
     allowed = _vocab(vocabulary)
+    grams = _phrases(vocabulary)
     bad: list[str] = []
-    for m in _WORD_RE.finditer(reply):
-        w = m.group(0)
-        if not w[0].isupper():
-            continue
-        low = _word(w)
-        if len(low) < 2 or low in _ALWAYS_OK or low in allowed:
-            continue
-        before = reply[:m.start()].rstrip()
-        sentence_start = not before or before[-1] in ".!?:;\n\"'(“‘-•*"
-        if sentence_start and low in _SENTENCE_STARTERS:
-            continue
-        bad.append(w)
+    for run in _name_runs(reply):
+        words = [m.group(0) for m in run]
+        keys = [_key(w) for w in words]
+        name = [w[0].isupper() for w in words]        # joiners are lower case
+        ok = [n and k in allowed and k not in _ALWAYS_OK for n, k in zip(name, keys)]
+        for i in range(len(run)):
+            for j in range(min(len(run), i + _NGRAM_MAX), i + 1, -1):
+                if sum(name[i:j]) >= 2 and tuple(keys[i:j]) in grams:
+                    ok[i:j] = [True] * (j - i)
+                    break
+        if not ok[0] and _sentence_start(reply[:run[0].start()]) and keys[0] in _SENTENCE_STARTERS:
+            ok[0] = True
+        part: list[int] = []
+        for idx in [*range(len(run)), None]:
+            if idx is not None and not ok[idx] and words[idx] != "and":
+                if name[idx]:
+                    part.append(idx)
+                continue
+            if part and (len(part) >= 2 or (keys[part[0]] not in _ALWAYS_OK and keys[part[0]] not in allowed)):
+                bad.extend(words[p] for p in part)
+            part = []
     return bad
 
 
@@ -328,11 +477,19 @@ def leaks_prompt(reply: str) -> bool:
                for i in range(len(words) - _PROMPT_WINDOW + 1))
 
 
+# Appended to the model's own reply when the server proposed the first route option (the model listed the options and
+# asked which one): the reply then matches the plan card under it.
+SERVER_PROPOSAL_NOTE = ("I have put the first option below as a plan you can apply to your trip; ask me for another "
+                        "one if you prefer.")
+
+
 def fallback_reply(offered: list[dict], *, with_proposal: bool, failed: bool = False) -> str:
+    """The server sentence. Without a proposal it names every country AA sells now, by name (S277 smoke: a top-8 by
+    tour count left out countries such as Vietnam); the planner's text wraps."""
     if with_proposal:
         return ("Here is a plan made only from Adventure Asia's tours. Check the stops below and apply it to your "
                 "trip if it suits you.")
-    names = [c["country"] for c in offered[:FALLBACK_COUNTRIES]]
+    names = sorted({str(c["country"]) for c in offered if c.get("country")}, key=str.casefold)
     where = (", ".join(names[:-1]) + f" and {names[-1]}") if len(names) > 1 else (names[0] if names else "")
     lead = "I could not work that out. " if failed else ""
     offer = f" Adventure Asia runs trips in {where}." if where else ""
@@ -348,7 +505,9 @@ async def run_turn(conn: Any, *, message: str, history: list[dict], itinerary: l
     refs.vocabulary.extend(c["country"] for c in offered)
     trip = trip_refs(itinerary, refs)
     msg = _clean(message, MAX_MESSAGE_CHARS)
+    refs.vocabulary.extend(demonyms(offered))
     steps: list[dict] = []
+    route_found: Optional[dict] = None     # the last tool's route_options answer, when it was one
     result = TurnResult(reply="", outcome=OUTCOME_FALLBACK)
     for step in range(1, MAX_STEPS + 1):
         if before_call is not None:
@@ -377,23 +536,41 @@ async def run_turn(conn: Any, *, message: str, history: list[dict], itinerary: l
             except chat_tools.ToolError as e:
                 out = {"error": str(e)}
             steps.append({"call": {"tool": name, "args": obj.get("args")}, "result": out})
+            route_found = out if name == "route_options" and out.get("options") else None
             continue
         if "reply" in obj:
-            return _finish(obj, refs, itinerary, offered, result)
+            return _finish(obj, refs, itinerary, offered, result, route_found)
         result.invalid_json += 1
     result.reply = fallback_reply(offered, with_proposal=False, failed=True)
     result.outcome = OUTCOME_FALLBACK
     return result
 
 
+def first_route_proposal(route_found: Optional[dict], refs: chat_tools.Refs,
+                         itinerary: list[dict]) -> Optional[dict]:
+    """A "replace" proposal of the first option a route_options call returned (its pinned days, in order), or None."""
+    if not route_found or not route_found.get("options"):
+        return None
+    day_refs = [d["ref"] for d in route_found["options"][0].get("days", []) if d.get("ref")]
+    if not day_refs:
+        return None
+    proposal, dropped = build_proposal({"action": "replace", "refs": day_refs}, refs, itinerary)
+    return proposal if not dropped else None
+
+
 def _finish(obj: dict, refs: chat_tools.Refs, itinerary: list[dict], offered: list[dict],
-            result: TurnResult) -> TurnResult:
+            result: TurnResult, route_found: Optional[dict] = None) -> TurnResult:
     proposal, dropped = build_proposal(obj.get("proposal"), refs, itinerary)
     kind = OUTCOME_REFUSAL if obj.get("kind") == "refusal" else OUTCOME_ANSWER
     if kind == OUTCOME_REFUSAL or dropped:
         # A refusal never changes the trip, and a proposal that named anything the turn did not return is refused
         # whole (the model tried to go outside the catalog: none of its plan is trusted).
         proposal = None
+    elif obj.get("proposal") in (None, {}, []) and proposal is None:
+        # The traveller asked for a route and the model only listed the options (S277 smoke, "4 days in Laos"): the
+        # server proposes the first one, built from the tool's catalog references like any proposal.
+        proposal = first_route_proposal(route_found, refs, itinerary)
+        result.server_proposal = proposal is not None
     reply = re.sub(r"\s+", " ", str(obj.get("reply") or "")).strip()
     bad = ungrounded_words(reply, refs.vocabulary)
     result.dropped_refs, result.ungrounded, result.proposal = dropped, len(bad), proposal
@@ -405,5 +582,7 @@ def _finish(obj: dict, refs: chat_tools.Refs, itinerary: list[dict], offered: li
         else:
             result.outcome = OUTCOME_REFUSAL if kind == OUTCOME_REFUSAL and not dropped else OUTCOME_FALLBACK
         return result
+    if result.server_proposal:
+        reply = f"{reply} {SERVER_PROPOSAL_NOTE}"
     result.reply, result.outcome, result.from_model = reply, kind, True
     return result
