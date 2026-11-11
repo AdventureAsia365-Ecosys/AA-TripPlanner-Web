@@ -74,8 +74,10 @@ export default function DayList({
   const refocus = useRef<string | null>(null);
   // The handle whose move menu is open (a tap / click / Enter on a handle opens it).
   const [menu, setMenu] = useState<string | null>(null);
-  // A drag that just ended: the click that follows the pointerup must not open the menu.
-  const dragEnded = useRef(false);
+  // A press handled at pointerup (a tap toggled the menu, or a drag ended): the click that may follow is skipped. A
+  // touch tap does not always get a click (Chromium drops it after some gestures), so taps are handled at pointerup;
+  // the click handler is for Enter / Space and for assistive tech that sends a click with no pointer events.
+  const skipClick = useRef(false);
 
   const groups = groupByDay(itinerary);
   const nameOfDestination = (id: string) => itinerary.find((x) => x.destination_id === id && !isLine(x))?.name ?? null;
@@ -136,8 +138,7 @@ export default function DayList({
 
   const onPointerDown = (e: React.PointerEvent, kind: SortKind, index: number) => {
     if (e.button !== 0 || !listRef.current) return;
-    // A drag on touch may end with no click: a new press starts clean.
-    dragEnded.current = false;
+    skipClick.current = false;
     const rows = listRef.current.querySelectorAll<HTMLElement>(kind === "stop" ? "[data-sort-stop]" : "[data-sort-day]");
     const centres = [...rows].map((r) => {
       const b = r.getBoundingClientRect();
@@ -160,15 +161,17 @@ export default function DayList({
     if (!drag) return;
     const d = drag;
     setDrag(null);
-    dragEnded.current = d.moved;
-    if (d.moved && d.to !== d.from) void commit(d.kind, d.from, d.to, handleId, label);
+    skipClick.current = true;
+    if (!d.moved) toggleMenu(handleId);
+    else if (d.to !== d.from) void commit(d.kind, d.from, d.to, handleId, label);
   };
+  const toggleMenu = (handleId: string) => setMenu((m) => (m === handleId ? null : handleId));
   const onHandleClick = (handleId: string) => {
-    if (dragEnded.current) {
-      dragEnded.current = false;
+    if (skipClick.current) {
+      skipClick.current = false;
       return;
     }
-    setMenu(menu === handleId ? null : handleId);
+    toggleMenu(handleId);
   };
   const onMenuKey = (e: React.KeyboardEvent<HTMLElement>, handleId: string) => {
     const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];

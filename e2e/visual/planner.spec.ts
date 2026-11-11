@@ -193,6 +193,25 @@ test("a day with two stops moves as a whole (day handle, arrow key)", async ({ p
   expect(mock.reorders[0]).toEqual([A, D, B, C]);
 });
 
+test("the move menu by keyboard (Enter) and by mouse click; Escape returns focus to the handle", async ({ page }, info) => {
+  const mock = await mockApis(page);
+  await openPlanner(page, isMobile(info.project.name));
+  const handle = page.locator(`[data-handle="${A}"]`);
+  await handle.focus();
+  await page.keyboard.press("Enter");
+  const menu = page.getByTestId("reorder-menu");
+  await expect(menu.getByTestId("move-down")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(handle).toBeFocused();
+  if (!isMobile(info.project.name)) {
+    await handle.click();
+    await page.getByTestId("reorder-menu").getByTestId("move-last").click();
+    await expect.poll(() => mock.reorders.length).toBe(1);
+    expect(mock.reorders[0]).toEqual([B, C, D, A]);
+  }
+});
+
 test("reorder by a touch drag of the handle at 390", async ({ page }, info) => {
   test.skip(!isMobile(info.project.name), "touch drag runs on the 390 phone project");
   const mock = await mockApis(page);
