@@ -4,12 +4,14 @@
 // The fragment carries component ids only (lib/shareTrip.ts); the stops, their places and photos come from the CIS
 // catalog (GET /browse/stops). Nothing here writes: no trip call, no cookie read, nothing stored. Kit loading, empty
 // and error states (item 7); the agency tenant's brand tokens colour it (the tenant page adds its <style>).
-// "Print or save as PDF" is the browser's print (app/globals.css @media print hides the controls), and the
+// "Print or save as PDF" is the browser's print (app/globals.css @media print hides the controls; lib/printTheme.ts
+// prints in the light theme even when the viewer reads in dark), and the
 // calendar file (.ics) needs a start date the traveller picks.
 import { useEffect, useMemo, useState } from "react";
 import { fetchStops, type StopDetail } from "@/lib/api";
 import { assignDays, groupByDay } from "@/lib/itineraryOrder";
 import { kindLabel, placeKind } from "@/lib/placeIcon";
+import { printInLightTheme } from "@/lib/printTheme";
 import { decodeShare, parseStartDate, tripIcs, type SharedTrip } from "@/lib/shareTrip";
 import { formatDays } from "@/lib/text";
 import { PlaceIcon } from "@/components/ActivityIcon";
@@ -42,6 +44,9 @@ export default function SharedTripView({ planHref, agencyName }: { planHref: str
       window.removeEventListener("hashchange", read);
     };
   }, []);
+
+  // Printing always uses the light theme (dark text on white paper), whatever theme the viewer reads in.
+  useEffect(() => printInLightTheme(window), []);
 
   const key = shared ? `${shared.ids.join(",")}#${attempt}` : "";
   useEffect(() => {

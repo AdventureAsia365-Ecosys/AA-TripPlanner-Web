@@ -447,7 +447,9 @@ html[data-motion="ok"] .tp-skeleton {
   animation: tp-skeleton-pulse 1.4s var(--aa-ease-std) infinite;
 }
 
-/* ── AA-1041 (R7 item 6): the share / print view prints on white with no page chrome. ── */
+/* ── AA-1041 (R7 item 6): the share / print view prints on white with no page chrome. A viewer on the dark theme
+   prints in the light theme: lib/printTheme.ts switches <html data-theme> while printing (the --aa-* values may only
+   be defined in the kit core, so this sheet cannot redefine them). ── */
 @media print {
   .tp-no-print {
     display: none !important;
