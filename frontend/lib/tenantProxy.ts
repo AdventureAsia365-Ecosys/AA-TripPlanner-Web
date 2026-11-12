@@ -21,7 +21,7 @@ export type TenantPick =
 
 export async function tenantHeaders(
   slugHeader: string | null,
-  edgeKey: string,
+  keyMaterial: string,
   resolve: (slug: string) => Promise<TenantSite | null>,
   nowS?: number,
 ): Promise<TenantPick> {
@@ -34,6 +34,9 @@ export async function tenantHeaders(
     throw e;
   }
   if (!site) return { ok: false, status: 404, error: "unknown_tenant" };
-  if (!normaliseEdgeKey(edgeKey)) return { ok: false, status: 503, error: "tenant_assertion_unavailable" };
-  return { ok: true, headers: { [TENANT_ASSERTION_HEADER]: signTenantAssertion(edgeKey, site.tenant_id, site.slug, nowS) } };
+  if (!normaliseEdgeKey(keyMaterial)) return { ok: false, status: 503, error: "tenant_assertion_unavailable" };
+  return {
+    ok: true,
+    headers: { [TENANT_ASSERTION_HEADER]: signTenantAssertion(keyMaterial, site.tenant_id, site.slug, nowS) },
+  };
 }
