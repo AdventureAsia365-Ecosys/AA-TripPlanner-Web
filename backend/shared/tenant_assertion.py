@@ -21,6 +21,12 @@ Lambdas accept:
   * the edge-derived key (the pre-AA-1092 key) only until ``edge_derived_until`` (the cut-over grace), or while the
     secret has no value yet (a shell before the first fill: the behaviour before AA-1092, logged on every use).
 
+Each container caches the secret for ``config.API_KEY_CACHE_SECONDS`` (10 minutes). A signature miss re-reads it once
+when the cached copy is at least ``config.TENANT_ASSERTION_REFRESH_MIN_AGE_S`` old (``_refresh_after_miss``), then
+verifies again: a web task that already signs with a new ``current`` (first fill, rotation) is not refused until the
+cache expires. The rollout still waits 10 minutes after a write before the web deploy (AA-CIS-Infra
+tools/identity/tripplanner_assertion_key.py ``deploy_not_before``); the re-read covers a deploy that did not.
+
 A grace longer than ``config.TENANT_ASSERTION_MAX_GRACE_S`` is ignored (the old key is refused). A secret that is
 malformed, or a ``current`` shorter than ``config.TENANT_ASSERTION_KEY_MIN_LENGTH``, fails closed: a request WITH an
 assertion is refused (503); a request without one keeps the default tenant.
@@ -315,6 +321,32 @@ def _raw_secret() -> Optional[str]:
     return raw
 
 
+def _refresh_after_miss() -> bool:
+    """After a signature miss on Lambda: re-read the secret once when the cached copy is at least
+    TENANT_ASSERTION_REFRESH_MIN_AGE_S old (and no failed read is backing off). True when the re-read returned another
+    value (verify again); False otherwise. Throttled per container, so a flood of forged assertions costs at most one
+    Secrets Manager read per TENANT_ASSERTION_REFRESH_MIN_AGE_S."""
+    if config.TENANT_ASSERTION_KEY or not _on_lambda() or not _cache["loaded"]:
+        return False  # the env key never changes; an unloaded cache was read by this very request
+    now = time.monotonic()
+    fetched_at = _cache["fetched_at"]
+    if now - fetched_at < config.TENANT_ASSERTION_REFRESH_MIN_AGE_S or now < _cache["retry_at"]:
+        return False
+    before = _cache["raw"]
+    expired = now - config.API_KEY_CACHE_SECONDS - 1.0
+    _cache["fetched_at"] = expired  # _raw_secret now reads
+    try:
+        raw = _raw_secret()
+    except AssertionKeyUnavailable:  # pragma: no cover - a loaded cache is returned on a read error
+        raw = before
+    if _cache["fetched_at"] == expired:
+        _cache["fetched_at"] = fetched_at  # the read failed: keep the old age (retry_at throttles the next try)
+    if raw == before:
+        return False
+    observability.emit("tenant_assertion_key_refreshed")
+    return True
+
+
 def current_keyset() -> KeySet:
     """The env key (local dev, tests) wins; on Lambda the secret; off Lambda without an env key, not provisioned
     (the edge-derived key, the local behaviour before AA-1092)."""
@@ -347,7 +379,13 @@ def from_headers(headers: dict[str, str]) -> Optional[TenantAssertion]:
     if raw is None or raw == "":
         return None
     try:
-        checked = verify(raw, assertion_keys())
+        try:
+            checked = verify(raw, assertion_keys())
+        except AssertionRefused as e:
+            # A key this container has not seen yet (first fill, rotation): one throttled re-read, then verify again.
+            if e.reason != "signature" or not _refresh_after_miss():
+                raise
+            checked = verify(raw, assertion_keys())
     except AssertionRefused as e:
         observability.emit("tenant_assertion_refused", reason=e.reason)
         raise

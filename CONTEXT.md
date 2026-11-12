@@ -740,7 +740,8 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   `{current, previous, previous_until, edge_derived_until}` (epoch seconds), filled and rotated by AA-CIS-Infra
   `tools/identity/tripplanner_assertion_key.py`, never by Terraform. The BFF signs with `current` (web task env
   `TP_TENANT_ASSERTION_KEY`; unset or `REPLACE_ME` = the edge key, the cut-over fallback; shorter than 32 = 503). The
-  Lambdas (both, one role) read the secret by name (cached 10 min) and accept `current`, `previous` until
+  Lambdas (both, one role) read the secret by name (cached 10 min; a signature miss re-reads it once, at most every
+  30 s per container, so a key the container has not seen yet verifies at once) and accept `current`, `previous` until
   `previous_until`, and the edge-derived key only until `edge_derived_until` or while the secret has no value yet; a
   grace longer than 7 days is ignored; a malformed secret fails closed (503). A non-current key in use logs
   `tenant_assertion_key_used {key}`. (Before AA-1092 the material was the edge key.) A slug that

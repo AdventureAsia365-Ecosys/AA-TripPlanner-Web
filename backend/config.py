@@ -72,6 +72,11 @@ TENANT_ASSERTION_KEY_MIN_LENGTH = 32
 # The longest grace a rotation may give the previous key (or the edge-derived key at the cut-over): a forgotten
 # timestamp far in the future must not keep an old key alive. Longer = ignored (logged), the old key is refused.
 TENANT_ASSERTION_MAX_GRACE_S = 7 * 24 * 3600
+# AA-1092 review round 2: a signature miss re-reads the secret once when the cached copy is at least this old, so a
+# web task that already signs with a new current (first fill or rotation) is not refused for the rest of a warm
+# container's API_KEY_CACHE_SECONDS. Throttle: at most one extra read per container per this many seconds, so forged
+# assertions cannot turn into a Secrets Manager read each.
+TENANT_ASSERTION_REFRESH_MIN_AGE_S = 30
 
 # --- CIS public API (AA-812) ---
 # Base URL that catalog photo paths are relative to: {base}{path}?size=large|small (CIS

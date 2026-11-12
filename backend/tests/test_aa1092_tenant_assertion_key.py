@@ -5,7 +5,8 @@ an assertion signed with the current key is accepted; one forged with any other 
 key once the secret holds a value, is refused 401; the previous key only inside its grace window, the edge-derived key
 only inside the cut-over window (or while the secret is still a shell); a grace longer than the maximum is ignored;
 an expired assertion is refused whatever key signed it; a malformed secret or a short key fails closed (503); a read
-error keeps the cached keys; the secret is read once per cache window; no key material or header value is logged.
+error keeps the cached keys; the secret is read once per cache window, plus one throttled re-read on a signature miss
+(review round 2: a key the warm container has not seen yet verifies at once); no key material or header value is logged.
 The cross-language vector with the dedicated key is pinned by frontend/lib/tenantAssertion.test.ts too.
 """
 from __future__ import annotations
@@ -220,6 +221,65 @@ def test_the_secret_is_read_once_per_cache_window(on_lambda):
     for _ in range(3):
         assert "tenant" in _answer(_sign(CURRENT, now=_now()))
     assert on_lambda["reads"] == ["tripplanner/test/tenant-assertion-key"]
+
+
+# --- review round 2: a key the warm container has not seen yet ------------------------------------------------------
+
+def test_a_cached_shell_rereads_once_when_the_web_already_signs_with_the_new_key(on_lambda, monkeypatch, capsys):
+    # The container cached the shell (edge-derived only); the fill and the web deploy happened inside its cache window.
+    monkeypatch.setattr(config, "TENANT_ASSERTION_REFRESH_MIN_AGE_S", 0)
+    assert "tenant" in _answer(_sign(EDGE, now=_now()))
+    on_lambda["value"] = _keyset(current=CURRENT, edge_derived_until=_now() + 3600)
+    assert _answer(_sign(CURRENT, now=_now()))["tenant"]["tenant_id"] == TENANT_A
+    assert len(on_lambda["reads"]) == 2
+    assert any(ln["evt"] == "tenant_assertion_key_refreshed" for ln in _lines(capsys))
+
+
+def test_a_cached_keyset_without_the_rotated_key_verifies_after_one_forced_refresh(on_lambda, monkeypatch):
+    monkeypatch.setattr(config, "TENANT_ASSERTION_REFRESH_MIN_AGE_S", 0)
+    on_lambda["value"] = _keyset(current=PREVIOUS)
+    assert "tenant" in _answer(_sign(PREVIOUS, now=_now()))
+    on_lambda["value"] = _keyset(current=CURRENT, previous=PREVIOUS, previous_until=_now() + 600)
+    assert _answer(_sign(CURRENT, now=_now()))["tenant"]["tenant_id"] == TENANT_A
+    assert _answer(_sign(PREVIOUS, now=_now()))["tenant"]["tenant_id"] == TENANT_A  # still in its grace
+    assert len(on_lambda["reads"]) == 2
+
+
+def test_forged_assertions_reread_at_most_once_per_refresh_age(on_lambda, capsys):
+    # Default throttle (30 s): a fresh cache is never re-read, whatever number of forged assertions arrive.
+    on_lambda["value"] = _keyset(current=CURRENT)
+    assert "tenant" in _answer(_sign(CURRENT, now=_now()))
+    for _ in range(5):
+        assert _answer(_sign(OTHER, now=_now()))["response"]["statusCode"] == 401
+    assert len(on_lambda["reads"]) == 1
+    assert {ln.get("reason") for ln in _lines(capsys) if ln["evt"] == "tenant_assertion_refused"} == {"signature"}
+
+
+def test_a_forged_assertion_after_the_refresh_age_rereads_once_and_stays_refused(on_lambda, monkeypatch, capsys):
+    monkeypatch.setattr(config, "TENANT_ASSERTION_REFRESH_MIN_AGE_S", 0)
+    on_lambda["value"] = _keyset(current=CURRENT)
+    assert "tenant" in _answer(_sign(CURRENT, now=_now()))
+    assert _answer(_sign(OTHER, now=_now()))["response"]["statusCode"] == 401
+    assert len(on_lambda["reads"]) == 2  # the one re-read; the value did not change, so no second verify
+    assert not [ln for ln in _lines(capsys) if ln["evt"] == "tenant_assertion_key_refreshed"]
+
+
+def test_a_failed_reread_keeps_the_cached_keys_and_backs_off(on_lambda, monkeypatch):
+    monkeypatch.setattr(config, "TENANT_ASSERTION_REFRESH_MIN_AGE_S", 0)
+    on_lambda["value"] = _keyset(current=CURRENT)
+    assert "tenant" in _answer(_sign(CURRENT, now=_now()))
+    on_lambda["value"] = RuntimeError("Throttling")
+    assert _answer(_sign(OTHER, now=_now()))["response"]["statusCode"] == 401
+    assert _answer(_sign(OTHER, now=_now()))["response"]["statusCode"] == 401  # retry_at: no second read
+    assert len(on_lambda["reads"]) == 2
+    assert "tenant" in _answer(_sign(CURRENT, now=_now()))  # the cached keys still verify
+
+
+def test_an_expired_assertion_never_rereads(on_lambda, monkeypatch):
+    monkeypatch.setattr(config, "TENANT_ASSERTION_REFRESH_MIN_AGE_S", 0)
+    on_lambda["value"] = _keyset(current=CURRENT)
+    assert _answer(_sign(CURRENT, now=_now() - 600))["response"]["statusCode"] == 401
+    assert len(on_lambda["reads"]) == 1
 
 
 def test_no_header_never_reads_the_secret(on_lambda):
