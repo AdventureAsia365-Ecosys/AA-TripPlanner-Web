@@ -41,6 +41,9 @@ DEMO = config.DEMO_TENANT_ID
 AGENCY_A = "4b1d7e57-0000-4000-8000-0000000000a1"
 AGENCY_B = "4b1d7e57-0000-4000-8000-0000000000b2"
 PAUSED = "4b1d7e57-0000-4000-8000-0000000000c3"
+# AA-1094 S278 finding: synthetic agencies on Dev are kind demo; they list their own tours, not the AA catalogue.
+SYNTH_DEMO = "4b1d7e57-0000-4000-8000-0000000000d4"
+SYNTH_EMPTY = "4b1d7e57-0000-4000-8000-0000000000e5"
 # Copied verbatim from AA-CIS-App tests/integration/test_aa1038_migration_379.py (COLUMNS).
 CIS_379_COLUMNS = (
     "tenant_id uuid, slug text, name text, kind text, account_status text, in_service boolean, served boolean, "
@@ -57,7 +60,11 @@ INSERT INTO catalog.zz_tenant_tripplanner_rows VALUES
     ('{AGENCY_A}', 'quillmere-voyages', 'Quillmere Voyages', 'agency', 'active', true, true, true, false,
      '{{"accent": "#1a2b3c"}}', 'en'),
     ('{AGENCY_B}', 'ottervale-journeys', 'Ottervale Journeys', 'agency', 'active', true, true, false, true, '{{}}', 'vi'),
-    ('{PAUSED}', 'saltmarsh-routes', 'Saltmarsh Routes', 'agency', 'suspended', false, false, true, false, '{{}}', 'en');
+    ('{PAUSED}', 'saltmarsh-routes', 'Saltmarsh Routes', 'agency', 'suspended', false, false, true, false, '{{}}', 'en'),
+    ('{SYNTH_DEMO}', 'audit-heronford-trails', 'Heronford Trails', 'demo', 'active', true, true, true, false, '{{}}',
+     'en'),
+    ('{SYNTH_EMPTY}', 'audit-larchwick-tours', 'Larchwick Tours', 'demo', 'active', true, true, true, false, '{{}}',
+     'en');
 CREATE VIEW catalog.v_tenant_tripplanner_v1 WITH (security_barrier = true) AS
     SELECT * FROM catalog.zz_tenant_tripplanner_rows;
 GRANT USAGE ON SCHEMA catalog TO tripplanner;
@@ -73,6 +80,7 @@ CIS_404_COLUMNS = (
 )
 TOUR_A1 = "7a000000-0000-4000-8000-0000000000a1"
 TOUR_B1 = "7b000000-0000-4000-8000-0000000000b1"
+TOUR_D1 = "7d000000-0000-4000-8000-0000000000d1"
 # AA-1094: catalog.v_tenant_tour_v1 (CIS 404) as a stand-in over a plain table, granted the way CIS 404 grants it.
 TOUR_VIEW_STANDIN = f"""
 CREATE TABLE catalog.zz_tenant_tour_rows (
@@ -87,7 +95,10 @@ INSERT INTO catalog.zz_tenant_tour_rows VALUES
      'h1'),
     ('{AGENCY_B}', 'cis', 'b1b1b1b1-0000-4000-8000-000000000001', '{TOUR_B1}', 'invented-salt-flat-loop-b1b1b1b1',
      'Ottervale salt flat loop', NULL, 'Invented summary B', '[]', NULL, NULL, NULL,
-     'Laos', '6 days', 6, NULL, '/photos/b1.jpg', 1, gen_random_uuid(), 'tenant_edit', now(), true, 'h2');
+     'Laos', '6 days', 6, NULL, '/photos/b1.jpg', 1, gen_random_uuid(), 'tenant_edit', now(), true, 'h2'),
+    ('{SYNTH_DEMO}', 'cis', 'd1d1d1d1-0000-4000-8000-000000000001', '{TOUR_D1}', 'invented-heron-marsh-ride-d1d1d1d1',
+     'Heronford marsh ride', NULL, 'Invented summary D', '[]', NULL, NULL, NULL,
+     'Laos', '3 days', 3, NULL, '/photos/d1.jpg', 1, gen_random_uuid(), 'ai_generated', now(), false, 'h3');
 CREATE VIEW catalog.v_tenant_tour_v1 WITH (security_barrier = true) AS SELECT * FROM catalog.zz_tenant_tour_rows;
 GRANT SELECT ON catalog.v_tenant_tour_v1 TO tripplanner;
 """
@@ -309,3 +320,27 @@ async def test_the_tour_page_sql_finds_the_tour_by_slug_and_suffix_and_not_anoth
     other = await tp_conn.fetch(tenant_tours.BY_SLUG_SQL, a_site["tenant_id"], "invented-salt-flat-loop-b1b1b1b1",
                                 "b1b1b1b1")
     assert other == []
+
+
+async def test_a_synthetic_demo_agency_lists_its_own_tours_and_the_aa_tenant_the_aa_catalogue(db, tp_conn,
+                                                                                               monkeypatch):
+    """AA-1094 S278 finding: the AA catalogue keys on the AA-hosted tenant id, not on kind demo."""
+    async def aa_list(q, *, pool):
+        return {"filters": {}, "total": 99, "limit": q["limit"], "offset": 0, "tours": []}
+    monkeypatch.setattr(catalog, "list_tours", aa_list)
+    pool = _OneConnPool(tp_conn)
+    q = catalog.parse_list_query({})
+    synth = await tenant_site.lookup("audit-heronford-trails", pool=pool)
+    assert synth["kind"] == "demo"
+    mine = await tenant_tours.list_tours(synth, q, pool=pool)
+    assert mine["source"] == "tenant" and [t["tour_id"] for t in mine["tours"]] == [TOUR_D1]
+    # The tour page SQL (the photos come from the CIS photo view, not in this replay; the offline test covers them).
+    page = await tp_conn.fetch(tenant_tours.BY_SLUG_SQL, synth["tenant_id"], "invented-heron-marsh-ride-d1d1d1d1",
+                               "d1d1d1d1")
+    assert [str(r["tour_id"]) for r in page] == [TOUR_D1]
+    assert await tp_conn.fetch(tenant_tours.BY_SLUG_SQL, synth["tenant_id"], "invented-fern-valley-walk-a1a1a1a1",
+                               "a1a1a1a1") == []
+    empty = await tenant_tours.list_tours(await tenant_site.lookup("audit-larchwick-tours", pool=pool), q, pool=pool)
+    assert empty["source"] == "tenant" and empty["total"] == 0 and empty["tours"] == []
+    aa = await tenant_tours.list_tours(await tenant_site.lookup("aa-tripplanner", pool=pool), q, pool=pool)
+    assert aa["source"] == "aa" and aa["total"] == 99

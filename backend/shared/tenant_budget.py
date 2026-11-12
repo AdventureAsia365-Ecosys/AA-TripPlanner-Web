@@ -73,8 +73,8 @@ _clock: Callable[[], float] = time.monotonic
 
 
 def exempt(tenant_id: Optional[str]) -> bool:
-    """AA's own planner (the bare path, the demo tenant): no tenant budget applies."""
-    return tenant_id is None or tenant_id in (config.DEFAULT_TENANT_ID, config.DEMO_TENANT_ID)
+    """AA's own planner (the bare path, the AA-hosted tenant: config.is_aa_hosted): no tenant budget applies."""
+    return tenant_id is None or config.is_aa_hosted(tenant_id)
 
 
 def clear() -> None:

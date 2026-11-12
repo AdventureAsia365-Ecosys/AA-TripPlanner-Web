@@ -1,5 +1,6 @@
 """AA-1094 (root ADR 0019 d10, S278 audit M20) — a tenant's own tours (backend/browse/tenant_tours.py) and the two
-browse routes, offline: the demo tenant keeps the AA catalogue, an agency lists only its rows of
+browse routes, offline: the AA-hosted tenant (by its fixed id, whatever its kind) keeps the AA catalogue, an agency
+(a synthetic kind demo agency included) lists only its rows of
 catalog.v_tenant_tour_v1, the view absent (before CIS 404) is an empty list / 404, a transient error is 503 no-store,
 an unknown or unserved slug is 404 before the view is read. No price anywhere. Invented names only.
 """
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from backend import config
 from backend.browse import catalog, tenant_site, tenant_tours
 from backend.browse import handler as browse_handler
 
@@ -111,15 +113,73 @@ async def test_a_human_edited_text_has_no_generation_time():
     assert card["ai"]["human_edited"] is True and card["ai"]["generated_at"] is None
 
 
-async def test_the_demo_tenant_keeps_the_aa_catalogue(monkeypatch):
+@pytest.fixture
+def aa_catalogue(monkeypatch):
+    """catalog.list_tours stubbed: a list answered from it has total 7 and no view read."""
     async def aa_list(q, *, pool):
         return {"filters": {}, "total": 7, "limit": 24, "offset": 0, "tours": []}
     monkeypatch.setattr(catalog, "list_tours", aa_list)
+    monkeypatch.setattr(config, "DEFAULT_TENANT_ID", DEMO)
+
+
+async def test_the_aa_hosted_tenant_keeps_the_aa_catalogue(aa_catalogue):
     pool = FakePool(tours=[_tour_row()])
     site = tenant_site.shape(_site_row(tenant_id=uuid.UUID(DEMO), slug="aa-tripplanner", kind="demo"))
     out = await tenant_tours.list_tours(site, _q(), pool=pool)
     assert out["source"] == "aa" and out["total"] == 7 and _view_calls(pool) == []
     assert await tenant_tours.tour_detail(site, "invented-ridge-trek-laos-5f1e0c2a", pool=pool) is None
+
+
+# AA-1094 S278 finding: every synthetic agency on Dev is kind demo; the AA catalogue keys on the AA-hosted tenant id.
+@pytest.mark.parametrize("kind", ["demo", "agency", "internal", None])
+async def test_the_aa_hosted_tenant_is_found_by_its_id_whatever_its_kind(aa_catalogue, kind):
+    site = tenant_site.shape(_site_row(tenant_id=uuid.UUID(DEMO), slug="aa-tripplanner", kind=kind))
+    assert (await tenant_tours.list_tours(site, _q(), pool=FakePool()))["source"] == "aa"
+
+
+async def test_a_synthetic_demo_agency_lists_its_own_adopted_tours_and_has_tour_pages(aa_catalogue):
+    pool = FakePool(tours=[_tour_row()])
+    site = tenant_site.shape(_site_row(slug="audit-quillmere-voyages", kind="demo"))
+    out = await tenant_tours.list_tours(site, _q(), pool=pool)
+    assert out["source"] == "tenant" and out["total"] == 1
+    assert [t["title"] for t in out["tours"]] == ["Quillmere's ridge walk"]
+    page = await tenant_tours.tour_detail(site, "invented-ridge-trek-laos-5f1e0c2a", pool=pool)
+    assert page is not None and page["tenant"]["slug"] == "audit-quillmere-voyages"
+    assert [c[2][0] for c in _view_calls(pool)] == [AGENCY, AGENCY]
+
+
+@pytest.mark.parametrize("kind", ["demo", "agency"])
+async def test_an_agency_with_no_adopted_tour_lists_nothing_not_the_aa_catalogue(aa_catalogue, kind):
+    pool = FakePool(tours=[])
+    out = await tenant_tours.list_tours(tenant_site.shape(_site_row(kind=kind)), _q(), pool=pool)
+    assert out["source"] == "tenant" and out["total"] == 0 and out["tours"] == []
+    assert len(_view_calls(pool)) == 1
+
+
+async def test_the_bare_path_tenant_override_also_serves_the_aa_catalogue(aa_catalogue, monkeypatch):
+    monkeypatch.setattr(config, "DEFAULT_TENANT_ID", AGENCY)
+    out = await tenant_tours.list_tours(tenant_site.shape(_site_row()), _q(), pool=FakePool(tours=[_tour_row()]))
+    assert out["source"] == "aa"
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (DEMO, True),
+    (DEMO.upper(), True),
+    (f" {DEMO} ", True),
+    (AGENCY, False),
+    ("aa-tripplanner", False),
+    ("", False),
+    (None, False),
+])
+async def test_is_aa_hosted_keys_on_the_fixed_tenant_id(monkeypatch, raw, expected):
+    monkeypatch.setattr(config, "DEFAULT_TENANT_ID", DEMO)
+    assert config.is_aa_hosted(raw) is expected
+
+
+async def test_no_tour_rule_reads_the_tenant_kind():
+    import inspect
+    src = inspect.getsource(tenant_tours)
+    assert "DEMO_KIND" not in src and 'get("kind")' not in src and "[\"kind\"]" not in src
 
 
 @pytest.mark.parametrize("sqlstate", ["42P01", "42501"])
