@@ -735,9 +735,17 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   `aa-tripplanner:ids:<slug>` (the bare `/plan` keeps `aa-tripplanner:ids`), so one agency's trip is never sent to
   another's planner. The BFF (`lib/tenantProxy.ts`) resolves the slug and sends the assembly Lambda a fresh **tenant
   assertion** `x-tp-tenant: v1.<payload>.<sig>` (claims `exp`, `iat`, `slug`, `tid`, life 120 s), HMAC-SHA256 with a key
-  derived from the edge key (`HMAC(edge key, "aa-tripplanner tenant assertion v1")`, `lib/tenantAssertion.ts` and
-  `backend/shared/tenant_assertion.py`, pinned equal by one shared vector). No new secret: both sides already hold the
-  edge key; both sides strip surrounding whitespace (space, tab, CR, LF) from the edge key before deriving. A slug that
+  derived from key material (`HMAC(material, "aa-tripplanner tenant assertion v1")`, `lib/tenantAssertion.ts` and
+  `backend/shared/tenant_assertion.py`, pinned equal by shared vectors; both sides strip surrounding whitespace).
+  **AA-1092 (S278 audit M19): the material is a dedicated secret, `tripplanner/<env>/tenant-assertion-key`**, JSON
+  `{current, previous, previous_until, edge_derived_until}` (epoch seconds), filled and rotated by AA-CIS-Infra
+  `tools/identity/tripplanner_assertion_key.py`, never by Terraform. The BFF signs with `current` (web task env
+  `TP_TENANT_ASSERTION_KEY`; unset or `REPLACE_ME` = the edge key, the cut-over fallback; shorter than 32 = 503). The
+  Lambdas (both, one role) read the secret by name (cached 10 min; a signature miss re-reads it once, at most every
+  30 s per container, so a key the container has not seen yet verifies at once) and accept `current`, `previous` until
+  `previous_until`, and the edge-derived key only until `edge_derived_until` or while the secret has no value yet; a
+  grace longer than 7 days is ignored; a malformed secret fails closed (503). A non-current key in use logs
+  `tenant_assertion_key_used {key}`. (Before AA-1092 the material was the edge key.) A slug that
   does not resolve is a 404 `unknown_tenant` from the BFF, a lookup that is down a 503 `tenant_lookup_unavailable`; no
   slug header = no assertion = the default (demo) tenant, exactly as in slice 1. The account calls do the same
   (`lib/accountProxy.ts`): the planner header's links keep the tenant (`/sign-in?next=/{slug}/plan`,
@@ -747,7 +755,7 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   (`aa-tripplanner:ids` and `aa-tripplanner:ids:<slug>`).
 - **The Lambda trusts only the signature.** `assembly/handler.py` `tenant_assertion_answer` runs before any
   connection or SQL: a forged, altered, expired (or `exp - iat` over 300 s, or `iat` more than 30 s ahead) assertion is
-  401 `tenant_assertion_invalid`, no bind; when the edge key cannot be read, 503 `tenant_assertion_unavailable`. Log
+  401 `tenant_assertion_invalid`, no bind; when no key can be read (AA-1092 above), 503 `tenant_assertion_unavailable`. Log
   line `tenant_assertion_refused {reason}` (never the value). A valid one binds its `tid` with source `assertion`
   (`tenant_context` line). The browse Lambda binds nothing (it reads catalog views only).
 - **What a tenant sees of the catalogue.** AA master rows only, whatever is bound: the tour views read

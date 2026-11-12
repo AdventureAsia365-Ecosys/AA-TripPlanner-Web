@@ -56,3 +56,17 @@ def _fresh_search_embed_state():
     llm_gateway._spend_unreadable_until = 0.0
     llm_gateway._alerted.clear()
     llm_gateway.llm_breaker.local.clear()
+
+
+@pytest.fixture(autouse=True)
+def _tenant_assertion_key_shell(monkeypatch):
+    """AA-1092: the dedicated tenant-assertion secret is a shell with no value unless a test says otherwise (the
+    edge-derived key, the behaviour every older test expects), and no test ever reaches Secrets Manager for it."""
+    from backend import config
+    from backend.shared import tenant_assertion
+
+    tenant_assertion.reset_cache()
+    monkeypatch.setattr(config, "TENANT_ASSERTION_KEY", "")
+    monkeypatch.setattr(tenant_assertion, "_fetch_secret", lambda name: None)
+    yield
+    tenant_assertion.reset_cache()
