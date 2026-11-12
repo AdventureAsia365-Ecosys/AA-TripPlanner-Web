@@ -753,7 +753,7 @@ S276) makes the database enforce it: a connection without a tenant context sees 
 - **What a tenant sees of the catalogue.** AA master rows only, whatever is bound: the tour views read
   `catalog._live_tour`, whose WHERE keeps the AA master tenant (decided in the 379 view contract). The agency's own
   tours come from `catalog.v_tenant_tour_v1` (CIS 403, contract `catalog.tenant_tour.v1`, AA-1094): one row per live
-  AA tour the agency made its own (a finished, not rejected T2 version) with its latest text; AA liveness wins.
+  AA tour with a version publishable on the agency's site (approved by it, its own edit, or AI text whose QA passed) with the served text; AA liveness wins.
   `backend/browse/tenant_tours.py` serves `GET /browse/tenant/{slug}/tours` (the planner's list on `/{slug}/plan`,
   `source: "tenant"`) and `GET /browse/tenant/{slug}/tours/{tour}` (the page `app/[tenant]/tours/[tour]`), both after
   the served-slug lookup. The demo tenant (kind `demo`) lists the AA catalogue (`source: "aa"`) and keeps linking to

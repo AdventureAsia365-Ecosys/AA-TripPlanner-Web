@@ -4,8 +4,8 @@ GET /browse/tenant/{slug}/tours            the planner's tour list on /{slug}/pl
 GET /browse/tenant/{slug}/tours/{tour}     the tenant's tour page /{slug}/tours/{tour}
 
 Both read the CIS contract view catalog.v_tenant_tour_v1 (CIS 403, contract catalog.tenant_tour.v1, SELECT to role
-tripplanner): one row per live AA tour the tenant made its own (a finished, not rejected T2 version), with the
-tenant's latest text and the AA facts of the live tour. AA liveness wins (a retired or paused tour is not in the view).
+tripplanner): one row per live AA tour with a version publishable on the tenant's site (approved by it, its own
+edit, or AI text whose QA passed), with the served text and the AA facts of the live tour. AA liveness wins (a retired or paused tour is not in the view).
 
 The slug is resolved first (tenant_site.lookup: only a SERVED tenant). The demo tenant (kind demo, the AA-hosted
 aa-tripplanner) has no agency text of its own: its list is the AA catalogue (catalog.list_tours) with `source: "aa"`,
