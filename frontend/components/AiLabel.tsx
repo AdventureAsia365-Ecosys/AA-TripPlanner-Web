@@ -53,6 +53,15 @@ export const AI_SITE_EXPLANATION =
   "which says how much of it AI wrote. The planner's place search and its “You might also like” suggestions use AI to match your words " +
   "and the places you picked. An Adventure Asia advisor reviews every trip before you book.";
 
+// AA-1094: the same pill on an agency's own pages (/{slug}/plan, /{slug}/tours/...), without the Adventure Asia brand:
+// the tour text there is the agency's AI rewrite (CIS T2, in the agency's style; a version the agency edited says so in
+// its machine-readable mark), and the planner's search, suggestions and narration use AI as on AA's site.
+export const AI_AGENCY_LABEL = "AI";
+export const AI_AGENCY_EXPLANATION =
+  "Tour descriptions on this site are written with the help of AI and adapted to this agency's style; " +
+  "the agency may have edited them. The planner's place search, its suggestions and the trip narration also use " +
+  "AI. The agency confirms every detail of your trip in your official quote.";
+
 interface Props {
   label: string;
   // Shorter text for narrow screens (below the sm breakpoint); the full label shows from sm up.

@@ -22,7 +22,7 @@ import { readChatAnswer, type ChatAnswer } from "./planChat";
 // AA-1038 R5 hosting: the web ACL's Challenge answer on the two model calls behind CloudFront (none elsewhere).
 import { isWafChallenge, throughWafEdge } from "./wafChallenge";
 // AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
-import { tenantFetch } from "./plannerTenant";
+import { plannerTenant, tenantFetch } from "./plannerTenant";
 import type { LeadBody } from "./leadForm";
 
 function filterParams(f: BrowseFilters): string {
@@ -466,7 +466,10 @@ export async function fetchCatalogTours(q: {
   limit?: number;
   offset?: number;
 }): Promise<TourList | null> {
-  const p = new URLSearchParams({ resource: "catalog-tours" });
+  // AA-1094: on an agency's planner (/{slug}/plan) the list is that tenant's own tours (lib/tenantTours.ts).
+  const tenant = plannerTenant();
+  const p = new URLSearchParams({ resource: tenant ? "tenant-tours" : "catalog-tours" });
+  if (tenant) p.set("tenant", tenant);
   if (q.country) p.set("country", q.country);
   if (q.month) p.set("month", String(q.month));
   if (q.sort) p.set("sort", q.sort);

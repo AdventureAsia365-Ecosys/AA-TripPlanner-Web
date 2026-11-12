@@ -1,6 +1,7 @@
 "use client";
 
-// AA-812 — the planner's LIST view: AA tours (CIS catalog) for the country chosen on the map,
+// AA-812 — the planner's LIST view: AA tours (CIS catalog) for the country chosen on the map (AA-1094: on an agency's
+// planner, that agency's own tours with its own text, each opening its tour page under the agency's brand),
 // filterable by travel month (the tour's "best time to go"; a tour that names no month stays in)
 // and sortable by duration. Each tour opens its page or is pinned as a whole route (same apply-route
 // flow as the route finder). A trip that already has stops is asked first, like PlanPrefill
@@ -13,10 +14,15 @@ import { fetchCatalogTours, fetchTourRoute } from "@/lib/api";
 import type { TourCard, TourSort } from "@/lib/catalogTypes";
 import type { RouteProposal } from "@/lib/types";
 import { coverAlt, daysText, formatDays, MONTH_NAMES } from "@/lib/text";
+import { plannerTenant } from "@/lib/plannerTenant";
+import { tourHref, type TourListSource } from "@/lib/tenantTours";
 
 const PAGE_SIZE = 24;
 
-type Load = { state: "loading" } | { state: "error" } | { state: "done"; tours: TourCard[]; total: number };
+type Load =
+  | { state: "loading" }
+  | { state: "error" }
+  | { state: "done"; tours: TourCard[]; total: number; source?: TourListSource };
 
 export default function TourListPane() {
   const { filters, applyRoute, itinerary } = useTrip();
@@ -43,7 +49,10 @@ export default function TourListPane() {
     let active = true;
     fetchCatalogTours({ country: filters.country, month: month || undefined, sort, limit: PAGE_SIZE }).then((r) => {
       if (!active) return;
-      setLoaded({ key: queryKey, load: r ? { state: "done", tours: r.tours, total: r.total } : { state: "error" } });
+      setLoaded({
+        key: queryKey,
+        load: r ? { state: "done", tours: r.tours, total: r.total, source: r.source } : { state: "error" },
+      });
     });
     return () => {
       active = false;
@@ -68,7 +77,7 @@ export default function TourListPane() {
     const seen = new Set(load.tours.map((t) => t.tour_id));
     const tours = [...load.tours, ...r.tours.filter((t) => !seen.has(t.tour_id))];
     // Only onto the page it extends: a query changed meanwhile (key differs) keeps its own page.
-    setLoaded((cur) => (cur?.key === key ? { key, load: { state: "done", tours, total: r.total } } : cur));
+    setLoaded((cur) => (cur?.key === key ? { key, load: { state: "done", tours, total: r.total, source: r.source } } : cur));
     setMore("idle");
   };
 
@@ -104,7 +113,7 @@ export default function TourListPane() {
     <div className="absolute inset-0 z-[15] overflow-y-auto bg-k-bg px-4 pb-20 pt-4" aria-label="Tours list">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-semibold text-k-ink">
-          {filters.country ? `Tours in ${filters.country}` : "All Adventure Asia tours"}
+          {filters.country ? `Tours in ${filters.country}` : plannerTenant() ? "All tours" : "All Adventure Asia tours"}
           {load.state === "done" && <span className="ml-1.5 font-normal text-k-muted">({load.total})</span>}
           <span className="block text-[11px] font-normal text-k-muted">Change the country on the Map view.</span>
         </p>
@@ -149,7 +158,7 @@ export default function TourListPane() {
         <p className="mt-6 rounded-xl border border-dashed border-k-line bg-k-card p-4 text-center text-xs text-k-muted">
           {month
             ? `No tours ${filters.country ? `in ${filters.country} ` : ""}list ${MONTH_NAMES[month - 1]} as a good time to go. Try another month.`
-            : `No Adventure Asia tours ${filters.country ? `in ${filters.country} ` : ""}yet. Try another country.`}
+            : `No ${load.source === "tenant" ? "" : "Adventure Asia "}tours ${filters.country ? `in ${filters.country} ` : ""}yet. Try another country.`}
         </p>
       )}
       {load.state === "done" && load.tours.length > 0 && (
@@ -175,7 +184,8 @@ export default function TourListPane() {
                   {t.country && !filters.country ? ` · ${t.country}` : ""}
                 </p>
                 {/* AA-833: no prefetch; the list shows many tours at once (see TourCard). */}
-                <Link href={`/tours/${t.slug}`} prefetch={false} className="aa-focus line-clamp-2 text-sm font-semibold text-k-ink hover:underline">
+                {/* AA-1094: on an agency's planner a tour opens the agency's own tour page (its text, its brand). */}
+                <Link href={tourHref(plannerTenant(), load.source, t.slug)} prefetch={false} className="aa-focus line-clamp-2 text-sm font-semibold text-k-ink hover:underline">
                   {t.title}
                 </Link>
                 {confirm?.tourId === t.tour_id ? (
