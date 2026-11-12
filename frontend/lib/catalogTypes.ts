@@ -52,6 +52,41 @@ export interface TourList {
   limit: number;
   offset: number;
   tours: TourCard[];
+  // AA-1094: a tenant's list (/browse/tenant/{slug}/tours) says whose tours these are: "tenant" = the agency's own
+  // (catalog.v_tenant_tour_v1, its tour pages are /{slug}/tours/{tour}), "aa" = the AA catalogue (the demo tenant).
+  // Absent on the AA catalogue list.
+  source?: "aa" | "tenant";
+}
+
+// AA-1094 (catalog.tenant_tour v1, backend/browse/tenant_tours.py tour_detail): one tour of an agency tenant with the
+// tenant's own text and the AA facts of the live tour. No price (the agency is the merchant of record).
+export interface TenantTourDetail {
+  contract: "catalog.tenant_tour";
+  version: number;
+  tenant: { slug: string; name: string };
+  source_system: string;
+  source_id: string;
+  tour_id: string;
+  slug: string;
+  title: string;
+  subtitle: string | null;
+  summary: string | null;
+  highlights: string[];
+  itinerary_text: string | null;
+  seo_title: string | null;
+  seo_meta: string | null;
+  country: string | null;
+  country_slug: string;
+  duration_raw: string | null;
+  duration_days: number | null;
+  best_time_to_go: string | null;
+  cover_url: string | null;
+  cover_source: CoverSource;
+  cover_place: string | null;
+  photo_count: number;
+  content_hash: string;
+  ai?: CatalogAiMark;
+  photos: Omit<CatalogPhoto, "destination_id">[];
 }
 
 export interface TourDay {

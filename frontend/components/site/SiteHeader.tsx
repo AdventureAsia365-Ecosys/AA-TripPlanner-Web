@@ -53,7 +53,7 @@ export default function SiteHeader({ overHero = false }: { overHero?: boolean })
                 {l.label}
               </SiteLink>
             ))}
-            {/* AA-908: Sign in / My trips, fetched by the browser (this header is on CDN-cached pages). */}
+            {/* AA-908: My trips (AA-1094: no Sign in), fetched by the browser (this header is on CDN-cached pages). */}
             <AccountLink tone="band" className="hidden md:inline" />
             <span className="hidden md:inline-flex">
               <ThemeToggle tone="band" />

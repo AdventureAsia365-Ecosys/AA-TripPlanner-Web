@@ -60,6 +60,23 @@ TENANT_ASSERTION_HEADER = "x-tp-tenant"
 # fresh one per request with a 120 s life.
 TENANT_ASSERTION_MAX_LIFETIME_S = 300
 TENANT_ASSERTION_SKEW_S = 30
+# AA-1092 (S278 audit M19): the assertion key has its own secret, no longer derived from the edge key alone.
+# On Lambda it is read by name, tripplanner/<ENVIRONMENT>/tenant-assertion-key: JSON {"current", "previous",
+# "previous_until", "edge_derived_until"} (backend/shared/tenant_assertion.py; filled and rotated by AA-CIS-Infra
+# tools/identity/tripplanner_assertion_key.py). TP_TENANT_ASSERTION_KEY in the env (a plain key, the "current" value)
+# wins: local dev and tests. Cached like the edge key (API_KEY_CACHE_SECONDS).
+TENANT_ASSERTION_KEY = _get("TP_TENANT_ASSERTION_KEY", "")
+TENANT_ASSERTION_KEY_SECRET_NAME_TEMPLATE = "tripplanner/{environment}/tenant-assertion-key"
+# A dedicated key shorter than this is a configuration error (fail closed), never a weak key in use.
+TENANT_ASSERTION_KEY_MIN_LENGTH = 32
+# The longest grace a rotation may give the previous key (or the edge-derived key at the cut-over): a forgotten
+# timestamp far in the future must not keep an old key alive. Longer = ignored (logged), the old key is refused.
+TENANT_ASSERTION_MAX_GRACE_S = 7 * 24 * 3600
+# AA-1092 review round 2: a signature miss re-reads the secret once when the cached copy is at least this old, so a
+# web task that already signs with a new current (first fill or rotation) is not refused for the rest of a warm
+# container's API_KEY_CACHE_SECONDS. Throttle: at most one extra read per container per this many seconds, so forged
+# assertions cannot turn into a Secrets Manager read each.
+TENANT_ASSERTION_REFRESH_MIN_AGE_S = 30
 
 # --- CIS public API (AA-812) ---
 # Base URL that catalog photo paths are relative to: {base}{path}?size=large|small (CIS

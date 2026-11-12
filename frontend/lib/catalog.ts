@@ -10,6 +10,7 @@ import type {
   CountrySummary,
   DestinationPage,
   SitemapData,
+  TenantTourDetail,
   TourDetail,
   TourList,
   TourSort,
@@ -73,6 +74,13 @@ export function getTours(q: {
 
 export function getTour(slug: string): Promise<Result<TourDetail>> {
   return browseGet<TourDetail>(`/browse/catalog/tours/${encodeURIComponent(slug)}`);
+}
+
+// AA-1094: one tour of an agency tenant with the tenant's own text (catalog.v_tenant_tour_v1). The caller checks the
+// slugs (lib/tenantTours.ts tenantTourPath); cached like the other catalog reads and dropped with them on a CIS
+// lifecycle event, so a tour AA retires leaves the tenant page too.
+export function getTenantTour(path: string): Promise<Result<TenantTourDetail>> {
+  return browseGet<TenantTourDetail>(path);
 }
 
 export function getCountries(): Promise<Result<{ countries: CountrySummary[] }>> {

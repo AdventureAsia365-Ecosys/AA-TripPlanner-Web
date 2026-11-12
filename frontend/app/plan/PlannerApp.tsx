@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import Header from "@/components/Header";
+import Header, { type HeaderAgency } from "@/components/Header";
 import FilterChips from "@/components/FilterChips";
 import TripPanel from "@/components/TripPanel";
 import TourListPane from "@/components/TourListPane";
@@ -91,7 +91,7 @@ function SideTabs({ tab, setTab }: { tab: SideTab; setTab: (t: SideTab) => void 
   );
 }
 
-function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
+function Layout({ initialMobileView, agency }: { initialMobileView: "map" | "trip"; agency: HeaderAgency | null }) {
   const { itinerary } = useTrip();
   const [isMobile, setIsMobile] = useState(false);
   const [mobileView, setMobileView] = useState<"map" | "trip" | "chat">(initialMobileView);
@@ -137,7 +137,7 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
   if (!isMobile) {
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100vh", width: "100vw" }}>
-        <Header />
+        <Header agency={agency} />
         <main className="overflow-hidden" style={{ display: "flex", flex: 1, minHeight: 0 }}>
           <section style={{ position: "relative", flex: 1, height: "100%" }}>
             {mapArea}
@@ -165,7 +165,7 @@ function Layout({ initialMobileView }: { initialMobileView: "map" | "trip" }) {
   // (map hidden with visibility, not unmounted) so Mapbox keeps its canvas.
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", width: "100vw" }}>
-      <Header />
+      <Header agency={agency} />
       <main className="overflow-hidden" style={{ position: "relative", flex: 1, minHeight: 0 }}>
         <section
           style={{
@@ -266,12 +266,22 @@ export default function PlannerApp({
   useEffect(() => {
     reloadIntoPlannerDocument();
   }, []);
+  // AA-1094 (S278 audit M21): the tenant is this page's only. Leaving the planner without a document load (back /
+  // forward to an AA page) must not keep the agency's slug for AA's pages (their account link, their /api/trip calls).
+  // Set again in the effect too, so a development double mount does not leave it cleared.
+  const agencyName = agency?.name ?? null;
+  const agencyBadge = agency?.brandingBadge ?? false;
+  useEffect(() => {
+    setPlannerTenant(tenantSlug, agencyName === null ? null : { name: agencyName, brandingBadge: agencyBadge });
+    return () => setPlannerTenant(null);
+  }, [tenantSlug, agencyName, agencyBadge]);
+  const headerAgency = tenantSlug && agencyName ? { slug: tenantSlug, name: agencyName } : null;
   // AA-837: the planner follows the site theme (ui/core/tokens.css). Its surfaces and form controls use
   // the k-* tokens, so browser-styled controls (country select, days input) stay readable in dark.
   // The Mapbox basemap stays the light outdoors style in both themes (map imagery, not UI text).
   return (
     <TripProvider initialIntent={intent}>
-      <Layout initialMobileView={intent.ask ? "trip" : "map"} />
+      <Layout initialMobileView={intent.ask ? "trip" : "map"} agency={headerAgency} />
       <GuestResetNotice />
     </TripProvider>
   );

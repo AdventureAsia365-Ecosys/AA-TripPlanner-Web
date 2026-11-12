@@ -10,6 +10,7 @@ import { edgeGateOn, edgeGateRefusal } from "@/lib/edgeGate";
 import { TENANT_SLUG_HEADER, tenantHeaders } from "@/lib/tenantProxy";
 import { resolveTenant } from "@/lib/tenantSite";
 import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
+import { tenantToursPath } from "@/lib/tenantTours";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -84,6 +85,14 @@ export async function GET(req: NextRequest) {
       if (v) r.set(k, v);
     }
     upstreamPath = `/browse/catalog/tours${r.toString() ? `?${r}` : ""}`;
+  } else if (resource === "tenant-tours") {
+    // AA-1094: an agency's own tours on its planner (/{slug}/plan; CIS catalog.v_tenant_tour_v1). The Lambda resolves
+    // the slug (served tenants only, 404 otherwise); a slug that cannot be a tenant never reaches it.
+    const path = tenantToursPath(q.get("tenant"), q);
+    if (!path) {
+      return NextResponse.json({ error: "bad tenant" }, { status: 400, headers: { "cache-control": "no-store" } });
+    }
+    upstreamPath = path;
   } else if (resource === "tour-route") {
     // AA-812: one tour's whole route ("Customise this trip").
     // source_id (stable) lets the Lambda resolve the current tour_id after a CIS re-upload.
