@@ -33,8 +33,8 @@ AA-CIS-App. What it shares with the rest of the ecosystem is a small set of AWS-
   planning a trip, not an AA admin, but the planner is the tenant's product, not AA's consumer storefront. Today the
   only tenant is the AA-hosted demo (`aa-tripplanner`, kind `demo`): "Send to an advisor" is a demo notice (AA-1034
   R0), and every trip row belongs to the demo tenant (see "Tenancy (R5, AA-1038)"). Since slice 2 a served agency
-  tenant has its planner on `/{slug}/plan` of the same host (signed BFF tenant assertion); theme, the tenant's own
-  tour text and the lead route come in later R5 slices.
+  tenant has its planner on `/{slug}/plan` of the same host (signed BFF tenant assertion), under its own brand, with
+  its own tours and text (`catalog.v_tenant_tour_v1`, AA-1094) and its own tour pages `/{slug}/tours/{tour}`.
 - **Position**: a leaf product. It reads CIS content only through the `catalog.*` views (tours, places,
   tour graph) that the CIS side owns, and it calls Bedrock for AI assembly. Nothing in the CIS content pipeline
   depends on TripPlanner — the arrow points one way (TripPlanner → shared/Bedrock), never back.
@@ -510,7 +510,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
     link: the planner works as a guest. Per-PR previews can sign in only when the env values are set for Preview (new addresses also need `TP_COGNITO_SIGNUP_PROOF_KEY`).
   - Pages: `/sign-in` (two-step email -> code form, `?next=` same-site path, default `/trips`) and `/trips` (My
     Trips: status Draft / Sent to an advisor, stops, days, "Open" writes the ids to localStorage and opens `/plan`),
-    both noindex. The header link (`components/AccountLink.tsx`, "Sign in" / "My trips") is fetched by the browser,
+    both noindex. The header link (`components/AccountLink.tsx`, "My trips" only since AA-1094: no page links to
+    `/sign-in`, travellers are guests under ADR 0019 d11) is fetched by the browser,
     because the kit pages are CDN-cached. The send form shows the signed-in email read-only.
 - **My Payments on `/trips` (AA-682 S5) is retired (AA-1046, S271).** It read AA-Booking's customer payment requests
   (`booking.customer.v1`); root ADR 0019 made agencies the only customers, so the B2C half of AA-Booking (customer
@@ -750,8 +751,21 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   line `tenant_assertion_refused {reason}` (never the value). A valid one binds its `tid` with source `assertion`
   (`tenant_context` line). The browse Lambda binds nothing (it reads catalog views only).
 - **What a tenant sees of the catalogue.** AA master rows only, whatever is bound: the tour views read
-  `catalog._live_tour`, whose WHERE keeps the AA master tenant (decided in the 379 view contract). The tenant's own
-  text comes with `catalog.v_tenant_tour_v1` (later slice).
+  `catalog._live_tour`, whose WHERE keeps the AA master tenant (decided in the 379 view contract). The agency's own
+  tours come from `catalog.v_tenant_tour_v1` (CIS 403, contract `catalog.tenant_tour.v1`, AA-1094): one row per live
+  AA tour the agency made its own (a finished, not rejected T2 version) with its latest text; AA liveness wins.
+  `backend/browse/tenant_tours.py` serves `GET /browse/tenant/{slug}/tours` (the planner's list on `/{slug}/plan`,
+  `source: "tenant"`) and `GET /browse/tenant/{slug}/tours/{tour}` (the page `app/[tenant]/tours/[tour]`), both after
+  the served-slug lookup. The demo tenant (kind `demo`) lists the AA catalogue (`source: "aa"`) and keeps linking to
+  the AA tour pages; it has no tenant tour page. Before CIS 403 is applied (42P01 / 42501) an agency lists no tour.
+  No price on an agency's page (the agency is the merchant of record, ADR 0019 b5).
+- **Brand on the agency's pages only (AA-1094, S278 audit M21).** `/{slug}/plan` and `/{slug}/tours/{tour}` carry
+  the agency's bar (`components/Header.tsx` `agency`: its trading name, linking to its planner, no Adventure Asia
+  logo, an AI pill without the AA name, no account link) and its brand-token block; the planner's list links to the
+  agency's tour pages, never to AA's `/tours/{slug}`. `PlannerApp` clears the tab's tenant (`lib/plannerTenant.ts`)
+  when it unmounts, so an AA page reached without a document load carries no agency. AA's own pages keep AA's brand.
+  No page offers "Sign in" (d11: travellers are guests; `components/AccountLink.tsx` shows only "My trips" to a
+  traveller who still holds a session, on AA's pages).
 - **Isolation.** Under tenant A's assertion only A's sessions and trips are visible (tp-028 policy `<table>_tenant`):
   another tenant's trip is the same 404 as an unknown one and a mutation is 401 with no write
   (`backend/tests/test_aa1038_tenant_site_pg.py`, two synthetic agencies). The bare path binds the demo tenant, so it
