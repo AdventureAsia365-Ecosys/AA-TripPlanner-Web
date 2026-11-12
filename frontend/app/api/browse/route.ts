@@ -9,6 +9,7 @@ import { authEnv, callContext } from "@/lib/authRequest";
 import { edgeGateOn, edgeGateRefusal } from "@/lib/edgeGate";
 import { TENANT_SLUG_HEADER, tenantHeaders } from "@/lib/tenantProxy";
 import { resolveTenant } from "@/lib/tenantSite";
+import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
 import { tenantToursPath } from "@/lib/tenantTours";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
@@ -18,6 +19,9 @@ const BROWSE_API_URL = process.env.BROWSE_API_URL ?? "";
 // Shared secret the Lambdas verify (X-TripPlanner-Key). Server-side only —
 // never exposed to the browser. Omitted header when unset (local dev).
 const TRIPPLANNER_API_KEY = process.env.TRIPPLANNER_API_KEY ?? "";
+// AA-1092: the tenant assertion is signed with its own key (lib/tenantAssertion.ts), never derived from the edge key
+// once the task env carries TP_TENANT_ASSERTION_KEY. Server-side only.
+const TENANT_ASSERTION_KEY = assertionKeyMaterialFromEnv(process.env);
 
 function upstreamHeaders(extra: Record<string, string> = {}): HeadersInit {
   const h: Record<string, string> = { ...extra };
@@ -122,7 +126,7 @@ export async function GET(req: NextRequest) {
     setCookies = access.setCookies;
     // AA-1038 R5 slice 3: a /{slug} planner's search names its tenant, so the Lambda applies that tenant's AI budget
     // and writes the ledger row for it. Signed here exactly as on /api/trip (lib/tenantProxy.ts); no header = AA's site.
-    const pick = await tenantHeaders(req.headers.get(TENANT_SLUG_HEADER), TRIPPLANNER_API_KEY, resolveTenant);
+    const pick = await tenantHeaders(req.headers.get(TENANT_SLUG_HEADER), TENANT_ASSERTION_KEY, resolveTenant);
     if (!pick.ok) {
       return NextResponse.json({ error: pick.error }, {
         status: pick.status,
