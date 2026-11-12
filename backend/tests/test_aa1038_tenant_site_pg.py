@@ -34,7 +34,7 @@ import test_tp028_pg as forced  # noqa: E402
 
 from backend import config  # noqa: E402
 from backend.assembly import handler  # noqa: E402
-from backend.browse import tenant_site  # noqa: E402
+from backend.browse import catalog, tenant_site, tenant_tours  # noqa: E402
 from backend.shared import tenant_assertion as ta  # noqa: E402
 
 DEMO = config.DEMO_TENANT_ID
@@ -63,6 +63,34 @@ CREATE VIEW catalog.v_tenant_tripplanner_v1 WITH (security_barrier = true) AS
 GRANT USAGE ON SCHEMA catalog TO tripplanner;
 GRANT SELECT ON catalog.v_tenant_tripplanner_v1 TO tripplanner;
 """
+# AA-1094: copied verbatim from AA-CIS-App tests/integration/test_aa1094_migration_404.py (COLUMNS).
+CIS_404_COLUMNS = (
+    "tenant_id uuid, source_system text, source_id text, tour_id uuid, slug text, title text, subtitle text, "
+    "summary text, highlights jsonb, itinerary_text text, seo_title text, seo_meta text, country text, "
+    "duration_raw text, duration_days integer, best_time_to_go text, cover_photo_path text, photo_count bigint, "
+    "version_id uuid, edit_source text, text_updated_at timestamp with time zone, human_edited boolean, "
+    "content_hash text"
+)
+TOUR_A1 = "7a000000-0000-4000-8000-0000000000a1"
+TOUR_B1 = "7b000000-0000-4000-8000-0000000000b1"
+# AA-1094: catalog.v_tenant_tour_v1 (CIS 404) as a stand-in over a plain table, granted the way CIS 404 grants it.
+TOUR_VIEW_STANDIN = f"""
+CREATE TABLE catalog.zz_tenant_tour_rows (
+    tenant_id uuid, source_system text, source_id text, tour_id uuid, slug text, title text, subtitle text,
+    summary text, highlights jsonb, itinerary_text text, seo_title text, seo_meta text, country text,
+    duration_raw text, duration_days integer, best_time_to_go text, cover_photo_path text, photo_count bigint,
+    version_id uuid, edit_source text, text_updated_at timestamptz, human_edited boolean, content_hash text);
+INSERT INTO catalog.zz_tenant_tour_rows VALUES
+    ('{AGENCY_A}', 'cis', 'a1a1a1a1-0000-4000-8000-000000000001', '{TOUR_A1}', 'invented-fern-valley-walk-a1a1a1a1',
+     'Quillmere fern valley walk', NULL, 'Invented summary A', '["Invented ferns"]', 'Day 1 — Arrive', NULL, NULL,
+     'Laos', '4 days', 4, 'November to March', '/photos/a1.jpg', 1, gen_random_uuid(), 'ai_generated', now(), false,
+     'h1'),
+    ('{AGENCY_B}', 'cis', 'b1b1b1b1-0000-4000-8000-000000000001', '{TOUR_B1}', 'invented-salt-flat-loop-b1b1b1b1',
+     'Ottervale salt flat loop', NULL, 'Invented summary B', '[]', NULL, NULL, NULL,
+     'Laos', '6 days', 6, NULL, '/photos/b1.jpg', 1, gen_random_uuid(), 'tenant_edit', now(), true, 'h2');
+CREATE VIEW catalog.v_tenant_tour_v1 WITH (security_barrier = true) AS SELECT * FROM catalog.zz_tenant_tour_rows;
+GRANT SELECT ON catalog.v_tenant_tour_v1 TO tripplanner;
+"""
 EDGE = "-".join(["aa1038", "pg", "edge"])
 
 
@@ -79,7 +107,7 @@ def pg_dsn(request):
 
 @pytest.fixture(scope="module")
 def db(pg_dsn):
-    ctx, error = forced.forced_database(pg_dsn, extra_sql=VIEW_STANDIN)
+    ctx, error = forced.forced_database(pg_dsn, extra_sql=VIEW_STANDIN + TOUR_VIEW_STANDIN)
     try:
         assert error is None, error
         yield ctx
@@ -108,6 +136,9 @@ class _OneConnPool:
 
     async def fetchrow(self, sql, *args):
         return await self.conn.fetchrow(sql, *args)
+
+    async def fetch(self, sql, *args):
+        return await self.conn.fetch(sql, *args)
 
 
 def _acquire(conn, used: list):
@@ -238,3 +269,43 @@ async def test_a_forged_or_expired_assertion_binds_nothing_and_writes_nothing(db
         assert await su.fetchval("SELECT count(*) AS n FROM tripplanner.sessions") == before
     finally:
         await su.close()
+
+
+# --- AA-1094: the tenant's own tours (catalog.v_tenant_tour_v1, CIS 404) as the runtime role ----------------------
+
+async def test_the_tour_stand_in_has_the_cis_404_columns(db):
+    su = await asyncpg.connect(db["su_dsn"])
+    try:
+        cols = await su.fetchval(
+            "SELECT string_agg(a.attname || ' ' || format_type(a.atttypid, a.atttypmod), ', ' ORDER BY a.attnum) "
+            "AS cols FROM pg_attribute a WHERE a.attrelid = 'catalog.v_tenant_tour_v1'::regclass "
+            "AND a.attnum > 0 AND NOT a.attisdropped")
+    finally:
+        await su.close()
+    assert cols == CIS_404_COLUMNS
+
+
+async def test_each_agency_lists_only_its_own_tours_as_the_runtime_role(db, tp_conn):
+    pool = _OneConnPool(tp_conn)
+    q = catalog.parse_list_query({})
+    a = await tenant_tours.list_tours(await tenant_site.lookup("quillmere-voyages", pool=pool), q, pool=pool)
+    assert a["source"] == "tenant" and [t["tour_id"] for t in a["tours"]] == [TOUR_A1]
+    assert a["tours"][0]["title"] == "Quillmere fern valley walk"
+    b = await tenant_tours.list_tours(await tenant_site.lookup("ottervale-journeys", pool=pool), q, pool=pool)
+    assert [t["tour_id"] for t in b["tours"]] == [TOUR_B1] and b["tours"][0]["ai"]["human_edited"] is True
+    laos = await tenant_tours.list_tours(await tenant_site.lookup("quillmere-voyages", pool=pool),
+                                         catalog.parse_list_query({"country": "Laos", "max_days": "3"}), pool=pool)
+    assert laos["tours"] == []
+
+
+async def test_the_tour_page_sql_finds_the_tour_by_slug_and_suffix_and_not_another_agencys(db, tp_conn):
+    pool = _OneConnPool(tp_conn)
+    a_site = await tenant_site.lookup("quillmere-voyages", pool=pool)
+    by_slug = await tp_conn.fetch(tenant_tours.BY_SLUG_SQL, a_site["tenant_id"], "invented-fern-valley-walk-a1a1a1a1",
+                                  "a1a1a1a1")
+    assert [str(r["tour_id"]) for r in by_slug] == [TOUR_A1]
+    by_suffix = await tp_conn.fetch(tenant_tours.BY_SLUG_SQL, a_site["tenant_id"], "an-old-title-a1a1a1a1", "a1a1a1a1")
+    assert [r["slug"] for r in by_suffix] == ["invented-fern-valley-walk-a1a1a1a1"]
+    other = await tp_conn.fetch(tenant_tours.BY_SLUG_SQL, a_site["tenant_id"], "invented-salt-flat-loop-b1b1b1b1",
+                                "b1b1b1b1")
+    assert other == []
