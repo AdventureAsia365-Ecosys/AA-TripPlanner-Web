@@ -17,6 +17,8 @@ Routes:
   GET /browse/catalog/sitemap                (AA-812: slugs for sitemap.xml)
   GET /browse/catalog/retired                (AA-986 L6: slug suffixes of retired tours, for the 410 proxy)
   GET /browse/tenant/{slug}                  (AA-1038 R5 slice 2: the served tenant of a /{slug} path, for the BFF)
+  GET /browse/tenant/{slug}/tours            (AA-1094: the tenant's tours with its own text, catalog.v_tenant_tour_v1)
+  GET /browse/tenant/{slug}/tours/{tour}     (AA-1094: one tour of the tenant, its tour page)
 
 Every read uses only the CIS catalog views (ADR 0001): /browse/catalog/* the tour views of CIS migration 225, the
 place / tour-graph reads (tiles, countries, by-country, destinations, search, routes, tour-route, shapes, stops) the
@@ -45,6 +47,7 @@ from backend.browse import search as search_mod
 from backend.browse import shapes as shapes_mod
 from backend.browse import stops as stops_mod
 from backend.browse import tenant_site as tenant_site_mod
+from backend.browse import tenant_tours as tenant_tours_mod
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import TileError
 from backend.shared import observability, ratelimit, tenant, tenant_assertion
@@ -68,6 +71,9 @@ _CAT_SITEMAP_RE = re.compile(r"^/browse/catalog/sitemap$")
 _CAT_RETIRED_RE = re.compile(r"^/browse/catalog/retired$")
 # AA-1038 R5 slice 2: any one path segment; tenant_site.lookup checks the slug shape (a bad one is the same 404).
 _TENANT_RE = re.compile(r"^/browse/tenant/([^/]{1,120})$")
+# AA-1094: the tours of a tenant and one tour page (catalog.v_tenant_tour_v1, CIS 403); the tour slug as /catalog/tours.
+_TENANT_TOURS_RE = re.compile(r"^/browse/tenant/([^/]{1,120})/tours$")
+_TENANT_TOUR_RE = re.compile(r"^/browse/tenant/([^/]{1,120})/tours/([a-z0-9-]{1,120})$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 _CACHE_HEADERS = {
@@ -153,6 +159,26 @@ async def route(
             return _resp(404, {"error": "tenant not found"}, _NO_STORE_HEADERS)
         # The BFF keeps its own short cache; a suspension must not sit in a shared cache.
         return _resp(200, {"tenant": site}, _NO_STORE_HEADERS)
+
+    # --- AA-1094: a tenant's own tours (catalog.v_tenant_tour_v1, CIS 403); the slug resolved first, served only ----
+    m = _TENANT_TOURS_RE.match(path) or _TENANT_TOUR_RE.match(path)
+    if m:
+        try:
+            q = catalog_mod.parse_list_query(query) if m.re is _TENANT_TOURS_RE else None
+        except catalog_mod.QueryError as e:
+            return _resp(400, {"error": str(e)}, _NO_STORE_HEADERS)
+        try:
+            site = await tenant_site_mod.lookup(m.group(1), pool=pool)
+            if site is None:
+                return _resp(404, {"error": "tenant not found"}, _NO_STORE_HEADERS)
+            if q is not None:
+                return _resp(200, await tenant_tours_mod.list_tours(site, q, pool=pool), _CACHE_HEADERS)
+            data = await tenant_tours_mod.tour_detail(site, m.group(2), pool=pool)
+        except (tenant_site_mod.TenantLookupUnavailable, tenant_tours_mod.TenantToursUnavailable):
+            return _resp(503, {"error": "tenant tours unavailable"}, _NO_STORE_HEADERS)
+        if data is None:
+            return _resp(404, {"error": "tour not found"}, _NO_STORE_HEADERS)
+        return _resp(200, data, _CACHE_HEADERS)
 
     m = _CAT_DEST_RE.match(path)
     if m:
@@ -268,7 +294,7 @@ _ROUTE_NAMES: tuple[tuple[re.Pattern, str], ...] = (
     (_STOPS_RE, "stops"),
     (_CAT_TOURS_RE, "catalog_tours"), (_CAT_TOUR_RE, "catalog_tour"), (_CAT_DESTS_RE, "catalog_destinations"),
     (_CAT_DEST_RE, "catalog_destination"), (_CAT_SITEMAP_RE, "catalog_sitemap"), (_CAT_RETIRED_RE, "catalog_retired"),
-    (_TENANT_RE, "tenant"),
+    (_TENANT_RE, "tenant"), (_TENANT_TOURS_RE, "tenant_tours"), (_TENANT_TOUR_RE, "tenant_tour"),
 )
 
 
