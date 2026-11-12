@@ -7,7 +7,6 @@ import { authEnv, authLogLine, callContext } from "@/lib/authRequest";
 import { authJson } from "@/lib/authResponse";
 import { claimGuestTrips } from "@/lib/accountProxy";
 import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
-import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
 
 // AA-908 — POST /api/auth/verify {code}: check the email code of the pending step (__Host-tp_signin). On success the
 // tokens go into the sealed session cookies, and the assembly Lambda's POST /me/claim links this browser's guest
@@ -18,8 +17,6 @@ export const dynamic = "force-dynamic";
 
 const TRIP_API_URL = process.env.TRIP_API_URL ?? "";
 const TRIPPLANNER_API_KEY = process.env.TRIPPLANNER_API_KEY ?? "";
-// AA-1092: the tenant assertion's own key (lib/tenantAssertion.ts). Server-side only.
-const TENANT_ASSERTION_KEY = assertionKeyMaterialFromEnv(process.env);
 const CODE = /^\d{6,8}$/;
 
 export async function POST(req: NextRequest) {
@@ -75,7 +72,6 @@ export async function POST(req: NextRequest) {
       const claim = await claimGuestTrips({
         tripApiUrl: TRIP_API_URL,
         edgeKey: TRIPPLANNER_API_KEY,
-        assertionKey: TENANT_ASSERTION_KEY,
         requestId,
         accessToken: signedIn.accessToken,
         guestToken: isGuestToken(guest) ? guest : null,

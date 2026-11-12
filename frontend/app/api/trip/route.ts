@@ -14,16 +14,12 @@ import { authEnv, callContext } from "@/lib/authRequest";
 import { edgeGateOn, edgeGateRefusal } from "@/lib/edgeGate";
 import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
 import { tenantHeaders, type TenantPick } from "@/lib/tenantProxy";
-import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
 // Maps a single { op } POST body onto the Lambda's REST verbs/paths.
 const TRIP_API_URL = process.env.TRIP_API_URL ?? "";
 // Shared secret the Lambdas verify (X-TripPlanner-Key). Server-side only.
 const TRIPPLANNER_API_KEY = process.env.TRIPPLANNER_API_KEY ?? "";
-// AA-1092: the tenant assertion is signed with its own key (lib/tenantAssertion.ts), never derived from the edge key
-// once the task env carries TP_TENANT_ASSERTION_KEY. Server-side only.
-const TENANT_ASSERTION_KEY = assertionKeyMaterialFromEnv(process.env);
 
 // AA-827 / AA-909: mutations and the four trip reads carry the guest token (HttpOnly cookie) to the
 // Lambda, which checks it against the stored sha256 (reads: of the session that owns the trip, else
@@ -57,7 +53,7 @@ const READ_RESOURCES = new Set(["suggestions", "coverage", "activities"]);
 // AA-1038 R5 slice 2: the planner of a /{slug} page names its tenant (x-tp-tenant-slug); the BFF resolves it and
 // signs the tenant assertion the Lambda checks (lib/tenantProxy.ts). No header = the bare path = the demo tenant.
 function pickTenant(req: NextRequest): Promise<TenantPick> {
-  return tenantHeaders(req.headers.get(TENANT_SLUG_HEADER), TENANT_ASSERTION_KEY, resolveTenant);
+  return tenantHeaders(req.headers.get(TENANT_SLUG_HEADER), TRIPPLANNER_API_KEY, resolveTenant);
 }
 
 function tenantRefusal(pick: Extract<TenantPick, { ok: false }>, requestId: string): NextResponse {

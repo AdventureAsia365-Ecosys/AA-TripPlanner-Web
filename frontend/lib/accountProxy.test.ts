@@ -8,8 +8,6 @@ import { TENANT_ASSERTION_HEADER, signTenantAssertion } from "./tenantAssertion.
 import { TenantLookupUnavailable, type TenantSite } from "./tenantSite.ts";
 
 const EDGE = ["aa1038", "account", "edge"].join("-");
-// AA-1092: the assertion is signed with its own key material, never the edge key.
-const ASSERTION = ["aa1092", "account", "dedicated", "assertion", "material"].join("-");
 const TENANT_A = "4b1d7e57-0000-4000-8000-0000000000a1";
 const NOW = 1762400000;
 const SITE: TenantSite = {
@@ -35,8 +33,7 @@ function recorder(answer: { status: number; body: unknown }) {
 const resolveA = async (slug: string) => (slug === SITE.slug ? SITE : null);
 
 function base(tenantSlug: string | null, fetchImpl: typeof fetch, resolve = resolveA) {
-  return { tripApiUrl: "https://trip.example", edgeKey: EDGE, assertionKey: ASSERTION,
-    requestId: "req-1", accessToken: "at", tenantSlug,
+  return { tripApiUrl: "https://trip.example", edgeKey: EDGE, requestId: "req-1", accessToken: "at", tenantSlug,
     resolve, fetchImpl, nowS: NOW };
 }
 
@@ -47,7 +44,7 @@ test("claim from a tenant's planner: the Lambda gets the assertion of the RESOLV
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://trip.example/me/claim");
   const h = calls[0].init.headers as Record<string, string>;
-  assert.equal(h[TENANT_ASSERTION_HEADER], signTenantAssertion(ASSERTION, TENANT_A, "quillmere-voyages", NOW));
+  assert.equal(h[TENANT_ASSERTION_HEADER], signTenantAssertion(EDGE, TENANT_A, "quillmere-voyages", NOW));
   assert.equal(h["x-tripplanner-key"], EDGE);
   assert.equal(h["x-tripplanner-access"], "Bearer at");
 });
@@ -79,7 +76,7 @@ test("My Trips from a tenant's planner: /me/trips under the tenant's assertion; 
     assert.ok("upstream" in got && got.upstream.status === 200);
     assert.equal(calls[0].url, "https://trip.example/me/trips");
     assert.equal((calls[0].init.headers as Record<string, string>)[TENANT_ASSERTION_HEADER],
-      signTenantAssertion(ASSERTION, TENANT_A, "quillmere-voyages", NOW));
+      signTenantAssertion(EDGE, TENANT_A, "quillmere-voyages", NOW));
 
     const bare = await fetchMeTrips(base(null, fetchImpl));
     assert.ok("upstream" in bare);

@@ -12,8 +12,6 @@ import type { TenantSite } from "./tenantSite.ts";
 export interface AccountCall {
   tripApiUrl: string;
   edgeKey: string;
-  // AA-1092: the tenant assertion's key material (assertionKeyMaterialFromEnv), not the edge key.
-  assertionKey: string;
   requestId: string;
   accessToken: string;
   tenantSlug: string | null;
@@ -28,7 +26,7 @@ export interface AccountCall {
 export async function claimGuestTrips(
   call: AccountCall & { guestToken: string | null },
 ): Promise<{ claimed: number | null; status: number }> {
-  const tenant = await tenantHeaders(call.tenantSlug, call.assertionKey, call.resolve, call.nowS);
+  const tenant = await tenantHeaders(call.tenantSlug, call.edgeKey, call.resolve, call.nowS);
   if (!tenant.ok) return { claimed: null, status: tenant.status };
   const upstream = await (call.fetchImpl ?? fetch)(`${call.tripApiUrl}/me/claim`, {
     method: "POST",
@@ -43,7 +41,7 @@ export async function claimGuestTrips(
 export async function fetchMeTrips(
   call: AccountCall,
 ): Promise<{ refused: { status: number; error: string } } | { upstream: Response }> {
-  const tenant = await tenantHeaders(call.tenantSlug, call.assertionKey, call.resolve, call.nowS);
+  const tenant = await tenantHeaders(call.tenantSlug, call.edgeKey, call.resolve, call.nowS);
   if (!tenant.ok) return { refused: { status: tenant.status, error: tenant.error } };
   const upstream = await (call.fetchImpl ?? fetch)(`${call.tripApiUrl}/me/trips`, {
     method: "GET",

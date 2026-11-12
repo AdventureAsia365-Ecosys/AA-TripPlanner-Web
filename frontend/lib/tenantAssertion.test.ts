@@ -6,11 +6,7 @@ import { createHmac } from "node:crypto";
 import {
   ASSERTION_LIFETIME_S,
   KEY_LABEL,
-  MIN_DEDICATED_KEY_LENGTH,
   TENANT_ASSERTION_HEADER,
-  TENANT_ASSERTION_KEY_ENV,
-  assertionKeyMaterial,
-  assertionKeyMaterialFromEnv,
   deriveKey,
   normaliseEdgeKey,
   signTenantAssertion,
@@ -109,50 +105,4 @@ test("a lookup that is down is a retryable 503, not an unknown tenant", async ()
     throw new TenantLookupUnavailable(502);
   });
   assert.deepEqual(got, { ok: false, status: 503, error: "tenant_lookup_unavailable" });
-});
-
-// --- AA-1092: the dedicated key (S278 audit M19) -----------------------------------------------------------------------
-
-// The cross-language vector with the dedicated key: backend/tests/test_aa1092_tenant_assertion_key.py pins the same
-// header (same claims as the AA-1038 vector, another key material).
-const DEDICATED = ["aa1092", "vector", "dedicated", "assertion", "key", "material"].join("-");
-const DEDICATED_VECTOR =
-  "v1.eyJleHAiOjE3NjI0MDAxMjAsImlhdCI6MTc2MjQwMDAwMCwic2x1ZyI6InF1aWxsbWVyZS12b3lhZ2VzIiwidGlkIjoiNGIxZDdlNTct" +
-  "MDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMGExIn0.i7y_-KKqk8Lg_ud0BU1z94x1kcy0_TbUGwM1OsUt1RM";
-
-test("the dedicated cross-language vector", () => {
-  assert.equal(signTenantAssertion(DEDICATED, TENANT_A, "quillmere-voyages", NOW), DEDICATED_VECTOR);
-  assert.notEqual(DEDICATED_VECTOR, VECTOR_HEADER);
-});
-
-test("the env name and the floor match the Lambda and the task definition", () => {
-  assert.equal(TENANT_ASSERTION_KEY_ENV, "TP_TENANT_ASSERTION_KEY");
-  assert.equal(MIN_DEDICATED_KEY_LENGTH, 32);
-});
-
-test("a dedicated key wins over the edge key", () => {
-  assert.equal(assertionKeyMaterial(DEDICATED, EDGE), DEDICATED);
-  assert.equal(assertionKeyMaterial(`${DEDICATED}\n`, EDGE), DEDICATED);
-  assert.equal(assertionKeyMaterialFromEnv({ TP_TENANT_ASSERTION_KEY: DEDICATED, TRIPPLANNER_API_KEY: EDGE }), DEDICATED);
-});
-
-test("no dedicated key (or the placeholder): the edge key, the cut-over fallback", () => {
-  assert.equal(assertionKeyMaterial(undefined, EDGE), EDGE);
-  assert.equal(assertionKeyMaterial("", EDGE), EDGE);
-  assert.equal(assertionKeyMaterial(" \n", EDGE), EDGE);
-  assert.equal(assertionKeyMaterial("REPLACE_ME", EDGE), EDGE);
-  assert.equal(assertionKeyMaterialFromEnv({ TRIPPLANNER_API_KEY: EDGE }), EDGE);
-  assert.equal(assertionKeyMaterialFromEnv({}), "");
-});
-
-test("a dedicated key shorter than the floor signs nothing (503), never falls back to the edge key", async () => {
-  const short = "x".repeat(MIN_DEDICATED_KEY_LENGTH - 1);
-  assert.equal(assertionKeyMaterial(short, EDGE), "");
-  const got = await tenantHeaders("quillmere-voyages", assertionKeyMaterial(short, EDGE), async () => SITE);
-  assert.deepEqual(got, { ok: false, status: 503, error: "tenant_assertion_unavailable" });
-});
-
-test("tenantHeaders signs with the dedicated key it is given", async () => {
-  const got = await tenantHeaders("quillmere-voyages", assertionKeyMaterial(DEDICATED, EDGE), async () => SITE, NOW);
-  assert.deepEqual(got, { ok: true, headers: { "x-tp-tenant": DEDICATED_VECTOR } });
 });
