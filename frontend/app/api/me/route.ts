@@ -6,6 +6,7 @@ import { authEnv, callContext } from "@/lib/authRequest";
 import { authJson } from "@/lib/authResponse";
 import { fetchMeTrips } from "@/lib/accountProxy";
 import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
+import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
 
 // AA-908 — GET /api/me: who is signed in, and their trips (the assembly Lambda's GET /me/trips: trip and session
 // ids, TripPlanner status draft / sent, stops, days, dates). 401 {"error":"sign_in_required"} when signed out, or
@@ -17,6 +18,8 @@ export const dynamic = "force-dynamic";
 
 const TRIP_API_URL = process.env.TRIP_API_URL ?? "";
 const TRIPPLANNER_API_KEY = process.env.TRIPPLANNER_API_KEY ?? "";
+// AA-1092: the tenant assertion's own key (lib/tenantAssertion.ts). Server-side only.
+const TENANT_ASSERTION_KEY = assertionKeyMaterialFromEnv(process.env);
 
 export async function GET(req: NextRequest) {
   const requestId = requestIdFor(req.headers);
@@ -31,6 +34,7 @@ export async function GET(req: NextRequest) {
   const me = await fetchMeTrips({
     tripApiUrl: TRIP_API_URL,
     edgeKey: TRIPPLANNER_API_KEY,
+    assertionKey: TENANT_ASSERTION_KEY,
     requestId,
     accessToken: access.accessToken,
     tenantSlug: req.headers.get(TENANT_SLUG_HEADER),
