@@ -3,7 +3,7 @@
 GET /browse/tenant/{slug}/tours            the planner's tour list on /{slug}/plan
 GET /browse/tenant/{slug}/tours/{tour}     the tenant's tour page /{slug}/tours/{tour}
 
-Both read the CIS contract view catalog.v_tenant_tour_v1 (CIS 403, contract catalog.tenant_tour.v1, SELECT to role
+Both read the CIS contract view catalog.v_tenant_tour_v1 (CIS 404, contract catalog.tenant_tour.v1, SELECT to role
 tripplanner): one row per live AA tour with a version publishable on the tenant's site (approved by it, its own
 edit, or AI text whose QA passed), with the served text and the AA facts of the live tour. AA liveness wins (a retired or paused tour is not in the view).
 
@@ -11,7 +11,7 @@ The slug is resolved first (tenant_site.lookup: only a SERVED tenant). The demo 
 aa-tripplanner) has no agency text of its own: its list is the AA catalogue (catalog.list_tours) with `source: "aa"`,
 so its planner keeps linking to the AA tour pages; it has no tenant tour page (404).
 
-The view absent or not granted (42P01 / 42501: CIS 403 not applied yet): an agency lists no tour and has no tour
+The view absent or not granted (42P01 / 42501: CIS 404 not applied yet): an agency lists no tour and has no tour
 page; one log line says why. Any other read error raises (the handler answers 503 no-store).
 
 No price is read or answered: the agency is the merchant of record (ADR 0019 b5) and AA's suggested retail price is
@@ -31,7 +31,7 @@ DEMO_KIND = "demo"
 # label the page shows, as catalog.CATALOG_AI_GENERATOR is for AA's text).
 TENANT_AI_GENERATOR = "Adventure Asia content writer"
 
-# Column names, never * (the CIS test test_aa1094_migration_403.py pins the view's columns; the stand-in of
+# Column names, never * (the CIS test test_aa1094_migration_404.py pins the view's columns; the stand-in of
 # backend/tests/test_aa1038_tenant_site_pg.py copies them).
 COLUMNS = """
     t.source_system, t.source_id, t.tour_id::text AS tour_id, t.slug, t.title, t.subtitle, t.summary, t.highlights,
@@ -104,7 +104,7 @@ def _card(r: Any) -> dict:
 
 
 async def _fetch(pool: Any, sql: str, *args: Any) -> Optional[list]:
-    """Rows of the view, None when the view is absent for this role (before CIS 403)."""
+    """Rows of the view, None when the view is absent for this role (before CIS 404)."""
     try:
         return await pool.fetch(sql, *args)
     except Exception as exc:  # noqa: BLE001 — only the type is logged, never str(exc) (asyncpg echoes values)

@@ -63,8 +63,8 @@ CREATE VIEW catalog.v_tenant_tripplanner_v1 WITH (security_barrier = true) AS
 GRANT USAGE ON SCHEMA catalog TO tripplanner;
 GRANT SELECT ON catalog.v_tenant_tripplanner_v1 TO tripplanner;
 """
-# AA-1094: copied verbatim from AA-CIS-App tests/integration/test_aa1094_migration_403.py (COLUMNS).
-CIS_403_COLUMNS = (
+# AA-1094: copied verbatim from AA-CIS-App tests/integration/test_aa1094_migration_404.py (COLUMNS).
+CIS_404_COLUMNS = (
     "tenant_id uuid, source_system text, source_id text, tour_id uuid, slug text, title text, subtitle text, "
     "summary text, highlights jsonb, itinerary_text text, seo_title text, seo_meta text, country text, "
     "duration_raw text, duration_days integer, best_time_to_go text, cover_photo_path text, photo_count bigint, "
@@ -73,7 +73,7 @@ CIS_403_COLUMNS = (
 )
 TOUR_A1 = "7a000000-0000-4000-8000-0000000000a1"
 TOUR_B1 = "7b000000-0000-4000-8000-0000000000b1"
-# AA-1094: catalog.v_tenant_tour_v1 (CIS 403) as a stand-in over a plain table, granted the way CIS 403 grants it.
+# AA-1094: catalog.v_tenant_tour_v1 (CIS 404) as a stand-in over a plain table, granted the way CIS 404 grants it.
 TOUR_VIEW_STANDIN = f"""
 CREATE TABLE catalog.zz_tenant_tour_rows (
     tenant_id uuid, source_system text, source_id text, tour_id uuid, slug text, title text, subtitle text,
@@ -271,9 +271,9 @@ async def test_a_forged_or_expired_assertion_binds_nothing_and_writes_nothing(db
         await su.close()
 
 
-# --- AA-1094: the tenant's own tours (catalog.v_tenant_tour_v1, CIS 403) as the runtime role ----------------------
+# --- AA-1094: the tenant's own tours (catalog.v_tenant_tour_v1, CIS 404) as the runtime role ----------------------
 
-async def test_the_tour_stand_in_has_the_cis_403_columns(db):
+async def test_the_tour_stand_in_has_the_cis_404_columns(db):
     su = await asyncpg.connect(db["su_dsn"])
     try:
         cols = await su.fetchval(
@@ -282,7 +282,7 @@ async def test_the_tour_stand_in_has_the_cis_403_columns(db):
             "AND a.attnum > 0 AND NOT a.attisdropped")
     finally:
         await su.close()
-    assert cols == CIS_403_COLUMNS
+    assert cols == CIS_404_COLUMNS
 
 
 async def test_each_agency_lists_only_its_own_tours_as_the_runtime_role(db, tp_conn):

@@ -71,7 +71,7 @@ _CAT_SITEMAP_RE = re.compile(r"^/browse/catalog/sitemap$")
 _CAT_RETIRED_RE = re.compile(r"^/browse/catalog/retired$")
 # AA-1038 R5 slice 2: any one path segment; tenant_site.lookup checks the slug shape (a bad one is the same 404).
 _TENANT_RE = re.compile(r"^/browse/tenant/([^/]{1,120})$")
-# AA-1094: the tours of a tenant and one tour page (catalog.v_tenant_tour_v1, CIS 403); the tour slug as /catalog/tours.
+# AA-1094: the tours of a tenant and one tour page (catalog.v_tenant_tour_v1, CIS 404); the tour slug as /catalog/tours.
 _TENANT_TOURS_RE = re.compile(r"^/browse/tenant/([^/]{1,120})/tours$")
 _TENANT_TOUR_RE = re.compile(r"^/browse/tenant/([^/]{1,120})/tours/([a-z0-9-]{1,120})$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -160,7 +160,7 @@ async def route(
         # The BFF keeps its own short cache; a suspension must not sit in a shared cache.
         return _resp(200, {"tenant": site}, _NO_STORE_HEADERS)
 
-    # --- AA-1094: a tenant's own tours (catalog.v_tenant_tour_v1, CIS 403); the slug resolved first, served only ----
+    # --- AA-1094: a tenant's own tours (catalog.v_tenant_tour_v1, CIS 404); the slug resolved first, served only ----
     m = _TENANT_TOURS_RE.match(path) or _TENANT_TOUR_RE.match(path)
     if m:
         try:

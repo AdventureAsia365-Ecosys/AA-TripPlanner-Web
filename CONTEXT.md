@@ -752,12 +752,12 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   (`tenant_context` line). The browse Lambda binds nothing (it reads catalog views only).
 - **What a tenant sees of the catalogue.** AA master rows only, whatever is bound: the tour views read
   `catalog._live_tour`, whose WHERE keeps the AA master tenant (decided in the 379 view contract). The agency's own
-  tours come from `catalog.v_tenant_tour_v1` (CIS 403, contract `catalog.tenant_tour.v1`, AA-1094): one row per live
+  tours come from `catalog.v_tenant_tour_v1` (CIS 404, contract `catalog.tenant_tour.v1`, AA-1094): one row per live
   AA tour with a version publishable on the agency's site (approved by it, its own edit, or AI text whose QA passed) with the served text; AA liveness wins.
   `backend/browse/tenant_tours.py` serves `GET /browse/tenant/{slug}/tours` (the planner's list on `/{slug}/plan`,
   `source: "tenant"`) and `GET /browse/tenant/{slug}/tours/{tour}` (the page `app/[tenant]/tours/[tour]`), both after
   the served-slug lookup. The demo tenant (kind `demo`) lists the AA catalogue (`source: "aa"`) and keeps linking to
-  the AA tour pages; it has no tenant tour page. Before CIS 403 is applied (42P01 / 42501) an agency lists no tour.
+  the AA tour pages; it has no tenant tour page. Before CIS 404 is applied (42P01 / 42501) an agency lists no tour.
   No price on an agency's page (the agency is the merchant of record, ADR 0019 b5).
 - **Brand on the agency's pages only (AA-1094, S278 audit M21).** `/{slug}/plan` and `/{slug}/tours/{tour}` carry
   the agency's bar (`components/Header.tsx` `agency`: its trading name, linking to its planner, no Adventure Asia

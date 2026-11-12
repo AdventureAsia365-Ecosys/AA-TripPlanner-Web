@@ -1,6 +1,6 @@
 """AA-1094 (root ADR 0019 d10, S278 audit M20) — a tenant's own tours (backend/browse/tenant_tours.py) and the two
 browse routes, offline: the demo tenant keeps the AA catalogue, an agency lists only its rows of
-catalog.v_tenant_tour_v1, the view absent (before CIS 403) is an empty list / 404, a transient error is 503 no-store,
+catalog.v_tenant_tour_v1, the view absent (before CIS 404) is an empty list / 404, a transient error is 503 no-store,
 an unknown or unserved slug is 404 before the view is read. No price anywhere. Invented names only.
 """
 from __future__ import annotations
