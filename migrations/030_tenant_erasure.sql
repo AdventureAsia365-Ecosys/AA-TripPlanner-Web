@@ -30,23 +30,33 @@
 --      assembly Lambda never opens that scope (backend/tests/test_aa1038_force_rls.py), so a request path cannot
 --      erase, and row-level security keeps every other caller at zero rows anyway.
 --        plan, per table (keys sorted): tripplanner.sessions / trip_drafts / trip_events / outbox  action delete;
---          tripplanner.ai_spend_month (scope 'tenant:<id>')  action merge_into_app; tripplanner.customers and
---          tripplanner.traveller_accounts linked through the tenant's sessions  action keep (count only: frozen
---          global traveller records, outside the tenant scope, a traveller's own erasure is the DSAR runbook).
+--          tripplanner.ai_spend_month (scope 'tenant:<id>')  action merge_into_app; tripplanner.customers linked
+--          through the tenant's sessions and through no session of another tenant  action delete (personal data that
+--          would otherwise be left without any session: the only FK to customers is sessions.customer_id, so the
+--          delete is FK-safe once the sessions are gone; a customer another tenant's session still links is not
+--          touched); tripplanner.traveller_accounts linked through the tenant's sessions  action keep (count only:
+--          global sign-in accounts, outside the tenant scope, a traveller's own erasure is the DSAR runbook).
 --          fingerprint = sha256 hex of the comma-joined md5 of every row's text, in key order (empty = sha256 of '').
+--          The row text depends on the session's TimeZone / DateStyle / IntervalStyle / extra_float_digits /
+--          bytea_output, so the function pins all five (SET clauses): a DRY RUN and the apply hash the same rows
+--          the same way whatever the caller's session settings are.
 --          plan_hash = sha256 hex of 'tp-tenant-erase/1|<tenant>|' and every 'key|action|rows|fingerprint' line.
 --        dry_run true: returns the plan, writes nothing.
---        dry_run false: expect_plan (64 hex) is required (22023); the five tables are locked IN EXCLUSIVE MODE (reads
+--        dry_run false: expect_plan (64 hex) is required (22023); the six tables are locked IN EXCLUSIVE MODE (reads
 --          go on, writes wait) so the plan cannot move between the hash and the deletes; a hash other than
 --          expect_plan returns status refused, reason plan_changed, nothing deleted; else the deletes run children
---          first (trip_events, trip_drafts, outbox, sessions; no FK links them) and each must remove exactly the
---          planned count (else the statement raises and the caller's transaction rolls back); the spend rows are
+--          first (trip_events, trip_drafts, outbox, sessions, then the planned customers: trip_events.session_id and
+--          trip_drafts.session_id reference sessions.id, sessions.customer_id references customers.id; outbox has no
+--          FK) and each must remove exactly the planned count (else the statement raises and the caller's
+--          transaction rolls back); the spend rows are
 --          merged: an app row of the same stage and month is inserted only when none exists (the app row already
 --          counts every tenant's spend, backend/shared/monthly_spend.py charge()), then the tenant rows go.
 --        The log row is the caller's (same transaction): the function never writes the log.
 --   4. tripplanner.v_tenant_erasure_report_v1 (request_id, tenant_id, mode, status, reason, plan_hash, counts, job_id,
---      created_at, updated_at) over the log: an owner view (no security_invoker), SELECT to cis_app (the CIS saga
---      reads each app's report, contract tenant.erasure.v1); the default writes of the runtime role on it revoked.
+--      created_at, updated_at) over the log: an owner view (no security_invoker), SELECT to cis_app only (the CIS
+--      saga reads each app's report, contract tenant.erasure.v1); every default privilege of the runtime role on it
+--      is revoked, SELECT included (the view bypasses the log's row-level security as its owner, so the runtime role
+--      reads the log itself, under its system policy).
 --   5. comments, guards, registration.
 --
 -- Locks: none on existing tables (new objects only; the function's locks are taken when it runs, in apply mode only).
@@ -143,6 +153,11 @@ RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, pg_temp
+SET TimeZone = 'UTC'
+SET DateStyle = 'ISO, YMD'
+SET IntervalStyle = 'postgres'
+SET extra_float_digits = 3
+SET bytea_output = 'hex'
 AS $fn$
 DECLARE
     v_scope    text := 'tenant:' || p_tenant::text;
@@ -153,6 +168,7 @@ DECLARE
     v_fp       text;
     v_done     bigint;
     v_app_rows bigint := 0;
+    v_customers uuid[];
 BEGIN
     IF p_tenant IS NULL OR p_dry_run IS NULL THEN
         RAISE EXCEPTION 'tp-030 erase_tenant: tenant and dry_run are required' USING ERRCODE = '22004';
@@ -167,7 +183,7 @@ BEGIN
             RAISE EXCEPTION 'tp-030 erase_tenant: an apply needs the approved plan hash (64 hex)' USING ERRCODE = '22023';
         END IF;
         LOCK TABLE tripplanner.trip_events, tripplanner.trip_drafts, tripplanner.outbox, tripplanner.sessions,
-                   tripplanner.ai_spend_month IN EXCLUSIVE MODE;
+                   tripplanner.customers, tripplanner.ai_spend_month IN EXCLUSIVE MODE;
     END IF;
 
     -- the plan: per table the action, the row count and a fingerprint of the rows (never a row value)
@@ -193,10 +209,15 @@ BEGIN
     v_tables := v_tables || jsonb_build_object('tripplanner.ai_spend_month',
                                                jsonb_build_object('action', 'merge_into_app', 'rows', v_n,
                                                                   'fingerprint', v_fp));
-    SELECT count(*) INTO v_n FROM tripplanner.customers c
-     WHERE c.id IN (SELECT s.customer_id FROM tripplanner.sessions s WHERE s.tenant_id = p_tenant);
+    -- customers only this tenant's sessions link (no session of another tenant): deleted after the sessions
+    SELECT coalesce(array_agg(c.id ORDER BY c.id), '{}'::uuid[]), count(*),
+           encode(sha256(convert_to(coalesce(string_agg(md5(c::text), ',' ORDER BY c.id), ''), 'UTF8')), 'hex')
+      INTO v_customers, v_n, v_fp
+      FROM tripplanner.customers c
+     WHERE c.id IN (SELECT s.customer_id FROM tripplanner.sessions s WHERE s.tenant_id = p_tenant)
+       AND NOT EXISTS (SELECT 1 FROM tripplanner.sessions o WHERE o.customer_id = c.id AND o.tenant_id <> p_tenant);
     v_tables := v_tables || jsonb_build_object('tripplanner.customers',
-                                               jsonb_build_object('action', 'keep', 'rows', v_n, 'fingerprint', NULL));
+                                               jsonb_build_object('action', 'delete', 'rows', v_n, 'fingerprint', v_fp));
     SELECT count(*) INTO v_n FROM tripplanner.traveller_accounts a
      WHERE a.id IN (SELECT s.account_id FROM tripplanner.sessions s WHERE s.tenant_id = p_tenant);
     v_tables := v_tables || jsonb_build_object('tripplanner.traveller_accounts',
@@ -232,6 +253,9 @@ BEGIN
     DELETE FROM tripplanner.sessions t WHERE t.tenant_id = p_tenant;
     GET DIAGNOSTICS v_done = ROW_COUNT;
     v_deleted := v_deleted || jsonb_build_object('tripplanner.sessions', v_done);
+    DELETE FROM tripplanner.customers c WHERE c.id = ANY (v_customers);
+    GET DIAGNOSTICS v_done = ROW_COUNT;
+    v_deleted := v_deleted || jsonb_build_object('tripplanner.customers', v_done);
 
     INSERT INTO tripplanner.ai_spend_month (stage, scope, month, cost_usd, calls, updated_at)
     SELECT t.stage, 'app', t.month, t.cost_usd, t.calls, now()
@@ -263,8 +287,7 @@ SELECT l.request_id, l.tenant_id, l.mode, l.status, l.reason, l.plan_hash, l.cou
        l.updated_at
   FROM tripplanner.tenant_erasure_log l;
 
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON tripplanner.v_tenant_erasure_report_v1 FROM tripplanner;
-GRANT SELECT ON tripplanner.v_tenant_erasure_report_v1 TO tripplanner;
+REVOKE ALL ON tripplanner.v_tenant_erasure_report_v1 FROM tripplanner;
 GRANT SELECT ON tripplanner.v_tenant_erasure_report_v1 TO cis_app;
 
 -- 5. comments
@@ -278,9 +301,9 @@ COMMENT ON COLUMN tripplanner.tenant_erasure_log.tenant_id IS
 COMMENT ON COLUMN tripplanner.tenant_erasure_log.counts IS
     'tp-030: the plan / result of tripplanner.erase_tenant: per table action, rows and fingerprint (sha256 of row md5s), deleted counts. No row value.';
 COMMENT ON FUNCTION tripplanner.erase_tenant(uuid, boolean, text) IS
-    'tp-030 (AA-1093): DRY RUN plan (dry_run true) or apply (dry_run false, expect_plan = the approved plan hash; another hash = refused plan_changed) of a tenant erasure: deletes the tenant''s sessions, trip_drafts, trip_events, outbox rows and merges its ai_spend_month rows into the app scope. SECURITY INVOKER; only under the jobs system scope with no tenant bound (else 42501).';
+    'tp-030 (AA-1093): DRY RUN plan (dry_run true) or apply (dry_run false, expect_plan = the approved plan hash; another hash = refused plan_changed) of a tenant erasure: deletes the tenant''s sessions, trip_drafts, trip_events, outbox rows and the customers no other tenant''s session links, and merges its ai_spend_month rows into the app scope. SECURITY INVOKER; session settings that shape row text pinned (UTC, ISO dates); only under the jobs system scope with no tenant bound (else 42501).';
 COMMENT ON VIEW tripplanner.v_tenant_erasure_report_v1 IS
-    'tp-030 (AA-1093): the TripPlanner erasure report the CIS saga reads (contract tenant.erasure.v1): request, tenant, mode, status, reason, plan hash, counts. Ids, counts and hashes only. SELECT to cis_app.';
+    'tp-030 (AA-1093): the TripPlanner erasure report the CIS saga reads (contract tenant.erasure.v1): request, tenant, mode, status, reason, plan hash, counts. Ids, counts and hashes only. SELECT to cis_app only (not the runtime role).';
 
 DO $$
 BEGIN
@@ -307,6 +330,7 @@ BEGIN
     IF has_table_privilege('tripplanner', 'tripplanner.tenant_erasure_log', 'DELETE')
        OR NOT has_table_privilege('tripplanner', 'tripplanner.tenant_erasure_log', 'INSERT')
        OR has_table_privilege('tripplanner', 'tripplanner.v_tenant_erasure_report_v1', 'INSERT')
+       OR has_table_privilege('tripplanner', 'tripplanner.v_tenant_erasure_report_v1', 'SELECT')
        OR NOT has_table_privilege('cis_app', 'tripplanner.v_tenant_erasure_report_v1', 'SELECT')
        OR has_table_privilege('cis_app', 'tripplanner.tenant_erasure_log', 'SELECT') THEN
         RAISE EXCEPTION 'tp-030: unexpected grants on the erasure log or its report view';

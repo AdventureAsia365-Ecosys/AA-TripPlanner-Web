@@ -7,11 +7,13 @@ invented rows of two more tenants: TARGET (the one erased) and OTHER (must stay 
 
 Checks: the contract shape (no directive line, one BEGIN … COMMIT, no SECURITY DEFINER); the log (columns, key, FORCE
 row-level security, exactly its two policies, the runtime role cannot delete), the function (SECURITY INVOKER,
-executable by tripplanner only), the view (columns, SELECT to cis_app only); as the runtime role: the function refuses
-outside the system scope and under a bound tenant; the DRY RUN plan hash is stable, ignores other tenants and changes
-when the tenant's data changes; an apply without a plan or with a stale plan deletes nothing; an apply with the
-approved plan removes every row of the tenant, leaves the other tenants intact and merges the spend rows into the app
-scope; cis_app reads the report view and not the table; a re-run is a no-op.
+executable by tripplanner only, the session settings that shape row text pinned), the view (columns, SELECT to cis_app
+only, the runtime role cannot read it); as the runtime role: the function refuses outside the system scope and under a
+bound tenant; the DRY RUN plan hash is stable, equal under two session TimeZone / DateStyle settings, ignores other
+tenants and changes when the tenant's data changes; an apply without a plan or with a stale plan deletes nothing; an
+apply with the approved plan removes every row of the tenant and the customers only its sessions link (a customer
+another tenant's session links stays), leaves the other tenants intact and merges the spend rows into the app scope;
+cis_app reads the report view and not the table; a re-run is a no-op.
 """
 from __future__ import annotations
 
@@ -34,8 +36,14 @@ TARGET = "a7a7a7a7-0000-4000-8000-0000000000e1"        # invented tenant that is
 OTHER = "b8b8b8b8-0000-4000-8000-0000000000e2"         # invented tenant that must stay intact
 TABLES = ("sessions", "trip_drafts", "trip_events", "outbox")
 TARGET_ROWS = {"sessions": 2, "trip_drafts": 2, "trip_events": 3, "outbox": 1}
-OTHER_ROWS = {"sessions": 1, "trip_drafts": 1, "trip_events": 1, "outbox": 1}
+OTHER_ROWS = {"sessions": 2, "trip_drafts": 1, "trip_events": 1, "outbox": 1}
 SYSTEM = "SELECT set_config('app.tenant_scope', 'system', false)"
+# Invented customers: ONLY_TARGET is linked by a TARGET session only (deleted with the tenant), SHARED by a TARGET
+# session and an OTHER session (kept), ONLY_OTHER by an OTHER session only (kept).
+ONLY_TARGET = "d1d1d1d1-0000-4000-8000-0000000000c1"
+SHARED = "d2d2d2d2-0000-4000-8000-0000000000c2"
+ONLY_OTHER = "d3d3d3d3-0000-4000-8000-0000000000c3"
+CUSTOMERS = {ONLY_TARGET: "Ilse Vandermeer", SHARED: "Tomas Okonkwo-Lind", ONLY_OTHER: "Priya Halvorsen"}
 PLAN_KEYS = ["tripplanner.ai_spend_month", "tripplanner.customers", "tripplanner.outbox", "tripplanner.sessions",
              "tripplanner.traveller_accounts", "tripplanner.trip_drafts", "tripplanner.trip_events"]
 
@@ -44,12 +52,15 @@ def _code(sql: str) -> str:
     return "\n".join(ln for ln in sql.splitlines() if not ln.lstrip().startswith("--"))
 
 
-async def seed_tenant(su, tenant: str, rows: dict, *, spend_usd: float = 0.0) -> None:
+async def seed_tenant(su, tenant: str, rows: dict, *, spend_usd: float = 0.0,
+                      customers: tuple = ()) -> None:
     """Invented rows of one tenant in the four tables (as the superuser, which bypasses row security), plus its spend
-    row and the matching app row of this month when spend_usd > 0."""
+    row and the matching app row of this month when spend_usd > 0. ``customers``: customer ids linked by the tenant's
+    sessions, in order (one per session; the rest of the sessions link none)."""
     sessions = [uuid.uuid4() for _ in range(rows["sessions"])]
-    for s in sessions:
-        await su.execute("INSERT INTO tripplanner.sessions (id, tenant_id) VALUES ($1, $2::uuid)", s, tenant)
+    for i, s in enumerate(sessions):
+        await su.execute("INSERT INTO tripplanner.sessions (id, tenant_id, customer_id) VALUES ($1, $2::uuid, $3::uuid)",
+                         s, tenant, customers[i] if i < len(customers) else None)
     trips = [uuid.uuid4() for _ in range(rows["trip_drafts"])]
     for i, t in enumerate(trips):
         await su.execute("INSERT INTO tripplanner.trip_drafts (id, session_id, tenant_id, itinerary) "
@@ -89,8 +100,11 @@ def erasure_database(pg_dsn, *, seed: bool = True):  # noqa: F811
         if seed:
             su = await asyncpg.connect(ctx["su_dsn"])
             try:
-                await seed_tenant(su, TARGET, TARGET_ROWS, spend_usd=0.25)
-                await seed_tenant(su, OTHER, OTHER_ROWS, spend_usd=0.5)
+                for i, (cid, name) in enumerate(CUSTOMERS.items()):
+                    await su.execute("INSERT INTO tripplanner.customers (id, name, email, created_at, contact_consent) "
+                                     "VALUES ($1::uuid, $2, $3, now(), false)", cid, name, f"traveller{i}@example.test")
+                await seed_tenant(su, TARGET, TARGET_ROWS, spend_usd=0.25, customers=(ONLY_TARGET, SHARED))
+                await seed_tenant(su, OTHER, OTHER_ROWS, spend_usd=0.5, customers=(SHARED, ONLY_OTHER))
                 # a spend row of the target in a past month with no app row: the merge must add one
                 await su.execute("INSERT INTO tripplanner.ai_spend_month (stage, scope, month, cost_usd, calls) "
                                  "VALUES ('tp_plan_chat', $1, DATE '2026-09-01', 0.1, 1)", f"tenant:{TARGET}")
@@ -169,6 +183,7 @@ def test_log_function_and_view_shape(db):
                                       "WHERE schemaname = 'tripplanner' AND tablename = 'tenant_erasure_log' "
                                       "ORDER BY policyname")
             fn = await su.fetchrow("SELECT p.prosecdef AS definer, pg_get_userbyid(p.proowner) AS owner, "
+                                   "p.proconfig AS config, "
                                    "has_function_privilege('tripplanner', p.oid, 'EXECUTE') AS tp, "
                                    "has_function_privilege('cis_app', p.oid, 'EXECUTE') AS cis, "
                                    "has_function_privilege('booking', p.oid, 'EXECUTE') AS bk "
@@ -199,13 +214,14 @@ def test_log_function_and_view_shape(db):
         ("tenant_erasure_log_owner_read", "SELECT", ["tp_owner"]),
         ("tenant_erasure_log_system", "ALL", ["tp_owner", "tripplanner"])]
     assert (fn["definer"], fn["owner"], fn["tp"], fn["cis"], fn["bk"]) == (False, "tp_owner", True, False, False)
+    assert sorted(fn["config"]) == sorted(["search_path=pg_catalog, pg_temp", "TimeZone=UTC", "DateStyle=ISO, YMD",
+                                           "IntervalStyle=postgres", "extra_float_digits=3", "bytea_output=hex"])
     assert [r["column_name"] for r in view_cols] == ["request_id", "tenant_id", "mode", "status", "reason", "plan_hash",
                                                      "counts", "job_id", "created_at", "updated_at"]
     assert {k: v for k, v in privs.items() if v} == {
         ("tripplanner", "tenant_erasure_log", "SELECT"): True, ("tripplanner", "tenant_erasure_log", "INSERT"): True,
         ("tripplanner", "tenant_erasure_log", "UPDATE"): True,
-        ("tripplanner", "v_tenant_erasure_report_v1", "SELECT"): True,
-        ("cis_app", "v_tenant_erasure_report_v1", "SELECT"): True}
+        ("cis_app", "v_tenant_erasure_report_v1", "SELECT"): True}     # the runtime role cannot read the view
     assert registered == 1
 
 
@@ -245,13 +261,18 @@ def test_dry_run_plan_is_stable_counts_the_tenant_and_writes_nothing(db):
     assert sorted(first["tables"]) == PLAN_KEYS
     assert {k: v["rows"] for k, v in first["tables"].items()} == {
         "tripplanner.sessions": 2, "tripplanner.trip_drafts": 2, "tripplanner.trip_events": 3, "tripplanner.outbox": 1,
-        "tripplanner.ai_spend_month": 2, "tripplanner.customers": 0, "tripplanner.traveller_accounts": 0}
-    assert {v["action"] for v in first["tables"].values()} == {"delete", "merge_into_app", "keep"}
+        "tripplanner.ai_spend_month": 2, "tripplanner.customers": 1, "tripplanner.traveller_accounts": 0}
+    assert {k: v["action"] for k, v in first["tables"].items()} == {
+        **dict.fromkeys(["tripplanner.sessions", "tripplanner.trip_drafts", "tripplanner.trip_events",
+                         "tripplanner.outbox", "tripplanner.customers"], "delete"),
+        "tripplanner.ai_spend_month": "merge_into_app", "tripplanner.traveller_accounts": "keep"}
+    assert first["tables"]["tripplanner.customers"]["fingerprint"] != first["tables"]["tripplanner.outbox"]["fingerprint"]
     # no row value in the plan: only counts, actions and hex fingerprints
     for v in first["tables"].values():
         assert set(v) == {"action", "rows", "fingerprint"}
         assert v["fingerprint"] is None or re.fullmatch(r"[0-9a-f]{64}", v["fingerprint"])
     assert "Lantern" not in json.dumps(first)
+    assert not [n for n in CUSTOMERS.values() if n in json.dumps(first)] and "example.test" not in json.dumps(first)
 
 
 @pytest.mark.parametrize("change", [
@@ -260,6 +281,7 @@ def test_dry_run_plan_is_stable_counts_the_tenant_and_writes_nothing(db):
     "INSERT INTO tripplanner.trip_events (trip_id, session_id, event_type, payload, tenant_id) "
     "SELECT trip_id, session_id, 'reorder', '{{}}', tenant_id FROM tripplanner.trip_events WHERE tenant_id = '{t}' LIMIT 1",
     "UPDATE tripplanner.ai_spend_month SET calls = calls + 1 WHERE scope = 'tenant:{t}'",
+    f"UPDATE tripplanner.customers SET contact_consent = true WHERE id = '{ONLY_TARGET}'",
 ])
 def test_plan_hash_changes_when_the_tenant_data_changes(db, change):
     async def body(conn):
@@ -282,6 +304,38 @@ def test_plan_hash_ignores_other_tenants(db):
 
     before, after, other = run(_runtime(db, body))
     assert before == after and other != before
+
+
+def test_plan_hash_is_the_same_under_other_session_settings(db):
+    """The fingerprints hash row text, which depends on the session's TimeZone / DateStyle / extra_float_digits /
+    IntervalStyle / bytea_output: the function pins them, so the operator's DRY RUN and the jobs Lambda's apply agree."""
+    async def body(conn):
+        await conn.execute(SYSTEM)
+        hashes = []
+        for tz, style, digits, byt in (("UTC", "ISO, MDY", "1", "hex"),
+                                       ("Asia/Ho_Chi_Minh", "SQL, DMY", "0", "escape"),
+                                       ("America/Los_Angeles", "German", "-15", "escape")):
+            await conn.execute(f"SET TimeZone = '{tz}'")
+            await conn.execute(f"SET DateStyle = '{style}'")
+            await conn.execute(f"SET extra_float_digits = {digits}")
+            await conn.execute(f"SET bytea_output = '{byt}'")
+            await conn.execute("SET IntervalStyle = 'iso_8601'" if tz != "UTC" else "SET IntervalStyle = 'postgres'")
+            plan = await _erase(conn, TARGET, True)
+            hashes.append((plan["plan_hash"], {k: v["fingerprint"] for k, v in plan["tables"].items()},
+                           await conn.fetchval("SHOW TimeZone")))
+        # a stamped row of the target: its text under the caller's own settings differs between the two zones
+        texts = []
+        for tz in ("UTC", "Asia/Ho_Chi_Minh"):
+            await conn.execute(f"SET TimeZone = '{tz}'")
+            texts.append(await conn.fetchval("SELECT t::text FROM tripplanner.sessions t WHERE t.tenant_id = $1::uuid "
+                                             "ORDER BY t.id LIMIT 1", TARGET))
+        return hashes, texts
+
+    hashes, texts = run(_runtime(db, body))
+    assert texts[0] != texts[1]                                   # the settings do move the row text …
+    assert hashes[0][0] == hashes[1][0] == hashes[2][0]           # … but not the plan hash
+    assert hashes[0][1] == hashes[1][1] == hashes[2][1]
+    assert hashes[1][2] == "Asia/Ho_Chi_Minh"                     # the function's SET did not leak into the session
 
 
 def test_apply_needs_a_plan_and_refuses_a_stale_one(db):
@@ -319,14 +373,17 @@ def test_apply_with_the_approved_plan_erases_the_tenant_only_and_merges_its_spen
         verify = await _erase(conn, TARGET, True)
         demo_after = await conn.fetchval("SELECT count(*) AS n FROM tripplanner.sessions WHERE tenant_id <> ALL($1::uuid[])",
                                          [TARGET, OTHER])
+        customers_after = [r["id"] for r in await conn.fetch(
+            "SELECT id::text AS id FROM tripplanner.customers WHERE id = ANY($1::uuid[]) ORDER BY id", list(CUSTOMERS))]
         return (other_before, app_before, result, await _tenant_counts(conn, TARGET), await _tenant_counts(conn, OTHER),
-                app_after, verify, demo_before, demo_after)
+                app_after, verify, demo_before, demo_after, customers_after)
 
-    other_before, app_before, result, target_after, other_after, app_after, verify, demo_before, demo_after = \
-        run(_runtime(db, body))
+    (other_before, app_before, result, target_after, other_after, app_after, verify, demo_before, demo_after,
+     customers_after) = run(_runtime(db, body))
     assert result["status"] == "applied" and result["reason"] is None
     assert result["deleted"] == {"tripplanner.sessions": 2, "tripplanner.trip_drafts": 2, "tripplanner.trip_events": 3,
-                                 "tripplanner.outbox": 1, "tripplanner.ai_spend_month": 2}
+                                 "tripplanner.outbox": 1, "tripplanner.customers": 1, "tripplanner.ai_spend_month": 2}
+    assert customers_after == sorted([SHARED, ONLY_OTHER])     # only the customer no other tenant links is gone
     assert result["app_rows_added"] == 1                     # September had no app row; this month's already counts it
     assert target_after == dict.fromkeys([*TABLES, "spend"], 0)
     assert other_after == other_before == {**OTHER_ROWS, "spend": 1}
@@ -357,10 +414,16 @@ def test_runtime_cannot_delete_log_rows_and_cis_app_reads_the_view_only(db):
             no_reason = "ran"
         except asyncpg.CheckViolationError:
             no_reason = "refused"
-        return deleted, no_reason
+        try:
+            async with conn.transaction():
+                await conn.fetch("SELECT 1 FROM tripplanner.v_tenant_erasure_report_v1")
+            view = "read"
+        except asyncpg.InsufficientPrivilegeError:
+            view = "refused"
+        return deleted, no_reason, view
 
-    deleted, no_reason = run(_runtime(db, body))
-    assert (deleted, no_reason) == ("refused", "refused")
+    deleted, no_reason, view = run(_runtime(db, body))
+    assert (deleted, no_reason, view) == ("refused", "refused", "refused")   # the report view is CIS's, not the runtime's
 
     async def as_cis():
         su = await asyncpg.connect(db["su_dsn"])
