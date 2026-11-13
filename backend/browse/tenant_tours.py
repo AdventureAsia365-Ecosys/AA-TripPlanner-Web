@@ -7,9 +7,12 @@ Both read the CIS contract view catalog.v_tenant_tour_v1 (CIS 404, contract cata
 tripplanner): one row per live AA tour with a version publishable on the tenant's site (approved by it, its own
 edit, or AI text whose QA passed), with the served text and the AA facts of the live tour. AA liveness wins (a retired or paused tour is not in the view).
 
-The slug is resolved first (tenant_site.lookup: only a SERVED tenant). The demo tenant (kind demo, the AA-hosted
-aa-tripplanner) has no agency text of its own: its list is the AA catalogue (catalog.list_tours) with `source: "aa"`,
-so its planner keeps linking to the AA tour pages; it has no tenant tour page (404).
+The slug is resolved first (tenant_site.lookup: only a SERVED tenant). The AA-hosted tenant aa-tripplanner
+(config.is_aa_hosted: its fixed tenant id, never `kind`) has no agency text of its own: its list is the AA catalogue
+(catalog.list_tours) with `source: "aa"`, so its planner keeps linking to the AA tour pages; it has no tenant tour page
+(404). Every other served tenant, a synthetic demo agency (kind demo) included, lists its own adopted tours and has
+tenant tour pages; one with no adopted tour lists nothing, never the AA catalogue (AA-1094, S278 finding: keying on
+kind demo gave every synthetic agency the AA catalogue).
 
 The view absent or not granted (42P01 / 42501: CIS 404 not applied yet): an agency lists no tour and has no tour
 page; one log line says why. Any other read error raises (the handler answers 503 no-store).
@@ -22,11 +25,11 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
+from backend import config
 from backend.browse import catalog
 
 VIEW = "catalog.v_tenant_tour_v1"
 VIEW_ABSENT_SQLSTATES = frozenset({"42P01", "42501"})
-DEMO_KIND = "demo"
 # The generator name of a tenant's T2 text (CIS ai_marking.version_mark GENERATOR is admin-side; this is the public
 # label the page shows, as catalog.CATALOG_AI_GENERATOR is for AA's text).
 TENANT_AI_GENERATOR = "Adventure Asia content writer"
@@ -115,10 +118,16 @@ async def _fetch(pool: Any, sql: str, *args: Any) -> Optional[list]:
         raise TenantToursUnavailable(type(exc).__name__) from None
 
 
+def serves_aa_catalogue(site: dict) -> bool:
+    """True for the AA-hosted tenant only (config.is_aa_hosted on the tenant id); the tenant's `kind` plays no part."""
+    return config.is_aa_hosted(site.get("tenant_id"))
+
+
 async def list_tours(site: dict, q: dict, *, pool: Any) -> dict:
-    """The planner's tour list of a served tenant: the AA catalogue for the demo tenant (`source: "aa"`), the tenant's
-    own tours otherwise (`source: "tenant"`). Same page shape as catalog.list_tours."""
-    if site.get("kind") == DEMO_KIND:
+    """The planner's tour list of a served tenant: the AA catalogue for the AA-hosted tenant (`source: "aa"`), the
+    tenant's own tours otherwise (`source: "tenant"`, empty when it adopted none). Same page shape as
+    catalog.list_tours."""
+    if serves_aa_catalogue(site):
         return {**await catalog.list_tours(q, pool=pool), "source": "aa"}
     rows = await _fetch(pool, CARDS_SQL, site["tenant_id"], q["country"], q["min_days"], q["max_days"]) or []
     cards = [_card(r) for r in rows]
@@ -139,10 +148,10 @@ async def list_tours(site: dict, q: dict, *, pool: Any) -> dict:
 
 
 async def tour_detail(site: dict, slug: str, *, pool: Any) -> Optional[dict]:
-    """One tour of a served agency tenant with the tenant's text, or None (the demo tenant, a tour the tenant did not
-    make its own, a tour AA no longer serves, or the view absent). The slug may be an older spelling: its source-id
+    """One tour of a served agency tenant with the tenant's text, or None (the AA-hosted tenant, a tour the tenant did
+    not make its own, a tour AA no longer serves, or the view absent). The slug may be an older spelling: its source-id
     suffix finds the tour and `slug` in the answer is the current one (the page redirects)."""
-    if site.get("kind") == DEMO_KIND:
+    if serves_aa_catalogue(site):
         return None
     slug = (slug or "").strip().lower()
     rows = await _fetch(pool, BY_SLUG_SQL, site["tenant_id"], slug, catalog.source_id_suffix(slug))

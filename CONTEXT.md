@@ -764,8 +764,12 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   AA tour with a version publishable on the agency's site (approved by it, its own edit, or AI text whose QA passed) with the served text; AA liveness wins.
   `backend/browse/tenant_tours.py` serves `GET /browse/tenant/{slug}/tours` (the planner's list on `/{slug}/plan`,
   `source: "tenant"`) and `GET /browse/tenant/{slug}/tours/{tour}` (the page `app/[tenant]/tours/[tour]`), both after
-  the served-slug lookup. The demo tenant (kind `demo`) lists the AA catalogue (`source: "aa"`) and keeps linking to
-  the AA tour pages; it has no tenant tour page. Before CIS 404 is applied (42P01 / 42501) an agency lists no tour.
+  the served-slug lookup. Only the AA-hosted tenant `aa-tripplanner` lists the AA catalogue (`source: "aa"`) and keeps
+  linking to the AA tour pages; it has no tenant tour page. The rule keys on its fixed tenant id
+  (`config.is_aa_hosted`: `DEMO_TENANT_ID`, which CIS 379 seeds and guards, or the bare path's `DEFAULT_TENANT_ID`),
+  never on `kind`: synthetic agencies are kind `demo` too and list their own adopted tours (none adopted = an empty
+  list, never the AA catalogue). The same predicate exempts AA's own planner from the tenant AI budget and the agency
+  lead route (`tenant_budget.exempt`). Before CIS 404 is applied (42P01 / 42501) an agency lists no tour.
   No price on an agency's page (the agency is the merchant of record, ADR 0019 b5).
 - **Brand on the agency's pages only (AA-1094, S278 audit M21).** `/{slug}/plan` and `/{slug}/tours/{tour}` carry
   the agency's bar (`components/Header.tsx` `agency`: its trading name, linking to its planner, no Adventure Asia

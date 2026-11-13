@@ -52,6 +52,21 @@ def tenant_uuid(raw: Optional[str], name: str) -> str:
 # Override for a test or a second environment only (Lambda env TP_DEFAULT_TENANT_ID); unset or blank = the demo tenant.
 DEFAULT_TENANT_ID = tenant_uuid((_get("TP_DEFAULT_TENANT_ID") or "").strip() or DEMO_TENANT_ID, "TP_DEFAULT_TENANT_ID")
 
+
+def is_aa_hosted(tenant_id: Optional[str]) -> bool:
+    """AA's own planner: the AA-hosted tenant aa-tripplanner (DEMO_TENANT_ID, the fixed id CIS 379 seeds and guards:
+    no other tenant may hold it) or the bare path's tenant (DEFAULT_TENANT_ID). It serves the AA catalogue and has no
+    tenant AI budget. Keyed on the tenant id, never on `kind`: every synthetic agency on Dev is kind demo too, and
+    each lists its own tours (AA-1094, S278 finding). The view catalog.v_tenant_tripplanner_v1 carries no plan code,
+    so the fixed id is the explicit attribute. A value that is not a uuid is not AA-hosted."""
+    if tenant_id is None:
+        return False
+    try:
+        canonical = str(uuid.UUID(str(tenant_id).strip()))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return canonical in (DEFAULT_TENANT_ID, DEMO_TENANT_ID)
+
 # AA-1038 R5 slice 2: the /{slug} path. The BFF resolves the slug through GET /browse/tenant/{slug} (CIS view
 # catalog.v_tenant_tripplanner_v1, CIS 379) and sends the assembly Lambda a signed tenant assertion in this header
 # (backend/shared/tenant_assertion.py). No header = the bare path = DEFAULT_TENANT_ID, as in slice 1.
