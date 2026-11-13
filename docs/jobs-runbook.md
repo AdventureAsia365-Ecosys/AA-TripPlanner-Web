@@ -1,8 +1,9 @@
 # Jobs Lambda runbook — tripplanner.job and the outbox PII redaction
 
 The jobs Lambda `aa-tripplanner-dev-jobs` (AA-861) is the worker of `tripplanner.job` (migration tp-021). An
-EventBridge Scheduler rule wakes it once a day at 19:30 UTC with `{"op": "tick"}`; an operator invokes it directly
-(IAM, no HTTP route). Its kinds:
+EventBridge Scheduler rule wakes it once a day at 19:30 UTC with `{"op": "tick"}`, a second one every 5 minutes with
+`{"op": "erasure_feed"}` (the CIS erasure requests only, AA-1093; see "Tenant erasure" below); an operator invokes it
+directly (IAM, no HTTP route). Its kinds:
 
 - `tp_retention_outbox_redact`: the personal data in `tripplanner.outbox.payload` (customer name, email, phone,
   signed-in identity, custom day notes) is removed 90 days after the row was written (data standards DM-6.6 / DM-7.2).
@@ -100,8 +101,13 @@ close it. An override run never counts as the last live run: the daily tick stay
   the log group `/aws/lambda/aa-tripplanner-dev-jobs` (`job_finished`, `jobs_run`, `outbox_redact_held`,
   `outbox_redact_failed`, `rate_counter_purge_held`, `rate_counter_purge_failed` lines). A tick before tp-023 is
   applied fails the rate-counter kind (`UndefinedTableError`): apply tp-023, the next tick is clean. A failed live run keeps the batches it committed; the job result says how many.
-- `aa-tripplanner-dev-jobs-not-run`: no invocation for 2 days (schedule disabled or broken). Missing data is
-  breaching, so it is also in ALARM from its creation until the first invocation (see "First deploy", step 6).
+- `aa-tripplanner-dev-jobs-not-run`: no daily tick for 2 days (the daily schedule disabled or broken). It counts the
+  tick's `jobs_run` log line with `"op": "tick"` (metric `AA/TripPlanner` `JobsTickRuns`), not invocations: the
+  5-minute erasure feed invokes the function all day and would hide a stopped tick. Missing data is breaching, so it
+  is also in ALARM from its creation until the first tick (see "First deploy", step 6; invoke `{"op":"tick"}` once
+  to clear it at once).
+- An erasure feed run that fails (the database unreachable, a failed or refused-apply erase job) raises too and
+  fires `aa-tripplanner-dev-jobs-errors`; read the `jobs_run` line with `"op": "erasure_feed"`.
 
 ## What stays working after a redaction
 
@@ -124,8 +130,11 @@ tp-031 the erase fails with `UndefinedFunctionError` (nothing is deleted).
   of the same request, round and source is not run again, a new round applies its own plan), `verify` (every delete / merge count 0
   and a census of the `pii:` columns finding 0, else `census_not_zero`). Each run appends one report to
   `tripplanner.tenant_erasure_log` (status `ok` / `refused` / `failed` with a contract error code), which CIS reads
-  through `tripplanner.v_tenant_erasure_report_v1`. The daily tick reads the CIS request view
-  `catalog.v_tenant_erasure_v1` once it exists (`no_feed` until then) and runs each request once per round and phase.
+  through `tripplanner.v_tenant_erasure_report_v1`. The op `erasure_feed` (every 5 minutes) reads the CIS request
+  view `catalog.v_tenant_erasure_v1` once it exists (`no_feed` until then) and queues one job per new request, round
+  and phase (idempotency key `tp_tenant_erase:<request>:<round>:<phase>`), then runs due erase jobs only; so a request
+  CIS opens (or its "Run now") gets TripPlanner's report within about 5 minutes. The daily tick reads the same view
+  and runs any request still without a report (the safety net, e.g. after a feed job's Lambda was killed).
   Refused always: the AA-hosted tenant (`aa_hosted_refused`) and the pilot (`pilot_refused`). An apply also needs
   `TENANT_ERASE_APPLY_ENABLED=true` on the function (Terraform, default off), CIS markers for the tenant
   (`tenant_markers_unknown`), outside prod a tenant CIS marks synthetic (`not_synthetic`), and for a CIS request an
@@ -146,6 +155,19 @@ aws lambda invoke --function-name aa-tripplanner-dev-jobs --cli-binary-format ra
 aws lambda invoke --function-name aa-tripplanner-dev-jobs --cli-binary-format raw-in-base64-out --payload '{"op":"restore_drill","payload":{"tenant_slug":"<slug>"}}' --profile aa365-admin --region us-west-1 /tmp/tp-jobs.json && cat /tmp/tp-jobs.json
 aws lambda invoke --function-name aa-tripplanner-dev-jobs --cli-binary-format raw-in-base64-out --payload '{"op":"enqueue","kind":"tp_tenant_erase","payload":{"tenant_slug":"<slug>","mode":"dry_run"}}' --profile aa365-admin --region us-west-1 /tmp/tp-jobs.json && cat /tmp/tp-jobs.json
 ```
+
+Read the CIS request feed now (what the 5-minute schedule does; a drill need not wait for it):
+
+```bash
+aws lambda invoke --function-name aa-tripplanner-dev-jobs --cli-binary-format raw-in-base64-out --payload '{"op":"erasure_feed"}' --profile aa365-admin --region us-west-1 /tmp/tp-jobs.json && cat /tmp/tp-jobs.json
+```
+
+The answer: `feed` (`no_feed` before CIS ships the view, `feed_shape_unknown` when it lacks a contract column, else
+`feed`), `due` (requests without a report in their round and phase), `queued` (the job ids this run queued; empty
+when an earlier run already queued them) and `jobs` (each erase job run, `result.outcome` `ran` / `superseded` /
+`not_due` / `already_reported`, `result.requests` the report). A `TooManyRequestsException` means a scheduled run holds
+the one slot (reserved concurrency 1): retry a few seconds later. An `enqueue` with `"trigger":"feed"` or
+`"trigger":"schedule"` is refused: those payloads belong to the schedules.
 
 An operator run uses one request id per tenant (a UUIDv5 of the tenant, the `request_id` of the DRY RUN's report) and
 round 1 unless the payload names `request_id` / `round`. A `request_id` of a CIS request (a row of

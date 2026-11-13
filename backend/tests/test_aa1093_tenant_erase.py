@@ -88,6 +88,15 @@ def test_the_bare_path_tenant_is_refused_like_the_demo_tenant(monkeypatch):
     ({"tenant_id": TENANT, "round": 0}, "round must be an integer"),
     ({"tenant_id": TENANT, "round": "2"}, "round must be an integer"),
     ({"tenant_id": TENANT, "round": True}, "round must be an integer"),
+    ({"trigger": "feed", "request_id": REQUEST}, "a feed run takes exactly"),
+    ({"trigger": "feed", "request_id": REQUEST, "tenant_id": TENANT, "round": 1, "mode": "dry_run", "expect_plan": PLAN},
+     "a feed run takes exactly"),
+    ({"trigger": "feed", "request_id": REQUEST, "tenant_id": TENANT, "round": 1, "mode": "delete"},
+     "mode must be one of"),
+    ({"trigger": "feed", "request_id": "not-a-uuid", "tenant_id": TENANT, "round": 1, "mode": "dry_run"},
+     "must be uuids"),
+    ({"trigger": "feed", "request_id": REQUEST, "tenant_id": TENANT, "round": 0, "mode": "dry_run"},
+     "round must be an integer"),
 ])
 def test_erase_payload_is_validated_without_echoing_values(payload, message):
     with pytest.raises(PermanentError) as e:
@@ -527,3 +536,212 @@ def test_drill_fails_with_s3_access_denied_not_files_gone():
     with pytest.raises(PermanentError, match="^s3_access_denied") as e:
         asyncio.run(tenant_restore_drill.check_files(store, TENANT, "bk-1", None))
     assert "gone" not in str(e.value) and TENANT not in str(e.value)
+
+
+# ── the erasure feed: one job per CIS request, round and phase (op erasure_feed) ─────────────────────────────────
+
+
+FEED_ROW = {"request_id": REQUEST, "tenant_id": TENANT, "phase": "dry_run", "round": 1, "step_status": "active",
+            # a feed job compares not_before with the wall clock: a fixed time long past
+            "not_before": datetime(2026, 1, 1, tzinfo=timezone.utc), "approved_plan_hash": None,
+            "approval_expires_at": datetime(2999, 1, 1, tzinfo=timezone.utc), "is_pilot": False, "is_synthetic": True}
+SECOND = "d2d2d2d2-0000-4000-8000-0000000000e6"
+
+
+class _FeedConn(_Conn):
+    """``_Conn`` plus the request view (``rows``: the due rows, newest per request) and the report log
+    (``reported``: (request, round, mode) of the CIS reports, appended by every report insert)."""
+
+    def __init__(self, rows=(), *, reported=(), **kw):
+        super().__init__(**kw)
+        self.rows = [dict(r) for r in rows]
+        self.reported = set(reported)
+
+    async def fetch(self, sql, *args):
+        self.calls.append(sql)
+        if sql == tenant_erase.REQUESTS_SQL:
+            return self.rows
+        if sql == tenant_erase.REPORTED_SQL:
+            return [{"request_id": r, "round": n, "mode": m} for r, n, m in self.reported if r in args[0]]
+        raise AssertionError(sql)
+
+    async def fetchrow(self, sql, *args):
+        if sql == tenant_erase.REQUEST_SQL:
+            self.calls.append(sql)
+            return next((r for r in self.rows if r["request_id"] == args[0]), None)
+        row = await super().fetchrow(sql, *args)
+        if "INSERT INTO tripplanner.tenant_erasure_log" in sql and args[10] == "cis":
+            self.reported.add((args[0], args[2], args[3]))
+        return row
+
+
+class _OneConnPool:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def acquire(self):
+        conn = self.conn
+
+        class _Ctx:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, *a):
+                return False
+        return _Ctx()
+
+
+def _view(monkeypatch, columns=tenant_erase.FEED_COLUMNS):
+    async def cols(_conn, relation):
+        return list(columns) if relation == tenant_erase.tenant_target.FEED_VIEW else []
+    monkeypatch.setattr(tenant_erase.tenant_target, "columns", cols)
+
+
+def _fake_queue(monkeypatch):
+    """tripplanner.job as far as the feed needs it: one row per idempotency key, ever."""
+    jobs: dict[str, dict] = {}
+
+    async def enqueue(conn, kind, payload, *, created_by, idempotency_key=None, max_attempts=1):
+        if idempotency_key in jobs:
+            return None
+        jobs[idempotency_key] = {"kind": kind, "payload": payload, "created_by": created_by,
+                                 "max_attempts": max_attempts, "id": f"job-{len(jobs) + 1}"}
+        return jobs[idempotency_key]["id"]
+
+    monkeypatch.setattr(tenant_erase.queue, "enqueue", enqueue)
+    return jobs
+
+
+def test_the_feed_queues_each_request_round_and_phase_once(monkeypatch):
+    _view(monkeypatch)
+    jobs = _fake_queue(monkeypatch)
+    rows = [FEED_ROW, {**FEED_ROW, "request_id": SECOND, "phase": "apply", "approved_plan_hash": None}]
+    conn = _FeedConn(rows)
+    out = asyncio.run(tenant_erase.queue_feed(_OneConnPool(conn), created_by="scheduler:test"))
+    # the apply without an approved hash is not due (CIS sets the hash with the phase)
+    assert (out["feed"], out["due"], out["queued"]) == ("feed", 1, ["job-1"])
+    [(key, job)] = jobs.items()
+    assert key == f"tp_tenant_erase:{REQUEST}:1:dry_run"
+    assert job == {"kind": tenant_erase.KIND, "created_by": "scheduler:test", "max_attempts": 1, "id": "job-1",
+                   "payload": {"trigger": "feed", "request_id": REQUEST, "tenant_id": TENANT, "round": 1,
+                               "mode": "dry_run"}}
+    assert tenant_erase.validate_payload(job["payload"]) == job["payload"]
+    assert conn.calls[0] == tenant_erase.tenant.SYSTEM_SCOPE_SQL           # the report log needs the system scope
+
+    # every later run of the feed in the same round and phase queues nothing new
+    for _ in range(3):
+        assert asyncio.run(tenant_erase.queue_feed(_OneConnPool(conn), created_by="scheduler:test"))["queued"] == []
+    # a reported (request, round, phase) is not due; the next phase of the request is a new job
+    conn = _FeedConn([{**FEED_ROW, "phase": "apply", "approved_plan_hash": PLAN}],
+                     reported={(REQUEST, 1, "dry_run")})
+    out = asyncio.run(tenant_erase.queue_feed(_OneConnPool(conn), created_by="scheduler:test"))
+    assert out["queued"] == ["job-2"] and f"tp_tenant_erase:{REQUEST}:1:apply" in jobs
+    conn = _FeedConn([FEED_ROW], reported={(REQUEST, 1, "dry_run")})
+    assert asyncio.run(tenant_erase.queue_feed(_OneConnPool(conn), created_by="x"))["due"] == 0
+
+
+@pytest.mark.parametrize("columns,state", [((), "no_feed"), (("request_id", "tenant_id"), "feed_shape_unknown")])
+def test_the_feed_queues_nothing_without_the_contract_view(monkeypatch, columns, state):
+    _view(monkeypatch, columns)
+    jobs = _fake_queue(monkeypatch)
+    out = asyncio.run(tenant_erase.queue_feed(_OneConnPool(_FeedConn([FEED_ROW])), created_by="x"))
+    assert (out["feed"], out["due"], out["queued"], jobs) == (state, 0, [], {})
+
+
+def _feed_job(conn, payload=None):
+    class _Job:
+        id = JOB
+        payload = {}
+
+    job = _Job()
+    job.payload = payload or tenant_erase.feed_payload(Request.from_row(FEED_ROW))
+    return asyncio.run(tenant_erase.run(_OneConnPool(conn), job, environ=DEV_ON))
+
+
+def test_a_feed_job_runs_its_request_once_and_reports_like_the_daily_feed(monkeypatch):
+    _view(monkeypatch)
+    conn = _FeedConn([FEED_ROW], plan=_function())
+    out = _feed_job(conn)
+    assert (out["mode"], out["trigger"], out["outcome"], out["attention"]) == ("feed", "feed", "ran", False)
+    [entry] = out["requests"]
+    assert (entry["request_id"], entry["mode"], entry["status"], entry["round"]) == (REQUEST, "dry_run", "ok", 1)
+    _valid(entry)
+    assert conn.inserts[-1][10] == "cis"                          # a CIS request's report
+    # the same job again (or the daily tick's report first) writes nothing
+    again = _feed_job(conn)
+    assert (again["outcome"], again["requests"], len(conn.inserts)) == ("already_reported", [], 1)
+
+
+@pytest.mark.parametrize("change,outcome", [
+    ({"phase": "apply", "approved_plan_hash": PLAN}, "superseded"),         # CIS moved the request on
+    ({"round": 2}, "superseded"),
+    ({"step_status": "done"}, "superseded"),
+    ({"tenant_id": "b8b8b8b8-0000-4000-8000-0000000000e2"}, "superseded"),
+    ({"not_before": datetime(2999, 1, 1, tzinfo=timezone.utc)}, "not_due"),
+])
+def test_a_feed_job_whose_request_moved_on_writes_no_report(monkeypatch, change, outcome):
+    _view(monkeypatch)
+    conn = _FeedConn([{**FEED_ROW, **change}], calls_function=False)
+    out = _feed_job(conn)
+    assert (out["outcome"], out["requests"], conn.inserts) == (outcome, [], [])
+
+
+def test_a_feed_job_of_a_request_gone_from_the_view_or_without_the_view(monkeypatch):
+    _view(monkeypatch)
+    assert _feed_job(_FeedConn([], calls_function=False))["outcome"] == "superseded"
+    _view(monkeypatch, ())
+    out = _feed_job(_FeedConn([FEED_ROW], calls_function=False))
+    assert (out["mode"], out["requests"], out["attention"]) == ("no_feed", [], False)
+
+
+def test_a_failed_feed_job_asks_for_attention(monkeypatch):
+    _view(monkeypatch)
+
+    def wrong(*args):
+        return {**_function()(*args), "plan_hash": "f" * 64}
+
+    out = _feed_job(_FeedConn([FEED_ROW], plan=wrong))
+    assert out["requests"][0]["status"] == "failed" and out["attention"] is True
+
+
+# ── op erasure_feed ──────────────────────────────────────────────────────────
+
+
+def _serve_feed(monkeypatch, event, *, jobs=()):
+    seen = {}
+
+    async def queue_feed(pool, *, created_by):
+        seen["created_by"] = created_by
+        return {"feed": "feed", "due": 1, "queued": ["job-1"]}
+
+    async def run_due(pool, handlers, **kw):
+        seen["kinds"] = sorted(handlers)
+        return {"reaped": {"reaped": 0, "cancelled": 0}, "jobs": list(jobs)}
+
+    monkeypatch.setattr(handler.tenant_erase, "queue_feed", queue_feed)
+    monkeypatch.setattr(handler.runner, "run_due", run_due)
+    out = asyncio.run(handler.serve(event, pool=_OneConnPool(object()), worker="w", time_left=lambda: 600.0))
+    return out, seen
+
+
+def test_the_erasure_feed_op_queues_then_runs_erase_jobs_only(monkeypatch):
+    out, seen = _serve_feed(monkeypatch, {"op": "erasure_feed", "source": handler.FEED_SOURCE})
+    assert (out["op"], out["feed"], out["queued"], out["jobs"]) == ("erasure_feed", "feed", ["job-1"], [])
+    assert seen == {"created_by": handler.FEED_SCHEDULER, "kinds": [tenant_erase.KIND]}
+    _, seen = _serve_feed(monkeypatch, {"op": "erasure_feed"})                # an operator's invoke
+    assert seen["created_by"] == handler.OPERATOR
+    assert "erasure_feed" in handler.OPS and "erasure_feed" not in handler.OP_KINDS
+
+
+def test_the_erasure_feed_op_raises_when_an_erase_job_needs_attention(monkeypatch):
+    failed = {"job_id": "job-1", "kind": tenant_erase.KIND, "status": "succeeded",
+              "result": {"mode": "feed", "attention": True}}
+    with pytest.raises(handler.JobsNeedAttention, match="job-1"):
+        _serve_feed(monkeypatch, {"op": "erasure_feed"}, jobs=[failed])
+
+
+@pytest.mark.parametrize("trigger,message", [("schedule", "daily tick"), ("feed", "op erasure_feed")])
+def test_an_operator_enqueue_may_not_take_a_scheduler_trigger(trigger, message):
+    out = asyncio.run(handler.serve({"op": "enqueue", "kind": tenant_erase.KIND, "payload": {"trigger": trigger}},
+                                    pool=_OneConnPool(object()), worker="w", time_left=lambda: 600.0))
+    assert message in out["error"]

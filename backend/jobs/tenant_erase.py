@@ -35,6 +35,18 @@ Payload:
   ``round`` to 1; an apply needs ``expect_plan`` (the DRY RUN's ``plan_hash``); markers from
   :func:`backend.jobs.tenant_target.markers`. A ``request_id`` that names a CIS request (a row of the request view)
   is refused before anything runs (PermanentError, no report): an operator report never lands in a CIS request.
+* ``{"trigger": "feed", "request_id", "tenant_id", "round", "mode"}`` (queued by the jobs op ``erasure_feed``, every
+  5 minutes and on an operator's invoke, :func:`queue_feed`): ONE CIS request in one (round, phase). The newest view
+  row of the request is read again: a request whose tenant, round or phase moved on, or whose step is no longer
+  ``active``, writes no report (``superseded``); nor does one CIS made not due again (``not_due``, the daily tick runs
+  it once due) or one that already has a report of that round and mode (``already_reported``: the daily tick ran it
+  first). Otherwise the same run as the daily feed's.
+
+The feed cadence (AA-1093 follow-up, S279 DRILL-01): CIS and Booking answer a request within minutes, the daily tick
+alone made TripPlanner wait up to a day. :func:`queue_feed` reads the request view and queues one job per new
+(request, round, phase) with the idempotency key ``tp_tenant_erase:<request>:<round>:<phase>`` (Booking's), so a
+request is queued once however often the feed runs; the daily ``schedule`` run stays the safety net (it runs a
+request no feed job reported, e.g. after a feed job's Lambda was killed).
 
 Refusals (a report of status ``refused``; nothing is deleted), in this order:
 
@@ -68,7 +80,7 @@ from typing import Any, Optional
 import asyncpg
 
 from backend import config
-from backend.jobs import tenant_target
+from backend.jobs import queue, tenant_target
 from backend.jobs.queue import Job
 from backend.jobs.runner import PermanentError
 from backend.shared import observability, tenant
@@ -81,7 +93,9 @@ CONTRACT = "tenant.erasure.v1"
 APP = "tripplanner"
 MODES = ("dry_run", "apply", "verify")
 PAYLOAD_KEYS = frozenset({"trigger", "tenant_id", "tenant_slug", "mode", "expect_plan", "request_id", "round"})
-TRIGGERS = ("schedule", "manual")
+FEED_TRIGGER = "feed"     # one CIS request, queued by queue_feed (jobs op erasure_feed)
+TRIGGERS = ("schedule", "manual", FEED_TRIGGER)
+FEED_PAYLOAD_KEYS = frozenset({"trigger", "request_id", "tenant_id", "round", "mode"})
 PLAN_RE = re.compile(r"^[0-9a-f]{64}$")
 # Namespace of the request id of an operator run (one per tenant): its DRY RUN and its apply share the request.
 OPERATOR_NAMESPACE = uuid.UUID("3d7e8c1a-5b2f-5e4a-9c61-7a0f93a1b2c4")
@@ -132,6 +146,11 @@ APPLIED_SQL = """
 """
 # Operator runs never take the id of a CIS request (they would report into the saga outside its phase and approval).
 CIS_REQUEST_SQL = f"SELECT 1 FROM {tenant_target.FEED_VIEW} WHERE request_id = $1::uuid LIMIT 1"  # noqa: S608
+# The newest row of one CIS request (a feed job reads it again before it runs).
+REQUEST_SQL = f"""
+    SELECT {_REQUEST_COLUMNS} FROM {tenant_target.FEED_VIEW}
+     WHERE app = '{APP}' AND request_id = $1::uuid ORDER BY updated_at DESC LIMIT 1
+"""  # noqa: S608 — fixed names
 
 # ── The census (verify) ──────────────────────────────────────────────────────────────────────────────────────────
 _CUSTOMERS = ("id IN (SELECT s.customer_id FROM tripplanner.sessions s WHERE s.tenant_id = $1::uuid) AND NOT EXISTS "
@@ -221,8 +240,26 @@ def validate_payload(payload: Any) -> dict[str, Any]:
         if set(payload) - {"trigger"}:
             raise PermanentError("a scheduled run takes no other key (it reads the CIS request view)")
         return payload
+    if trigger == FEED_TRIGGER:
+        _validate_feed(payload)
+        return payload
     _validate_manual(payload)
     return payload
+
+
+def _validate_feed(payload: dict[str, Any]) -> None:
+    if set(payload) != FEED_PAYLOAD_KEYS:
+        raise PermanentError(f"a feed run takes exactly {sorted(FEED_PAYLOAD_KEYS)}")
+    if payload["mode"] not in MODES:
+        raise PermanentError(f"mode must be one of {list(MODES)}")
+    try:
+        tenant.canonical(payload["request_id"])
+        tenant.canonical(payload["tenant_id"])
+    except tenant.InvalidTenant:
+        raise PermanentError("request_id and tenant_id must be uuids") from None
+    round_ = payload["round"]
+    if isinstance(round_, bool) or not isinstance(round_, int) or round_ < 1:
+        raise PermanentError("round must be an integer from 1")
 
 
 def _validate_manual(payload: dict[str, Any]) -> None:
@@ -300,6 +337,16 @@ def needs_attention(entry: dict[str, Any]) -> bool:
 
 def schedule_key(day: date) -> str:
     return f"{KIND}:schedule:{day.isoformat()}"
+
+
+def feed_key(req: Request) -> str:
+    """One job per CIS request, round and phase, ever (Booking's key shape)."""
+    return f"{KIND}:{req.request_id}:{req.round}:{req.phase}"
+
+
+def feed_payload(req: Request) -> dict[str, Any]:
+    return {"trigger": FEED_TRIGGER, "request_id": req.request_id, "tenant_id": req.tenant_id, "round": req.round,
+            "mode": req.phase}
 
 
 # ── One run of one request ───────────────────────────────────────────────────────────────────────────────────────
@@ -412,21 +459,79 @@ async def _feed(conn: Any) -> tuple[str, list[Request]]:
     return "feed", [Request.from_row(r) for r in await conn.fetch(REQUESTS_SQL)]
 
 
-async def _run_feed(conn: Any, job: Job, env: Environ) -> dict[str, Any]:
+async def pending(conn: Any) -> tuple[str, list[Request]]:
+    """('no_feed' | 'feed_shape_unknown' | 'feed', the requests due in a (round, phase) that has no report yet; an
+    apply only with an approved hash). Needs the system scope (the report log has FORCE row-level security)."""
     state, requests = await _feed(conn)
+    if state != "feed":
+        return state, []
+    reported = {(r["request_id"], r["round"], r["mode"])
+                for r in await conn.fetch(REPORTED_SQL, [r.request_id for r in requests])}
+    due = [req for req in requests if (req.request_id, req.round, req.phase) not in reported
+           and (req.phase != "apply" or PLAN_RE.match(req.approved_plan_hash or ""))]   # CIS sets the hash with apply
+    return state, due
+
+
+async def queue_feed(pool: Any, *, created_by: str) -> dict[str, Any]:
+    """Jobs op ``erasure_feed``: one ``feed`` job per due request (idempotency key per request, round and phase, so a
+    request is queued once however often this runs). Reads the view and the report log only; ids and counts out."""
+    async with pool.acquire() as conn, tenant.system_scope(conn, op=KIND):
+        state, due = await pending(conn)
+        queued = []
+        for req in due:
+            job_id = await queue.enqueue(conn, KIND, feed_payload(req), created_by=created_by,
+                                         idempotency_key=feed_key(req), max_attempts=MAX_ATTEMPTS)
+            if job_id:
+                queued.append(job_id)
+    observability.emit("tenant_erase_feed", state=state, due=len(due), queued=len(queued))
+    return {"feed": state, "due": len(due), "queued": queued}
+
+
+async def _run_feed(conn: Any, job: Job, env: Environ) -> dict[str, Any]:
+    state, requests = await pending(conn)
     if state != "feed":
         observability.emit("tenant_erase_feed", state=state)
         return {"mode": state, "trigger": "schedule", "requests": [], "attention": state == "feed_shape_unknown"}
-    reported = {(r["request_id"], r["round"], r["mode"])
-                for r in await conn.fetch(REPORTED_SQL, [r.request_id for r in requests])}
-    out = []
-    for req in requests:
-        if (req.request_id, req.round, req.phase) in reported:
-            continue
-        if req.phase == "apply" and not PLAN_RE.match(req.approved_plan_hash or ""):
-            continue                                  # CIS sets the approved hash with the apply phase
-        out.append(await run_mode(conn, req, req.phase, job_id=job.id, environ=env))
+    out = [await run_mode(conn, req, req.phase, job_id=job.id, environ=env) for req in requests]
     return {"mode": "feed", "trigger": "schedule", "requests": out, "attention": any(needs_attention(e) for e in out)}
+
+
+async def _skip_feed_job(conn: Any, payload: dict[str, Any], req: Optional[Request]) -> Optional[str]:
+    """Why a feed job writes no report, or None when it runs: the request moved on, its step is no longer due (CIS
+    moved ``not_before`` after the job was queued: the daily tick runs it once due), or a report of its round and mode
+    exists (the daily tick or an earlier job ran it)."""
+    if req is None or (req.tenant_id, req.round, req.phase, req.step_status) != \
+            (tenant.canonical(payload["tenant_id"]), payload["round"], payload["mode"], "active"):
+        return "superseded"
+    if req.not_before is not None and req.not_before > datetime.now(timezone.utc):
+        return "not_due"
+    reported = {(r["round"], r["mode"]) for r in await conn.fetch(REPORTED_SQL, [req.request_id])}
+    return "already_reported" if (req.round, req.phase) in reported else None
+
+
+async def _read_request(conn: Any, request_id: str) -> tuple[str, Optional[Request]]:
+    """('no_feed' | 'feed_shape_unknown' | 'feed', the newest row of one CIS request or None)."""
+    cols = await tenant_target.columns(conn, tenant_target.FEED_VIEW)
+    if not cols:
+        return "no_feed", None
+    if not all(c in cols for c in FEED_COLUMNS):
+        return "feed_shape_unknown", None
+    row = await conn.fetchrow(REQUEST_SQL, request_id)
+    return "feed", Request.from_row(row) if row is not None else None
+
+
+async def _run_feed_job(conn: Any, payload: dict[str, Any], job: Job, env: Environ) -> dict[str, Any]:
+    """A ``feed`` job: run its one request in its (round, phase) if it still is there and has no report yet."""
+    state, req = await _read_request(conn, tenant.canonical(payload["request_id"]))
+    base = {"mode": "feed", "trigger": FEED_TRIGGER, "request_id": tenant.canonical(payload["request_id"]),
+            "round": payload["round"], "phase": payload["mode"]}
+    if state != "feed":
+        return {**base, "mode": state, "requests": [], "attention": state == "feed_shape_unknown"}
+    skip = await _skip_feed_job(conn, payload, req)
+    if skip:
+        return {**base, "outcome": skip, "requests": [], "attention": False}
+    entry = await run_mode(conn, req, req.phase, job_id=job.id, environ=env)
+    return {**base, "outcome": "ran", "requests": [entry], "attention": needs_attention(entry)}
 
 
 async def _refuse_cis_request_id(conn: Any, request_id: str) -> None:
@@ -458,8 +563,11 @@ async def run(pool: Any, job: Job, *, environ: Optional[Environ] = None) -> dict
     payload = validate_payload(job.payload)
     env = os.environ if environ is None else environ
     async with pool.acquire() as conn, tenant.system_scope(conn, op=KIND):
-        if payload.get("trigger", "manual") == "schedule":
+        trigger = payload.get("trigger", "manual")
+        if trigger == "schedule":
             result = await _run_feed(conn, job, env)
+        elif trigger == FEED_TRIGGER:
+            result = await _run_feed_job(conn, payload, job, env)
         else:
             result = await _run_operator(conn, payload, job, env)
     for e in result["requests"]:

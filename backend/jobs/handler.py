@@ -28,6 +28,15 @@ Events (``op``; the scheduler sends ``{"op": "tick", "source": "aa-861-daily"}``
 ``restore_drill``
     ``{"op": "restore_drill", "payload": {"tenant_id" | "tenant_slug", "backup_id"}}``: the same as an ``enqueue`` of
     ``tp_tenant_restore_drill`` (AA-1093): load a tenant backup into ``pg_temp``, compare, roll back.
+``erasure_feed``
+    AA-1093 follow-up (S279): read the CIS erasure request feed (``catalog.v_tenant_erasure_v1``) and queue one
+    ``tp_tenant_erase`` job per new (request, round, phase) of TripPlanner (``trigger: feed``, idempotency key per
+    request, round and phase, so a request is queued once), then run due ``tp_tenant_erase`` jobs only (no other
+    kind: their cadence stays the daily tick's). Woken every 5 minutes by its own EventBridge schedule
+    (``{"op": "erasure_feed", "source": "aa-1093-erasure-feed"}``, AA-CIS-Infra ``tripplanner_jobs.tf``) and callable by
+    an operator. Answer ``{"feed": "no_feed" | "feed_shape_unknown" | "feed", "due", "queued", "jobs"}``; raises
+    :class:`JobsNeedAttention` like ``tick`` when an erase job it ran failed or refused an apply. A view without the
+    contract columns is reported by the daily tick (attention), not every 5 minutes.
 
 AA-1093 (tenant offboarding, part 2 and 3 of the root plan): ``tp_tenant_erase`` (daily: the CIS request feed when it
 exists; by ``enqueue``: an operator drill), ``tp_tenant_backup`` (daily: the tenants CIS marks ``is_pilot``, D11,
@@ -82,8 +91,13 @@ MAX_ATTEMPTS: dict[str, int] = {outbox_redact.KIND: outbox_redact.MAX_ATTEMPTS,
                                 tenant_backup.KIND: tenant_backup.MAX_ATTEMPTS,
                                 tenant_restore_drill.KIND: tenant_restore_drill.MAX_ATTEMPTS}
 SCHEDULER = "scheduler:tp-jobs-daily"
+FEED_SCHEDULER = "scheduler:tp-erasure-feed"
+FEED_SOURCE = "aa-1093-erasure-feed"    # the "source" of the erasure feed schedule's event (AA-CIS-Infra)
 OPERATOR = "operator:lambda-invoke"
-OPS = ("tick", "enqueue", "run", "status", "restore_drill", "settings")
+OPS = ("tick", "enqueue", "run", "status", "restore_drill", "settings", "erasure_feed")
+# Payload triggers an operator enqueue may not use: each belongs to its scheduler path.
+RESERVED_TRIGGERS = {"schedule": "trigger 'schedule' is reserved for the daily tick",
+                     tenant_erase.FEED_TRIGGER: "trigger 'feed' is reserved for the op erasure_feed"}
 # Ops that are an enqueue of one fixed kind (AA-1093).
 OP_KINDS = {"restore_drill": tenant_restore_drill.KIND}
 ATTENTION_MODES = ("held",)
@@ -131,6 +145,23 @@ async def queue_daily(pool: Any, today: date) -> list[str]:
     return queued
 
 
+async def erasure_feed(event: dict[str, Any], *, pool: Any, worker: str,
+                       time_left: Callable[[], float]) -> dict[str, Any]:
+    """Op ``erasure_feed``: queue the new CIS erasure requests, then run due ``tp_tenant_erase`` jobs only."""
+    emit = observability.emit
+    created_by = FEED_SCHEDULER if event.get("source") == FEED_SOURCE else OPERATOR
+    fed = await tenant_erase.queue_feed(pool, created_by=created_by)
+    emit("jobs_queued", op="erasure_feed", queued=len(fed["queued"]))
+    ran = await runner.run_due(pool, {tenant_erase.KIND: HANDLERS[tenant_erase.KIND]}, worker=worker,
+                               time_left=time_left, emit=emit)
+    needs = attention(ran["jobs"])
+    emit("jobs_run", op="erasure_feed", feed=fed["feed"], queued=len(fed["queued"]), ran=len(ran["jobs"]),
+         attention=len(needs), **ran["reaped"])
+    if needs:
+        raise JobsNeedAttention(f"jobs need attention: {', '.join(needs)}")
+    return {"op": "erasure_feed", **fed, **ran}
+
+
 async def settings_status(pool: Any) -> dict[str, Any]:
     """Op ``settings``: the settings this container serves and the daily AI cap with its source (values, sources and
     versions only)."""
@@ -142,6 +173,16 @@ async def settings_status(pool: Any) -> dict[str, Any]:
     observability.emit("jobs_settings", source=out["source"], daily_cap_source=daily["source"],
                        daily_cap_usd=daily["cap_usd"])
     return out
+
+
+def _enqueue_refusal(op: str, event: dict[str, Any]) -> Optional[str]:
+    """The error of an operator enqueue (op ``enqueue`` or an op of :data:`OP_KINDS`) that is not queued, or None."""
+    if (OP_KINDS.get(op) or event.get("kind")) not in HANDLERS:
+        return f"unknown kind; one of {sorted(HANDLERS)}"
+    payload = event.get("payload") or {}
+    if not isinstance(payload, dict):
+        return "payload must be an object"
+    return RESERVED_TRIGGERS.get(str(payload.get("trigger")))
 
 
 async def serve(event: dict[str, Any], *, pool: Any, worker: str, time_left: Callable[[], float],
@@ -162,20 +203,19 @@ async def serve(event: dict[str, Any], *, pool: Any, worker: str, time_left: Cal
     if op == "status":
         async with pool.acquire() as conn:
             return {"op": op, "jobs": await queue.recent(conn, sorted(HANDLERS))}
+    if op == "erasure_feed":
+        return await erasure_feed(event, pool=pool, worker=worker, time_left=time_left)
     queued: list[str] = []
     if op == "tick":
         queued = await queue_daily(pool, today or datetime.now(timezone.utc).date())
     elif op == "enqueue" or op in OP_KINDS:
-        kind = OP_KINDS.get(op) or event.get("kind")
-        if kind not in HANDLERS:
-            return {"error": f"unknown kind; one of {sorted(HANDLERS)}"}
-        payload = event.get("payload") or {}
-        if not isinstance(payload, dict):
-            return {"error": "payload must be an object"}
-        if payload.get("trigger") == "schedule":
-            return {"error": "trigger 'schedule' is reserved for the daily tick"}
+        refused = _enqueue_refusal(op, event)
+        if refused:
+            return {"error": refused}
+        kind = OP_KINDS.get(op) or event["kind"]
         async with pool.acquire() as conn:
-            job_id = await queue.enqueue(conn, kind, payload, created_by=OPERATOR, max_attempts=MAX_ATTEMPTS[kind])
+            job_id = await queue.enqueue(conn, kind, event.get("payload") or {}, created_by=OPERATOR,
+                                         max_attempts=MAX_ATTEMPTS[kind])
         queued = [job_id] if job_id else []
     emit("jobs_queued", op=op, queued=len(queued))
     ran = await runner.run_due(pool, HANDLERS, worker=worker, time_left=time_left, emit=emit)

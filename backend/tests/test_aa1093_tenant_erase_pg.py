@@ -438,3 +438,56 @@ async def test_a_new_round_after_a_failed_verification_dry_runs_applies_and_veri
     assert [(r["round"], r["mode"], r["status"]) for r in report] == [
         (1, "dry_run", "ok"), (1, "apply", "ok"), (1, "verify", "failed"),
         (2, "dry_run", "ok"), (2, "apply", "ok"), (2, "verify", "ok")]
+
+
+async def _feed_keys(su) -> list[tuple]:
+    rows = await su.fetch("SELECT idempotency_key, created_by FROM tripplanner.job WHERE kind = $1 "
+                          "AND payload->>'trigger' = 'feed' AND idempotency_key IS NOT NULL", tenant_erase.KIND)
+    return sorted((r["idempotency_key"], r["created_by"]) for r in rows)
+
+
+async def test_the_erasure_feed_op_queues_each_new_request_once_and_the_daily_tick_adds_nothing(env, monkeypatch,
+                                                                                                 tmp_path):
+    """S279 follow-up (DRILL-01): op erasure_feed (every 5 minutes) answers a CIS request within one run, once per
+    (request, round, phase); the daily tick after it writes no second report."""
+    monkeypatch.setattr(tenant_erase.os, "environ", DEV_ON)
+    monkeypatch.setattr(tenant_store, "S3Store", lambda: tenant_store.DirStore(str(tmp_path)))
+    su = env["su"]
+    # no request view yet: nothing queued, nothing run
+    out = await _serve(env, {"op": "erasure_feed", "source": handler.FEED_SOURCE})
+    assert (out["feed"], out["due"], out["queued"], out["jobs"]) == ("no_feed", 0, [], [])
+
+    await su.execute(FEED_STANDIN)
+    for row in [(REQUEST, TARGET, "dry_run", 1, "tripplanner", False, True, None, "-1 day"),
+                (PILOT_REQUEST, PILOT, "dry_run", 1, "tripplanner", True, False, None, "-1 day"),
+                (LATER_REQUEST, OTHER, "dry_run", 1, "booking", False, True, None, "-1 day"),       # not ours
+                (DRILL_REQUEST, OTHER, "dry_run", 1, "tripplanner", False, True, None, "+5 days")]:  # not due
+        await su.execute(FEED_INSERT, *row)
+    out = await _serve(env, {"op": "erasure_feed", "source": handler.FEED_SOURCE})
+    assert (out["feed"], out["due"], len(out["queued"])) == ("feed", 2, 2)
+    entries = {e["request_id"]: e for j in out["jobs"] for e in j["result"]["requests"]}
+    assert {j["kind"] for j in out["jobs"]} == {tenant_erase.KIND}
+    assert (entries[REQUEST]["mode"], entries[REQUEST]["status"]) == ("dry_run", "ok")
+    assert (entries[PILOT_REQUEST]["status"], entries[PILOT_REQUEST]["error_code"]) == ("refused", "pilot_refused")
+    plan = entries[REQUEST]["plan_hash"]
+    assert await _feed_keys(su) == sorted([(f"tp_tenant_erase:{REQUEST}:1:dry_run", handler.FEED_SCHEDULER),
+                                           (f"tp_tenant_erase:{PILOT_REQUEST}:1:dry_run", handler.FEED_SCHEDULER)])
+
+    # the next runs of the feed and the daily tick add nothing in this round and phase
+    again = await _serve(env, {"op": "erasure_feed", "source": handler.FEED_SOURCE})
+    assert (again["due"], again["queued"], again["jobs"]) == (0, [], [])
+    assert (await _tick(env, kinds=(tenant_erase.KIND, tenant_backup.KIND)))["result"]["requests"] == []
+
+    # the approval moves the request to apply: the feed queues and runs it at once
+    await su.execute(FEED_INSERT, REQUEST, TARGET, "apply", 1, "tripplanner", False, True, plan, "-1 day")
+    out = await _serve(env, {"op": "erasure_feed"})
+    [job] = out["jobs"]
+    assert (job["result"]["outcome"], job["result"]["requests"][0]["status"]) == ("ran", "ok")
+    assert await _counts(su, TARGET) == dict.fromkeys([*TABLES, "spend"], 0)
+
+    # (the tick helper above cleared the keys of the earlier erase jobs)
+    assert (f"tp_tenant_erase:{REQUEST}:1:apply", handler.OPERATOR) in await _feed_keys(su)
+    report = await _report_rows(su, "request_id = $1::uuid", REQUEST)
+    assert [(r["mode"], r["status"]) for r in report] == [("dry_run", "ok"), ("apply", "ok")]
+    for r in report:
+        jsonschema.validate(r, ROW_SCHEMA, format_checker=jsonschema.FormatChecker())

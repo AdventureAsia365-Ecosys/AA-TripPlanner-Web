@@ -62,7 +62,8 @@ API Gateway HTTP v2  (ANY /browse/{proxy+}, ANY /trip/{proxy+}; edge shared secr
 Two HTTP Python 3.12 Lambda functions
   ├─ browse      → stateless, cacheable reads (destinations, suggestions); embeds search text
   └─ assembly    → stateful writes (trip mutations) + Bedrock (AI narrative/plan)
-(+ jobs Lambda, no HTTP route: daily EventBridge tick → tripplanner.job worker, AA-861)
+(+ jobs Lambda, no HTTP route: daily EventBridge tick → tripplanner.job worker, AA-861;
+   + a 5-minute erasure feed read, AA-1093)
       │
       ▼
 Postgres (the shared RDS in acc2)
@@ -366,7 +367,12 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   daily at 19:30 UTC: the Lambda queues the day's scheduled runs (idempotency key per kind and UTC day) and runs due
   jobs (`backend/jobs/runner.py`: reap expired leases, claim with `FOR UPDATE SKIP LOCKED`, lease = time left + 60 s,
   retry with backoff, stop with 45 s left). A tick that ends with a failed job or a HELD retention run raises, so the
-  errors alarm fires. Operators use `enqueue` / `run` / `status` by direct invoke (`docs/jobs-runbook.md`).
+  errors alarm fires. Operators use `enqueue` / `run` / `status` by direct invoke (`docs/jobs-runbook.md`). A second
+  schedule (AA-1093 follow-up, S279) sends `{"op": "erasure_feed", "source": "aa-1093-erasure-feed"}` every 5 minutes:
+  it reads the CIS erasure request feed, queues `tp_tenant_erase` jobs for the new requests only and runs due
+  `tp_tenant_erase` jobs only (every other kind keeps the daily cadence). Reserved concurrency 1 still holds: an
+  event that finds the function busy waits in Lambda's async queue (max event age 1 h). The not-run alarm counts
+  the daily tick's `jobs_run` log line (op `tick`), not invocations, so the feed does not hide a stopped tick.
 - **`tp_retention_outbox_redact`** (`backend/jobs/outbox_redact.py`, DM-6.6 / DM-7.2): outbox rows older than 90 days
   get `payload` rebuilt from an allowlist (`backend/jobs/redact.py`, AA-Booking's `bk_retention_inbox_redact` rule plus
   `customer.identity`): name, email, phone, identity and custom day notes nulled, unknown keys dropped; `redacted_at`
@@ -395,7 +401,11 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   column order; SELECT to `cis_app` only; rows written before tp-031 are `source = tp030` and left out). Requests come
   from `catalog.v_tenant_erasure_v1` (contract ErasureRequestRow, `WHERE app = 'tripplanner'`, newest `updated_at` per
   request, step `active` past `not_before`, once per request / round / phase; feature-detected: `no_feed` until CIS
-  ships it) on the daily tick, or from an operator `enqueue` (DRY RUN by default; request id = a UUIDv5 of the tenant,
+  ships it) every 5 minutes through the jobs op `erasure_feed` (one job per new request / round / phase, payload
+  `{"trigger": "feed", request_id, tenant_id, round, mode}`, idempotency key `tp_tenant_erase:<request>:<round>:<phase>`
+  like Booking's; the job reads the request again and writes no report when it moved on, is no longer due or already
+  has a report), on the daily tick (the safety net: it runs any request still without a report), or from an
+  operator `enqueue` (DRY RUN by default; request id = a UUIDv5 of the tenant,
   round 1; a request id of a CIS request fails the job, so an operator report never lands in a CIS request). Always refused: the AA-hosted tenant (`aa_hosted_refused`, `config.is_aa_hosted`) and the pilot
   (`pilot_refused`); an apply also needs `TENANT_ERASE_APPLY_ENABLED=true` (Terraform, default off), CIS markers and,
   outside prod, a synthetic tenant (`not_synthetic`, D8). Traveller accounts linked through the tenant's sessions are
@@ -1225,7 +1235,7 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
 | AA-CIS-App (admin overview, AA-858) | — | — (it **reads** `tripplanner.v_ops_traffic_daily`: per UTC day `planner_session_started`, `trip_started`, `trip_edited`, `inquiry_sent`, aggregates only, last 400 days; contract `ops.overview.v1`, metric names append-only) | migration tp-015 grants role `cis_app` (the CIS runtime from X1 S18; until then the CIS runtime `aa_cis_admin` reads it through its `tp_owner` membership) USAGE on schema `tripplanner` + SELECT on the view only |
 | AA-CIS-App (admin data coverage, AA-992) | — | — (it **reads** `tripplanner.v_ops_data_totals` (metric, n: sessions, trip drafts / sent, trips with events, pin events, id-map rows, customers, traveller accounts, outbox rows, narration cache rows; totals, aggregates only), `tripplanner.v_ops_pin_components` (pinned catalog component id + number of trips; no trip / session id, no payload text) and `tripplanner.v_ops_component_id_map` (id-map edges, catalog ids only) to count pins whose component is gone, walking map + CIS redirect like `component_ids.id_map`; contract `ops.data_coverage.v1`, metric names and columns append-only) | migration tp-020 grants role `cis_app` SELECT on the three views only (USAGE on the schema since tp-015) |
 | AA-CIS-App (TP-03 inquiry handoff check, AA-1003; retired 2026-11-03 with the B2B-only model, root ADR 0019: no CIS reader now, the view goes with the B2C drop) | — | — (it **read** `tripplanner.v_ops_inquiry_keys` (`idempotency_key`, `created_at` of each `inquiry.submitted` outbox row of the last 30 days; the hand-off key `<trip id>:<hand-off id>`, no payload, no contact) and matches it with `booking.v_ops_inquiry_inbox` (bk-035) to name each inquiry not received and its age; contract `ops.overview.v1` key view, columns append-only) | migration tp-022 (contract file: manual DB Migrate apply) grants role `cis_app` SELECT on the view only |
-| AA-CIS-App (tenant offboarding, AA-1093) | `catalog.v_tenant_erasure_v1` (contract `tenant.erasure.v1` ErasureRequestRow: `request_id`, `tenant_id`, `phase`, `round`, `opened_at`, `approval_expires_at`, `is_pilot`, `is_synthetic`, `app`, `step_status`, `not_before`, `approved_plan_hash`, `updated_at`), feature-detected by column, read by the jobs Lambda's daily `tp_tenant_erase`; `catalog.v_tenant_account_v1` markers when granted | — (CIS **reads** `tripplanner.v_tenant_erasure_report_v1`, contract ErasureReportRow: report, request, tenant, app, round, mode, status, error code, plan hash, tables, blockers, census, job, time; ids, codes, counts and hashes only) | tp-030 / tp-031 grant `cis_app` SELECT on the report view only; the CIS view's grant to `tripplanner` comes with its CIS migration |
+| AA-CIS-App (tenant offboarding, AA-1093) | `catalog.v_tenant_erasure_v1` (contract `tenant.erasure.v1` ErasureRequestRow: `request_id`, `tenant_id`, `phase`, `round`, `opened_at`, `approval_expires_at`, `is_pilot`, `is_synthetic`, `app`, `step_status`, `not_before`, `approved_plan_hash`, `updated_at`), feature-detected by column, read by the jobs Lambda's `tp_tenant_erase` (op `erasure_feed` every 5 minutes, and the daily tick); `catalog.v_tenant_account_v1` markers when granted | — (CIS **reads** `tripplanner.v_tenant_erasure_report_v1`, contract ErasureReportRow: report, request, tenant, app, round, mode, status, error code, plan hash, tables, blockers, census, job, time; ids, codes, counts and hashes only) | tp-030 / tp-031 grant `cis_app` SELECT on the report view only; the CIS view's grant to `tripplanner` comes with its CIS migration |
 | AA-CIS-App (admin-editable settings, AA-1096 lane L5) | `catalog.v_app_settings_v1` (`app`, `key`, `value` jsonb, `version`, `tenant_id`, `effective_from`: per key the platform value in force, else the CIS default as version 0, plus a row per tenant override), read by `backend/shared/settings.py` (cached 25 s per container; feature-detected: 42P01 / 42501 = the env value, else the code default, of `backend/config.py`). The 17 keys `tripplanner.*` (visitor rate limits, planning chat monthly caps, lead cap per tenant, lead hold, narration cache TTL and max_tokens, planning chat steps and max_tokens, the two hand-off switches) are edited on the CIS admin page Platform › Settings, TripPlanner tab; the daily AI cap is the app profile row above, not a setting. Jobs Lambda op `settings` reports what a container serves | — | CIS 414 (definitions, app profile budget 5.0) and 415 (the view, SELECT to `tripplanner` only; it shows a reader its own app's rows only) |
 | AA-CIS-Infra | — | — | owns the Lambdas, API Gateway, OIDC deploy role, secrets and the DB Migrate workflow that applies `migrations/` |
 
