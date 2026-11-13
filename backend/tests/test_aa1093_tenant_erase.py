@@ -172,7 +172,7 @@ def _files():
     lines = {"sessions": ['{"id": "s1", "tenant_id": "t"}'], "trip_drafts": [],
              "trip_events": ['{"id": 1}', '{"id": 2}'], "outbox": []}
     cols = {t: ["id", "tenant_id"] for t in tenant_backup.TABLES}
-    return tenant_backup.build(TENANT, "bk-1", lines, cols, "tp-030", "2026-11-13T00:00:00+00:00")
+    return tenant_backup.build(TENANT, "bk-1", lines, cols, "2026-11-13T00:00:00+00:00")
 
 
 def test_backup_files_manifest_and_sums_agree():

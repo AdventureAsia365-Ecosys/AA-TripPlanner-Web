@@ -12,8 +12,8 @@ Objects (prefix ``exports/tenants/<tenant>/tripplanner/<backup id>/``, :mod:`bac
 
 * ``tables/tripplanner.<table>.jsonl``: one ``to_jsonb(row)`` per line in primary-key order, each line ended by a
   newline (Postgres writes the JSON, so every type comes back through ``jsonb_populate_recordset``);
-* ``manifest.json``: format ``tp-tenant-backup/1``, tenant, backup id, the highest registered ``tp-`` migration when
-  readable, per table rows, bytes, sha256 and columns, the restore order, and what is left out and why;
+* ``manifest.json``: format ``tp-tenant-backup/1``, tenant, backup id, per table rows, bytes, sha256 and columns, the
+  restore order, and what is left out and why;
 * ``SHA256SUMS`` (``sha256sum`` format) over the table files and the manifest, written last; its own digest is in the
   job result, which the drill checks first.
 
@@ -62,9 +62,7 @@ COLUMNS_SQL = """
      WHERE a.attrelid = ('tripplanner.' || $1)::regclass AND a.attnum > 0 AND NOT a.attisdropped
      ORDER BY a.attnum
 """
-# Two statements: Postgres checks the table privilege of a subquery even inside a CASE that never runs it.
-SCHEMA_VERSION_READABLE_SQL = "SELECT has_table_privilege('shared.schema_versions', 'SELECT') AS ok"
-SCHEMA_VERSION_SQL = "SELECT max(version) AS v FROM shared.schema_versions WHERE version LIKE 'tp-%'"
+
 
 
 def table_key(table: str) -> str:
@@ -103,26 +101,23 @@ def validate_payload(payload: Any) -> dict[str, Any]:
     return payload
 
 
-async def read_tenant(conn: Any, tenant_id: str) -> tuple[dict[str, list[str]], dict[str, list[str]], Optional[str]]:
-    """(lines per table, columns per table, schema version) of one tenant, one snapshot. ``conn`` is system-scoped."""
+async def read_tenant(conn: Any, tenant_id: str) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """(lines per table, columns per table) of one tenant, one snapshot. ``conn`` is system-scoped."""
     lines: dict[str, list[str]] = {}
     cols: dict[str, list[str]] = {}
     async with conn.transaction(isolation="repeatable_read", readonly=True):
-        version = (await conn.fetchval(SCHEMA_VERSION_SQL)
-                   if await conn.fetchval(SCHEMA_VERSION_READABLE_SQL) else None)
         for table in TABLES:
             lines[table] = [r["j"] for r in await conn.fetch(ROWS_SQL[table], tenant_id)]
             cols[table] = [r["name"] for r in await conn.fetch(COLUMNS_SQL, table)]
-    return lines, cols, version
+    return lines, cols
 
 
 def build(tenant_id: str, backup_id: str, lines: dict[str, list[str]], cols: dict[str, list[str]],
-          version: Optional[str], created_at: str) -> dict[str, bytes]:
+          created_at: str) -> dict[str, bytes]:
     """Every object of one backup, by key relative to its prefix (pure)."""
     files = {table_key(t): jsonl(lines[t]) for t in TABLES}
     manifest = {
         "format": FORMAT, "tenant_id": tenant_id, "backup_id": backup_id, "created_at": created_at,
-        "schema_version": version,
         "tables": {f"tripplanner.{t}": {"file": table_key(t), "rows": len(lines[t]),
                                         "bytes": len(files[table_key(t)]), "sha256": sha256(files[table_key(t)]),
                                         "columns": cols[t], "key": "id"} for t in TABLES},
@@ -143,9 +138,9 @@ async def run(pool: Any, job: Job, *, store: Optional[tenant_store.ObjectStore] 
         raise PermanentError(str(e)) from None
     async with pool.acquire() as conn, tenant.system_scope(conn, op=KIND):
         tenant_id = await tenant_target.resolve(conn, payload)
-        lines, cols, version = await read_tenant(conn, tenant_id)
+        lines, cols = await read_tenant(conn, tenant_id)
     created = (now or datetime.now(timezone.utc)).isoformat()
-    files = build(tenant_id, job.id, lines, cols, version, created)
+    files = build(tenant_id, job.id, lines, cols, created)
     prefix = tenant_store.prefix(tenant_id, job.id)
     for key in sorted(k for k in files if k != SUMS):
         await store.put_bytes(prefix + key, files[key],
@@ -154,4 +149,4 @@ async def run(pool: Any, job: Job, *, store: Optional[tenant_store.ObjectStore] 
     rows = {f"tripplanner.{t}": len(lines[t]) for t in TABLES}
     observability.emit("tenant_backup", tenant_id=tenant_id, backup_id=job.id, rows=sum(rows.values()))
     return {"mode": "backup", "tenant_id": tenant_id, "backup_id": job.id, "prefix": prefix, "rows": rows,
-            "schema_version": version, "sha256sums_sha256": sha256(files[SUMS])}
+            "sha256sums_sha256": sha256(files[SUMS])}
