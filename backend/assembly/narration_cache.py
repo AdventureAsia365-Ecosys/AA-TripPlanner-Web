@@ -15,7 +15,7 @@ from typing import Any, Optional, Protocol
 
 from backend import config
 from backend.assembly import master_content
-from backend.shared import observability
+from backend.shared import observability, settings
 
 # Bump when the narration prompts (agent.py), grounding or the master-day choice
 # (master_content.resolve_days) change, so old text is not reused.
@@ -58,7 +58,7 @@ async def get(conn: _Conn, key: str) -> Optional[dict]:
             "UPDATE tripplanner.narration_cache SET hits = hits + 1, last_hit_at = now() "
             "WHERE itinerary_hash = $1 AND created_at > now() - make_interval(hours => $2::int) "
             "RETURNING narration, source",
-            key, config.NARRATION_CACHE_TTL_HOURS,
+            key, settings.get(settings.NARRATION_CACHE_TTL_HOURS),
         )
     except Exception as e:  # noqa: BLE001 — tp-010 not applied, permission, ...
         observability.emit("narration_cache_skipped", op="read", detail=str(e)[:500])

@@ -306,3 +306,13 @@ SIGNED_IN_HEADER = "x-tp-signed-in"
 
 # How long a narration in tripplanner.narration_cache is reused for the same itinerary.
 NARRATION_CACHE_TTL_HOURS = int(_get("NARRATION_CACHE_TTL_HOURS", "168"))
+
+# --- Admin-editable settings (S279 thresholds lane L5, AA-1096) ---
+# The rate limits, the planning chat caps, the lead cap and hold, the narration cache TTL, the max_tokens and steps
+# below and the two hand-off switches are read through backend/shared/settings.py from the CIS view
+# catalog.v_app_settings_v1 (edited on the CIS admin page Platform > Settings). The values in this module (the env var
+# when set, else the code default) are only its fallback while the view cannot be read: one release, then the env vars
+# go (Infra lane L6). The three below had no env var: they are code defaults only.
+NARRATION_MAX_TOKENS = 1200  # technical-constant: fallback of tripplanner.ai.narration_max_tokens
+PLAN_CHAT_MAX_STEPS = 3  # technical-constant: fallback of tripplanner.ai.plan_chat_max_steps
+PLAN_CHAT_MAX_TOKENS = 700  # technical-constant: fallback of tripplanner.ai.plan_chat_max_tokens

@@ -256,7 +256,7 @@ async def run(pool: Any, job: Job, *, now: Optional[datetime] = None,
         rejected = await rejected_since(conn, at - leads.EXPIRY_TICK_INTERVAL)
         retried = (_retry_counts() if dry_run
                    else await retry(conn, cutoff, deliver=deliver, budget_s=budget_s, clock=clock))
-    result: dict[str, Any] = {"mode": "dry_run" if dry_run else "live", "hold_days": leads.config.LEAD_HOLD_DAYS,
+    result: dict[str, Any] = {"mode": "dry_run" if dry_run else "live", "hold_days": leads.hold_days(),
                               "expire": expired, "rejected": rejected, "retry": retried}
     attention = []
     if expired["expired"]:

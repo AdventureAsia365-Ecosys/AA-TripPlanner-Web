@@ -12,7 +12,9 @@ answers whether it may go on:
   chat     per guest session, 1 hour window, ``config.TP_RATE_CHAT_PER_HOUR`` (20)     AA-1041: the planning chat
   chat_ip  per traveller IP,  1 hour window, ``config.TP_RATE_CHAT_IP_PER_HOUR`` (40)
 
-A signed-in traveller gets ``config.TP_RATE_SIGNED_IN_FACTOR`` (2) times the allowance. A refused request is counted
+S279 L5 (AA-1096): each allowance is a setting (``backend/shared/settings.py``, CIS admin Platform › Settings); the
+config names above are only its fallback. A signed-in traveller gets ``config.TP_RATE_SIGNED_IN_FACTOR`` (2) times the
+allowance. A refused request is counted
 too (a client that keeps hammering stays refused until the window ends) and answers 429 with ``retry_after_s``.
 
 Keys: ``key_hash`` = hex HMAC-SHA256 of ``"<scope>|<kind>|<value>"``, keyed with the edge API key (the BFF's shared
@@ -46,7 +48,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 from backend import config
-from backend.shared import auth, observability
+from backend.shared import auth, observability, settings
 
 SCOPE_NARRATE = "narrate"
 SCOPE_SEARCH = "search"
@@ -107,21 +109,23 @@ class Decision:
     reason: Optional[str] = None  # "counter_unavailable" when it failed open
 
 
+# S279 L5 (AA-1096): scope -> (window, the allowance's setting; backend/shared/settings.py, CIS Platform > Settings).
+_RULES = {
+    SCOPE_NARRATE: (NARRATE_WINDOW_SECONDS, settings.RATE_NARRATE_PER_HOUR),
+    SCOPE_SEARCH: (SEARCH_WINDOW_SECONDS, settings.RATE_SEARCH_PER_MINUTE),
+    SCOPE_SEND: (SEND_WINDOW_SECONDS, settings.RATE_SEND_PER_HOUR),
+    SCOPE_SEND_IP: (SEND_WINDOW_SECONDS, settings.RATE_SEND_IP_PER_HOUR),
+    SCOPE_CHAT: (CHAT_WINDOW_SECONDS, settings.RATE_CHAT_PER_HOUR),
+    SCOPE_CHAT_IP: (CHAT_WINDOW_SECONDS, settings.RATE_CHAT_IP_PER_HOUR),
+}
+
+
 def rule_for(scope: str, *, signed_in: bool) -> Rule:
-    factor = max(1, int(config.TP_RATE_SIGNED_IN_FACTOR)) if signed_in else 1
-    if scope == SCOPE_NARRATE:
-        return Rule(scope, NARRATE_WINDOW_SECONDS, int(config.TP_RATE_NARRATE_PER_HOUR) * factor)
-    if scope == SCOPE_SEARCH:
-        return Rule(scope, SEARCH_WINDOW_SECONDS, int(config.TP_RATE_SEARCH_PER_MINUTE) * factor)
-    if scope == SCOPE_SEND:
-        return Rule(scope, SEND_WINDOW_SECONDS, int(config.TP_RATE_SEND_PER_HOUR) * factor)
-    if scope == SCOPE_SEND_IP:
-        return Rule(scope, SEND_WINDOW_SECONDS, int(config.TP_RATE_SEND_IP_PER_HOUR) * factor)
-    if scope == SCOPE_CHAT:
-        return Rule(scope, CHAT_WINDOW_SECONDS, int(config.TP_RATE_CHAT_PER_HOUR) * factor)
-    if scope == SCOPE_CHAT_IP:
-        return Rule(scope, CHAT_WINDOW_SECONDS, int(config.TP_RATE_CHAT_IP_PER_HOUR) * factor)
-    raise ValueError(f"unknown rate-limit scope {scope!r}")
+    if scope not in _RULES:
+        raise ValueError(f"unknown rate-limit scope {scope!r}")
+    factor = max(1, int(settings.get(settings.RATE_SIGNED_IN_FACTOR))) if signed_in else 1
+    window, key = _RULES[scope]
+    return Rule(scope, window, int(settings.get(key)) * factor)
 
 
 def normalise_ip(raw: Optional[str]) -> Optional[str]:

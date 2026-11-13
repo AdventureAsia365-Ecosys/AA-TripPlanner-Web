@@ -50,7 +50,7 @@ from backend.browse import tenant_site as tenant_site_mod
 from backend.browse import tenant_tours as tenant_tours_mod
 from backend.browse.filters import BrowseFilters
 from backend.browse.tiles import TileError
-from backend.shared import observability, ratelimit, tenant, tenant_assertion
+from backend.shared import observability, ratelimit, settings, tenant, tenant_assertion
 
 _TILE_RE = re.compile(r"^/browse/tiles/([^/]+)$")
 _DEST_RE = re.compile(r"^/browse/destinations/([^/]+)$")
@@ -327,6 +327,7 @@ def _handle(event, context):  # pragma: no cover - thin AWS adapter
 
     async def _run():
         pool = await get_pool()
+        await settings.refresh(pool)          # S279 L5: the search allowance and its signed-in factor (cached 25 s)
         if picked["tenant_id"] is None:
             return await route(method, path, query, pool=pool, client=client)
         with tenant.using(picked["tenant_id"], source=tenant.SOURCE_ASSERTION):

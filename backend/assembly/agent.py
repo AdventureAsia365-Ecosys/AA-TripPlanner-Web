@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterator, Optional
 
-from backend.shared import llm_gateway
+from backend.shared import llm_gateway, settings
 
 STAGE = "tp_compose"
 
@@ -81,6 +81,9 @@ def _run(system: str, itinerary: list[dict], invoker: Optional[Invoker],
     are granted InvokeModel only.
     """
     body = _build_body(system, itinerary)
+    # S279 L5 (AA-1096): the admin-editable max_tokens (CIS Platform > Settings) replaces the body's 1200, which stays
+    # in _build_body so the prompt registry hash of tp_compose does not move.
+    body["max_tokens"] = int(settings.get(settings.NARRATION_MAX_TOKENS))
     if invoker is not None:
         text = _text_from_response(invoker(STAGE, body))
     else:
