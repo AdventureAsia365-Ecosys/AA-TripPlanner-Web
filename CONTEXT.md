@@ -375,6 +375,39 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   runs live and HOLDs above 2x the last live run. `manual_override` + `older_than_days` counts younger rows in a DRY
   RUN anywhere; a live override needs `RETENTION_OVERRIDE_ENABLED=true` on Dev (Terraform, default off).
 - The outbox is still append-only for everyone else: the redaction kind is its one UPDATE (tp-021 table comment).
+- **Tenant offboarding (AA-1093, tp-030; root plan `docs/audits/2026-11-13-S279-session/aa1093-plan.md`).**
+  `tp_tenant_erase` (`backend/jobs/tenant_erase.py`) is TripPlanner's part of the CIS offboarding saga (decision D4):
+  it deletes every row of one tenant in the four tenant tables, deletes the `tripplanner.customers` rows that only this
+  tenant's sessions link (personal data that would otherwise be left with no session; the only FK to customers is
+  `sessions.customer_id`, so the delete runs after the sessions; a customer another tenant's session links stays) and
+  merges its `ai_spend_month` rows into the app scope, through the database function
+  `tripplanner.erase_tenant(tenant, dry_run, expect_plan)` (SECURITY INVOKER; only under the system scope with no tenant
+  bound; TimeZone / DateStyle / IntervalStyle / extra_float_digits / bytea_output pinned so the fingerprints never
+  depend on the caller's session). A DRY RUN returns the plan (per table: action, rows, a sha256 fingerprint of the
+  rows, never a value) and its `plan_hash`; an apply runs only when the log holds the DRY RUN of the same request and
+  tenant, `planned`, with exactly that hash (else `no_approved_plan`), recomputes it under an EXCLUSIVE lock and refuses
+  another hash (`plan_changed`); verify expects zeros. One row per (request, mode) in `tripplanner.tenant_erasure_log`
+  (FORCE RLS, no DELETE for the runtime role), read by CIS through `tripplanner.v_tenant_erasure_report_v1` (SELECT to
+  `cis_app` only; the runtime role reads the log itself). Requests come from `catalog.v_tenant_erasure_v1` (contract
+  `tenant.erasure.v1`, feature-detected by column: `no_feed` until CIS ships it) on the daily tick, or from an operator
+  `enqueue`. Always refused: the AA-hosted tenant (`config.is_aa_hosted`: `DEMO_TENANT_ID` or the bare path's
+  `DEFAULT_TENANT_ID`) and the pilot; an apply also needs `TENANT_ERASE_APPLY_ENABLED=true` (Terraform, default off),
+  CIS markers (`is_pilot`, `is_synthetic`) and, outside prod, a synthetic tenant (D8). Traveller accounts linked
+  through the tenant's sessions are counted (`keep`), not erased: global sign-in accounts without a tenant column.
+- **Tenant backup and restore drill (AA-1093 part 3, D11).** `tp_tenant_backup` (`backend/jobs/tenant_backup.py`)
+  writes one tenant's four tables (one repeatable-read snapshot) as JSONL + `manifest.json` + `SHA256SUMS` to the
+  CIS gold bucket, `exports/tenants/<tenant>/tripplanner/<job id>/` (bucket rule: 7 days; `TENANT_EXPORT_BUCKET` from
+  Terraform; the role may put / get that prefix only, `backend/jobs/tenant_store.py`). `tp_tenant_restore_drill`
+  (op `restore_drill`, `backend/jobs/tenant_restore_drill.py`) verifies the files, loads them into `pg_temp` in a
+  transaction that is always rolled back, and compares manifest / restored / live counts and digests. Daily (D11): the
+  tick queues `tp_tenant_backup` `{"trigger": "schedule"}`, which backs up every tenant CIS marks `is_pilot` in a
+  readable marker view (`catalog.v_tenant_erasure_v1`, `catalog.v_tenant_account_v1`, feature-detected by column; one
+  prefix per tenant under the job id, the result lists them in `backups`); with no readable marker view it records
+  `no_feed` and does nothing. Otherwise both kinds run by `enqueue` (`docs/jobs-runbook.md`). Retention of these
+  exports: the gold bucket's existing `exports-expire` rule (AA-CIS-Infra `modules/s3`: 7 days, noncurrent copy 1 day
+  later), so no new lifecycle rule. S3 errors: NoSuchKey / 404 = missing; 403 / AccessDenied fails the job with
+  `s3_access_denied`, never read as missing (without ListBucket S3 also answers 403 for an expired key; the backup job's
+  date tells them apart).
 
 ### Guest identity (AA-827)
 
@@ -1186,6 +1219,7 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
 | AA-CIS-App (admin overview, AA-858) | — | — (it **reads** `tripplanner.v_ops_traffic_daily`: per UTC day `planner_session_started`, `trip_started`, `trip_edited`, `inquiry_sent`, aggregates only, last 400 days; contract `ops.overview.v1`, metric names append-only) | migration tp-015 grants role `cis_app` (the CIS runtime from X1 S18; until then the CIS runtime `aa_cis_admin` reads it through its `tp_owner` membership) USAGE on schema `tripplanner` + SELECT on the view only |
 | AA-CIS-App (admin data coverage, AA-992) | — | — (it **reads** `tripplanner.v_ops_data_totals` (metric, n: sessions, trip drafts / sent, trips with events, pin events, id-map rows, customers, traveller accounts, outbox rows, narration cache rows; totals, aggregates only), `tripplanner.v_ops_pin_components` (pinned catalog component id + number of trips; no trip / session id, no payload text) and `tripplanner.v_ops_component_id_map` (id-map edges, catalog ids only) to count pins whose component is gone, walking map + CIS redirect like `component_ids.id_map`; contract `ops.data_coverage.v1`, metric names and columns append-only) | migration tp-020 grants role `cis_app` SELECT on the three views only (USAGE on the schema since tp-015) |
 | AA-CIS-App (TP-03 inquiry handoff check, AA-1003; retired 2026-11-03 with the B2B-only model, root ADR 0019: no CIS reader now, the view goes with the B2C drop) | — | — (it **read** `tripplanner.v_ops_inquiry_keys` (`idempotency_key`, `created_at` of each `inquiry.submitted` outbox row of the last 30 days; the hand-off key `<trip id>:<hand-off id>`, no payload, no contact) and matches it with `booking.v_ops_inquiry_inbox` (bk-035) to name each inquiry not received and its age; contract `ops.overview.v1` key view, columns append-only) | migration tp-022 (contract file: manual DB Migrate apply) grants role `cis_app` SELECT on the view only |
+| AA-CIS-App (tenant offboarding, AA-1093) | `catalog.v_tenant_erasure_v1` (contract `tenant.erasure.v1`: `request_id`, `tenant_id`, `mode`, optional `app`, `tripplanner_plan_hash`, `is_pilot`, `is_synthetic`), feature-detected by column, read by the jobs Lambda's daily `tp_tenant_erase`; `catalog.v_tenant_account_v1` markers when granted | — (CIS **reads** `tripplanner.v_tenant_erasure_report_v1`: request, tenant, mode, status, reason, plan hash, counts; ids, counts and hashes only) | tp-030 grants `cis_app` SELECT on the report view only; the CIS view's grant to `tripplanner` comes with its CIS migration |
 | AA-CIS-Infra | — | — | owns the Lambdas, API Gateway, OIDC deploy role, secrets and the DB Migrate workflow that applies `migrations/` |
 
 Schema owners and version keys: `AA-Ecosys/docs/database/schema-ownership.md`.

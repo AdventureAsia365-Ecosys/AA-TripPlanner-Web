@@ -74,7 +74,9 @@ def test_only_the_jobs_lambda_opens_the_system_scope():
 
 def test_every_job_module_that_names_a_tenant_table_opens_the_system_scope():
     named = {n: src for n, src in _sources("jobs").items() if SQL_TABLE_RE.search(src)}
-    assert sorted(named) == ["backend/jobs/lead_deliver.py", "backend/jobs/outbox_redact.py"], sorted(named)
+    # AA-1093: the tenant backup and its restore drill read the four tables of one tenant under the system scope.
+    assert sorted(named) == ["backend/jobs/lead_deliver.py", "backend/jobs/outbox_redact.py",
+                             "backend/jobs/tenant_backup.py", "backend/jobs/tenant_restore_drill.py"], sorted(named)
     for name, src in named.items():
         acquires = ACQUIRE_RE.findall(src)
         assert acquires, name

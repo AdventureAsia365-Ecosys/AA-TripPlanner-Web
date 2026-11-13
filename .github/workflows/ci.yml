@@ -221,14 +221,14 @@ jobs:
           pip install -r requirements.txt
           pytest tests/test_places_source_pg.py tests/test_route_property_pg.py tests/test_vector_topk_pg.py \
             tests/test_account_pg.py tests/test_jobs_pg.py tests/test_tenant_rls_pg.py tests/test_aa1038_tenant_site_pg.py \
-            tests/test_aa1038_leads_pg.py \
+            tests/test_aa1038_leads_pg.py tests/test_aa1093_tenant_erase_pg.py \
             -v --tb=short -rs -p no:cacheprovider \
             --pg-dsn postgresql://postgres@127.0.0.1:5433/postgres \
             | tee /tmp/backend-pg.txt
           if grep -qE "[0-9]+ (skipped|xfailed|xpassed|deselected)" /tmp/backend-pg.txt; then
             echo "::error::backend PG tests were skipped, xfailed, xpassed or deselected"; exit 1
           fi
-          for module in test_places_source_pg test_route_property_pg test_vector_topk_pg test_account_pg test_jobs_pg test_tenant_rls_pg test_aa1038_tenant_site_pg test_aa1038_leads_pg; do
+          for module in test_places_source_pg test_route_property_pg test_vector_topk_pg test_account_pg test_jobs_pg test_tenant_rls_pg test_aa1038_tenant_site_pg test_aa1038_leads_pg test_aa1093_tenant_erase_pg; do
             if ! grep -qE "^tests/${module}\.py::[^ ]+ PASSED" /tmp/backend-pg.txt; then
               echo "::error::${module}.py reported no PASSED test"; exit 1
             fi
