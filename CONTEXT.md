@@ -1168,6 +1168,12 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   version (written by the upload step), plus the smoke rows above. Red/green only, table in the job summary; a
   `result` job per deploy workflow is red when the deploy or verify did not succeed (Deploy Web Dev: verify and
   release may skip only while the service runs no task). A PR that adds a route or Lambda worth guarding adds a row.
+- **Code-health ratchets** (AA-1097; `.github/scripts/code_health.py`, limits and exemptions with reasons in
+  `.github/code-health.json`): a new function over cyclomatic complexity 10 (Python: ruff C901, in "Backend (pytest)";
+  TypeScript: ESLint `complexity`, in "Frontend (lint + build)") or a new source file over 800 lines (tests included;
+  the vendored kit core and `backend/aa_llm` exempt) fails; today's offenders sit in `.github/code-health-baseline.json`,
+  may not get worse, and the baseline only shrinks: after an improvement run `python3 .github/scripts/code_health.py
+  update` and commit it. `scripts/pre-push.sh` runs it too.
 - **CI checks**: required "Backend (pytest)", "Frontend (lint + build)", "Migrations (lint, PG 15
   replay)" (on a PR it also refuses an added line naming a migration by an old number after a renumber,
   `.github/scripts/migration_refs.py`, AA-1024 l22; a history note carries `old-mig-ok`; and an added tp-NNN that is not main max + 1 on the main of the run, or that an older open PR also adds under another name, `.github/scripts/migration_numbers.py`: no merge queue here, so re-run the PR's CI after another migration PR merged); plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan

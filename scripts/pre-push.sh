@@ -83,6 +83,7 @@ plan_checks() {
   fi
   echo "resource-ids"
   echo "ci-script-tests"
+  echo "code-health"
   [[ "$all" == *" hook "* ]] && echo "hook-self-test"
   [[ "$all" == *" deps "* ]] && echo "pip-audit"
   if [[ "$all" == *" unit_full "* ]]; then echo "unit-full"
@@ -163,7 +164,7 @@ self_test() {
     n=$((n + 1))
     if [[ "$got" == "$want" ]]; then echo "ok   $name"; else echo "FAIL $name"; echo "     want: $want"; echo "     got:  $got"; fails=$((fails + 1)); fi
   }
-  local BASE_IDS="resource-ids ci-script-tests"
+  local BASE_IDS="resource-ids ci-script-tests code-health"
   local DOCS="docs-frontmatter docs-adr docs-aws-multiline docs-links"
   local FE="fe-lint fe-typecheck fe-test"
   local ALL="$BASE_IDS hook-self-test pip-audit unit-full migration-lint docs-tools-tests $DOCS $FE"
@@ -409,6 +410,21 @@ run_check() {
       run_step "$id" "" "ci.yml / Backend (pytest) / CI script tests" \
         "python3 -m unittest discover -s .github/scripts -p 'test_*.py'" -- \
         python3 -m unittest discover -s .github/scripts -p 'test_*.py' ;;
+    code-health)
+      # AA-1097: complexity + file-size ratchets against the diff base (always on, like resource-ids: ruff over the
+      # backend takes well under a second). TypeScript complexity when frontend/ or the ratchet files changed (or
+      # --full / --ci); a missing ruff / frontend node_modules is a visible skip outside --ci.
+      local kinds="python,files" allow=(--allow-missing-tools) f
+      [[ "$MODE" == "ci" ]] && allow=()
+      [[ "$MODE" != "fast" ]] && kinds="python,files,typescript"
+      for f in "${CHANGED[@]}"; do
+        case "$f" in frontend/* | .github/code-health* | .github/scripts/code_health*) kinds="python,files,typescript" ;; esac
+      done
+      local base_args=()
+      git -C "$REPO_ROOT" rev-parse --verify -q "$BASE" >/dev/null && base_args=(--base "$BASE")
+      run_step "$id" "" "ci.yml / Backend (pytest) / Code health ratchets (+ Frontend (lint + build) / Code health (TypeScript complexity))" \
+        "python3 .github/scripts/code_health.py check --kind $kinds ${base_args[*]}" -- \
+        python3 .github/scripts/code_health.py check --kind "$kinds" "${base_args[@]}" "${allow[@]}" ;;
     pip-audit)
       local want="pip-audit==2.10.1" apy
       apy="${BACKEND_PY:-$(command -v python3 || true)}"

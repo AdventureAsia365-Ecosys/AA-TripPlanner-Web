@@ -60,6 +60,26 @@ jobs:
           path: ~/.cache/pip
           key: ${{ steps.pip-cache.outputs.cache-primary-key }}
 
+      # AA-1097: code-health ratchets (.github/scripts/code_health.py, limits in .github/code-health.json). A new Python
+      # function over complexity 10 (ruff C901; this pin = "ruff_version" in the config) or a new source file over 800
+      # lines fails; a function or file already in .github/code-health-baseline.json may not get worse, and the baseline
+      # only shrinks (also against the PR base). Improved code: `python3 .github/scripts/code_health.py update`, commit
+      # the baseline. The TypeScript part runs in "Frontend (lint + build)" (it needs node_modules).
+      - name: Install ruff (code-health ratchet)
+        run: pip install ruff==0.16.9
+
+      - name: Code health ratchets (Python complexity, file size)
+        working-directory: .
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+        run: |
+          BASE_ARGS=()
+          case "$BASE_SHA" in
+            ""|0000000000000000000000000000000000000000) echo "::notice::No base commit: the shrink-only check against the base is skipped." ;;
+            *) git fetch --no-tags --depth=1 origin "$BASE_SHA" && BASE_ARGS=(--base "$BASE_SHA") ;;
+          esac
+          python3 .github/scripts/code_health.py check --kind python,files "${BASE_ARGS[@]}"
+
       - name: Run unit tests
         # All backend unit tests are offline (no DB / Mapbox / Bedrock);
         # PYTHONPATH points at the repo root so `import backend.*` resolves.
@@ -316,6 +336,22 @@ jobs:
           node ui/core/check-kit-copy.mjs --no-kit-disable app
           node ui/core/check-kit-copy.mjs --no-kit-disable components
           node ui/core/check-kit-copy.mjs --no-kit-disable ui --ignore core
+
+      # AA-1097: the TypeScript half of the code-health ratchet (ESLint's complexity rule through
+      # .github/scripts/code_health_eslint.mjs, this job's node_modules); the Python half and file size run in
+      # "Backend (pytest)".
+      - name: Code health (TypeScript complexity)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        working-directory: .
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+        run: |
+          BASE_ARGS=()
+          case "$BASE_SHA" in
+            ""|0000000000000000000000000000000000000000) echo "::notice::No base commit: the shrink-only check against the base is skipped." ;;
+            *) git fetch --no-tags --depth=1 origin "$BASE_SHA" && BASE_ARGS=(--base "$BASE_SHA") ;;
+          esac
+          python3 .github/scripts/code_health.py check --kind typescript "${BASE_ARGS[@]}"
 
       - name: Type-check
         run: npm run typecheck
