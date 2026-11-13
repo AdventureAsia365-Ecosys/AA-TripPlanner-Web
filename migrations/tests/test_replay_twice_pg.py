@@ -57,6 +57,8 @@ SUPERSEDED_BY_DROP = {
     "025": "creates the shadow policies <table>_tenant_shadow and the demo-fallback tenant_id default, which tp-028 "
            "dropped and replaced (AA-1038 FORCE slice); a re-run would bring them back, and its guard refuses the "
            "forced tables tp-028 leaves (it fails on the final state)",
+    "030": "creates the tp-030 report view over the log columns reason / counts / created_at, which tp-031 renamed "
+           "(AA-1093 contract reshape, the old erase_tenant signature dropped too); a re-run fails on the view",
 }
 
 # Everything a re-run could change in the two schemas the files touch. One text line per fact; set equality.
@@ -322,9 +324,10 @@ RUNTIME_DML_EXCEPTIONS = {
     # tp-019 (AA-908): accounts are upserted at sign-in (INSERT ... ON CONFLICT DO UPDATE last_sign_in_at); erasing
     # one is a reviewed erasure step, not a runtime path.
     "traveller_accounts": {"sel", "ins", "upd"},
-    # tp-030 (AA-1093): the tenant erasure log is the record of an erasure; the jobs Lambda inserts and updates its
-    # rows, the app never deletes one (retention: data standards DM-7.1).
-    "tenant_erasure_log": {"sel", "ins", "upd"},
+    # tp-030 / tp-031 (AA-1093): the tenant erasure log is the record of an erasure, append-only since tp-031
+    # (contract tenant.erasure.v1): the jobs Lambda inserts and reads its rows, never updates or deletes one
+    # (retention: data standards DM-7.1).
+    "tenant_erasure_log": {"sel", "ins"},
 }
 
 
