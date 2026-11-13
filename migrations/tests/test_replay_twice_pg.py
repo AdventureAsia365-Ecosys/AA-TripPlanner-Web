@@ -322,6 +322,9 @@ RUNTIME_DML_EXCEPTIONS = {
     # tp-019 (AA-908): accounts are upserted at sign-in (INSERT ... ON CONFLICT DO UPDATE last_sign_in_at); erasing
     # one is a reviewed erasure step, not a runtime path.
     "traveller_accounts": {"sel", "ins", "upd"},
+    # tp-030 (AA-1093): the tenant erasure log is the record of an erasure; the jobs Lambda inserts and updates its
+    # rows, the app never deletes one (retention: data standards DM-7.1).
+    "tenant_erasure_log": {"sel", "ins", "upd"},
 }
 
 
