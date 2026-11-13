@@ -73,7 +73,9 @@ Dev.
 - Code PR: `backend/jobs/tenant_erase.py` rewritten on the contract; `tenant_target.py` docstring;
   `backend/tests/test_aa1093_tenant_erase.py` (erase part rewritten, backup / drill part unchanged),
   `backend/tests/test_aa1093_tenant_erase_pg.py` (contract feed stand-in, contract row validation; backup / drill tests
-  call the 4-argument function), `backend/tests/contracts/tenant.erasure.v1.json`, `CONTEXT.md`, `docs/jobs-runbook.md`.
+  call the 4-argument function), `backend/tests/contracts/tenant.erasure.v1.json`, `CONTEXT.md`, `docs/jobs-runbook.md`,
+  `backend/tests/test_aa1038_force_rls.py` (`tenant_erase.py` now names the tenant tables in its census SQL: it joins
+  the list of job modules that must open the system scope, which it does).
 - Unchanged: the daily pilot backup, the restore drill, the S3 AccessDenied handling, `MAX_ATTEMPTS = 1`.
 
 ## Tradeoffs
