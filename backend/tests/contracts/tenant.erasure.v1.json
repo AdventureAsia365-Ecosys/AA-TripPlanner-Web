@@ -1,0 +1,442 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Generated from AA-Ecosys docs/contracts/tenant.erasure.v1.openapi.yaml (info.version 1.0): ErasureReport, ErasureReportRow, ErasureRequestRow and the components they reference, $ref rewritten to $defs. Regenerate when the contract changes.",
+  "$defs": {
+    "App": {
+      "type": "string",
+      "enum": [
+        "cis",
+        "crm",
+        "booking",
+        "tripplanner"
+      ]
+    },
+    "Blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "count"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{1,63}$"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "Census": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pii_columns_checked",
+        "pii_rows_found"
+      ],
+      "properties": {
+        "pii_columns_checked": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The app's columns whose comment starts with pii: (DM-6.1) that the census read for the tenant."
+        },
+        "pii_rows_found": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Rows of the tenant that still hold a value in one of them. Must be 0."
+        }
+      }
+    },
+    "ErasureReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "report_id",
+        "request_id",
+        "tenant_id",
+        "app",
+        "round",
+        "mode",
+        "status",
+        "error_code",
+        "plan_hash",
+        "tables",
+        "blockers",
+        "census",
+        "job_id",
+        "reported_at"
+      ],
+      "properties": {
+        "report_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The idempotency key of the report, unique per app."
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tenant_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "app": {
+          "$ref": "#/$defs/App"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "dry_run",
+            "apply",
+            "verify"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "blocked",
+            "refused",
+            "failed"
+          ],
+          "description": "ok; blocked = a dry run found blockers (no hash to approve); refused = a guard or a changed plan stopped it, nothing was erased; failed = an error, the transaction rolled back."
+        },
+        "error_code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "plan_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Dry run and apply - the plan hash computed (on apply, the recomputed one that matched or not); null on verify."
+        },
+        "tables": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/TableEntry"
+          },
+          "description": "Dry run - the plan; apply - the rows each statement touched; verify - what is left (rows 0 except keep)."
+        },
+        "blockers": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/Blocker"
+          }
+        },
+        "census": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Census"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Verify only."
+        },
+        "job_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid",
+          "description": "The app's own job row that produced the report (crm.job, booking.job, tripplanner.job)."
+        },
+        "reported_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "ErasureReportRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One row of booking.v_tenant_erasure_report_v1 or tripplanner.v_tenant_erasure_report_v1 per report (the owner's tenant_erasure_log is append-only); the same fields as ErasureReport, tables / blockers / census as jsonb. CIS reads the rows of its open requests by request_id and keeps the newest of each (app, round, mode). Columns are only appended.",
+      "required": [
+        "report_id",
+        "request_id",
+        "tenant_id",
+        "app",
+        "round",
+        "mode",
+        "status",
+        "error_code",
+        "plan_hash",
+        "tables",
+        "blockers",
+        "census",
+        "job_id",
+        "reported_at"
+      ],
+      "properties": {
+        "report_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tenant_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "app": {
+          "type": "string",
+          "enum": [
+            "booking",
+            "tripplanner"
+          ]
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "dry_run",
+            "apply",
+            "verify"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "blocked",
+            "refused",
+            "failed"
+          ]
+        },
+        "error_code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "plan_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tables": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/TableEntry"
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/Blocker"
+          }
+        },
+        "census": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Census"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "job_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "reported_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "ErasureRequestRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One row of catalog.v_tenant_erasure_v1 per request and step of booking or tripplanner (the CRM reads the HTTP feed, CIS its own tables); a consumer reads WHERE app = its own name and acts on the newest updated_at of each request. Columns are only appended.",
+      "required": [
+        "request_id",
+        "tenant_id",
+        "phase",
+        "round",
+        "opened_at",
+        "approval_expires_at",
+        "is_pilot",
+        "is_synthetic",
+        "app",
+        "step_status",
+        "not_before",
+        "approved_plan_hash",
+        "updated_at"
+      ],
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tenant_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "opened_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "approval_expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "is_pilot": {
+          "type": "boolean"
+        },
+        "is_synthetic": {
+          "type": "boolean"
+        },
+        "app": {
+          "type": "string",
+          "enum": [
+            "booking",
+            "tripplanner"
+          ]
+        },
+        "step_status": {
+          "$ref": "#/$defs/StepStatus"
+        },
+        "not_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "approved_plan_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "ErrorCode": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[a-z][a-z0-9_]{1,63}$",
+      "description": "A code, never a message: for example plan_changed, approval_expired, not_due, pilot_refused, not_synthetic, apply_disabled, blocked, census_not_zero, internal_error. Null when the status is ok."
+    },
+    "Md5": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "Phase": {
+      "type": "string",
+      "enum": [
+        "dry_run",
+        "awaiting_approval",
+        "apply",
+        "verify",
+        "done",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "StepStatus": {
+      "type": "string",
+      "enum": [
+        "waiting",
+        "active",
+        "done",
+        "failed"
+      ],
+      "description": "waiting = its not_before has not passed yet (or an earlier stage is still running); active = part of the current round, it acts on the request phase; done = verified erased; failed = it refused or failed in the current round."
+    },
+    "TableEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "table",
+        "action",
+        "rows",
+        "digest"
+      ],
+      "properties": {
+        "table": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]*\\.[a-z_][a-z0-9_]*$",
+          "maxLength": 127
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "delete",
+            "cascade",
+            "detach",
+            "merge",
+            "redact",
+            "anonymise",
+            "keep",
+            "shred"
+          ],
+          "description": "shred = the CRM destroys the tenant's keys (crypto-shredding); keep = rows that stay by rule (audit chain, accounting exception), counted so the receipt can say so."
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Md5"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "md5 of the sorted '<primary key>|<row version>' lines; null for action keep and shred."
+        }
+      }
+    }
+  }
+}

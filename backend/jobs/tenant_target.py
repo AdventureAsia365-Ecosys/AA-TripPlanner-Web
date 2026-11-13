@@ -5,8 +5,9 @@
   the two; anything else is a :class:`~backend.jobs.runner.PermanentError` with a fixed message (no value echoed).
 * :func:`markers` reads whether CIS marks the tenant as the pilot or as synthetic (an E2E / canary tenant), from the
   first readable source, feature-detected by column so the code ships before CIS does:
-    1. ``catalog.v_tenant_erasure_v1`` (contract tenant.erasure.v1, the saga's request view; CIS lane of AA-1093)
-       when it has ``is_pilot`` and ``is_synthetic``;
+    1. ``catalog.v_tenant_erasure_v1`` (contract tenant.erasure.v1 ErasureRequestRow, the saga's request view, rows of
+       every app; CIS lane of AA-1093) when it has ``is_pilot`` and ``is_synthetic``: the pilot when any row says so,
+       synthetic only when every row says so;
     2. ``catalog.v_tenant_account_v1`` (CIS 401 ``is_synthetic``; today granted to booking only) when this role may
        read it.
   None when neither answers: an erasure apply then refuses (``tenant_markers_unknown``, plan decision D8), a DRY RUN
