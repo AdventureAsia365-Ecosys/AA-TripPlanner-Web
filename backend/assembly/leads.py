@@ -59,7 +59,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from backend import config
-from backend.shared import observability, ratelimit
+from backend.shared import observability, ratelimit, settings
 
 EVENT = "lead.submitted"
 CONTRACT = "lead.submitted.v1"
@@ -729,12 +729,18 @@ async def deliver_now(conn: Any, row_id: int, route: Route, payload: dict, **kw:
     return error
 
 
+def hold_days() -> int:
+    """The lead hold in days (S279 L5: the setting tripplanner.leads.hold_days, 3..7; ``config.LEAD_HOLD_DAYS`` is its
+    fallback), clamped again to LEAD_HOLD_DAYS_MIN..MAX so no value can stretch the DM-7.1 promise."""
+    return config.lead_hold_days(str(settings.get(settings.LEAD_HOLD_DAYS)))
+
+
 def effective_hold() -> timedelta:
     """How old a pending lead may be at an expiry tick: the hold minus one tick interval, the ticks it absorbs
     (:data:`EXPIRY_TICKS_ABSORBED`) and the lateness margin, so a lead written just after a tick is still redacted
     before it turns ``config.LEAD_HOLD_DAYS`` old even when the tick that should end its hold fails (the next one
     does). With the 7-day hold a lead is expired once it is 4 d 23 h old."""
-    return (timedelta(days=config.LEAD_HOLD_DAYS) - (1 + EXPIRY_TICKS_ABSORBED) * EXPIRY_TICK_INTERVAL
+    return (timedelta(days=hold_days()) - (1 + EXPIRY_TICKS_ABSORBED) * EXPIRY_TICK_INTERVAL
             - EXPIRY_TICK_MARGIN)
 
 

@@ -82,8 +82,13 @@ def _sql_strings(text: str):
             yield n.value
 
 
+# S279 L5 (AA-1096): a whole literal that is a settings key ("tripplanner.<area>.<name>", backend/shared/settings.py)
+# is a key of catalog.v_app_settings_v1, not a table.
+_SETTING_KEY = re.compile(r"^tripplanner\.[a-z][a-z0-9_]*\.[a-z0-9_]+$")
+
+
 def _foreign_reads(text: str) -> list[str]:
-    return [m.group(0) for lit in _sql_strings(text) for m in _QUALIFIED.finditer(lit)
+    return [m.group(0) for lit in _sql_strings(text) if not _SETTING_KEY.match(lit) for m in _QUALIFIED.finditer(lit)
             if not _allowed(m.group(1), m.group(2))]
 
 

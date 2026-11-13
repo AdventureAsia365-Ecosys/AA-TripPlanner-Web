@@ -21,6 +21,10 @@ Events (``op``; the scheduler sends ``{"op": "tick", "source": "aa-861-daily"}``
     Run due jobs only.
 ``status``
     The 20 latest jobs of every registered kind (ids, status, counts; read only).
+``settings``
+    S279 L5 (AA-1096): what this container serves from the admin-editable settings (``backend/shared/settings.py``,
+    read from ``catalog.v_app_settings_v1``): each key's value, source (tenant / platform / fallback / env) and version,
+    and the daily AI cap with its source (``app_profile`` once the CIS app profile sets it, else ``env``). Read only.
 ``restore_drill``
     ``{"op": "restore_drill", "payload": {"tenant_id" | "tenant_slug", "backup_id"}}``: the same as an ``enqueue`` of
     ``tp_tenant_restore_drill`` (AA-1093): load a tenant backup into ``pg_temp``, compare, roll back.
@@ -39,6 +43,7 @@ import os
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
+from backend import config
 from backend.jobs import (
     lead_deliver,
     outbox_redact,
@@ -49,7 +54,7 @@ from backend.jobs import (
     tenant_erase,
     tenant_restore_drill,
 )
-from backend.shared import observability, tenant
+from backend.shared import app_profile, observability, settings, tenant
 
 # kind -> handler(pool, job). Every kind matches '^tp_[a-z0-9_]+$' (tp-021 job_kind_chk, owners.yaml tp_).
 HANDLERS: dict[str, runner.Handler] = {
@@ -78,7 +83,7 @@ MAX_ATTEMPTS: dict[str, int] = {outbox_redact.KIND: outbox_redact.MAX_ATTEMPTS,
                                 tenant_restore_drill.KIND: tenant_restore_drill.MAX_ATTEMPTS}
 SCHEDULER = "scheduler:tp-jobs-daily"
 OPERATOR = "operator:lambda-invoke"
-OPS = ("tick", "enqueue", "run", "status", "restore_drill")
+OPS = ("tick", "enqueue", "run", "status", "restore_drill", "settings")
 # Ops that are an enqueue of one fixed kind (AA-1093).
 OP_KINDS = {"restore_drill": tenant_restore_drill.KIND}
 ATTENTION_MODES = ("held",)
@@ -126,6 +131,19 @@ async def queue_daily(pool: Any, today: date) -> list[str]:
     return queued
 
 
+async def settings_status(pool: Any) -> dict[str, Any]:
+    """Op ``settings``: the settings this container serves and the daily AI cap with its source (values, sources and
+    versions only)."""
+    profile = await app_profile.current(pool)
+    cap = profile.default_daily_budget_usd
+    daily = ({"cap_usd": cap, "source": "app_profile"} if cap is not None
+             else {"cap_usd": float(config.TP_DAILY_SPEND_CAP_USD), "source": "env"})
+    out = {"op": "settings", **settings.status(), "daily_cap": {**daily, "profile_source": profile.source}}
+    observability.emit("jobs_settings", source=out["source"], daily_cap_source=daily["source"],
+                       daily_cap_usd=daily["cap_usd"])
+    return out
+
+
 async def serve(event: dict[str, Any], *, pool: Any, worker: str, time_left: Callable[[], float],
                 today: Optional[date] = None) -> dict[str, Any]:
     """Handle one jobs event. ``pool`` is the asyncpg pool (one connection)."""
@@ -138,6 +156,9 @@ async def serve(event: dict[str, Any], *, pool: Any, worker: str, time_left: Cal
     # without a tenant context sees no row there, so each of them opens tenant.system_scope (policy outbox_system)
     # for its run. The queue (tripplanner.job) and the rate-counter purge read tables without row-level security.
     tenant.system_context(op)
+    await settings.refresh(pool)                  # S279 L5: e.g. the lead hold of tp_lead_deliver (cached 25 s)
+    if op == "settings":
+        return await settings_status(pool)
     if op == "status":
         async with pool.acquire() as conn:
             return {"op": op, "jobs": await queue.recent(conn, sorted(HANDLERS))}

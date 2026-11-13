@@ -39,6 +39,26 @@ def _no_app_profile(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_settings_view(monkeypatch):
+    """S279 L5 (AA-1096): no test reads the CIS settings view unless it says so (the fake DBs answer any SQL): the view
+    counts as not migrated, so every setting serves its fallback, the config attribute the older tests patch. Tests of
+    the reader patch ``settings.read``."""
+    from backend.shared import settings
+
+    async def _not_migrated(db):
+        raise _ViewMissing()
+
+    settings.invalidate()
+    monkeypatch.setattr(settings, "read", _not_migrated)
+    yield
+    settings.invalidate()
+
+
+class _ViewMissing(Exception):
+    sqlstate = "42P01"
+
+
+@pytest.fixture(autouse=True)
 def _fresh_search_embed_state():
     """AA-856: the query-embedding cache and the throttle cooldown are per container (module
     globals); every test starts with both empty."""

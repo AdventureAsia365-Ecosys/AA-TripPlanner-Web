@@ -1,7 +1,7 @@
 """AA-1041 slice 2 — the planning chat bound to Adventure Asia's live tours and places (stage ``tp_plan_chat``).
 
 One turn = the traveller's message (plus the last few turns, sent back by the browser) answered by at most
-:data:`MAX_STEPS` model calls. The model speaks one JSON object per call:
+``tripplanner.ai.plan_chat_max_steps`` model calls (a setting, S279 L5). The model speaks one JSON object per call:
 
   {"tool": "<name>", "args": {...}}                         ask the server to read the catalog (chat_tools.py)
   {"reply": "...", "kind": "answer" | "refusal",
@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from backend.assembly import chat_tools
+from backend.shared import settings
 from backend.shared.scrub import scrub_text
 
 STAGE = "tp_plan_chat"
@@ -48,9 +49,14 @@ STAGE = "tp_plan_chat"
 # its own stage; llm_gateway.load_route(..., borrow_from=...)).
 LENDER_STAGE = "tp_compose"
 
-MAX_STEPS = 3
-MAX_TOKENS = 700
 MAX_MESSAGE_CHARS = 500
+
+
+def max_tokens() -> int:
+    """max_tokens of one chat model call (the setting tripplanner.ai.plan_chat_max_tokens, S279 L5)."""
+    return int(settings.get(settings.PLAN_CHAT_MAX_TOKENS))
+
+
 MAX_HISTORY_TURNS = 6
 MAX_HISTORY_CHARS = 600
 MAX_REPLY_CHARS = 700
@@ -509,13 +515,14 @@ async def run_turn(conn: Any, *, message: str, history: list[dict], itinerary: l
     steps: list[dict] = []
     route_found: Optional[dict] = None     # the last tool's route_options answer, when it was one
     result = TurnResult(reply="", outcome=OUTCOME_FALLBACK)
-    for step in range(1, MAX_STEPS + 1):
+    max_steps = int(settings.get(settings.PLAN_CHAT_MAX_STEPS))   # S279 L5: CIS Platform > Settings
+    for step in range(1, max_steps + 1):
         if before_call is not None:
             reason = await before_call()
             if reason is not None:
                 result.outcome, result.paused_reason = OUTCOME_PAUSED, reason
                 return result
-        last = step == MAX_STEPS
+        last = step == max_steps
         try:
             text = generate(_SYSTEM, _build_user(offered, trip, history, msg, steps, last))
         except OutOfTime:

@@ -60,7 +60,7 @@ from backend.assembly import activities as activities_mod
 from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
 from backend.shared import component_ids, llm_gateway, m2m_auth, observability, ratelimit, tenant, tenant_assertion
-from backend.shared import monthly_spend, tenant_budget
+from backend.shared import monthly_spend, settings, tenant_budget
 
 _COMPONENTS_RE = re.compile(r"^/trip/([^/]+)/components$")
 _COMPONENT_ITEM_RE = re.compile(r"^/trip/([^/]+)/components/([^/]+)$")
@@ -215,7 +215,7 @@ async def route(
             return await _send_lead(conn, m.group(1), body, guest_token, caller, cur.tenant_id, client=client)
         # AA-1034 R0 (root ADR 0019): B2B-only, so no lead is stored and nothing goes to Booking. Before the guard and
         # any SQL: the answer is the same for every caller and reveals nothing about the trip.
-        if config.ADVISOR_HANDOFF_DEMO:
+        if settings.get(settings.ADVISOR_HANDOFF_DEMO):
             return _resp(410, {"error": "b2b_only", "detail": B2B_ONLY_DETAIL})
         trip_id = m.group(1)
         session_id = body.get("session_id")
@@ -249,13 +249,13 @@ async def route(
                 # registration. No tripplanner.customers row is written or matched: the identity is the link.
                 stored = await handoff_mod.load_customer(conn, session_id) or {}
                 name = str(customer.get("name") or stored.get("name") or "").strip()
-                if config.REQUIRE_REGISTRATION_BEFORE_HANDOFF and not name:
+                if settings.get(settings.REQUIRE_REGISTRATION) and not name:
                     return _resp(422, {"error": "registration_required", "detail": "name required before sending"})
                 consent = customer.get("consent") is True if customer else bool(stored.get("consent"))
                 traveller = handoff_mod.signed_in_contact(
                     caller.principal, name=name, phone=customer.get("phone") or stored.get("phone"),
                     consent=consent)
-            elif config.REQUIRE_REGISTRATION_BEFORE_HANDOFF and not registered:
+            elif settings.get(settings.REQUIRE_REGISTRATION) and not registered:
                 if not (customer.get("name") and (customer.get("phone") or customer.get("email"))):
                     return _resp(
                         422,
@@ -351,9 +351,8 @@ async def route(
                 narrate_fn = await _resolve_narrator(mode, narrator, conn, calls)
             except llm_gateway.AiPaused as e:
                 paused = e.reason
-        # AA-1015: 10 model narrations per hour per session (twice that signed in). Counted only when this request
-        # would call the model: a cached answer, an all-AA-text trip (answered above), a stopped budget or paused AI
-        # costs nothing.
+        # AA-1015: model narrations per hour per session (a setting; more signed in). Counted only when this request
+        # would call the model: a cached answer, an all-AA-text trip, a stopped budget or paused AI costs nothing.
         if narrate_fn is not None:
             decision = await ratelimit.hit(conn, ratelimit.SCOPE_NARRATE, ratelimit.KIND_SESSION, session_id,
                                            signed_in=caller.signed_in)
@@ -365,8 +364,7 @@ async def route(
                                                            day_texts=day_texts)
         except llm_gateway.BedrockError as e:
             # Every attempt failed (each is in `calls` as a failed row), or the route deadline passed (its 'deadline'
-            # row too) or every reply was cut at its token limit ('truncated' rows, AA-642 S263 E1): degrade, do not
-            # cache.
+            # row too) or every reply was cut at its token limit ('truncated', AA-642 S263 E1): degrade, no cache.
             await _record_calls(conn, calls, {"mode": mode, "days": len(itinerary), "degraded": True})
             calls = []
             paused = getattr(e, "reason", None) or "provider_unavailable"
@@ -586,8 +584,8 @@ async def _chat_gate(conn) -> Optional[str]:
     daily app caps and the tenant's AI budget (`budget_status`). Fails closed."""
     tid = tenant.current_id()
     reason = await monthly_spend.check(conn, plan_chat.STAGE, tid,
-                                       app_cap_usd=config.TP_PLAN_CHAT_MONTHLY_CAP_USD,
-                                       tenant_cap_usd=config.TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD)
+                                       app_cap_usd=settings.get(settings.PLAN_CHAT_MONTHLY_CAP_USD),
+                                       tenant_cap_usd=settings.get(settings.PLAN_CHAT_TENANT_MONTHLY_CAP_USD, tid))
     if reason is not None:
         return reason
     budget = await llm_gateway.budget_status(conn, plan_chat.STAGE)
@@ -639,7 +637,7 @@ async def _chat(conn, trip_id: str, body: dict, guest_token: Optional[str], call
         bounded = route_ if route_.deadline_s and route_.deadline_s <= left else dataclasses.replace(
             route_, deadline_s=int(left))
         try:
-            text, call = llm_gateway.generate_text(bounded, system, user, plan_chat.MAX_TOKENS, failures=calls)
+            text, call = llm_gateway.generate_text(bounded, system, user, plan_chat.max_tokens(), failures=calls)
         except llm_gateway.RouteDeadlineExceeded:
             # A later step that ran past the turn's time (its 'deadline' row is in `calls`): the traveller gets the
             # server's fallback reply, as when too little time is left to start it, not the "unavailable" pause.
@@ -739,9 +737,9 @@ async def _send_lead(conn, trip_id: str, body: dict, guest_token: Optional[str],
         added = await events_mod.current_custom_days(conn, trip_id)
         if not current and not added:
             return _resp(400, {"error": "empty_trip", "detail": "add a stop or a day before sending"})
-        if await leads_mod.tenant_leads_24h(conn, tenant_id) >= config.TP_LEAD_TENANT_DAILY_CAP:
-            observability.emit("lead_refused", code="lead_cap_reached", tenant_id=tenant_id,
-                               cap=config.TP_LEAD_TENANT_DAILY_CAP)
+        cap = settings.get(settings.LEAD_TENANT_DAILY_CAP, tenant_id)   # S279 L5: a tenant override wins
+        if await leads_mod.tenant_leads_24h(conn, tenant_id) >= cap:
+            observability.emit("lead_refused", code="lead_cap_reached", tenant_id=tenant_id, cap=cap)
             return _resp(429, {"error": "lead_cap_reached"})
         # Added days count as days; their notes (free text) never go into the lead.
         summary = await leads_mod.trip_summary(conn, current, extra_days=len(added))
@@ -997,6 +995,7 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
             from backend.shared.db import get_pool
             acquire = (await get_pool()).acquire
         async with acquire() as conn, tenant.bound(conn, tid, source=tenant_source):
+            await settings.refresh(conn)          # S279 L5: the admin-editable settings, cached 25 s (never raises)
             return await route(method, path, body, conn=conn, guest_token=guest_token, caller=caller, client=client)
     except Exception as e:  # noqa: BLE001
         frames = traceback.extract_tb(e.__traceback__)
