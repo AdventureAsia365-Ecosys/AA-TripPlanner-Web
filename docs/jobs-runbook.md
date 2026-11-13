@@ -112,18 +112,23 @@ close it. An override run never counts as the last live run: the daily tick stay
 ## Tenant erasure, backup and restore drill (AA-1093)
 
 Three kinds of the tenant offboarding saga (root plan `docs/audits/2026-11-13-S279-session/aa1093-plan.md`, Parts 2
-and 3). Migration tp-030 (the log, `tripplanner.erase_tenant`, the CIS report view) must be applied first; before it the
-erase fails with `UndefinedFunctionError` (nothing is deleted).
+and 3; contract `tenant.erasure.v1`). Migrations tp-030 and tp-031 (the append-only report log,
+`tripplanner.erase_tenant(tenant, round, dry_run, expect_plan)`, the CIS report view) must be applied first; before
+tp-031 the erase fails with `UndefinedFunctionError` (nothing is deleted).
 
 - `tp_tenant_erase`: deletes every row of one tenant in `sessions`, `trip_drafts`, `trip_events`, `outbox`, the
   `customers` only its sessions link, and merges its `ai_spend_month` rows into the app scope. Modes `dry_run` (the
-  plan: per table action, rows, fingerprint, and the `plan_hash`; nothing deleted), `apply` (needs `expect_plan` = the
-  approved `plan_hash` AND the logged DRY RUN of the same `request_id` with that hash, else `no_approved_plan`; a moved
-  plan is refused `plan_changed`), `verify` (every count must be 0). Each run writes `tripplanner.tenant_erasure_log`, which CIS reads
+  plan: contract entries `{table, action, rows, digest}` and the `plan_hash` of the round; nothing deleted), `apply`
+  (needs the approved `plan_hash` of the round AND an ok DRY RUN report of the same `request_id`, round and tenant with
+  that hash, else `dry_run_missing`; a moved plan is refused `plan_changed`), `verify` (every delete / merge count 0
+  and a census of the `pii:` columns finding 0, else `census_not_zero`). Each run appends one report to
+  `tripplanner.tenant_erasure_log` (status `ok` / `refused` / `failed` with a contract error code), which CIS reads
   through `tripplanner.v_tenant_erasure_report_v1`. The daily tick reads the CIS request view
-  `catalog.v_tenant_erasure_v1` once it exists (`no_feed` until then). Refused always: the AA-hosted demo tenant and the
-  pilot. An apply also needs `TENANT_ERASE_APPLY_ENABLED=true` on the function (Terraform, default off), CIS markers
-  for the tenant, and outside prod a tenant CIS marks synthetic. A refused apply fails the tick (errors alarm).
+  `catalog.v_tenant_erasure_v1` once it exists (`no_feed` until then) and runs each request once per round and phase.
+  Refused always: the AA-hosted tenant (`aa_hosted_refused`) and the pilot (`pilot_refused`). An apply also needs
+  `TENANT_ERASE_APPLY_ENABLED=true` on the function (Terraform, default off), CIS markers for the tenant
+  (`tenant_markers_unknown`), outside prod a tenant CIS marks synthetic (`not_synthetic`), and for a CIS request an
+  unexpired approval (`approval_expired`). A failed report or a refused apply fails the tick (errors alarm).
 - `tp_tenant_backup`: one tenant's four tables as JSONL + `manifest.json` + `SHA256SUMS` to the gold bucket,
   `exports/tenants/<tenant>/tripplanner/<job id>/` (the bucket rule deletes `exports/` after 7 days). The function
   needs `TENANT_EXPORT_BUCKET` (Terraform) and its role may write and read that prefix only. The daily tick backs up
@@ -141,7 +146,9 @@ aws lambda invoke --function-name aa-tripplanner-dev-jobs --cli-binary-format ra
 aws lambda invoke --function-name aa-tripplanner-dev-jobs --cli-binary-format raw-in-base64-out --payload '{"op":"enqueue","kind":"tp_tenant_erase","payload":{"tenant_slug":"<slug>","mode":"dry_run"}}' --profile aa365-admin --region us-west-1 /tmp/tp-jobs.json && cat /tmp/tp-jobs.json
 ```
 
-An operator apply (a drill, after the tech lead approved the DRY RUN's `plan_hash`) adds `"mode":"apply",
-"expect_plan":"<plan_hash>","request_id":"<the dry run's request_id>"`; then `"mode":"verify"` with the same
-`request_id`. On Dev it runs only for a tenant CIS marks synthetic, and only while `TENANT_ERASE_APPLY_ENABLED` is
+An operator run uses one request id per tenant (a UUIDv5 of the tenant, the `request_id` of the DRY RUN's report) and
+round 1 unless the payload names `request_id` / `round`. An operator apply (a drill, after the tech lead approved the
+DRY RUN's `plan_hash`) adds `"mode":"apply","expect_plan":"<plan_hash>"`; then `"mode":"verify"`. Read the reports
+as `cis_app`: `SELECT mode, status, error_code, plan_hash FROM tripplanner.v_tenant_erasure_report_v1 WHERE tenant_id
+= '<tenant>' ORDER BY reported_at`. On Dev it runs only for a tenant CIS marks synthetic, and only while `TENANT_ERASE_APPLY_ENABLED` is
 `true`; close the flag again after the drill.

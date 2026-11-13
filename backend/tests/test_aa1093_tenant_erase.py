@@ -1,62 +1,80 @@
 """AA-1093 lane L4 (offline): the tenant erasure, backup and restore drill rules of the jobs Lambda.
 
 The database side (the plan hash, the apply, the round trip) is in test_aa1093_tenant_erase_pg.py and
-migrations/tests/test_tp030_pg.py. Tenant ids here are invented.
+migrations/tests/test_tp031_pg.py. Tenant ids here are invented. The reports are checked against the vendored contract
+(tests/contracts/tenant.erasure.v1.json, generated from AA-Ecosys docs/contracts/tenant.erasure.v1.openapi.yaml).
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
+import jsonschema
 import pytest
 
 from backend import config
 from backend.jobs import handler, tenant_backup, tenant_erase, tenant_restore_drill, tenant_store
 from backend.jobs.runner import PermanentError
-from backend.jobs.tenant_target import Markers
+from backend.jobs.tenant_erase import Request
 
 TENANT = "a7a7a7a7-0000-4000-8000-0000000000e1"
+REQUEST = "d1d1d1d1-0000-4000-8000-0000000000e5"
+JOB = "f0f0f0f0-0000-4000-8000-0000000000a1"
 PLAN = "ab" * 32
-SYNTHETIC = Markers(is_pilot=False, is_synthetic=True, source="test")
-REAL = Markers(is_pilot=False, is_synthetic=False, source="test")
-PILOT = Markers(is_pilot=True, is_synthetic=False, source="test")
+NOW = datetime(2026, 12, 31, 9, 0, tzinfo=timezone.utc)
 DEV_ON = {"ENVIRONMENT": "dev", "TENANT_ERASE_APPLY_ENABLED": "true"}
 PROD_ON = {"ENVIRONMENT": "prod", "TENANT_ERASE_APPLY_ENABLED": "true"}
+CONTRACT = json.loads((Path(__file__).parent / "contracts" / "tenant.erasure.v1.json").read_text())
+
+
+def _schema(name: str) -> dict:
+    return {**CONTRACT, "$ref": f"#/$defs/{name}"}
+
+
+def _req(**kw) -> Request:
+    base = {"request_id": REQUEST, "tenant_id": TENANT, "round": 1, "phase": "apply", "source": "cis",
+            "not_before": NOW - timedelta(days=1), "approved_plan_hash": PLAN,
+            "approval_expires_at": NOW + timedelta(hours=2), "is_pilot": False, "is_synthetic": True}
+    return Request(**{**base, **kw})
 
 
 # ── refusals ─────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("mode,tenant,markers,plan,environ,expected", [
-    ("dry_run", TENANT, None, None, {}, None),                          # a DRY RUN needs no flag and no markers
-    ("verify", TENANT, REAL, None, {}, None),
-    ("dry_run", config.DEMO_TENANT_ID, SYNTHETIC, None, DEV_ON, "demo_tenant"),
-    ("dry_run", TENANT, PILOT, None, DEV_ON, "pilot_tenant"),
-    ("apply", TENANT, PILOT, PLAN, PROD_ON, "pilot_tenant"),
-    ("apply", TENANT, SYNTHETIC, PLAN, {"ENVIRONMENT": "dev"}, "apply_disabled"),
-    ("apply", TENANT, SYNTHETIC, PLAN, {"ENVIRONMENT": "dev", "TENANT_ERASE_APPLY_ENABLED": "yes"}, "apply_disabled"),
-    ("apply", TENANT, None, PLAN, DEV_ON, "tenant_markers_unknown"),
-    ("apply", TENANT, REAL, PLAN, DEV_ON, "not_synthetic"),
-    # no ENVIRONMENT = not prod
-    ("apply", TENANT, REAL, PLAN, {"TENANT_ERASE_APPLY_ENABLED": "true"}, "not_synthetic"),
-    ("apply", TENANT, SYNTHETIC, None, DEV_ON, "no_approved_plan"),
-    ("apply", TENANT, SYNTHETIC, "ABC", DEV_ON, "no_approved_plan"),
-    ("apply", TENANT, SYNTHETIC, PLAN, DEV_ON, None),
-    ("apply", TENANT, REAL, PLAN, PROD_ON, None),                       # prod: any tenant but the pilot
+@pytest.mark.parametrize("mode,changes,environ,expected", [
+    ("dry_run", {"is_pilot": None, "is_synthetic": None, "source": "operator"}, {}, None),   # no flag, no markers
+    ("verify", {"is_synthetic": False}, {}, None),
+    ("dry_run", {"tenant_id": config.DEMO_TENANT_ID}, DEV_ON, "aa_hosted_refused"),
+    ("dry_run", {"is_pilot": True}, DEV_ON, "pilot_refused"),
+    ("apply", {"is_pilot": True}, PROD_ON, "pilot_refused"),
+    ("dry_run", {"not_before": NOW + timedelta(seconds=1)}, DEV_ON, "not_due"),
+    ("apply", {}, {"ENVIRONMENT": "dev"}, "apply_disabled"),
+    ("apply", {}, {"ENVIRONMENT": "dev", "TENANT_ERASE_APPLY_ENABLED": "yes"}, "apply_disabled"),
+    ("apply", {"is_pilot": None, "is_synthetic": None, "source": "operator"}, DEV_ON, "tenant_markers_unknown"),
+    ("apply", {"is_synthetic": False}, DEV_ON, "not_synthetic"),
+    ("apply", {"is_synthetic": False}, {"TENANT_ERASE_APPLY_ENABLED": "true"}, "not_synthetic"),  # no ENVIRONMENT
+    ("apply", {"approved_plan_hash": None}, DEV_ON, "approval_missing"),
+    ("apply", {"approved_plan_hash": "ABC"}, DEV_ON, "approval_missing"),
+    ("apply", {"approval_expires_at": NOW}, DEV_ON, "approval_expired"),
+    ("apply", {"approval_expires_at": None}, DEV_ON, "approval_expired"),
+    ("apply", {"approval_expires_at": None, "source": "operator"}, DEV_ON, None),   # an operator drill has no expiry
+    ("apply", {}, DEV_ON, None),
+    ("apply", {"is_synthetic": False}, PROD_ON, None),                               # prod: any tenant but the pilot
 ])
-def test_refusal_order(mode, tenant, markers, plan, environ, expected):
-    assert tenant_erase.refusal(mode, tenant, markers, plan, environ) == expected
+def test_refusal_order_and_codes(mode, changes, environ, expected):
+    assert tenant_erase.refusal(_req(**changes), mode, environ, NOW) == expected
 
 
 def test_the_bare_path_tenant_is_refused_like_the_demo_tenant(monkeypatch):
     """TP_DEFAULT_TENANT_ID (config.DEFAULT_TENANT_ID) is AA-hosted too (config.is_aa_hosted): never erased."""
     bare = "e5e5e5e5-0000-4000-8000-0000000000f1"
-    assert tenant_erase.refusal("dry_run", bare, SYNTHETIC, None, DEV_ON) is None
+    assert tenant_erase.refusal(_req(tenant_id=bare), "dry_run", DEV_ON, NOW) is None
     monkeypatch.setattr(config, "DEFAULT_TENANT_ID", bare)
     for mode in ("dry_run", "apply", "verify"):
-        assert tenant_erase.refusal(mode, bare, SYNTHETIC, PLAN, PROD_ON) == "demo_tenant"
-    assert tenant_erase.refusal("dry_run", config.DEMO_TENANT_ID, SYNTHETIC, None, DEV_ON) == "demo_tenant"
+        assert tenant_erase.refusal(_req(tenant_id=bare), mode, PROD_ON, NOW) == "aa_hosted_refused"
 
 
 @pytest.mark.parametrize("payload,message", [
@@ -67,6 +85,9 @@ def test_the_bare_path_tenant_is_refused_like_the_demo_tenant(monkeypatch):
     ({"tenant_id": TENANT, "mode": "delete"}, "mode must be one of"),
     ({"tenant_id": TENANT, "mode": "apply", "expect_plan": "short"}, "expect_plan must be"),
     ({"tenant_id": TENANT, "request_id": "not-a-uuid"}, "request_id must be a uuid"),
+    ({"tenant_id": TENANT, "round": 0}, "round must be an integer"),
+    ({"tenant_id": TENANT, "round": "2"}, "round must be an integer"),
+    ({"tenant_id": TENANT, "round": True}, "round must be an integer"),
 ])
 def test_erase_payload_is_validated_without_echoing_values(payload, message):
     with pytest.raises(PermanentError) as e:
@@ -74,84 +95,187 @@ def test_erase_payload_is_validated_without_echoing_values(payload, message):
     assert message in str(e.value) and "not-a-uuid" not in str(e.value)
 
 
-def test_verdict_of_each_mode():
-    rows = {"tripplanner.sessions": {"action": "delete", "rows": 0},
-            "tripplanner.customers": {"action": "keep", "rows": 3}}
-    assert tenant_erase.verdict("dry_run", {"status": "planned", "tables": rows}) == ("planned", None)
-    assert tenant_erase.verdict("apply", {"status": "applied"}) == ("applied", None)
-    assert tenant_erase.verdict("apply", {"status": "refused", "reason": "plan_changed"}) == ("refused", "plan_changed")
-    assert tenant_erase.verdict("verify", {"status": "planned", "tables": rows}) == ("verified", None)  # keep ignored
-    left = {**rows, "tripplanner.ai_spend_month": {"action": "merge_into_app", "rows": 1}}
-    assert tenant_erase.verdict("verify", {"status": "planned", "tables": left}) == ("residue", "rows_left")
+def test_the_operator_request_id_is_one_per_tenant():
+    assert tenant_erase.operator_request_id(TENANT) == tenant_erase.operator_request_id(TENANT)
+    assert tenant_erase.operator_request_id(TENANT) != tenant_erase.operator_request_id(REQUEST)
 
 
-def test_attention_on_a_refused_apply_or_a_residue_only():
+def test_plan_hash_is_the_contract_formula():
+    tables = [{"table": "tripplanner.sessions", "action": "delete", "rows": 2, "digest": "0" * 32},
+              {"table": "tripplanner.traveller_accounts", "action": "keep", "rows": 0, "digest": None}]
+    text = (f"tenant.erasure.v1|{TENANT}|3\ntripplanner.sessions|delete|2|{'0' * 32}\n"
+            "tripplanner.traveller_accounts|keep|0|")
+    assert tenant_erase.plan_hash(TENANT, 3, tables) == hashlib.sha256(text.encode()).hexdigest()
+    assert tenant_erase.plan_hash(TENANT, 3, tables[::-1]) == tenant_erase.plan_hash(TENANT, 3, tables)
+    assert tenant_erase.plan_hash(TENANT, 4, tables) != tenant_erase.plan_hash(TENANT, 3, tables)
+
+
+def test_verify_verdict():
+    clean = [{"table": "tripplanner.sessions", "action": "delete", "rows": 0, "digest": "x"},
+             {"table": "tripplanner.traveller_accounts", "action": "keep", "rows": 3, "digest": None}]
+    zero = {"pii_columns_checked": 9, "pii_rows_found": 0}
+    assert tenant_erase.verify_verdict(clean, zero, []) == ("ok", None, [])           # keep rows are not left-overs
+    left = [*clean, {"table": "tripplanner.ai_spend_month", "action": "merge", "rows": 1, "digest": "y"}]
+    assert tenant_erase.verify_verdict(left, zero, []) == ("failed", "census_not_zero", [])
+    assert tenant_erase.verify_verdict(clean, {**zero, "pii_rows_found": 1}, []) == ("failed", "census_not_zero", [])
+    assert tenant_erase.verify_verdict(clean, zero, ["tripplanner.x.y"]) == \
+        ("failed", "census_incomplete", [{"code": "pii_column_unlisted", "count": 1}])
+
+
+def test_attention_on_a_failure_or_a_refused_apply_only():
     assert tenant_erase.needs_attention({"mode": "apply", "status": "refused"})
-    assert tenant_erase.needs_attention({"mode": "verify", "status": "residue"})
+    assert tenant_erase.needs_attention({"mode": "verify", "status": "failed"})
+    assert tenant_erase.needs_attention({"mode": "dry_run", "status": "failed"})
     assert not tenant_erase.needs_attention({"mode": "dry_run", "status": "refused"})
-    assert not tenant_erase.needs_attention({"mode": "apply", "status": "applied"})
+    assert not tenant_erase.needs_attention({"mode": "apply", "status": "ok"})
+
+
+def test_the_census_covers_the_pii_columns_of_the_planned_tables():
+    cleared = {f"{t}.{c}" for t, (_, cols) in tenant_erase.CENSUS.items() for c in cols}
+    assert cleared == {"tripplanner.trip_drafts.itinerary", "tripplanner.trip_drafts.date_start",
+                       "tripplanner.trip_drafts.date_end", "tripplanner.trip_events.payload",
+                       "tripplanner.outbox.payload", "tripplanner.customers.name", "tripplanner.customers.phone",
+                       "tripplanner.customers.email"}
+    assert not cleared & set(tenant_erase.CENSUS_KEPT)
+    assert tenant_erase.census_sql("tripplanner.sessions") is None
+    assert "tenant_id = $1::uuid" in tenant_erase.census_sql("tripplanner.outbox")
+
+
+# ── one run, offline (a fake connection) ─────────────────────────────────────
+
+
+class _Tx:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
 
 
 class _Conn:
-    """Answers the log read; records every statement. A refusal must write the log row and never call the function."""
+    """Records every statement; answers the report insert like the database (report id + time), the DRY RUN lookup
+    with ``dry_run_ok`` and the function with ``plan``. ``calls_function`` False makes a call to it fail the test."""
 
-    def __init__(self, existing=None):
-        self.existing = existing
-        self.calls = []
+    def __init__(self, *, dry_run_ok=None, applied=None, plan=None, calls_function=True):
+        self.dry_run_ok, self.applied, self.plan, self.calls_function = dry_run_ok, applied, plan, calls_function
+        self.inserts: list[tuple] = []
+        self.calls: list[str] = []
+
+    def transaction(self):
+        return _Tx()
 
     async def fetchrow(self, sql, *args):
-        self.calls.append(("fetchrow", sql))
-        return self.existing
-
-    async def execute(self, sql, *args):
-        self.calls.append(("execute", sql, args))
-
-    async def fetchval(self, sql, *args):  # pragma: no cover - must not run on a refusal
-        raise AssertionError("erase_tenant must not run")
-
-
-class _NoPlanConn(_Conn):
-    """No DRY RUN row of the request carries the hash: the approved-plan read answers None."""
+        self.calls.append(sql)
+        if "INSERT INTO tripplanner.tenant_erasure_log" in sql:
+            self.inserts.append(args)
+            return {"report_id": f"0c9b8a7d-6e5f-4d3c-8b2a-1f0e9d8c7b{len(self.inserts):02d}", "reported_at": NOW}
+        if "mode = 'apply' AND status = 'ok'" in sql:
+            return self.applied
+        raise AssertionError(sql)
 
     async def fetchval(self, sql, *args):
-        if "mode = 'dry_run'" in sql:
-            self.calls.append(("fetchval", sql, args))
-            return None
-        raise AssertionError("erase_tenant must not run")
+        self.calls.append(sql)
+        if "mode = 'dry_run' AND status = 'ok'" in sql:
+            return self.dry_run_ok
+        if "erase_tenant" in sql:
+            assert self.calls_function, "erase_tenant must not run"
+            return json.dumps(self.plan(*args))
+        raise AssertionError(sql)
+
+    async def execute(self, sql, *args):
+        self.calls.append(sql)
+
+    async def fetch(self, sql, *args):
+        self.calls.append(sql)
+        return []
 
 
-def test_an_apply_without_a_logged_dry_run_of_that_hash_is_refused():
-    conn = _NoPlanConn()
-    out = asyncio.run(tenant_erase.erase_one(conn, request_id=TENANT, tenant_id=TENANT, mode="apply", expect_plan=PLAN,
-                                             markers=SYNTHETIC, job_id=TENANT, environ=DEV_ON))
-    assert (out["status"], out["reason"]) == ("refused", "no_approved_plan")
-    read = [c for c in conn.calls if c[0] == "fetchval"]
-    assert len(read) == 1 and read[0][2] == (TENANT, TENANT, PLAN)    # same request, same tenant, that exact hash
-    assert "status = 'planned'" in read[0][1]
-    writes = [c for c in conn.calls if c[0] == "execute"]
-    assert len(writes) == 1 and writes[0][2][5:7] == ("refused", "no_approved_plan")
+def _function(status="ok", code=None, rows=2):
+    def plan(tenant_id, round_, dry_run, expect):
+        tables = [{"table": "tripplanner.sessions", "action": "delete", "rows": rows, "digest": "0" * 32},
+                  {"table": "tripplanner.traveller_accounts", "action": "keep", "rows": 1, "digest": None}]
+        return {"format": "tenant.erasure.v1", "status": status, "error_code": code, "tables": tables,
+                "plan_hash": tenant_erase.plan_hash(tenant_id, round_, tables), "app_rows_added": 0}
+    return plan
 
 
-def test_a_refused_apply_is_logged_and_runs_nothing():
-    conn = _Conn()
-    out = asyncio.run(tenant_erase.erase_one(conn, request_id=TENANT, tenant_id=TENANT, mode="apply", expect_plan=PLAN,
-                                             markers=REAL, job_id=TENANT, environ=DEV_ON))
-    assert (out["status"], out["reason"]) == ("refused", "not_synthetic")
-    writes = [c for c in conn.calls if c[0] == "execute"]
-    assert len(writes) == 1 and "INSERT INTO tripplanner.tenant_erasure_log" in writes[0][1]
-    assert writes[0][2][5:7] == ("refused", "not_synthetic")
+def _run(conn, req, mode, environ=DEV_ON):
+    return asyncio.run(tenant_erase.run_mode(conn, req, mode, job_id=JOB, environ=environ, now=NOW))
 
 
-def test_an_applied_request_is_not_run_again_and_another_tenant_is_refused():
-    applied = {"tenant_id": TENANT, "status": "applied", "reason": None, "plan_hash": PLAN,
-               "counts": json.dumps({"tables": {"tripplanner.sessions": {"rows": 2}}, "deleted": {"x": 2}})}
-    out = asyncio.run(tenant_erase.erase_one(_Conn(applied), request_id=TENANT, tenant_id=TENANT, mode="apply",
-                                             expect_plan=PLAN, markers=SYNTHETIC, job_id=TENANT, environ=DEV_ON))
-    assert out["already_applied"] and out["status"] == "applied" and out["rows"] == {"tripplanner.sessions": 2}
-    other = {**applied, "tenant_id": "b8b8b8b8-0000-4000-8000-0000000000e2"}
-    out = asyncio.run(tenant_erase.erase_one(_Conn(other), request_id=TENANT, tenant_id=TENANT, mode="dry_run",
-                                             expect_plan=None, markers=None, job_id=TENANT, environ={}))
-    assert (out["status"], out["reason"], out["logged"]) == ("refused", "request_tenant_mismatch", False)
+def _valid(report):
+    jsonschema.validate(report, _schema("ErasureReport"), format_checker=jsonschema.FormatChecker())
+
+
+def test_a_refusal_is_a_contract_report_and_runs_nothing():
+    conn = _Conn(calls_function=False)
+    report = _run(conn, _req(is_synthetic=False), "apply")
+    assert (report["status"], report["error_code"], report["tables"], report["plan_hash"]) == \
+        ("refused", "not_synthetic", [], None)
+    _valid(report)
+    assert conn.inserts[0][3:6] == ("apply", "refused", "not_synthetic") and conn.inserts[0][10] == "cis"
+
+
+def test_an_apply_without_an_ok_dry_run_of_that_hash_is_refused():
+    conn = _Conn(dry_run_ok=None, calls_function=False)
+    report = _run(conn, _req(), "apply")
+    assert (report["status"], report["error_code"]) == ("refused", "dry_run_missing")
+    lookup = [c for c in conn.calls if "mode = 'dry_run' AND status = 'ok'" in c]
+    assert lookup and "round = $2" in lookup[0] and "source <> 'tp030'" in lookup[0]
+    _valid(report)
+
+
+def test_an_apply_with_the_approved_plan_reports_ok_and_a_changed_one_plan_changed():
+    req = _req(approved_plan_hash=_function()(TENANT, 1, False, None)["plan_hash"])
+    ok = _run(_Conn(dry_run_ok="r1", plan=_function()), req, "apply")
+    assert (ok["status"], ok["error_code"], ok["plan_hash"]) == ("ok", None, req.approved_plan_hash)
+    _valid(ok)
+    changed = _run(_Conn(dry_run_ok="r1", plan=_function(status="refused", code="plan_changed", rows=3)), req, "apply")
+    assert (changed["status"], changed["error_code"]) == ("refused", "plan_changed")
+    assert changed["plan_hash"] != req.approved_plan_hash and changed["tables"][0]["rows"] == 3
+    _valid(changed)
+
+
+def test_an_already_applied_request_is_not_run_again():
+    conn = _Conn(applied={"report_id": "r9", "round": 1, "plan_hash": PLAN}, calls_function=False)
+    out = _run(conn, _req(), "apply")
+    assert out["already_applied"] and out["report_id"] == "r9" and conn.inserts == []
+
+
+def test_a_dry_run_reports_the_plan_and_a_bad_hash_is_a_failure():
+    report = _run(_Conn(plan=_function()), _req(phase="dry_run"), "dry_run")
+    assert report["status"] == "ok" and report["plan_hash"] and len(report["tables"]) == 2
+    _valid(report)
+
+    def wrong(*args):
+        return {**_function()(*args), "plan_hash": "f" * 64}
+
+    report = _run(_Conn(plan=wrong), _req(phase="dry_run"), "dry_run")
+    assert (report["status"], report["error_code"], report["plan_hash"]) == ("failed", "internal_error", None)
+    _valid(report)
+
+
+def test_reports_and_rows_validate_against_the_contract_and_its_invalid_shapes_do_not():
+    report = _run(_Conn(plan=_function()), _req(phase="dry_run"), "dry_run")
+    row = {k: report[k] for k in ("report_id", "request_id", "tenant_id", "app", "round", "mode", "status",
+                                  "error_code", "plan_hash", "tables", "blockers", "census", "job_id", "reported_at")}
+    jsonschema.validate(row, _schema("ErasureReportRow"), format_checker=jsonschema.FormatChecker())
+    for bad in ({**row, "app": "crm"}, {**row, "plan_hash": "abc"}, {**row, "approved_by": "x"},
+                {**row, "tables": [{"table": "tripplanner.sessions", "action": "merge_into_app", "rows": 1,
+                                    "digest": None}]}):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(bad, _schema("ErasureReportRow"))
+
+
+def test_a_request_row_of_the_contract_reads_into_a_request():
+    row = {"request_id": REQUEST, "tenant_id": TENANT, "phase": "apply", "round": 2,
+           "opened_at": "2026-12-01T08:00:00Z", "approval_expires_at": "2026-12-31T10:00:00Z", "is_pilot": False,
+           "is_synthetic": True, "app": "tripplanner", "step_status": "active", "not_before": "2026-12-31T08:00:00Z",
+           "approved_plan_hash": PLAN, "updated_at": "2026-12-31T10:00:00Z"}
+    jsonschema.validate(row, _schema("ErasureRequestRow"))
+    assert tuple(sorted(row)) == tuple(sorted(tenant_erase.FEED_COLUMNS))
+    req = Request.from_row({**row, "not_before": NOW, "approval_expires_at": NOW})
+    assert (req.round, req.phase, req.source, req.is_pilot, req.is_synthetic) == (2, "apply", "cis", False, True)
 
 
 # ── handler wiring ───────────────────────────────────────────────────────────
