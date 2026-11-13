@@ -21,6 +21,12 @@ Events (``op``; the scheduler sends ``{"op": "tick", "source": "aa-861-daily"}``
     Run due jobs only.
 ``status``
     The 20 latest jobs of every registered kind (ids, status, counts; read only).
+``restore_drill``
+    ``{"op": "restore_drill", "payload": {"tenant_id" | "tenant_slug", "backup_id"}}``: the same as an ``enqueue`` of
+    ``tp_tenant_restore_drill`` (AA-1093): load a tenant backup into ``pg_temp``, compare, roll back.
+
+AA-1093 (tenant offboarding, part 2 and 3 of the root plan): ``tp_tenant_erase`` (daily: the CIS request feed when it
+exists; by ``enqueue``: an operator drill), ``tp_tenant_backup`` and ``tp_tenant_restore_drill`` (by ``enqueue``).
 
 Every answer is ids, statuses and counts only (DM-6.3); the log lines are ``job_*`` / ``jobs_*`` events.
 """
@@ -31,7 +37,16 @@ import os
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
-from backend.jobs import lead_deliver, outbox_redact, queue, rate_counter_purge, runner
+from backend.jobs import (
+    lead_deliver,
+    outbox_redact,
+    queue,
+    rate_counter_purge,
+    runner,
+    tenant_backup,
+    tenant_erase,
+    tenant_restore_drill,
+)
 from backend.shared import observability, tenant
 
 # kind -> handler(pool, job). Every kind matches '^tp_[a-z0-9_]+$' (tp-021 job_kind_chk, owners.yaml tp_).
@@ -39,6 +54,9 @@ HANDLERS: dict[str, runner.Handler] = {
     outbox_redact.KIND: outbox_redact.run,
     rate_counter_purge.KIND: rate_counter_purge.run,  # AA-1015: tripplanner.ai_rate_counter windows > 2 days
     lead_deliver.KIND: lead_deliver.run,  # AA-1038 slice 3: the lead hold (<= 7 days), rejected leads, retries
+    tenant_erase.KIND: tenant_erase.run,  # AA-1093: the TripPlanner part of the tenant offboarding saga
+    tenant_backup.KIND: tenant_backup.run,  # AA-1093: one tenant's rows to the gold bucket (exports/, 7 days)
+    tenant_restore_drill.KIND: tenant_restore_drill.run,  # AA-1093: a backup into pg_temp, compared, rolled back
 }
 # Kinds the daily tick queues: kind -> (payload, max_attempts, idempotency key of a UTC day).
 DAILY: dict[str, tuple[dict[str, Any], int, Callable[[date], str]]] = {
@@ -46,13 +64,19 @@ DAILY: dict[str, tuple[dict[str, Any], int, Callable[[date], str]]] = {
     rate_counter_purge.KIND: ({"trigger": "schedule"}, rate_counter_purge.MAX_ATTEMPTS,
                               rate_counter_purge.schedule_key),
     lead_deliver.KIND: ({"trigger": "schedule"}, lead_deliver.MAX_ATTEMPTS, lead_deliver.schedule_key),
+    tenant_erase.KIND: ({"trigger": "schedule"}, tenant_erase.MAX_ATTEMPTS, tenant_erase.schedule_key),
 }
 MAX_ATTEMPTS: dict[str, int] = {outbox_redact.KIND: outbox_redact.MAX_ATTEMPTS,
                                 rate_counter_purge.KIND: rate_counter_purge.MAX_ATTEMPTS,
-                                lead_deliver.KIND: lead_deliver.MAX_ATTEMPTS}
+                                lead_deliver.KIND: lead_deliver.MAX_ATTEMPTS,
+                                tenant_erase.KIND: tenant_erase.MAX_ATTEMPTS,
+                                tenant_backup.KIND: tenant_backup.MAX_ATTEMPTS,
+                                tenant_restore_drill.KIND: tenant_restore_drill.MAX_ATTEMPTS}
 SCHEDULER = "scheduler:tp-jobs-daily"
 OPERATOR = "operator:lambda-invoke"
-OPS = ("tick", "enqueue", "run", "status")
+OPS = ("tick", "enqueue", "run", "status", "restore_drill")
+# Ops that are an enqueue of one fixed kind (AA-1093).
+OP_KINDS = {"restore_drill": tenant_restore_drill.KIND}
 ATTENTION_MODES = ("held",)
 
 
@@ -116,8 +140,8 @@ async def serve(event: dict[str, Any], *, pool: Any, worker: str, time_left: Cal
     queued: list[str] = []
     if op == "tick":
         queued = await queue_daily(pool, today or datetime.now(timezone.utc).date())
-    elif op == "enqueue":
-        kind = event.get("kind")
+    elif op == "enqueue" or op in OP_KINDS:
+        kind = OP_KINDS.get(op) or event.get("kind")
         if kind not in HANDLERS:
             return {"error": f"unknown kind; one of {sorted(HANDLERS)}"}
         payload = event.get("payload") or {}

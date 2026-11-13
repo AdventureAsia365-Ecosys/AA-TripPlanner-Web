@@ -108,3 +108,37 @@ close it. An override run never counts as the last live run: the daily tick stay
 - The keys `id` and `idempotency_key` are unchanged, and the columns of `tripplanner.v_inquiry_outbox` did not change.
   (AA-Booking read that view by cursor until the inquiry.submitted contract was retired; tp-027 revoked its grant.)
 - A second hand-off with the same key is still refused by `outbox_idempotency_key_key` (`ON CONFLICT DO NOTHING`).
+
+## Tenant erasure, backup and restore drill (AA-1093)
+
+Three kinds of the tenant offboarding saga (root plan `docs/audits/2026-11-13-S279-session/aa1093-plan.md`, Parts 2
+and 3). Migration tp-030 (the log, `tripplanner.erase_tenant`, the CIS report view) must be applied first; before it the
+erase fails with `UndefinedFunctionError` (nothing is deleted).
+
+- `tp_tenant_erase`: deletes every row of one tenant in `sessions`, `trip_drafts`, `trip_events`, `outbox` and merges
+  its `ai_spend_month` rows into the app scope. Modes `dry_run` (the plan: per table action, rows, fingerprint, and
+  the `plan_hash`; nothing deleted), `apply` (needs `expect_plan` = the approved `plan_hash`; a moved plan is refused
+  `plan_changed`), `verify` (every count must be 0). Each run writes `tripplanner.tenant_erasure_log`, which CIS reads
+  through `tripplanner.v_tenant_erasure_report_v1`. The daily tick reads the CIS request view
+  `catalog.v_tenant_erasure_v1` once it exists (`no_feed` until then). Refused always: the AA-hosted demo tenant and the
+  pilot. An apply also needs `TENANT_ERASE_APPLY_ENABLED=true` on the function (Terraform, default off), CIS markers
+  for the tenant, and outside prod a tenant CIS marks synthetic. A refused apply fails the tick (errors alarm).
+- `tp_tenant_backup`: one tenant's four tables as JSONL + `manifest.json` + `SHA256SUMS` to the gold bucket,
+  `exports/tenants/<tenant>/tripplanner/<job id>/` (the bucket rule deletes `exports/` after 7 days). The function
+  needs `TENANT_EXPORT_BUCKET` (Terraform) and its role may write and read that prefix only.
+- `tp_tenant_restore_drill` (op `restore_drill`): checks the files against `SHA256SUMS` and the backup job's digest,
+  loads every table into `pg_temp`, compares counts and digests with the manifest and with live rows, and rolls back.
+  It never writes a live table. `passed: false` fails the tick.
+
+Commands (a tenant by `tenant_id` or `tenant_slug`; every answer is ids, counts and hashes):
+
+```bash
+aws lambda invoke --function-name aa-tripplanner-dev-jobs --cli-binary-format raw-in-base64-out --payload '{"op":"enqueue","kind":"tp_tenant_backup","payload":{"tenant_slug":"<slug>"}}' --profile aa365-admin --region us-west-1 /tmp/tp-jobs.json && cat /tmp/tp-jobs.json
+aws lambda invoke --function-name aa-tripplanner-dev-jobs --cli-binary-format raw-in-base64-out --payload '{"op":"restore_drill","payload":{"tenant_slug":"<slug>"}}' --profile aa365-admin --region us-west-1 /tmp/tp-jobs.json && cat /tmp/tp-jobs.json
+aws lambda invoke --function-name aa-tripplanner-dev-jobs --cli-binary-format raw-in-base64-out --payload '{"op":"enqueue","kind":"tp_tenant_erase","payload":{"tenant_slug":"<slug>","mode":"dry_run"}}' --profile aa365-admin --region us-west-1 /tmp/tp-jobs.json && cat /tmp/tp-jobs.json
+```
+
+An operator apply (a drill, after the tech lead approved the DRY RUN's `plan_hash`) adds `"mode":"apply",
+"expect_plan":"<plan_hash>","request_id":"<the dry run's request_id>"`; then `"mode":"verify"` with the same
+`request_id`. On Dev it runs only for a tenant CIS marks synthetic, and only while `TENANT_ERASE_APPLY_ENABLED` is
+`true`; close the flag again after the drill.
