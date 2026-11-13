@@ -26,7 +26,9 @@ Events (``op``; the scheduler sends ``{"op": "tick", "source": "aa-861-daily"}``
     ``tp_tenant_restore_drill`` (AA-1093): load a tenant backup into ``pg_temp``, compare, roll back.
 
 AA-1093 (tenant offboarding, part 2 and 3 of the root plan): ``tp_tenant_erase`` (daily: the CIS request feed when it
-exists; by ``enqueue``: an operator drill), ``tp_tenant_backup`` and ``tp_tenant_restore_drill`` (by ``enqueue``).
+exists; by ``enqueue``: an operator drill), ``tp_tenant_backup`` (daily: the tenants CIS marks ``is_pilot``, D11,
+``no_feed`` until a marker view is readable; by ``enqueue``: one tenant) and ``tp_tenant_restore_drill`` (by
+``enqueue`` / op ``restore_drill``).
 
 Every answer is ids, statuses and counts only (DM-6.3); the log lines are ``job_*`` / ``jobs_*`` events.
 """
@@ -65,6 +67,8 @@ DAILY: dict[str, tuple[dict[str, Any], int, Callable[[date], str]]] = {
                               rate_counter_purge.schedule_key),
     lead_deliver.KIND: ({"trigger": "schedule"}, lead_deliver.MAX_ATTEMPTS, lead_deliver.schedule_key),
     tenant_erase.KIND: ({"trigger": "schedule"}, tenant_erase.MAX_ATTEMPTS, tenant_erase.schedule_key),
+    # AA-1093 D11: back up the tenants CIS marks is_pilot (no_feed, nothing done, until a marker view is readable)
+    tenant_backup.KIND: ({"trigger": "schedule"}, tenant_backup.MAX_ATTEMPTS, tenant_backup.schedule_key),
 }
 MAX_ATTEMPTS: dict[str, int] = {outbox_redact.KIND: outbox_redact.MAX_ATTEMPTS,
                                 rate_counter_purge.KIND: rate_counter_purge.MAX_ATTEMPTS,

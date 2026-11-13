@@ -115,17 +115,20 @@ Three kinds of the tenant offboarding saga (root plan `docs/audits/2026-11-13-S2
 and 3). Migration tp-030 (the log, `tripplanner.erase_tenant`, the CIS report view) must be applied first; before it the
 erase fails with `UndefinedFunctionError` (nothing is deleted).
 
-- `tp_tenant_erase`: deletes every row of one tenant in `sessions`, `trip_drafts`, `trip_events`, `outbox` and merges
-  its `ai_spend_month` rows into the app scope. Modes `dry_run` (the plan: per table action, rows, fingerprint, and
-  the `plan_hash`; nothing deleted), `apply` (needs `expect_plan` = the approved `plan_hash`; a moved plan is refused
-  `plan_changed`), `verify` (every count must be 0). Each run writes `tripplanner.tenant_erasure_log`, which CIS reads
+- `tp_tenant_erase`: deletes every row of one tenant in `sessions`, `trip_drafts`, `trip_events`, `outbox`, the
+  `customers` only its sessions link, and merges its `ai_spend_month` rows into the app scope. Modes `dry_run` (the
+  plan: per table action, rows, fingerprint, and the `plan_hash`; nothing deleted), `apply` (needs `expect_plan` = the
+  approved `plan_hash` AND the logged DRY RUN of the same `request_id` with that hash, else `no_approved_plan`; a moved
+  plan is refused `plan_changed`), `verify` (every count must be 0). Each run writes `tripplanner.tenant_erasure_log`, which CIS reads
   through `tripplanner.v_tenant_erasure_report_v1`. The daily tick reads the CIS request view
   `catalog.v_tenant_erasure_v1` once it exists (`no_feed` until then). Refused always: the AA-hosted demo tenant and the
   pilot. An apply also needs `TENANT_ERASE_APPLY_ENABLED=true` on the function (Terraform, default off), CIS markers
   for the tenant, and outside prod a tenant CIS marks synthetic. A refused apply fails the tick (errors alarm).
 - `tp_tenant_backup`: one tenant's four tables as JSONL + `manifest.json` + `SHA256SUMS` to the gold bucket,
   `exports/tenants/<tenant>/tripplanner/<job id>/` (the bucket rule deletes `exports/` after 7 days). The function
-  needs `TENANT_EXPORT_BUCKET` (Terraform) and its role may write and read that prefix only.
+  needs `TENANT_EXPORT_BUCKET` (Terraform) and its role may write and read that prefix only. The daily tick backs up
+  every tenant CIS marks `is_pilot` (`no_feed` while no marker view is readable); a job that fails with
+  `s3_access_denied` means S3 refused the call (the role grant, or the bucket policy), never "file missing".
 - `tp_tenant_restore_drill` (op `restore_drill`): checks the files against `SHA256SUMS` and the backup job's digest,
   loads every table into `pg_temp`, compares counts and digests with the manifest and with live rows, and rolls back.
   It never writes a live table. `passed: false` fails the tick.

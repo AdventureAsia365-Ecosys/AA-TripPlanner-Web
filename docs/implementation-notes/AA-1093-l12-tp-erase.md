@@ -33,10 +33,13 @@ AA-CIS-Infra PR (the jobs Lambda's S3 grant and two environment variables), plus
 - **Spend merge.** `charge()` already adds every turn to the `app` row and the `tenant:<id>` row, so the app sum
   includes the tenant. The merge inserts an app row only where none exists for that stage and month (ON CONFLICT DO
   NOTHING; no double count) and deletes the tenant rows.
-- **Customers and traveller accounts are `keep` (count only).** They have no tenant column and are frozen global
-  traveller records (customers since R0, before tenants existed, so 0 for any agency tenant). A traveller's own
-  erasure is the DSAR runbook. Their count is in the plan hash, their fingerprint is not (a sign-in elsewhere would
-  otherwise move every plan).
+- **Customers only this tenant's sessions link are deleted; traveller accounts are `keep` (count only)** (review fix
+  pass). The schema reference shows exactly one FK to `tripplanner.customers`: `sessions.customer_id`. So a customer
+  linked by the erased tenant's sessions and by no session of another tenant is planned `delete` (count + fingerprint
+  in the plan hash) and deleted right after the sessions, inside the same locked call (customers joins the EXCLUSIVE
+  lock list); a customer another tenant's session links is not touched. Keeping them would leave personal data (name,
+  phone, e-mail) with no session at all. Traveller accounts are global sign-in accounts: `keep`, count only (a sign-in
+  elsewhere would otherwise move every plan); a traveller's own erasure is the DSAR runbook.
 - **Log `tripplanner.tenant_erasure_log`**: PK (request_id, mode); status per mode (CHECK); a refused row has a reason;
   FORCE RLS with `<log>_system` and `<log>_owner_read` (the report view is an owner view read by cis_app); the runtime
   role has no DELETE (`RUNTIME_DML_EXCEPTIONS` in the replay test). An `applied` row is never overwritten (upsert WHERE).
@@ -61,8 +64,32 @@ AA-CIS-Infra PR (the jobs Lambda's S3 grant and two environment variables), plus
   evidence persists in `tripplanner.job` (ids, counts, digests). Temp tables `LIKE` the live ones, loaded with
   `jsonb_populate_recordset`, digest written back the backup's way must equal the file's sha256, live counts reported
   not judged; the transaction always rolls back.
-- **No S3 ListBucket.** Every object name is fixed and the backup job names its prefix; S3 answers 403 for a missing
-  key without ListBucket, which the store treats as missing.
+- **No S3 ListBucket; 403 is never "missing"** (review fix pass). Every object name is fixed and the backup job names
+  its prefix. NoSuchKey / 404 is `ObjectMissing`; 403 / AccessDenied is `AccessDenied`, which the backup and the drill
+  turn into a failed job with the error `s3_access_denied: ...` (a wrong grant must fail loudly, not pass as an expired
+  backup). Cost: without ListBucket, S3 answers 403 for an expired key too, so a drill of a backup older than 7 days
+  also fails `s3_access_denied`; the backup job row's date tells them apart.
+- **Fingerprint settings pinned on the function** (review fix pass): `md5(t::text)` depends on the session's TimeZone,
+  DateStyle, IntervalStyle, extra_float_digits and bytea_output (sessions has a bytea column). `erase_tenant` carries
+  `SET TimeZone = 'UTC'`, `DateStyle = 'ISO, YMD'`, `IntervalStyle = 'postgres'`, `extra_float_digits = 3`,
+  `bytea_output = 'hex'`, so an operator's DRY RUN from any client and the Lambda's apply hash the same rows the same
+  way. A pg test proves the hash is equal under three different session settings (and fails without the pin).
+- **An apply needs the logged DRY RUN** (review fix pass): besides a 64-hex `expect_plan`, `tenant_erase.erase_one`
+  requires a `tenant_erasure_log` row with the same request_id, mode `dry_run`, status `planned`, the same tenant and
+  `plan_hash = expect_plan`; else `no_approved_plan` (retried daily like the other non-final refusals). The function
+  still re-checks the hash under the lock (`plan_changed`).
+- **AA-hosted = `config.is_aa_hosted`** (review fix pass): the `demo_tenant` refusal covers `DEMO_TENANT_ID` and the
+  bare path's `DEFAULT_TENANT_ID` (`TP_DEFAULT_TENANT_ID`).
+- **Report view for `cis_app` only** (review fix pass): the runtime role has no privilege on
+  `v_tenant_erasure_report_v1` (an owner view bypasses the log's RLS; the jobs code reads the log under its system
+  policy). The migration's guard block refuses a SELECT grant to `tripplanner`.
+- **Daily pilot backup** (review fix pass, D11): `tp_tenant_backup` joins the daily tick with `{"trigger":
+  "schedule"}`. It lists the tenants marked `is_pilot` in every readable marker view (`catalog.v_tenant_erasure_v1`,
+  `catalog.v_tenant_account_v1`; columns `tenant_id` + `is_pilot`, feature-detected) and backs each one up under the
+  job id (one prefix per tenant; result `backups`, which the restore drill reads like a single backup's result). No
+  readable marker view: `no_feed`, nothing written, the bucket is not even needed. Retention: the gold bucket's
+  `exports-expire` rule already covers `exports/` (AA-CIS-Infra `modules/s3`, 7 days + noncurrent 1 day, merged with
+  #803), so no Infra lifecycle follow-up is needed.
 
 ## Changed
 
@@ -73,6 +100,14 @@ AA-CIS-Infra PR (the jobs Lambda's S3 grant and two environment variables), plus
   tables (both open the system scope on every acquire). `test_jobs_pg.py`: four daily kinds, `no_feed` in the status.
 - `.github/workflows/ci.yml`: the new PG module in the backend PG step.
 - `CONTEXT.md` (jobs section, contracts table), `docs/jobs-runbook.md` (new section).
+- Review fix pass (S279): `tenant_erase.refusal` uses `config.is_aa_hosted`; `erase_one` checks the logged DRY RUN
+  (`APPROVED_PLAN_SQL`); `tenant_store` splits `ObjectMissing` / `AccessDenied` (put and get) and `denied()`;
+  `tenant_backup` takes `{"trigger": "schedule"}` (pilot tenants, `backup_one`), `tenant_target.pilot_tenants`;
+  `tenant_restore_drill.entry_of` reads a daily result; `handler.DAILY` has five kinds; tests for each finding
+  (offline + PG; `test_jobs_pg.py` expects five daily kinds and two `no_feed`). Migration PR: SET clauses on
+  `erase_tenant`, customers `delete` + lock + delete, REVOKE ALL on the report view from `tripplanner` (+ guard), the
+  header names the real FKs; `test_tp030_pg.py` seeds three invented customers (target only / shared / other only) and
+  tests the settings-independent hash, the customer delete and the view refusal.
 - Migration PR: `migrations/030_tenant_erasure.sql`, `migrations/tests/test_tp030_pg.py`, the log in
   `RUNTIME_DML_EXCEPTIONS` of `test_replay_twice_pg.py`.
 
@@ -99,5 +134,12 @@ AA-CIS-Infra PR (the jobs Lambda's S3 grant and two environment variables), plus
 - **Rule g of the RLS catalogue guard** (`tripplanner.v_tenant_erasure_report_v1:cis_app`) needs an allowlist line in
   the CIS canonical `tests/integration/rls_catalogue_rules.py` and its Infra byte copy (same for Booking's report view):
   with the CIS saga lane. Until then the nightly schema reference lists it as a finding (not fatal).
+- **Customers are not in the tenant backup** (unchanged format `tp-tenant-backup/1`): an erasure now deletes the
+  customers only that tenant links, so a real restore (none exists; the drill loads into `pg_temp` without
+  constraints) would need those customers back before `sessions.customer_id` can point at them. In practice agency
+  tenants have 0 linked customers (customers date from R0, the AA-hosted tenant). Follow-up only if a real restore is
+  ever built.
+- **Optional Infra follow-up:** grant the jobs role `s3:ListBucket` on `exports/tenants/*/tripplanner/*` if a drill
+  should tell "expired" (404) from "denied" (403). Not required: the job row's date already tells them apart.
 - The apply on Dev is not part of this lane's live steps: it is the end-to-end offboarding drill after the tech lead
   approves the combined fingerprint.

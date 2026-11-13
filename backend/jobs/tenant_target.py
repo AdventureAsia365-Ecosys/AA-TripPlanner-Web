@@ -11,6 +11,9 @@
        read it.
   None when neither answers: an erasure apply then refuses (``tenant_markers_unknown``, plan decision D8), a DRY RUN
   and a backup go on (they delete nothing).
+* :func:`pilot_tenants` lists the tenants CIS marks ``is_pilot`` in every readable source of the two above (columns
+  ``tenant_id`` + ``is_pilot``), for the daily pilot backup (D11). No readable source = ``None`` (the backup run then
+  records ``no_feed`` and does nothing).
 """
 from __future__ import annotations
 
@@ -78,3 +81,18 @@ async def markers(conn: Any, tenant_id: str) -> Optional[Markers]:
             if row is not None and row["is_pilot"] is not None and row["is_synthetic"] is not None:
                 return Markers(bool(row["is_pilot"]), bool(row["is_synthetic"]), relation)
     return None
+
+
+async def pilot_tenants(conn: Any) -> tuple[Optional[list[str]], list[str]]:
+    """(the readable marker sources, or None when there is none; the canonical ids of the tenants marked is_pilot in
+    any of them, sorted). The relation names are the two constants above, never a value from a payload."""
+    sources: list[str] = []
+    found: set[str] = set()
+    for relation in (FEED_VIEW, ACCOUNT_VIEW):
+        cols = await columns(conn, relation)
+        if "tenant_id" in cols and "is_pilot" in cols:
+            sources.append(relation)
+            for r in await conn.fetch(f"SELECT DISTINCT tenant_id::text AS tenant_id FROM {relation} "
+                                      f"WHERE is_pilot AND tenant_id IS NOT NULL"):
+                found.add(tenant.canonical(r["tenant_id"]))
+    return (sources or None), sorted(found)

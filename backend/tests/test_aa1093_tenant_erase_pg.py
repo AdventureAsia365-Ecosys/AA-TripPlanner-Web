@@ -7,11 +7,14 @@ forced database with invented demo rows, tp-029, tp-030, invented rows of the TA
 builds its own database, so an apply in one never shows in another. A stand-in of the CIS request view
 ``catalog.v_tenant_erasure_v1`` (a table behind a view, SELECT to tripplanner) is created only by the feed tests.
 
-Checks: an operator DRY RUN logs the plan and deletes nothing; an apply with a stale plan is refused and logged; an
-apply of a tenant CIS does not mark synthetic is refused on Dev; the feed runs dry run, apply and verify of the
-synthetic TARGET and erases every row of it while OTHER and the demo rows stay; the pilot is refused; cis_app reads the
-report; a backup of TARGET round-trips through the restore drill with equal counts and digests and the drill leaves
-every live row as it was; a changed backup file fails the drill.
+Checks: an operator DRY RUN logs the plan and deletes nothing; an apply of a hash no logged DRY RUN of that request
+carries is refused (no_approved_plan); an apply with a stale plan is refused and logged; an apply of a tenant CIS does
+not mark synthetic is refused on Dev; the feed runs dry run, apply and verify of the synthetic TARGET and erases every
+row of it (and the customer only its sessions link) while OTHER and the demo rows stay; the pilot is refused; cis_app
+reads the report; a backup of TARGET round-trips through the restore drill with equal counts and digests and the drill
+leaves every live row as it was; a changed backup file fails the drill; S3 refusing a put fails the backup job with
+s3_access_denied; the daily tick backs up the tenants CIS marks is_pilot (no_feed and nothing written before a marker
+view exists), and the drill restores that daily backup.
 """
 from __future__ import annotations
 
@@ -137,6 +140,7 @@ async def test_operator_dry_run_logs_the_plan_and_deletes_nothing(env, monkeypat
 
 async def test_apply_refuses_a_stale_plan_and_a_tenant_without_markers(env, monkeypatch):
     monkeypatch.setattr(tenant_erase.os, "environ", DEV_ON)
+    untouched = {"sessions": 2, "trip_drafts": 2, "trip_events": 3, "outbox": 1, "spend": 2}
     # no CIS view: the markers are unknown, so an apply is refused before the plan is even looked at
     job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": "0" * 64})
     assert job["result"]["requests"][0]["reason"] == "tenant_markers_unknown" and job["result"]["attention"]
@@ -144,19 +148,41 @@ async def test_apply_refuses_a_stale_plan_and_a_tenant_without_markers(env, monk
     await env["su"].execute("INSERT INTO catalog.erasure_feed_standin (request_id, tenant_id, app, mode, is_pilot, "
                             "is_synthetic) VALUES ($1::uuid, $2::uuid, 'booking', 'dry_run', false, true)",
                             REQUEST, TARGET)
-    job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": "0" * 64})
+
+    # a hash no DRY RUN of this request logged (even the tenant's real current plan) is not an approved plan
+    async with env["pool"].acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_scope', 'system', false)")
+        real = json.loads(await conn.fetchval("SELECT tripplanner.erase_tenant($1::uuid, true)::text", TARGET))
+        await conn.execute("RESET app.tenant_scope")
+    for expect in ("0" * 64, real["plan_hash"]):
+        job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": expect,
+                                                      "request_id": REQUEST})
+        entry = job["result"]["requests"][0]
+        assert (entry["status"], entry["reason"], entry["deleted"]) == ("refused", "no_approved_plan", {}), expect
+        assert job["result"]["attention"]
+    assert await _counts(env["su"], TARGET) == untouched
+
+    # the DRY RUN of this request is logged, then the tenant writes: the approved hash is stale
+    dry = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "dry_run", "request_id": REQUEST})
+    plan = dry["result"]["requests"][0]["plan_hash"]
+    assert plan == real["plan_hash"]
+    await env["su"].execute("UPDATE tripplanner.trip_drafts SET status = 'sent' WHERE tenant_id = $1::uuid", TARGET)
+    job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": plan,
+                                                  "request_id": REQUEST})
     entry = job["result"]["requests"][0]
     assert (entry["status"], entry["reason"], entry["deleted"]) == ("refused", "plan_changed", {})
-    assert await _counts(env["su"], TARGET) == {"sessions": 2, "trip_drafts": 2, "trip_events": 3, "outbox": 1,
-                                                "spend": 2}
+    assert await _counts(env["su"], TARGET) == untouched
     # a tenant CIS does not mark synthetic is refused on Dev
     await env["su"].execute("UPDATE catalog.erasure_feed_standin SET is_synthetic = false")
-    job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": "0" * 64})
+    job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": plan,
+                                                  "request_id": REQUEST})
     assert job["result"]["requests"][0]["reason"] == "not_synthetic"
 
 
-async def test_feed_runs_dry_run_apply_verify_and_erases_the_tenant_only(env, monkeypatch):
+async def test_feed_runs_dry_run_apply_verify_and_erases_the_tenant_only(env, monkeypatch, tmp_path):
     monkeypatch.setattr(tenant_erase.os, "environ", DEV_ON)
+    # the feed marks PILOT is_pilot, so the same ticks also run the daily pilot backup: give it a store
+    monkeypatch.setattr(tenant_store, "S3Store", lambda: tenant_store.DirStore(str(tmp_path)))
     su = env["su"]
     await su.execute(FEED_STANDIN)
     other_before = await _counts(su, OTHER)
@@ -191,6 +217,11 @@ async def test_feed_runs_dry_run_apply_verify_and_erases_the_tenant_only(env, mo
     assert await _counts(su, OTHER) == other_before
     assert await su.fetchval("SELECT count(*) AS n FROM tripplanner.sessions WHERE tenant_id <> ALL($1::uuid[])",
                              [TARGET, OTHER]) == demo_before
+    _, tp030 = _replay()
+    assert applied[(REQUEST, "apply")]["deleted"]["tripplanner.customers"] == 1
+    assert sorted(r["id"] for r in await su.fetch("SELECT id::text AS id FROM tripplanner.customers "
+                                                  "WHERE id = ANY($1::uuid[])", list(tp030.CUSTOMERS))) == \
+        sorted([tp030.SHARED, tp030.ONLY_OTHER])                       # only the customer no other tenant links
 
     await su.execute("INSERT INTO catalog.erasure_feed_standin VALUES ($1::uuid, $2::uuid, 'tripplanner', 'verify', "
                      "NULL, false, true)", REQUEST, TARGET)
@@ -263,3 +294,64 @@ async def test_backup_of_an_erased_tenant_restores_into_pg_temp_only(env, monkey
         "sessions": (2, 0), "trip_drafts": (2, 0), "trip_events": (3, 0), "outbox": (1, 0)}
     assert await _counts(env["su"], TARGET) == dict.fromkeys([*TABLES, "spend"], 0)
 
+
+class _DeniedS3:
+    """An S3 client that refuses every call the way S3 does without the grant (botocore ClientError shape)."""
+
+    class Error(Exception):
+        def __init__(self):
+            super().__init__("AccessDenied")
+            self.response = {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}
+
+    def put_object(self, **kw):
+        raise self.Error()
+
+    def get_object(self, **kw):
+        raise self.Error()
+
+
+async def test_s3_access_denied_fails_the_backup_job(env, monkeypatch):
+    store = tenant_store.S3Store(bucket="denied-bucket", client=_DeniedS3())
+    monkeypatch.setattr(tenant_store, "S3Store", lambda: store)
+    job = await _enqueue(env, tenant_backup.KIND, {"tenant_id": TARGET})
+    assert job["status"] == "failed", job
+    assert job["error"].startswith(tenant_store.ACCESS_DENIED_REASON) and TARGET not in job["error"]
+    drill = _only(await _serve(env, {"op": "restore_drill", "payload": {"tenant_id": TARGET, "backup_id": REQUEST}}))
+    assert drill["status"] == "failed" and drill["error"].startswith(tenant_store.ACCESS_DENIED_REASON)
+
+
+async def test_daily_tick_backs_up_the_pilot_tenants_once_a_marker_view_exists(env, monkeypatch, tmp_path):
+    store = tenant_store.DirStore(str(tmp_path))
+    monkeypatch.setattr(tenant_store, "S3Store", lambda: store)
+    su = env["su"]
+
+    # no CIS marker view: the run records no_feed and writes nothing (it does not even need the bucket)
+    out = await _serve(env, {"op": "tick"})
+    run = [j for j in out["jobs"] if j["kind"] == tenant_backup.KIND][0]
+    assert run["status"] == "succeeded" and run["result"] == {"mode": "no_feed", "trigger": "schedule", "backups": []}
+    assert not list(tmp_path.iterdir())
+
+    # CIS marks TARGET as the pilot (a request row of another app, so the erase run leaves it alone)
+    await su.execute(FEED_STANDIN)
+    await su.execute("INSERT INTO catalog.erasure_feed_standin VALUES ($1::uuid, $2::uuid, 'booking', 'dry_run', NULL, "
+                     "true, false), ($3::uuid, $4::uuid, 'booking', 'dry_run', NULL, false, true)",
+                     PILOT_REQUEST, TARGET, REQUEST, OTHER)
+    await su.execute("UPDATE tripplanner.job SET idempotency_key = NULL WHERE kind = ANY($1::text[])",
+                     [tenant_backup.KIND, tenant_erase.KIND])
+    out = await _serve(env, {"op": "tick"})
+    run = [j for j in out["jobs"] if j["kind"] == tenant_backup.KIND][0]
+    assert run["status"] == "succeeded", run
+    res = run["result"]
+    assert (res["mode"], res["sources"], res["backup_id"]) == ("scheduled", ["catalog.v_tenant_erasure_v1"],
+                                                               run["job_id"])
+    assert [b["tenant_id"] for b in res["backups"]] == [TARGET]       # the pilot only, not OTHER
+    assert res["backups"][0]["rows"]["tripplanner.trip_events"] == 3
+    assert (tmp_path / res["backups"][0]["prefix"] / "SHA256SUMS").exists()
+
+    # the drill finds the daily backup as the tenant's latest and restores it
+    drill = _only(await _serve(env, {"op": "restore_drill", "payload": {"tenant_id": TARGET}}))
+    assert drill["status"] == "succeeded", drill
+    assert drill["result"]["passed"] is True and drill["result"]["backup_id"] == run["job_id"]
+    assert drill["result"]["checks"]["sha256sums_matches_job"] is True
+    drill = _only(await _serve(env, {"op": "restore_drill", "payload": {"tenant_id": OTHER, "backup_id": run["job_id"]}}))
+    assert drill["status"] == "failed" and "another tenant" in drill["error"]

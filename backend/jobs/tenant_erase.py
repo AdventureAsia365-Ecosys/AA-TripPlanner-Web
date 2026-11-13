@@ -2,7 +2,8 @@
 docs/audits/2026-11-13-S279-session/aa1093-plan.md, Part 2; decisions D4, D8).
 
 TripPlanner deletes every row of an offboarded tenant (``tripplanner.sessions``, ``trip_drafts``, ``trip_events``,
-``outbox``) and merges its AI spend rows (``tripplanner.ai_spend_month`` scope ``tenant:<id>``) into the app scope.
+``outbox``, and the ``tripplanner.customers`` rows only its sessions link) and merges its AI spend rows
+(``tripplanner.ai_spend_month`` scope ``tenant:<id>``) into the app scope.
 The work is one database function, ``tripplanner.erase_tenant`` (tp-030): it computes the plan (per table: action,
 row count, a fingerprint of the rows, never a row value) and its hash, and on an apply recomputes the hash under a
 lock and refuses a hash other than the approved one (``plan_changed``). This module decides whether a request may
@@ -25,12 +26,15 @@ Payload:
 
 Refusals (the log row says ``refused`` with the reason; nothing is deleted), in this order:
 
-* ``demo_tenant``: the AA-hosted tenant (``config.DEMO_TENANT_ID``, the public planner's rows) is never erased;
+* ``demo_tenant``: the AA-hosted tenant (``config.is_aa_hosted``: ``DEMO_TENANT_ID`` or the bare path's
+  ``DEFAULT_TENANT_ID``, the public planner's rows) is never erased;
 * ``pilot_tenant``: CIS marks the tenant as the pilot (D8), in every mode;
 * apply only: ``apply_disabled`` unless the raw environment has ``TENANT_ERASE_APPLY_ENABLED=true`` (Terraform,
   default off); ``tenant_markers_unknown`` when no CIS view says whether the tenant is the pilot / synthetic;
   ``not_synthetic`` outside prod for a tenant CIS does not mark synthetic (D8: on Dev only synthetic tenants);
-  ``no_approved_plan`` without a 64-hex plan hash; ``plan_changed`` from the function.
+  ``no_approved_plan`` without a 64-hex plan hash, or when ``tripplanner.tenant_erasure_log`` holds no DRY RUN row of
+  the same request and tenant, status ``planned``, with exactly that ``plan_hash`` (an apply runs only a plan this
+  app computed and logged, never a hash typed or fed from elsewhere); ``plan_changed`` from the function.
 
 An apply that is already logged ``applied`` is not run again (the answer repeats the logged counts). A refused apply,
 a residue or an unknown feed shape asks for attention (the daily tick then reports an error). Results hold ids,
@@ -78,6 +82,12 @@ ERASE_SQL = "SELECT tripplanner.erase_tenant($1::uuid, $2, $3)::text AS result"
 LOG_READ_SQL = """
     SELECT tenant_id::text AS tenant_id, status, reason, plan_hash, counts::text AS counts
       FROM tripplanner.tenant_erasure_log WHERE request_id = $1::uuid AND mode = $2
+"""
+# The DRY RUN this apply carries out: same request, same tenant, logged planned with exactly the approved hash.
+APPROVED_PLAN_SQL = """
+    SELECT 1 AS ok FROM tripplanner.tenant_erasure_log
+     WHERE request_id = $1::uuid AND mode = 'dry_run' AND status = 'planned' AND tenant_id = $2::uuid
+       AND plan_hash = $3
 """
 LOG_UPSERT_SQL = """
     INSERT INTO tripplanner.tenant_erasure_log (request_id, tenant_id, mode, plan_hash, counts, status, reason, job_id)
@@ -134,7 +144,7 @@ def is_prod(environ: Environ) -> bool:
 def refusal(mode: str, tenant_id: str, markers: Optional[Markers], expect_plan: Optional[str],
             environ: Environ) -> Optional[str]:
     """The reason a request may not run, or None. Pure; the order is the module docstring's."""
-    if tenant_id == config.DEMO_TENANT_ID:
+    if config.is_aa_hosted(tenant_id):
         return "demo_tenant"
     if markers is not None and markers.is_pilot:
         return "pilot_tenant"
@@ -195,6 +205,9 @@ async def erase_one(conn: Any, *, request_id: str, tenant_id: str, mode: str, ex
                         json.loads(existing["counts"]), already_applied=True)
 
     reason = refusal(mode, tenant_id, markers, expect_plan, environ)
+    if reason is None and mode == "apply" and await conn.fetchval(APPROVED_PLAN_SQL, request_id, tenant_id,
+                                                                   expect_plan) is None:
+        reason = "no_approved_plan"
     if reason:
         await conn.execute(LOG_UPSERT_SQL, request_id, tenant_id, mode, None, "{}", "refused", reason, job_id)
         return _summary(request_id, tenant_id, mode, "refused", reason, None, {})

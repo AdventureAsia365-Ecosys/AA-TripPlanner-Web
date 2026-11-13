@@ -9,6 +9,9 @@ its prefix, and every object of it has a fixed name (``SHA256SUMS``, ``manifest.
 
 The bucket name comes from the Lambda environment (``TENANT_EXPORT_BUCKET``, set by Terraform): this repo is public,
 so no account id is written here. Without it a backup or a drill fails at once (a fixed message, no retry).
+
+Errors: NoSuchKey / 404 is :class:`ObjectMissing`; 403 / AccessDenied is :class:`AccessDenied`, which the backup and
+the drill turn into a failed job whose error starts with ``s3_access_denied`` (:func:`denied`), never into "missing".
 """
 from __future__ import annotations
 
@@ -23,8 +26,21 @@ APP = "tripplanner"
 
 
 class ObjectMissing(Exception):
-    """The object is not there (the 7-day rule took it, or it was never written). Without ListBucket S3 answers 403
-    for a missing key, so 403 counts as missing too."""
+    """The object is not there (the 7-day rule took it, or it was never written): S3 answered NoSuchKey / 404."""
+
+
+class AccessDenied(Exception):
+    """S3 refused the call (403 / AccessDenied): the role lacks the grant on that prefix, or the bucket policy / key
+    refuses it. Never read as "missing": a wrong grant must fail the job loudly (reason ``s3_access_denied``), not
+    pass as a backup the 7-day rule already took. Note: S3 also answers 403 for a missing key when the caller has no
+    ListBucket, which this role never has (nothing lists the bucket), so a drill of an expired backup fails with this
+    reason too; the job row of the backup (its date) tells the two apart."""
+
+
+# The job's failure reason for an AccessDenied (runner: a PermanentError fails the job at once with its message).
+ACCESS_DENIED_REASON = "s3_access_denied"
+MISSING_CODES = ("404", "NoSuchKey", "NotFound")
+DENIED_CODES = ("403", "AccessDenied", "AllAccessDisabled")
 
 
 class BucketNotConfigured(Exception):
@@ -60,19 +76,36 @@ class S3Store:
         self.client = client
 
     async def put_bytes(self, key: str, data: bytes, content_type: str) -> None:
-        await asyncio.to_thread(self.client.put_object, Bucket=self.bucket, Key=key, Body=data,
-                                ContentType=content_type, ServerSideEncryption=SSE)
+        def _put() -> None:
+            try:
+                self.client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type,
+                                       ServerSideEncryption=SSE)
+            except Exception as e:  # botocore ClientError
+                if error_code(e) in DENIED_CODES:
+                    raise AccessDenied(key) from None
+                raise
+        await asyncio.to_thread(_put)
 
     async def get_bytes(self, key: str) -> bytes:
         def _get() -> bytes:
             try:
                 return self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
-            except Exception as e:  # botocore ClientError: 404 / NoSuchKey, or 403 without ListBucket
-                code = str(getattr(e, "response", {}).get("Error", {}).get("Code", ""))
-                if code in ("404", "403", "NoSuchKey", "NotFound", "AccessDenied"):
+            except Exception as e:  # botocore ClientError: NoSuchKey / 404 = missing; 403 / AccessDenied = denied
+                code = error_code(e)
+                if code in MISSING_CODES:
                     raise ObjectMissing(key) from None
+                if code in DENIED_CODES:
+                    raise AccessDenied(key) from None
                 raise
         return await asyncio.to_thread(_get)
+
+
+def error_code(exc: BaseException) -> str:
+    """The S3 error code of a botocore ClientError (``response["Error"]["Code"]``), or "" for anything else."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return ""
+    return str((response.get("Error") or {}).get("Code") or "")
 
 
 class DirStore:
@@ -96,3 +129,8 @@ class DirStore:
             raise ObjectMissing(key)
         with open(src, "rb") as f:
             return f.read()
+
+
+def denied(exc: AccessDenied) -> str:
+    """The fixed failure text of a job S3 refused (the reason code first; no bucket name, no tenant id)."""
+    return f"{ACCESS_DENIED_REASON}: S3 refused a call on the tenant backup prefix (role grant or bucket policy)"

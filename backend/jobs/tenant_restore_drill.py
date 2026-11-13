@@ -2,7 +2,9 @@
 ``tp_tenant_backup`` can be restored, without writing a live table.
 
 Payload: ``{"tenant_id" | "tenant_slug", "backup_id": "<job id>"}``; without ``backup_id`` the tenant's latest
-succeeded ``tp_tenant_backup`` job is used.
+succeeded ``tp_tenant_backup`` job is used: an operator backup (``result.tenant_id``) or a daily pilot backup (one
+entry of ``result.backups`` per tenant). S3 refusing a read fails the drill with ``s3_access_denied``
+(:mod:`backend.jobs.tenant_store`).
 
 1. Files. ``SHA256SUMS`` is read and its digest compared with the backup job's result (when the job row is still
    there); ``manifest.json`` and every table file must match their line in it and the manifest's own sha256.
@@ -35,7 +37,9 @@ TABLES = tenant_backup.TABLES
 
 LATEST_BACKUP_SQL = """
     SELECT id::text AS id, result::text AS result FROM tripplanner.job
-     WHERE kind = $1 AND status = 'succeeded' AND result ->> 'tenant_id' = $2
+     WHERE kind = $1 AND status = 'succeeded'
+       AND (result ->> 'tenant_id' = $2
+            OR result -> 'backups' @> jsonb_build_array(jsonb_build_object('tenant_id', $2::text)))
      ORDER BY finished_at DESC, id LIMIT 1
 """
 BACKUP_JOB_SQL = """
@@ -95,19 +99,30 @@ def validate_payload(payload: Any) -> dict[str, Any]:
     return payload
 
 
+def entry_of(result: dict[str, Any], tenant_id: str) -> Optional[dict[str, Any]]:
+    """The backup entry of one tenant in a backup job's result: the result itself (an operator backup) or its item in
+    ``backups`` (a daily pilot backup). None when the job did not back up that tenant."""
+    if result.get("tenant_id") == tenant_id:
+        return result
+    for item in result.get("backups") or []:
+        if isinstance(item, dict) and item.get("tenant_id") == tenant_id:
+            return item
+    return None
+
+
 async def _backup_job(conn: Any, tenant_id: str, backup_id: Optional[str]) -> tuple[str, Optional[dict[str, Any]]]:
     if backup_id:
         row = await conn.fetchrow(BACKUP_JOB_SQL, tenant_backup.KIND, tenant.canonical(backup_id))
         if row is None:
             return tenant.canonical(backup_id), None     # the job row may be gone; the files still say enough
-        result = json.loads(row["result"] or "{}")
-        if result.get("tenant_id") != tenant_id:
+        entry = entry_of(json.loads(row["result"] or "{}"), tenant_id)
+        if entry is None:
             raise PermanentError("that backup belongs to another tenant")
-        return row["id"], result
+        return row["id"], entry
     row = await conn.fetchrow(LATEST_BACKUP_SQL, tenant_backup.KIND, tenant_id)
     if row is None:
         raise PermanentError("no succeeded tp_tenant_backup job for this tenant: pass backup_id")
-    return row["id"], json.loads(row["result"] or "{}")
+    return row["id"], entry_of(json.loads(row["result"] or "{}"), tenant_id)
 
 
 Lines = dict[str, list[str]]
@@ -122,6 +137,8 @@ async def check_files(store: tenant_store.ObjectStore, tenant_id: str, backup_id
         manifest_raw = await store.get_bytes(prefix + tenant_backup.MANIFEST)
     except tenant_store.ObjectMissing:
         raise PermanentError("the backup files are gone (the 7-day bucket rule) or were never written") from None
+    except tenant_store.AccessDenied as e:
+        raise PermanentError(tenant_store.denied(e)) from None
     sums = tenant_backup.parse_sums(sums_raw)
     manifest = json.loads(manifest_raw)
     checks = {
@@ -141,6 +158,8 @@ async def check_files(store: tenant_store.ObjectStore, tenant_id: str, backup_id
             checks["files"][table] = False
             lines[table] = []
             continue
+        except tenant_store.AccessDenied as e:
+            raise PermanentError(tenant_store.denied(e)) from None
         digest = tenant_backup.sha256(data)
         checks["files"][table] = digest == sums.get(key) == entry.get("sha256")
         lines[table] = data.decode("utf-8").splitlines()

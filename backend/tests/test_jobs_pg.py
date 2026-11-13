@@ -136,7 +136,7 @@ async def test_tick_queues_one_scheduled_dry_run_per_day_and_counts_without_writ
     await _outbox(su, 2, 10)
     first = await _serve(env, {"op": "tick"}, today=date(2026, 10, 29))
     again = await _serve(env, {"op": "tick"}, today=date(2026, 10, 29))
-    assert len(first["queued"]) == len(handler.DAILY) == 4 and again["queued"] == [] and again["jobs"] == []
+    assert len(first["queued"]) == len(handler.DAILY) == 5 and again["queued"] == [] and again["jobs"] == []
     job = _of(first, kind.KIND)
     assert job["status"] == "succeeded" and job["kind"] == kind.KIND
     res = job["result"]
@@ -311,10 +311,12 @@ async def test_status_and_bad_events(env):
     await _serve(env, {"op": "tick"}, today=date(2026, 10, 29))
     status = await _serve(env, {"op": "status"})
     # AA-1038 slice 3: tp_lead_deliver skips on this replay (tp-026 is not part of it): no lead row can exist.
-    # AA-1093: tp_tenant_erase answers no_feed while CIS has no catalog.v_tenant_erasure_v1 (none in this stand-in).
+    # AA-1093: tp_tenant_erase and the daily pilot tp_tenant_backup answer no_feed while CIS has no marker view
+    # (catalog.v_tenant_erasure_v1 / v_tenant_account_v1; none in this stand-in).
     assert {j["kind"]: j["result"]["mode"] for j in status["jobs"]} == {kind.KIND: "dry_run", purge.KIND: "dry_run",
                                                                         "tp_lead_deliver": "skipped",
-                                                                        "tp_tenant_erase": "no_feed"}
+                                                                        "tp_tenant_erase": "no_feed",
+                                                                        "tp_tenant_backup": "no_feed"}
     assert "unknown op" in (await _serve(env, {}))["error"]
     assert "unknown kind" in (await _serve(env, {"op": "enqueue", "kind": "bk_retention_job"}))["error"]
     assert "reserved" in (await _serve(env, {"op": "enqueue", "kind": kind.KIND,

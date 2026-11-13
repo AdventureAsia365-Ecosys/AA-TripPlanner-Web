@@ -49,6 +49,16 @@ def test_refusal_order(mode, tenant, markers, plan, environ, expected):
     assert tenant_erase.refusal(mode, tenant, markers, plan, environ) == expected
 
 
+def test_the_bare_path_tenant_is_refused_like_the_demo_tenant(monkeypatch):
+    """TP_DEFAULT_TENANT_ID (config.DEFAULT_TENANT_ID) is AA-hosted too (config.is_aa_hosted): never erased."""
+    bare = "e5e5e5e5-0000-4000-8000-0000000000f1"
+    assert tenant_erase.refusal("dry_run", bare, SYNTHETIC, None, DEV_ON) is None
+    monkeypatch.setattr(config, "DEFAULT_TENANT_ID", bare)
+    for mode in ("dry_run", "apply", "verify"):
+        assert tenant_erase.refusal(mode, bare, SYNTHETIC, PLAN, PROD_ON) == "demo_tenant"
+    assert tenant_erase.refusal("dry_run", config.DEMO_TENANT_ID, SYNTHETIC, None, DEV_ON) == "demo_tenant"
+
+
 @pytest.mark.parametrize("payload,message", [
     ([], "must be an object"),
     ({"tenant_id": TENANT, "force": True}, "unknown payload keys"),
@@ -100,6 +110,28 @@ class _Conn:
         raise AssertionError("erase_tenant must not run")
 
 
+class _NoPlanConn(_Conn):
+    """No DRY RUN row of the request carries the hash: the approved-plan read answers None."""
+
+    async def fetchval(self, sql, *args):
+        if "mode = 'dry_run'" in sql:
+            self.calls.append(("fetchval", sql, args))
+            return None
+        raise AssertionError("erase_tenant must not run")
+
+
+def test_an_apply_without_a_logged_dry_run_of_that_hash_is_refused():
+    conn = _NoPlanConn()
+    out = asyncio.run(tenant_erase.erase_one(conn, request_id=TENANT, tenant_id=TENANT, mode="apply", expect_plan=PLAN,
+                                             markers=SYNTHETIC, job_id=TENANT, environ=DEV_ON))
+    assert (out["status"], out["reason"]) == ("refused", "no_approved_plan")
+    read = [c for c in conn.calls if c[0] == "fetchval"]
+    assert len(read) == 1 and read[0][2] == (TENANT, TENANT, PLAN)    # same request, same tenant, that exact hash
+    assert "status = 'planned'" in read[0][1]
+    writes = [c for c in conn.calls if c[0] == "execute"]
+    assert len(writes) == 1 and writes[0][2][5:7] == ("refused", "no_approved_plan")
+
+
 def test_a_refused_apply_is_logged_and_runs_nothing():
     conn = _Conn()
     out = asyncio.run(tenant_erase.erase_one(conn, request_id=TENANT, tenant_id=TENANT, mode="apply", expect_plan=PLAN,
@@ -125,15 +157,19 @@ def test_an_applied_request_is_not_run_again_and_another_tenant_is_refused():
 # ── handler wiring ───────────────────────────────────────────────────────────
 
 
-def test_kinds_are_registered_and_the_erase_runs_daily_once():
+def test_kinds_are_registered_and_the_erase_and_pilot_backup_run_daily_once():
     for k in (tenant_erase, tenant_backup, tenant_restore_drill):
         assert k.KIND in handler.HANDLERS and handler.MAX_ATTEMPTS[k.KIND] == k.MAX_ATTEMPTS
         assert k.KIND.startswith("tp_")
     assert set(handler.DAILY) - {"tp_retention_outbox_redact", "tp_retention_ai_rate_counter",
-                                 "tp_lead_deliver"} == {tenant_erase.KIND}
+                                 "tp_lead_deliver"} == {tenant_erase.KIND, tenant_backup.KIND}
     payload, attempts, key = handler.DAILY[tenant_erase.KIND]
     assert payload == {"trigger": "schedule"} and attempts == 1
     assert key(date(2026, 11, 13)) == "tp_tenant_erase:schedule:2026-11-13"
+    payload, attempts, key = handler.DAILY[tenant_backup.KIND]
+    assert payload == {"trigger": "schedule"} and attempts == 2
+    assert key(date(2026, 11, 13)) == "tp_tenant_backup:schedule:2026-11-13"
+    assert tenant_restore_drill.KIND not in handler.DAILY
     assert handler.OP_KINDS == {"restore_drill": tenant_restore_drill.KIND}
 
 
@@ -196,6 +232,11 @@ def test_backup_files_manifest_and_sums_agree():
 def test_backup_payload_and_bucket():
     with pytest.raises(PermanentError):
         tenant_backup.validate_payload({"tenant_id": TENANT, "rows": 5})
+    with pytest.raises(PermanentError, match="takes no other key"):
+        tenant_backup.validate_payload({"trigger": "schedule", "tenant_id": TENANT})
+    with pytest.raises(PermanentError, match="trigger must be one of"):
+        tenant_backup.validate_payload({"trigger": "cron"})
+    assert tenant_backup.validate_payload({"trigger": "schedule"}) == {"trigger": "schedule"}
     assert tenant_store.prefix(TENANT, "bk-1") == f"exports/tenants/{TENANT}/tripplanner/bk-1/"
     with pytest.raises(tenant_store.BucketNotConfigured):
         tenant_store.bucket_name({})
@@ -230,3 +271,60 @@ def test_drill_pass_rule():
     assert not tenant_restore_drill.passed(checks, {})
     with pytest.raises(PermanentError):
         tenant_restore_drill.validate_payload({"tenant_id": TENANT, "backup_id": "latest"})
+
+
+def test_drill_finds_a_tenant_in_a_daily_pilot_backup_result():
+    single = {"tenant_id": TENANT, "sha256sums_sha256": "1" * 64}
+    daily = {"mode": "scheduled", "backups": [{"tenant_id": "b8b8b8b8-0000-4000-8000-0000000000e2"},
+                                              {"tenant_id": TENANT, "sha256sums_sha256": "2" * 64}]}
+    assert tenant_restore_drill.entry_of(single, TENANT) is single
+    assert tenant_restore_drill.entry_of(daily, TENANT)["sha256sums_sha256"] == "2" * 64
+    assert tenant_restore_drill.entry_of({"mode": "no_feed", "backups": []}, TENANT) is None
+
+
+# ── S3 errors ────────────────────────────────────────────────────────────────
+
+
+class _ClientError(Exception):
+    """The shape of botocore's ClientError (``response["Error"]["Code"]``), without botocore."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code, "Message": "x"}}
+
+
+class _S3:
+    def __init__(self, code):
+        self.code = code
+
+    def get_object(self, **kw):
+        raise _ClientError(self.code)
+
+    def put_object(self, **kw):
+        raise _ClientError(self.code)
+
+
+@pytest.mark.parametrize("code,expected", [
+    ("NoSuchKey", tenant_store.ObjectMissing), ("404", tenant_store.ObjectMissing),
+    ("NotFound", tenant_store.ObjectMissing),
+    ("AccessDenied", tenant_store.AccessDenied), ("403", tenant_store.AccessDenied),
+    ("SlowDown", _ClientError),                                         # anything else: raised as is (retryable)
+])
+def test_s3_get_maps_missing_and_denied_apart(code, expected):
+    store = tenant_store.S3Store(bucket="b", client=_S3(code))
+    with pytest.raises(expected):
+        asyncio.run(store.get_bytes("exports/tenants/x/tripplanner/y/SHA256SUMS"))
+
+
+def test_s3_put_access_denied_is_its_own_error():
+    store = tenant_store.S3Store(bucket="b", client=_S3("AccessDenied"))
+    with pytest.raises(tenant_store.AccessDenied):
+        asyncio.run(store.put_bytes("k", b"", "text/plain"))
+    assert tenant_store.denied(tenant_store.AccessDenied("k")).startswith("s3_access_denied")
+
+
+def test_drill_fails_with_s3_access_denied_not_files_gone():
+    store = tenant_store.S3Store(bucket="b", client=_S3("AccessDenied"))
+    with pytest.raises(PermanentError, match="^s3_access_denied") as e:
+        asyncio.run(tenant_restore_drill.check_files(store, TENANT, "bk-1", None))
+    assert "gone" not in str(e.value) and TENANT not in str(e.value)

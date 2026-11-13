@@ -377,24 +377,37 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
 - The outbox is still append-only for everyone else: the redaction kind is its one UPDATE (tp-021 table comment).
 - **Tenant offboarding (AA-1093, tp-030; root plan `docs/audits/2026-11-13-S279-session/aa1093-plan.md`).**
   `tp_tenant_erase` (`backend/jobs/tenant_erase.py`) is TripPlanner's part of the CIS offboarding saga (decision D4):
-  it deletes every row of one tenant in the four tenant tables and merges its `ai_spend_month` rows into the app scope,
-  through the database function `tripplanner.erase_tenant(tenant, dry_run, expect_plan)` (SECURITY INVOKER; only under
-  the system scope with no tenant bound). A DRY RUN returns the plan (per table: action, rows, a sha256 fingerprint of
-  the rows, never a value) and its `plan_hash`; an apply recomputes it under an EXCLUSIVE lock and refuses another hash
-  (`plan_changed`); verify expects zeros. One row per (request, mode) in `tripplanner.tenant_erasure_log` (FORCE RLS,
-  no DELETE for the runtime role), read by CIS through `tripplanner.v_tenant_erasure_report_v1`. Requests come from
-  `catalog.v_tenant_erasure_v1` (contract `tenant.erasure.v1`, feature-detected by column: `no_feed` until CIS ships
-  it) on the daily tick, or from an operator `enqueue`. Always refused: the AA-hosted demo tenant and the pilot; an
-  apply also needs `TENANT_ERASE_APPLY_ENABLED=true` (Terraform, default off), CIS markers (`is_pilot`,
-  `is_synthetic`) and, outside prod, a synthetic tenant (D8). Customers and traveller accounts linked through the
-  tenant's sessions are counted (`keep`), not erased: they are global traveller records without a tenant column.
+  it deletes every row of one tenant in the four tenant tables, deletes the `tripplanner.customers` rows that only this
+  tenant's sessions link (personal data that would otherwise be left with no session; the only FK to customers is
+  `sessions.customer_id`, so the delete runs after the sessions; a customer another tenant's session links stays) and
+  merges its `ai_spend_month` rows into the app scope, through the database function
+  `tripplanner.erase_tenant(tenant, dry_run, expect_plan)` (SECURITY INVOKER; only under the system scope with no tenant
+  bound; TimeZone / DateStyle / IntervalStyle / extra_float_digits / bytea_output pinned so the fingerprints never
+  depend on the caller's session). A DRY RUN returns the plan (per table: action, rows, a sha256 fingerprint of the
+  rows, never a value) and its `plan_hash`; an apply runs only when the log holds the DRY RUN of the same request and
+  tenant, `planned`, with exactly that hash (else `no_approved_plan`), recomputes it under an EXCLUSIVE lock and refuses
+  another hash (`plan_changed`); verify expects zeros. One row per (request, mode) in `tripplanner.tenant_erasure_log`
+  (FORCE RLS, no DELETE for the runtime role), read by CIS through `tripplanner.v_tenant_erasure_report_v1` (SELECT to
+  `cis_app` only; the runtime role reads the log itself). Requests come from `catalog.v_tenant_erasure_v1` (contract
+  `tenant.erasure.v1`, feature-detected by column: `no_feed` until CIS ships it) on the daily tick, or from an operator
+  `enqueue`. Always refused: the AA-hosted tenant (`config.is_aa_hosted`: `DEMO_TENANT_ID` or the bare path's
+  `DEFAULT_TENANT_ID`) and the pilot; an apply also needs `TENANT_ERASE_APPLY_ENABLED=true` (Terraform, default off),
+  CIS markers (`is_pilot`, `is_synthetic`) and, outside prod, a synthetic tenant (D8). Traveller accounts linked
+  through the tenant's sessions are counted (`keep`), not erased: global sign-in accounts without a tenant column.
 - **Tenant backup and restore drill (AA-1093 part 3, D11).** `tp_tenant_backup` (`backend/jobs/tenant_backup.py`)
   writes one tenant's four tables (one repeatable-read snapshot) as JSONL + `manifest.json` + `SHA256SUMS` to the
   CIS gold bucket, `exports/tenants/<tenant>/tripplanner/<job id>/` (bucket rule: 7 days; `TENANT_EXPORT_BUCKET` from
   Terraform; the role may put / get that prefix only, `backend/jobs/tenant_store.py`). `tp_tenant_restore_drill`
   (op `restore_drill`, `backend/jobs/tenant_restore_drill.py`) verifies the files, loads them into `pg_temp` in a
-  transaction that is always rolled back, and compares manifest / restored / live counts and digests. No schedule:
-  both run by `enqueue` (`docs/jobs-runbook.md`).
+  transaction that is always rolled back, and compares manifest / restored / live counts and digests. Daily (D11): the
+  tick queues `tp_tenant_backup` `{"trigger": "schedule"}`, which backs up every tenant CIS marks `is_pilot` in a
+  readable marker view (`catalog.v_tenant_erasure_v1`, `catalog.v_tenant_account_v1`, feature-detected by column; one
+  prefix per tenant under the job id, the result lists them in `backups`); with no readable marker view it records
+  `no_feed` and does nothing. Otherwise both kinds run by `enqueue` (`docs/jobs-runbook.md`). Retention of these
+  exports: the gold bucket's existing `exports-expire` rule (AA-CIS-Infra `modules/s3`: 7 days, noncurrent copy 1 day
+  later), so no new lifecycle rule. S3 errors: NoSuchKey / 404 = missing; 403 / AccessDenied fails the job with
+  `s3_access_denied`, never read as missing (without ListBucket S3 also answers 403 for an expired key; the backup job's
+  date tells them apart).
 
 ### Guest identity (AA-827)
 
