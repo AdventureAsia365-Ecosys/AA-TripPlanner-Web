@@ -24,12 +24,18 @@ AA-CIS-App, AA-Booking and AA-Partner; only `.github/code-health.json` and the b
 - **Pre-push**: `code-health` is always on, like `resource-ids` and `ci-script-tests` (ruff over the backend takes well
   under a second); the TypeScript part runs when `frontend/` or the ratchet files changed (always in `--full` / `--ci`);
   a missing ruff / `frontend/node_modules` is a visible skip outside `--ci`.
-- Function identity, the shrink-only rules (NEW / WORSE / STALE / TIGHT, `update` never adds or raises), moves and
-  splits: as in the AA-CIS-App notes of the same name; `code_health.py --help` has the summary.
+- Function identity, the shrink-only rules (NEW / WORSE / STALE fail; TIGHT and RENUM are notices; `update` never
+  adds or raises), ordinal families, the merge-base comparison, moves and splits: as in the AA-CIS-App notes of the
+  same name; `code_health.py --help` has the summary.
 
 ## Changed
 
 - Nothing beyond the issue; no file was refactored.
+- Review fixes (same lane, same script in all four repos): an improved entry still over the limit (TIGHT) is a
+  notice, not a failure, so parallel PRs on one big file do not conflict on its baseline line; `--base` is
+  resolved to the merge-base with HEAD, so a baseline shrunk on main after the branch point does not fail
+  pre-push; ordinal keys (`Page.map()#3`) are paired per family, so inserting a simple callback above a
+  baseline one is a RENUM notice and `update` re-keys it.
 
 ## Tradeoffs
 
