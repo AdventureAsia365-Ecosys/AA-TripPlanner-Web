@@ -158,6 +158,8 @@ class _Conn:
 
     def __init__(self, *, dry_run_ok=None, applied=None, plan=None, calls_function=True):
         self.dry_run_ok, self.applied, self.plan, self.calls_function = dry_run_ok, applied, plan, calls_function
+        self.cis_requests: set[str] = set()
+        self.dry_run_args: tuple = ()
         self.inserts: list[tuple] = []
         self.calls: list[str] = []
 
@@ -170,16 +172,21 @@ class _Conn:
             self.inserts.append(args)
             return {"report_id": f"0c9b8a7d-6e5f-4d3c-8b2a-1f0e9d8c7b{len(self.inserts):02d}", "reported_at": NOW}
         if "mode = 'apply' AND status = 'ok'" in sql:
-            return self.applied
+            # Like the database: an ok apply of this request, round and source only.
+            a = self.applied
+            return a if a is not None and (a.get("round", 1), a.get("source", "cis")) == args[1:3] else None
         raise AssertionError(sql)
 
     async def fetchval(self, sql, *args):
         self.calls.append(sql)
         if "mode = 'dry_run' AND status = 'ok'" in sql:
+            self.dry_run_args = args
             return self.dry_run_ok
         if "erase_tenant" in sql:
             assert self.calls_function, "erase_tenant must not run"
             return json.dumps(self.plan(*args))
+        if sql == tenant_erase.CIS_REQUEST_SQL:
+            return 1 if args[0] in self.cis_requests else None
         raise AssertionError(sql)
 
     async def execute(self, sql, *args):
@@ -221,8 +228,16 @@ def test_an_apply_without_an_ok_dry_run_of_that_hash_is_refused():
     report = _run(conn, _req(), "apply")
     assert (report["status"], report["error_code"]) == ("refused", "dry_run_missing")
     lookup = [c for c in conn.calls if "mode = 'dry_run' AND status = 'ok'" in c]
-    assert lookup and "round = $2" in lookup[0] and "source <> 'tp030'" in lookup[0]
+    assert lookup and "round = $2" in lookup[0] and "source = $5" in lookup[0]
+    assert conn.dry_run_args == (REQUEST, 1, TENANT, PLAN, "cis")     # a CIS apply matches a CIS DRY RUN only
     _valid(report)
+
+
+def test_an_operator_apply_looks_for_an_operator_dry_run():
+    conn = _Conn(dry_run_ok=None, calls_function=False)
+    report = _run(conn, _req(source="operator"), "apply")
+    assert (report["status"], report["error_code"]) == ("refused", "dry_run_missing")
+    assert conn.dry_run_args[4] == "operator"
 
 
 def test_an_apply_with_the_approved_plan_reports_ok_and_a_changed_one_plan_changed():
@@ -240,6 +255,66 @@ def test_an_already_applied_request_is_not_run_again():
     conn = _Conn(applied={"report_id": "r9", "round": 1, "plan_hash": PLAN}, calls_function=False)
     out = _run(conn, _req(), "apply")
     assert out["already_applied"] and out["report_id"] == "r9" and conn.inserts == []
+    lookup = [c for c in conn.calls if "mode = 'apply' AND status = 'ok'" in c]
+    assert "round = $2" in lookup[0] and "source = $3" in lookup[0]
+
+
+def test_a_new_round_applies_its_own_plan_after_an_ok_apply_of_an_earlier_round():
+    # Round 1 applied ok, its verification found rows left, CIS opened round 2 and approved its DRY RUN: the round-2
+    # apply runs and writes its own report (CIS waits for the newest of (app, round 2, apply)).
+    req = _req(round=2, approved_plan_hash=_function()(TENANT, 2, False, None)["plan_hash"])
+    conn = _Conn(applied={"report_id": "r9", "round": 1, "plan_hash": PLAN}, dry_run_ok="r2", plan=_function())
+    out = _run(conn, req, "apply")
+    assert "already_applied" not in out and (out["status"], out["round"]) == ("ok", 2)
+    assert conn.inserts[0][2:5] == (2, "apply", "ok")
+    _valid(out)
+
+
+def test_an_operator_apply_is_not_skipped_by_a_cis_apply_of_the_same_request_id():
+    conn = _Conn(applied={"report_id": "r9", "round": 1, "source": "cis", "plan_hash": PLAN}, dry_run_ok=None,
+                 calls_function=False)
+    out = _run(conn, _req(source="operator"), "apply")
+    assert "already_applied" not in out and out["error_code"] == "dry_run_missing"
+
+
+# ── operator runs never take a CIS request id ────────────────────────────────
+
+
+def _operator(conn, payload, monkeypatch, *, feed_columns=("request_id", "tenant_id")):
+    async def columns(_conn, relation):
+        return list(feed_columns) if relation == tenant_erase.tenant_target.FEED_VIEW else []
+
+    async def markers(_conn, tenant_id):
+        return tenant_erase.tenant_target.Markers(False, True, tenant_erase.tenant_target.FEED_VIEW)
+
+    monkeypatch.setattr(tenant_erase.tenant_target, "columns", columns)
+    monkeypatch.setattr(tenant_erase.tenant_target, "markers", markers)
+
+    class _Job:
+        id = JOB
+
+    return asyncio.run(tenant_erase._run_operator(conn, payload, _Job(), DEV_ON))
+
+
+def test_an_operator_run_with_the_id_of_a_cis_request_is_refused_before_anything_runs(monkeypatch):
+    conn = _Conn(calls_function=False)
+    conn.cis_requests = {REQUEST}
+    for mode in ("dry_run", "apply", "verify"):
+        with pytest.raises(PermanentError, match="CIS erasure request"):
+            _operator(conn, {"tenant_id": TENANT, "mode": mode, "request_id": REQUEST, "expect_plan": PLAN},
+                      monkeypatch)
+    assert conn.inserts == []
+
+
+def test_an_operator_run_with_its_own_id_or_without_a_request_view_goes_on(monkeypatch):
+    conn = _Conn(plan=_function())
+    conn.cis_requests = {REQUEST}
+    out = _operator(conn, {"tenant_id": TENANT}, monkeypatch)
+    entry = out["requests"][0]
+    assert entry["request_id"] == tenant_erase.operator_request_id(TENANT) and entry["status"] == "ok"
+    assert conn.inserts[-1][10] == "operator"
+    out = _operator(conn, {"tenant_id": TENANT, "request_id": REQUEST}, monkeypatch, feed_columns=())
+    assert out["requests"][0]["request_id"] == REQUEST        # no request view yet: no CIS id exists to take
 
 
 def test_a_dry_run_reports_the_plan_and_a_bad_hash_is_a_failure():

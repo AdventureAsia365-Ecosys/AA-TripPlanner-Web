@@ -61,6 +61,17 @@ Dev.
   `census_incomplete` (blocker `pii_column_unlisted`).
 - **Operator path kept** (DRY RUN default): request id = UUIDv5 of the tenant (Booking's CLI does the same), round 1,
   payload may name `request_id` / `round`; markers from `tenant_target.markers`; no approval expiry for a drill.
+- **Review fix (S279): an operator run never takes a CIS request id.** A `request_id` found in
+  `catalog.v_tenant_erasure_v1` fails the job (PermanentError, no report) before markers or the plan are read; without
+  the view no CIS id exists yet, so the check passes. Otherwise an operator apply with the id, round and DRY RUN hash of
+  an open CIS request would erase outside the CIS phase and approval window (the operator path skips
+  `approval_expired`) and its `mode=apply status=ok` row would show in the report view as TripPlanner's answer.
+- **Review fix (S279): the DRY RUN an apply matches and the "already applied" skip are per source and round.**
+  `DRY_RUN_OK_SQL` filters `source = <the request's source>` (a CIS apply matches a CIS DRY RUN only), and
+  `APPLIED_SQL` filters `round` and `source`: before, an ok apply of round 1 made the round-2 apply (after a failed
+  verification and a new approved DRY RUN) return `already_applied` without a report, so CIS never got the round-2
+  apply report and the leftover rows stayed. The skip stays within one round (the feed already runs a request once per
+  round and phase; this covers an operator repeat).
 - **Contract test copy**: `backend/tests/contracts/tenant.erasure.v1.json` (ErasureReport, ErasureReportRow,
   ErasureRequestRow and their components, generated from the root YAML like the other vendored contracts). Offline
   tests validate every kind of report and a request row; the PG test validates every row cis_app reads in the view.
@@ -79,6 +90,11 @@ Dev.
 - Unchanged: the daily pilot backup, the restore drill, the S3 AccessDenied handling, `MAX_ATTEMPTS = 1`.
 
 ## Tradeoffs
+
+- Operator CIS-id refusal as a PermanentError (failed job, no report) rather than a `refused` report: a report would
+  land in the CIS request's report stream, which is exactly what the check prevents. An operator apply in prod stays
+  allowed (the D8 rule: prod applies any tenant with the flag on); with the CIS-id refusal its reports never reach a
+  CIS request, so it cannot move the saga.
 
 - In-place reshape vs drop and recreate: more statements, but contract class (auto-applied when the job tables are
   idle), no snapshot, and drill rows survive as evidence.

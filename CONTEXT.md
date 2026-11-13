@@ -386,8 +386,8 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   (`{table, action, rows, digest}`: actions delete / merge / keep, digest = md5 of the sorted
   `<primary key>|<updated_at UTC or empty>` lines, never a value) and the contract `plan_hash` (sha256 of
   `tenant.erasure.v1|<tenant>|<round>` and the sorted entry lines, recomputed in Python and checked); an apply runs only
-  with the CIS-approved hash of the round, an unexpired approval and an ok DRY RUN report of the same request, round and
-  tenant with exactly that hash (`approval_missing`, `approval_expired`, `dry_run_missing`), recomputes it under
+  with the CIS-approved hash of the round, an unexpired approval and an ok DRY RUN report of the same request, round,
+  tenant and source with exactly that hash (`approval_missing`, `approval_expired`, `dry_run_missing`), recomputes it under
   EXCLUSIVE locks and refuses another hash (`plan_changed`); verify expects zeros and a census of the `pii:` columns
   (DM-6.1) with `pii_rows_found` 0 (`census_not_zero`, `census_incomplete`). One APPEND-ONLY report per run in
   `tripplanner.tenant_erasure_log` (statuses ok / refused / failed, contract error codes; FORCE RLS; the runtime role
@@ -396,7 +396,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   from `catalog.v_tenant_erasure_v1` (contract ErasureRequestRow, `WHERE app = 'tripplanner'`, newest `updated_at` per
   request, step `active` past `not_before`, once per request / round / phase; feature-detected: `no_feed` until CIS
   ships it) on the daily tick, or from an operator `enqueue` (DRY RUN by default; request id = a UUIDv5 of the tenant,
-  round 1). Always refused: the AA-hosted tenant (`aa_hosted_refused`, `config.is_aa_hosted`) and the pilot
+  round 1; a request id of a CIS request fails the job, so an operator report never lands in a CIS request). Always refused: the AA-hosted tenant (`aa_hosted_refused`, `config.is_aa_hosted`) and the pilot
   (`pilot_refused`); an apply also needs `TENANT_ERASE_APPLY_ENABLED=true` (Terraform, default off), CIS markers and,
   outside prod, a synthetic tenant (`not_synthetic`, D8). Traveller accounts linked through the tenant's sessions are
   counted (`keep`), not erased: global sign-in accounts without a tenant column.

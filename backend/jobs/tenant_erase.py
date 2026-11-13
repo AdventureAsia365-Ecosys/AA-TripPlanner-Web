@@ -33,7 +33,8 @@ Payload:
 * ``{"tenant_id" | "tenant_slug", "mode", "expect_plan", "request_id", "round"}`` (an operator's ``enqueue``, a drill;
   DRY RUN by default): ``request_id`` defaults to a UUIDv5 of the tenant (so a drill's DRY RUN and apply share it),
   ``round`` to 1; an apply needs ``expect_plan`` (the DRY RUN's ``plan_hash``); markers from
-  :func:`backend.jobs.tenant_target.markers`.
+  :func:`backend.jobs.tenant_target.markers`. A ``request_id`` that names a CIS request (a row of the request view)
+  is refused before anything runs (PermanentError, no report): an operator report never lands in a CIS request.
 
 Refusals (a report of status ``refused``; nothing is deleted), in this order:
 
@@ -44,12 +45,13 @@ Refusals (a report of status ``refused``; nothing is deleted), in this order:
 * apply only: ``apply_disabled`` unless the raw environment has ``TENANT_ERASE_APPLY_ENABLED=true`` (Terraform,
   default off); ``tenant_markers_unknown`` (operator run, no CIS view says pilot / synthetic); ``not_synthetic``
   outside prod for a tenant not marked synthetic (D8); ``approval_missing`` without a 64-hex approved hash;
-  ``approval_expired`` when the CIS approval has expired; ``dry_run_missing`` when no ok DRY RUN report of the same
-  request, round and tenant carries exactly that hash (an apply runs only a plan this app computed and reported);
-  ``plan_changed`` from the function.
+  ``approval_expired`` when the CIS approval has expired; ``dry_run_missing`` when no ok DRY RUN report of the
+  same request, round, tenant and source carries exactly that hash (an apply runs only a plan this app computed and
+  reported); ``plan_changed`` from the function.
 
-An apply already reported ``ok`` for the request is not run again. A failed report or a refused apply asks for
-attention (the daily tick then reports an error). Results hold ids, codes, counts and hashes only (DM-6.3).
+An apply already reported ``ok`` for the request, round and source is not run again (a new round runs its own
+plan). A failed report or a refused apply asks for attention (the daily tick then reports an error). Results hold
+ids, codes, counts and hashes only (DM-6.3).
 """
 from __future__ import annotations
 
@@ -113,17 +115,23 @@ REPORTED_SQL = """
     SELECT DISTINCT request_id::text AS request_id, round, mode FROM tripplanner.tenant_erasure_log
      WHERE request_id = ANY($1::uuid[]) AND source = 'cis'
 """
+# The DRY RUN an apply runs must be of the same source: a CIS apply matches only a CIS DRY RUN, an operator apply only
+# an operator one (and never a tp030 row).
 DRY_RUN_OK_SQL = """
     SELECT report_id::text AS report_id FROM tripplanner.tenant_erasure_log
      WHERE request_id = $1::uuid AND round = $2 AND tenant_id = $3::uuid AND mode = 'dry_run' AND status = 'ok'
-       AND plan_hash = $4 AND source <> 'tp030'
+       AND plan_hash = $4 AND source = $5
      ORDER BY reported_at DESC LIMIT 1
 """
+# An ok apply of the same request, round and source: a new round (leftover rows after a failed verification) runs
+# its own approved plan and writes its own apply report.
 APPLIED_SQL = """
     SELECT report_id::text AS report_id, round, plan_hash FROM tripplanner.tenant_erasure_log
-     WHERE request_id = $1::uuid AND mode = 'apply' AND status = 'ok' AND source <> 'tp030'
+     WHERE request_id = $1::uuid AND round = $2 AND source = $3 AND mode = 'apply' AND status = 'ok'
      ORDER BY reported_at DESC LIMIT 1
 """
+# Operator runs never take the id of a CIS request (they would report into the saga outside its phase and approval).
+CIS_REQUEST_SQL = f"SELECT 1 FROM {tenant_target.FEED_VIEW} WHERE request_id = $1::uuid LIMIT 1"  # noqa: S608
 
 # ── The census (verify) ──────────────────────────────────────────────────────────────────────────────────────────
 _CUSTOMERS = ("id IN (SELECT s.customer_id FROM tripplanner.sessions s WHERE s.tenant_id = $1::uuid) AND NOT EXISTS "
@@ -335,7 +343,8 @@ async def _plan(conn: Any, req: Request, *, expect: Optional[str] = None) -> dic
 
 
 async def _apply(conn: Any, req: Request, job_id: Optional[str]) -> dict[str, Any]:
-    if await conn.fetchval(DRY_RUN_OK_SQL, req.request_id, req.round, req.tenant_id, req.approved_plan_hash) is None:
+    if await conn.fetchval(DRY_RUN_OK_SQL, req.request_id, req.round, req.tenant_id, req.approved_plan_hash,
+                           req.source) is None:
         return await write_report(conn, req, "apply", "refused", error_code="dry_run_missing", job_id=job_id)
     async with conn.transaction():
         await conn.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
@@ -371,13 +380,14 @@ async def _verify(conn: Any, req: Request, job_id: Optional[str]) -> dict[str, A
 async def run_mode(conn: Any, req: Request, mode: str, *, job_id: Optional[str], environ: Environ,
                    now: Optional[datetime] = None) -> dict[str, Any]:
     """Run one mode for one request on ``conn`` (held under the system scope) and append its report: every outcome
-    is a report, never a silent skip (an apply already reported ok excepted)."""
+    is a report, never a silent skip (an apply already reported ok for this request, round and source excepted).
+    """
     now = now or datetime.now(timezone.utc)
     code = refusal(req, mode, environ, now)
     if code:
         return await write_report(conn, req, mode, "refused", error_code=code, job_id=job_id)
     if mode == "apply":
-        done = await conn.fetchrow(APPLIED_SQL, req.request_id)
+        done = await conn.fetchrow(APPLIED_SQL, req.request_id, req.round, req.source)
         if done is not None:
             return {"request_id": req.request_id, "tenant_id": req.tenant_id, "mode": mode, "status": "ok",
                     "error_code": None, "plan_hash": done["plan_hash"], "report_id": done["report_id"],
@@ -419,13 +429,24 @@ async def _run_feed(conn: Any, job: Job, env: Environ) -> dict[str, Any]:
     return {"mode": "feed", "trigger": "schedule", "requests": out, "attention": any(needs_attention(e) for e in out)}
 
 
+async def _refuse_cis_request_id(conn: Any, request_id: str) -> None:
+    """An operator run with the id of a CIS request is refused before anything runs (PermanentError, no report)."""
+    if "request_id" not in await tenant_target.columns(conn, tenant_target.FEED_VIEW):
+        return                                        # no request view yet: no CIS request id exists to take
+    if await conn.fetchval(CIS_REQUEST_SQL, request_id) is not None:
+        raise PermanentError("request_id belongs to a CIS erasure request: an operator run uses its own id "
+                             "(leave request_id out for the tenant's drill id)")
+
+
 async def _run_operator(conn: Any, payload: dict[str, Any], job: Job, env: Environ) -> dict[str, Any]:
     tenant_id = await tenant_target.resolve(conn, payload)
     mode = payload.get("mode", "dry_run")
+    request_id = (tenant.canonical(payload["request_id"]) if payload.get("request_id")
+                  else operator_request_id(tenant_id))
+    await _refuse_cis_request_id(conn, request_id)
     markers = await tenant_target.markers(conn, tenant_id)
     req = Request(
-        request_id=tenant.canonical(payload["request_id"]) if payload.get("request_id")
-        else operator_request_id(tenant_id),
+        request_id=request_id,
         tenant_id=tenant_id, round=int(payload.get("round", 1)), phase=mode, source="operator",
         approved_plan_hash=payload.get("expect_plan"),
         is_pilot=markers.is_pilot if markers else None, is_synthetic=markers.is_synthetic if markers else None)

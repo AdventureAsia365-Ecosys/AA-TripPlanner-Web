@@ -43,6 +43,7 @@ PILOT = "c0c0c0c0-0000-4000-8000-0000000000e4"
 REQUEST = "d1d1d1d1-0000-4000-8000-0000000000e5"
 PILOT_REQUEST = "d2d2d2d2-0000-4000-8000-0000000000e6"
 LATER_REQUEST = "d3d3d3d3-0000-4000-8000-0000000000e7"
+DRILL_REQUEST = "d4d4d4d4-0000-4000-8000-0000000000e8"   # an operator drill's own id, never a CIS request
 DEV_ON = {"ENVIRONMENT": "dev", "TENANT_ERASE_APPLY_ENABLED": "true"}
 TABLES = ("sessions", "trip_drafts", "trip_events", "outbox")
 VIEW_COLUMNS = ("report_id, request_id, tenant_id, app, round, mode, status, error_code, plan_hash, tables, blockers, "
@@ -196,34 +197,40 @@ async def test_apply_refusals_carry_contract_codes_and_delete_nothing(env, monke
         await conn.execute("SELECT set_config('app.tenant_scope', 'system', false)")
         real = json.loads(await conn.fetchval("SELECT tripplanner.erase_tenant($1::uuid, 1, true)::text", TARGET))
         await conn.execute("RESET app.tenant_scope")
+    # an operator run never takes the id of a CIS request (it would report into the saga outside its approval)
+    job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": "0" * 64,
+                                                  "request_id": REQUEST})
+    assert job["status"] == "failed" and "CIS erasure request" in json.dumps(job), job
     for expect in ("0" * 64, real["plan_hash"]):
         job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": expect,
-                                                      "request_id": REQUEST})
+                                                      "request_id": DRILL_REQUEST})
         entry = job["result"]["requests"][0]
         assert (entry["status"], entry["error_code"]) == ("refused", "dry_run_missing"), expect
     assert await _counts(env["su"], TARGET) == untouched
 
     # the DRY RUN of this request, then the tenant writes: the approved hash is stale
-    dry = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "dry_run", "request_id": REQUEST})
+    dry = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "dry_run",
+                                                  "request_id": DRILL_REQUEST})
     plan = dry["result"]["requests"][0]["plan_hash"]
     assert plan == real["plan_hash"]
     # a DRY RUN of round 1 does not approve round 2
     job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": plan,
-                                                  "request_id": REQUEST, "round": 2})
+                                                  "request_id": DRILL_REQUEST, "round": 2})
     assert job["result"]["requests"][0]["error_code"] == "dry_run_missing"
     await env["su"].execute("UPDATE tripplanner.trip_drafts SET updated_at = now() WHERE tenant_id = $1::uuid", TARGET)
     job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": plan,
-                                                  "request_id": REQUEST})
+                                                  "request_id": DRILL_REQUEST})
     entry = job["result"]["requests"][0]
     assert (entry["status"], entry["error_code"]) == ("refused", "plan_changed") and entry["plan_hash"] != plan
     assert await _counts(env["su"], TARGET) == untouched
     await env["su"].execute("UPDATE catalog.erasure_feed_standin SET is_synthetic = false")
     job = await _enqueue(env, tenant_erase.KIND, {"tenant_id": TARGET, "mode": "apply", "expect_plan": plan,
-                                                  "request_id": REQUEST})
+                                                  "request_id": DRILL_REQUEST})
     assert job["result"]["requests"][0]["error_code"] == "not_synthetic"
     codes = [r["error_code"] for r in await _report_rows(env["su"], "mode = 'apply'")]
     assert codes == ["tenant_markers_unknown", "dry_run_missing", "dry_run_missing", "dry_run_missing",
                      "plan_changed", "not_synthetic"]
+    assert await _report_rows(env["su"], "request_id = $1::uuid", REQUEST) == []     # no operator row in a CIS request
 
 
 async def test_feed_runs_dry_run_apply_verify_and_erases_the_tenant_only(env, monkeypatch, tmp_path):
@@ -397,3 +404,37 @@ async def test_daily_tick_backs_up_the_pilot_tenants_once_a_marker_view_exists(e
     assert drill["result"]["checks"]["sha256sums_matches_job"] is True
     drill = _only(await _serve(env, {"op": "restore_drill", "payload": {"tenant_id": OTHER, "backup_id": run["job_id"]}}))
     assert drill["status"] == "failed" and "another tenant" in drill["error"]
+
+
+async def test_a_new_round_after_a_failed_verification_dry_runs_applies_and_verifies_again(env, monkeypatch):
+    """Round 1 applied ok, a row written after it fails the round-1 verification (census_not_zero); CIS opens round 2
+    and approves its DRY RUN: the round-2 apply runs (an ok apply of round 1 does not skip it) and erases the row."""
+    monkeypatch.setattr(tenant_erase.os, "environ", DEV_ON)
+    su = env["su"]
+    await su.execute(FEED_STANDIN)
+
+    async def step(phase, round_, plan=None):
+        await su.execute(FEED_INSERT, REQUEST, TARGET, phase, round_, "tripplanner", False, True, plan, "-1 day")
+        [entry] = (await _tick(env))["result"]["requests"]
+        assert (entry["mode"], entry["round"]) == (phase, round_), entry
+        return entry
+
+    dry = await step("dry_run", 1)
+    assert (await step("apply", 1, dry["plan_hash"]))["status"] == "ok"
+    await su.execute("INSERT INTO tripplanner.sessions (tenant_id) VALUES ($1::uuid)", TARGET)   # written after
+    await su.execute(FEED_INSERT, REQUEST, TARGET, "verify", 1, "tripplanner", False, True, None, "-1 day")
+    with pytest.raises(handler.JobsNeedAttention):                    # a failed report asks for attention
+        await _tick(env)
+    failed = (await _report_rows(su, "request_id = $1::uuid AND mode = 'verify'", REQUEST))[-1]
+    assert (failed["round"], failed["status"], failed["error_code"]) == (1, "failed", "census_not_zero")
+
+    dry2 = await step("dry_run", 2)
+    assert {t["table"]: t["rows"] for t in dry2["tables"]}["tripplanner.sessions"] == 1
+    applied = await step("apply", 2, dry2["plan_hash"])
+    assert "already_applied" not in applied and (applied["status"], applied["plan_hash"]) == ("ok", dry2["plan_hash"])
+    assert (await _counts(su, TARGET))["sessions"] == 0
+    assert (await step("verify", 2))["status"] == "ok"
+    report = await _report_rows(su, "request_id = $1::uuid", REQUEST)
+    assert [(r["round"], r["mode"], r["status"]) for r in report] == [
+        (1, "dry_run", "ok"), (1, "apply", "ok"), (1, "verify", "failed"),
+        (2, "dry_run", "ok"), (2, "apply", "ok"), (2, "verify", "ok")]
