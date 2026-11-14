@@ -35,7 +35,8 @@ export interface TenantSite {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-function asTenant(body: unknown, slug: string): TenantSite | null {
+// AA-1090: also read by the host resolver (lib/tenantHost.ts) with the slug the answer names.
+export function asTenant(body: unknown, slug: string): TenantSite | null {
   const t = (body as { tenant?: Partial<TenantSite> } | null)?.tenant;
   if (!t || typeof t.tenant_id !== "string" || !UUID_RE.test(t.tenant_id) || t.slug !== slug) return null;
   return {

@@ -6,6 +6,16 @@ import {
   serializeGuestCookie,
 } from "./lib/guestToken";
 import { createGoneCache, gonePage } from "./lib/goneTours";
+import {
+  hostNotFoundPage,
+  hostUnavailablePage,
+  isOwnHost,
+  requestHost,
+  resolveTenantHost,
+  siteHost,
+  tenantHostPath,
+} from "./lib/tenantHost";
+import { TenantLookupUnavailable } from "./lib/tenantSite";
 
 // AA-986 L6 (root ADR 0015 Q5): a retired tour's page answers 410 Gone (Next has no "gone" for a page). The list
 // of retired slug suffixes lives in this instance's memory (lib/goneTours.ts), refreshed every minute in the
@@ -27,49 +37,103 @@ const goneTours = createGoneCache();
 // The cookie is appended as a raw Set-Cookie header, never with `res.cookies.set`: that cookie wrapper
 // also writes `x-middleware-set-cookie` (the full cookie string) onto the response, which client JS can
 // read from a fetch() response and which would defeat HttpOnly.
-export async function proxy(req: NextRequest, event?: NextFetchEvent) {
-  // Tour pages are CDN-cached and public: never a guest cookie here, only the retired check.
-  if (req.nextUrl.pathname.startsWith("/tours/")) {
-    const retired = await goneTours.check(req.nextUrl.pathname);
-    const refreshing = goneTours.pending();
-    if (refreshing) event?.waitUntil(refreshing);
-    if (retired) {
-      return new NextResponse(gonePage(), {
-        status: 410,
-        headers: {
-          "content-type": "text/html; charset=utf-8",
-          // AA-987: no shared cache keeps the 410 (a restored tour must come back within 2 minutes: CloudFront
-          // caches no page, AA-CIS-Infra tripplanner_web_edge.tf); a browser may keep it for a minute.
-          "cache-control": "public, max-age=60",
-          "x-robots-tag": "noindex",
-        },
-      });
-    }
-    return NextResponse.next();
-  }
+// AA-1090 R8: the paths this proxy acted on before custom domains (the old matcher, kept as literals): the planner
+// pages (guest cookie), the four /api/trip operations (guest cookie, cross-site refusal) and the tour pages (410).
+const PLANNER_PATH_RE = /^\/(?:[^/]+\/)?plan(?:\/.*)?$/;
+const TRIP_API_PATHS = new Set(["/api/trip", "/api/trip/narrate", "/api/trip/send", "/api/trip/chat"]);
+const TOUR_PATH_RE = /^\/tours\/[^/]+$/;
+const OWN_HOST = siteHost(process.env.NEXT_PUBLIC_SITE_URL || "https://tripplanner.lumiguides.it.com");
 
+function actsOn(pathname: string): boolean {
+  return PLANNER_PATH_RE.test(pathname) || TRIP_API_PATHS.has(pathname) || TOUR_PATH_RE.test(pathname);
+}
+
+function hostPage(status: 404 | 503): NextResponse {
+  return new NextResponse(status === 404 ? hostNotFoundPage() : hostUnavailablePage(), {
+    status,
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" },
+  });
+}
+
+// AA-1090 R8: a request on an agency's own domain. The host must be a served tenant's active custom domain (else a
+// plain 404, never AA's site); the path is mapped onto the tenant's pages (lib/tenantHost.ts) and then handled like
+// the same path on our host.
+async function onTenantHost(req: NextRequest, event: NextFetchEvent | undefined, host: string) {
+  let slug: string;
+  try {
+    const site = await resolveTenantHost(host);
+    if (!site) return hostPage(404);
+    slug = site.slug;
+  } catch (e) {
+    if (e instanceof TenantLookupUnavailable) return hostPage(503);
+    throw e;
+  }
+  const decision = tenantHostPath(req.nextUrl.pathname, slug);
+  if (decision.kind === "not_found") return hostPage(404);
+  const path = decision.kind === "rewrite" ? decision.path : req.nextUrl.pathname;
+  const target = decision.kind === "rewrite" ? new URL(`${path}${req.nextUrl.search}`, req.url) : null;
+  if (!actsOn(path)) return pass(target);
+  return handle(req, event, path, target);
+}
+
+export async function proxy(req: NextRequest, event?: NextFetchEvent) {
+  const host = requestHost(req.headers.get("host"));
+  if (!isOwnHost(host, OWN_HOST)) return onTenantHost(req, event, host);
+  if (!actsOn(req.nextUrl.pathname)) return NextResponse.next();
+  return handle(req, event, req.nextUrl.pathname, null);
+}
+
+// `path` is the path the app serves (the request's own, or the tenant page an agency's domain maps it to, `target`).
+async function handle(req: NextRequest, event: NextFetchEvent | undefined, path: string, target: URL | null) {
+  // Tour pages are CDN-cached and public: never a guest cookie here, only the retired check.
+  if (path.startsWith("/tours/")) return tourPage(event, path, target);
+  return withGuestCookie(req, path, target);
+}
+
+function pass(target: URL | null): NextResponse {
+  return target ? NextResponse.rewrite(target) : NextResponse.next();
+}
+
+async function tourPage(event: NextFetchEvent | undefined, path: string, target: URL | null) {
+  const retired = await goneTours.check(path);
+  const refreshing = goneTours.pending();
+  if (refreshing) event?.waitUntil(refreshing);
+  if (!retired) return pass(target);
+  return new NextResponse(gonePage(), {
+    status: 410,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      // AA-987: no shared cache keeps the 410 (a restored tour must come back within 2 minutes: CloudFront
+      // caches no page, AA-CIS-Infra tripplanner_web_edge.tf); a browser may keep it for a minute.
+      "cache-control": "public, max-age=60",
+      "x-robots-tag": "noindex",
+    },
+  });
+}
+
+function withGuestCookie(req: NextRequest, path: string, target: URL | null) {
   const action = guestCookieAction(req, req.cookies.get(guestCookieName())?.value);
   if (action.kind === "reject") {
     return NextResponse.json({ error: "cross_origin" }, { status: 403 });
   }
-
   let res: NextResponse;
-  if (req.nextUrl.pathname.startsWith("/api/")) {
+  if (path.startsWith("/api/")) {
     const headers = new Headers(req.headers);
     headers.delete(MINTED_TOKEN_HEADER); // only this proxy may set it
     if (action.minted && action.token) headers.set(MINTED_TOKEN_HEADER, action.token);
     res = NextResponse.next({ request: { headers } });
   } else {
-    res = NextResponse.next();
+    res = pass(target);
   }
   if (action.token) res.headers.append("set-cookie", serializeGuestCookie(action.token));
   return res;
 }
 
 export const config = {
-  // AA-986 L6: "/tours/:slug" for the 410 of a retired tour (no cookie is ever set on it).
-  // AA-1015: "/api/trip/narrate" is the narrate op of /api/trip under its own path (BotID), same guest cookie rules;
-  // AA-1038 slice 3: "/api/trip/send" likewise for the send op; AA-1041 slice 2: "/api/trip/chat" for the chat op.
-  // AA-1038 R5 slice 2: "/:tenant/plan" is a tenant's planner (same guest cookie as /plan; the ids are per tenant).
-  matcher: ["/plan/:path*", "/:tenant/plan/:path*", "/api/trip", "/api/trip/narrate", "/api/trip/send", "/api/trip/chat", "/tours/:slug"],
+  // AA-1090 R8: every path but the build chunks and the image optimiser, because a request on an agency's own domain
+  // is resolved by its Host whatever the path. On our own host the proxy still acts only on the paths of actsOn():
+  // AA-986 L6 "/tours/:slug" (410 of a retired tour, never a cookie); AA-1015 "/api/trip/narrate", AA-1038 slice 3
+  // "/api/trip/send", AA-1041 "/api/trip/chat" (same guest cookie rules as "/api/trip"); "/plan" and, AA-1038 R5
+  // slice 2, "/:tenant/plan" (a tenant's planner, the same guest cookie; the ids are per tenant).
+  matcher: ["/((?!_next/static|_next/image).*)"],
 };

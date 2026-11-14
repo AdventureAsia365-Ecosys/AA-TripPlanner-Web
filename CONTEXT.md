@@ -782,6 +782,26 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   (the policies as the runtime role, the owner and cis_app). The nightly DB Isolation Probe of AA-CIS-Infra checks
   the four tables through `tripplanner`'s own login (cell `tenant.tripplanner_isolation`, expected from tp-028).
 
+#### An agency's own domain (R8, AA-1090)
+
+- **Which tenant.** A request whose Host is not ours (`lib/tenantHost.ts` `isOwnHost`: the public host of
+  `NEXT_PUBLIC_SITE_URL`, localhost, an IP literal or a one-label name stay on the old path) is resolved by
+  `proxy.ts` through `GET /browse/tenant-host/{host}` (`backend/browse/tenant_site.py` `lookup_host`): the CIS view
+  `catalog.v_tenant_tripplanner_v1` appends `custom_domains` (CIS 428, contract `tenant.entitlements.v1` 1.8), the
+  ACTIVE custom hosts the CIS job `tripplanner_custom_domain` attached to our CloudFront distribution. Only a served
+  tenant's host answers; an unknown host, an unserved tenant and a deploy before CIS 428 (42703) are a plain 404 page
+  (`no-store`, never AA's site); a lookup error is a 503 page, never cached. Per-instance cache as for the slug (60 s,
+  30 s for a miss).
+- **Paths on the agency's domain** (`tenantHostPath`): `/` -> `/{slug}`, `/plan...` -> `/{slug}/plan...`,
+  `/tours/{tour}` -> `/{slug}/tours/{tour}` (internal rewrites, so the tenant's branding, tours, lead route and guest
+  cookie are those of `/{slug}`); `/{slug}/...` (our path) keeps working; the BFF, static files and the shared pages
+  (sign-in, My Trips, privacy, terms) pass; AA's own catalogue pages (`/destinations`, `/tours`) and another tenant's
+  `/{slug}` are a 404 there. The proxy's matcher is now every path but the build chunks; on our own host it still acts
+  only on the old paths (`actsOn`).
+- **Edge.** AA-CIS-Infra routes every alias of the TripPlanner distribution to this service with a per-distribution
+  site header (not the Host) and scopes the three WAF rules the same way, so the rate limits and the Challenge carry
+  over to every agency domain. The cookie (`__Host-tp_guest`) and the WAF token are per host.
+
 #### The /{slug} path (R5 slice 2, AA-1038)
 
 - **Which tenant.** `app/[tenant]/plan/page.tsx` (and `app/[tenant]/page.tsx`, a redirect to `/{slug}/plan`) resolves
@@ -1243,7 +1263,7 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
 | Other side | This repo reads | This repo writes | Granted by |
 |---|---|---|---|
 | AA-CIS-App (catalog, AA-812) | `catalog.v_tour`, `v_tour_day`, `v_tour_place`, `v_tour_photo`, `v_destination`, `v_destination_photo` (contract `catalog.tour.v1`); photo URLs = `CIS_PUBLIC_API_BASE` + path | — | CIS migration 225 |
-| AA-CIS-App (tenants, AA-1038 R5 slice 2) | `catalog.v_tenant_tripplanner_v1` (contract `tenant.entitlements.v1` 1.4: `tenant_id`, `slug`, `name`, `kind`, `account_status`, `in_service`, `served`, `tp_launcher`, `tp_branding`, `theme`, `locale`), read by the browse Lambda's `/browse/tenant/{slug}` for the `/{slug}` path; unreadable = every slug 404 | — | CIS migration 379 (SELECT to `tripplanner` only) |
+| AA-CIS-App (tenants, AA-1038 R5 slice 2) | `catalog.v_tenant_tripplanner_v1` (contract `tenant.entitlements.v1` 1.4: `tenant_id`, `slug`, `name`, `kind`, `account_status`, `in_service`, `served`, `tp_launcher`, `tp_branding`, `theme`, `locale`), read by the browse Lambda's `/browse/tenant/{slug}` for the `/{slug}` path; unreadable = every slug 404; 1.8 (AA-1090) `custom_domains` read by `/browse/tenant-host/{host}` for an agency's own domain (absent = every host 404) | — | CIS migration 379, 428 (SELECT to `tripplanner` only) |
 | AA-CIS-App (tour liveness, AA-986) | `catalog.v_tour_retired` (tombstone: `source_system`, `source_id`, `state`, `reason`; contract `catalog.tour.v1.3`) for the saved-trip reasons and the tour page 410 | — | CIS migration 274 (until applied every read degrades to the pre-L6 answer) |
 | AA-CIS-App (places / tour graph, AA-712) | `catalog.v_tour_component`, `v_tour_stop`, `v_tour_leg`, `v_tour_junction`, `v_graph_node`, `v_destination` (+ `located_by`, `precision`; 256: shape kind / status / length / bbox / `shape_lo`), `v_component_embedding` (HNSW top-k, AA-847), `v_destination_shape` (line geometry by id, slice 6d), `v_destination_redirect` (merged destination id → keeper: `/browse/destinations/{id}` answers 301, AA-847 Problem 2), `v_component_redirect` (dropped component id → the component of the same place, followed by every assembly reader, AA-990) — contract `catalog.graph.v1.2` / `catalog.tour.v1.2` | — | CIS migrations 228, 253 (`v_component_embedding`), 256 (`v_destination_shape`): SELECT to `tripplanner` only; 257 (`v_destination_redirect`); 285 (`v_component_redirect`, `tripplanner` only) |
 | AA-CIS-App (AI gateway) | `catalog.v_llm_gateway_config_v1`, `catalog.v_llm_app_spend_today_v1` (AA-642 S8, CIS 323, applied); `catalog.v_embedding_space_v1` (AA-1026, CIS 329: the space of `geo.tour_place.embedding`); the view's 341 / 350 columns (deployment routing, stage x model params); `catalog.v_llm_app_profile_v1` (AA-1025 H1b, CIS 347: TripPlanner's app profile row). No read of `shared.llm_role_config` / `shared.llm_model_catalog` since AA-1027 E5 (CIS 351 revokes them) | `shared.llm_call_log` (ledger v2, `app = 'tripplanner'`) | CIS 173, 323, 329, 341, 347, 350, 351 |
