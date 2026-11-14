@@ -788,7 +788,7 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   `NEXT_PUBLIC_SITE_URL`, localhost, an IP literal or a one-label name stay on the old path) is resolved by
   `proxy.ts` through `GET /browse/tenant-host/{host}` (`backend/browse/tenant_site.py` `lookup_host`): the CIS view
   `catalog.v_tenant_tripplanner_v1` appends `custom_domains` (CIS 428, contract `tenant.entitlements.v1` 1.8), the
-  ACTIVE custom hosts the CIS job `tripplanner_custom_domain` attached to our CloudFront distribution. Only a served
+  ACTIVE custom hosts the CIS job `tripplanner_custom_domain` attached to our agency CloudFront distribution. Only a served
   tenant's host answers; an unknown host, an unserved tenant and a deploy before CIS 428 (42703) are a plain 404 page
   (`no-store`, never AA's site); a lookup error is a 503 page, never cached. Per-instance cache as for the slug (60 s,
   30 s for a miss).
@@ -798,8 +798,9 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   (sign-in, My Trips, privacy, terms) pass; AA's own catalogue pages (`/destinations`, `/tours`) and another tenant's
   `/{slug}` are a 404 there. The proxy's matcher is now every path but the build chunks; on our own host it still acts
   only on the old paths (`actsOn`).
-- **Edge.** AA-CIS-Infra routes every alias of the TripPlanner distribution to this service with a per-distribution
-  site header (not the Host) and scopes the three WAF rules the same way, so the rate limits and the Challenge carry
+- **Edge.** Agency domains are aliases of a TripPlanner AGENCY distribution of their own (the public host keeps its own
+  distribution and certificate). AA-CIS-Infra routes every alias of both distributions to this service with a site
+  header (not the Host) and scopes the three WAF rules the same way, so the rate limits and the Challenge carry
   over to every agency domain. The cookie (`__Host-tp_guest`) and the WAF token are per host.
 
 #### The /{slug} path (R5 slice 2, AA-1038)

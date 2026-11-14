@@ -1,7 +1,7 @@
 // AA-1090 TripPlanner R8 — an agency's own domain (trip.<agency domain>) serves that agency's planner.
 //
-// The CIS job attaches the host to our CloudFront distribution (an alternate domain name with its certificate) and
-// AA-CIS-Infra routes every alias of the distribution to this service, so the request reaches proxy.ts with the
+// The CIS job attaches the host to our agency CloudFront distribution (an alternate domain name with its certificate)
+// and AA-CIS-Infra routes every alias of it to this service, so the request reaches proxy.ts with the
 // agency's Host. Here:
 //   * isOwnHost: our public host (NEXT_PUBLIC_SITE_URL), localhost, an IP literal or a one-label name (the container
 //     and target-group health checks) are ours: the request is handled exactly as before;

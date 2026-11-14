@@ -14,7 +14,7 @@ no-store: a transient failure must never look like "no such tenant" (the BFF cac
 
 AA-1090 R8: GET /browse/tenant-host/{host} answers the same served tenant for an ACTIVE custom host of its site (an
 agency's own domain, e.g. trip.<agency domain>): CIS 428 appends custom_domains (text[]) to the view, filled by the
-CIS job that attached the host to the TripPlanner CloudFront distribution. The web proxy calls it for a request whose
+CIS job that attached the host to the TripPlanner agency CloudFront distribution. The web proxy calls it for a request whose
 Host is not one of our own hosts. Before CIS 428 the column is absent (42703): every host is a 404, as for the view.
 
 The answer carries what the planner needs to brand the site (name, theme, locale, the BO-8 badge flag) and the tenant
