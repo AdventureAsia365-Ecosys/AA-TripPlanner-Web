@@ -43,6 +43,23 @@ AA-CIS-App. What it shares with the rest of the ecosystem is a small set of AWS-
   owned by **AA-CIS-Infra**, consistent with the ecosystem rule "App owns code, Infra owns
   resources."
 
+## Run it locally
+
+The shortest path that works without AWS access, a database, Mapbox or Bedrock. The [README](README.md#local-setup)
+has the full commands.
+
+| Part | Command | Needs |
+|---|---|---|
+| Python setup | `python3.12 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt` | Python 3.12 |
+| Backend unit tests | `cd backend && PYTHONPATH=.. ../.venv/bin/pytest <test files>` | nothing else: the unit tests are offline. Run the files you touched; the whole suite needs a lot of memory |
+| Catalog without a database | `CIS_PUBLIC_API_BASE=http://localhost:8011 .venv/bin/python -m backend.tests.dev_browse_server`, from the repo root (not `backend/`); `curl -s localhost:8011/browse/countries` answers JSON | nothing: fixtures and generated placeholder photos (`DEV_BROWSE_PORT` moves it off 8011) |
+| Web app | `cd frontend && npm ci && cp .env.local.example .env.local && npm run dev` (port 3000); set its browse API base in `.env.local` to `http://localhost:8011`, the fixtures server | Node; a map token only for the map itself |
+| Web checks | `npm run lint`, `npm run typecheck`, `npm test` (in `frontend/`) | |
+| Pre-push checks | `scripts/install-hooks.sh` once per clone; each push then runs `scripts/pre-push.sh` | |
+
+- Never point a local run at the Dev database or the Dev Lambdas with a real key. Run frontend installs in a
+  worktree, not in the main checkout of the workspace.
+
 ## Architecture at a glance
 
 Architecture diagram (AWS icons): `AA-Ecosys/docs/architecture/diagrams/tripplanner.svg`, drawn from `tripplanner.py` in the
