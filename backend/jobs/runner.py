@@ -29,9 +29,9 @@ log = logging.getLogger(__name__)
 Handler = Callable[[Any, Job], Awaitable[dict[str, Any]]]
 
 LEASE_MARGIN_S = 60
-LEASE_MAX_S = 900
+LEASE_MAX_S = 900  # technical-constant: job lease mechanics (audit 4.8)
 # Stop claiming when less than this is left: a retention batch run needs room to finish and write its result.
-MIN_TIME_LEFT_S = 45
+MIN_TIME_LEFT_S = 45  # technical-constant: Lambda time guard, job mechanics (audit 4.8)
 MAX_JOBS_PER_RUN = 10
 
 

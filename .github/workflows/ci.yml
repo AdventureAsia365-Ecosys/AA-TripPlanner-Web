@@ -87,6 +87,43 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: pytest -v --tb=short
 
+  # AA-1096 (S279 thresholds audit, section 5.4): "Settings Lint", the settings-lint guard as a check of its own, named
+  # the same in AA-Booking and AA-Partner, so branch protection can require it by name. Tech lead rule S279: every
+  # threshold, limit or cap is an admin-editable setting (CIS admin Platform › Settings, TripPlanner tab), never a code
+  # literal or an env var alone. It fails on a new policy-looking numeric constant or numeric env read in backend/
+  # (backend/tests/test_aa1096_settings_lint.py: mark it '# technical-constant: <reason>' or make it a registry
+  # setting; the baseline only shrinks) and on a registry key without a reader (backend/tests/test_s279_settings.py).
+  # The same two files also run inside "Backend (pytest)"; this job only gives the rule its own check name. Offline.
+  settings-lint:
+    name: Settings Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # S273 (workflow_lint WL4): restore only; "Backend (pytest)" saves this same cache on main.
+      - name: Restore pip cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.12-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-${{ runner.arch }}-py3.12-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: settings-lint (hard-coded thresholds, dead settings)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: pytest tests/test_aa1096_settings_lint.py tests/test_s279_settings.py -v --tb=short
+
 
   # AA-879: the security job, same shape as AA-Booking's "Security Audit" (the resource-ID check stays in
   # "Backend (pytest)", which is already required). pip-audit FAILS on any known vulnerability in the Lambda
