@@ -28,7 +28,7 @@ VIEW = "catalog.v_embedding_space_v1"
 SEARCH_COLUMN = ("geo", "tour_place", "embedding")
 REASON_MISMATCH = "embedding_space_mismatch"
 REASON_UNREADABLE = "space_unreadable"
-CACHE_TTL_SECONDS = 60.0
+CACHE_TTL_SECONDS = 60.0  # technical-constant: reader cache pace (audit 4.8)
 
 SPACE_SQL = (
     f"SELECT space_key, model_keys, dimension, query_input_type FROM {VIEW} "

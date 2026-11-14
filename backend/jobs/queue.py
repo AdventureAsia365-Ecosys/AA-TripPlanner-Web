@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 BACKOFF_BASE_SECONDS = 60
-BACKOFF_MAX_SECONDS = 3600
-ERROR_MAX_CHARS = 500
+BACKOFF_MAX_SECONDS = 3600  # technical-constant: job retry backoff mechanics (audit 4.8)
+ERROR_MAX_CHARS = 500  # technical-constant: stored error text size (audit 4.8)
 LEASE_EXPIRED_ERROR = "lease expired (the runner stopped before finishing the job)"
 CANCELLED_ERROR = "cancelled before it started"
 

@@ -38,8 +38,8 @@ COLUMNS = ("app", "ai_enabled", "bulk_paused", "default_daily_budget_usd", "degr
 # Column names, never *, so a column CIS appends changes nothing (contract v1).
 PROFILE_SQL = f"SELECT {', '.join(COLUMNS)} FROM {VIEW} WHERE app = '{APP}'"  # noqa: S608 — fixed identifiers
 SWITCH_ENV = "TP_APP_PROFILE"
-CACHE_TTL_SECONDS = 20.0
-FAILURE_TTL_SECONDS = 60.0
+CACHE_TTL_SECONDS = 20.0  # technical-constant: reader cache pace (audit 4.8)
+FAILURE_TTL_SECONDS = 60.0  # technical-constant: retry pace after a read error (audit 4.8)
 VIEW_RETRY_SECONDS = 300.0
 DEFAULT_DEGRADE_MODE = "basic_narration"
 _MISSING_VIEW_STATES = ("42P01", "42501")
