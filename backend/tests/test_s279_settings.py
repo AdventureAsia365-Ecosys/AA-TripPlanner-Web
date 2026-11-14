@@ -74,11 +74,8 @@ def view(monkeypatch):
 
 
 def _code_defaults(monkeypatch) -> dict:
-    """config's values with every env var of a setting unset: the code defaults."""
+    """config's values: the code defaults (no setting reads an env var since AA-1096 l5)."""
     import importlib
-    for s in settings.SETTINGS.values():
-        if s.env:
-            monkeypatch.delenv(s.env, raising=False)
     fresh = importlib.reload(config)
     try:
         return {k: getattr(fresh, s.attr) for k, s in settings.SETTINGS.items()}
@@ -187,15 +184,64 @@ async def test_the_read_runs_in_a_savepoint_on_a_connection():
     assert await _REAL_READ(Conn()) == [] and seen == ["savepoint", "fetch", "released"]
 
 
-async def test_env_first_switch_is_an_emergency_override(view, monkeypatch):
+# The env vars of the settings and the TP_SETTINGS_ENV_FIRST switch lived one release (AA-1096 l5): none is read now.
+RETIRED_ENV = ("TP_SETTINGS_ENV_FIRST", "TP_RATE_NARRATE_PER_HOUR", "TP_RATE_SEARCH_PER_MINUTE", "TP_RATE_SIGNED_IN_FACTOR",
+               "TP_RATE_SEND_PER_HOUR", "TP_RATE_SEND_IP_PER_HOUR", "TP_RATE_CHAT_PER_HOUR", "TP_RATE_CHAT_IP_PER_HOUR",
+               "TP_PLAN_CHAT_MONTHLY_CAP_USD", "TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD", "TP_LEAD_TENANT_DAILY_CAP",
+               "TP_LEAD_HOLD_DAYS", "NARRATION_CACHE_TTL_HOURS", "ADVISOR_HANDOFF_DEMO",
+               "REQUIRE_REGISTRATION_BEFORE_HANDOFF", "TP_DAILY_SPEND_CAP_USD")
+
+
+async def test_no_env_var_overrides_a_setting_any_more(view, monkeypatch):
+    import importlib
     view["rows"] = [_row(settings.RATE_CHAT_IP_PER_HOUR, 12)]
     await settings.refresh(object())
+    monkeypatch.setenv("TP_SETTINGS_ENV_FIRST", "on")
     monkeypatch.setenv("TP_RATE_CHAT_IP_PER_HOUR", "41")
-    monkeypatch.setattr(config, "TP_RATE_CHAT_IP_PER_HOUR", 41)
-    assert settings.get(settings.RATE_CHAT_IP_PER_HOUR) == 12            # switch off: the view wins
-    monkeypatch.setenv(settings.ENV_FIRST_SWITCH, "on")
-    assert settings.resolve(settings.RATE_CHAT_IP_PER_HOUR) == (41, "env", None)
-    assert settings.get(settings.PLAN_CHAT_MAX_STEPS) == 3               # no env var: never "env"
+    assert settings.resolve(settings.RATE_CHAT_IP_PER_HOUR) == (12, "platform", 1)   # the view wins, always
+    for name in RETIRED_ENV:
+        monkeypatch.setenv(name, "3" if name != "ADVISOR_HANDOFF_DEMO" else "false")
+    fresh = importlib.reload(config)
+    try:
+        assert (fresh.TP_RATE_CHAT_IP_PER_HOUR, fresh.LEAD_HOLD_DAYS, fresh.TP_DAILY_SPEND_CAP_USD) == (40, 7, 5.0)
+        assert fresh.ADVISOR_HANDOFF_DEMO is True and fresh.REQUIRE_REGISTRATION_BEFORE_HANDOFF is True
+    finally:
+        for name in RETIRED_ENV:
+            monkeypatch.delenv(name, raising=False)
+        importlib.reload(config)
+
+
+def _env_reads(tree) -> list:
+    """(line, name) of every env read with a literal name: config._get / _get, os.environ.get / getenv, os.environ[...]."""
+    import ast
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant):
+            f = node.func
+            name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else ""
+            if name in ("_get", "getenv") or (name == "get" and "environ" in ast.unparse(f)):
+                out.append((node.lineno, node.args[0].value))
+        elif isinstance(node, ast.Subscript) and "environ" in ast.unparse(node.value) \
+                and isinstance(node.slice, ast.Constant):
+            out.append((node.lineno, node.slice.value))
+    return out
+
+
+def test_no_backend_module_reads_a_retired_env_var(tmp_path):
+    """settings-lint companion (AA-1096 l5): no module of backend/ (tests aside) reads a retired env var: the registry
+    owns those values. The scan catches a planted read."""
+    import ast
+    from pathlib import Path
+    backend = Path(__file__).resolve().parents[1]
+    found = []
+    for path in sorted(backend.rglob("*.py")):
+        if "tests" in path.parts or "node_modules" in path.parts:
+            continue
+        found += [f"{path.relative_to(backend)}:{line}: {name}" for line, name in
+                  _env_reads(ast.parse(path.read_text(encoding="utf-8"))) if name in RETIRED_ENV]
+    assert found == []
+    planted = 'import os\nA = int(_get("TP_RATE_CHAT_PER_HOUR", "20"))\nB = os.environ.get("TP_LEAD_HOLD_DAYS")\n'
+    assert sorted(n for _, n in _env_reads(ast.parse(planted))) == ["TP_LEAD_HOLD_DAYS", "TP_RATE_CHAT_PER_HOUR"]
 
 
 # ── call sites ───────────────────────────────────────────────────────────────────────────────────────────────────

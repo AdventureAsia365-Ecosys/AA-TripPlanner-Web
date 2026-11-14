@@ -10,12 +10,12 @@ app ``tripplanner``, CIS 407 / 414). The administrator edits them on the CIS adm
     settings.get(settings.LEAD_TENANT_DAILY_CAP, tenant_id)      # a tenant override when the view has one
 
 Resolution of ``get(key, tenant_id=None)``:
-  1. ``TP_SETTINGS_ENV_FIRST=on`` (an emergency switch for one release, off by default) and the key's env var is set:
-     the env value (the module attribute of ``backend/config.py`` that parses it), logged once as a warning;
-  2. the view's row of the tenant (``tenant_id`` given; only the keys with a per-tenant scope have such rows);
-  3. the view's platform row (the approved value in force, else the CIS default as version 0);
-  4. the fallback: today's value before the registry, i.e. the env var when set, else the code default (the same
-     config attribute; ``backend/tests/test_s279_settings.py`` pins it equal to the CIS seed).
+  1. the view's row of the tenant (``tenant_id`` given; only the keys with a per-tenant scope have such rows);
+  2. the view's platform row (the approved value in force, else the CIS default as version 0);
+  3. the fallback: the code default (the module attribute of ``backend/config.py``; ``backend/tests/test_s279_settings.py``
+     pins it equal to the CIS seed).
+No env var takes part (AA-1096 l5): the env fallbacks and the ``TP_SETTINGS_ENV_FIRST`` emergency switch were kept for
+one release and are gone.
 A value from the view that breaks its definition here (type, bounds) is refused (one ``settings_value_refused`` error
 line) and the fallback is served.
 
@@ -29,7 +29,6 @@ transaction.
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -45,7 +44,6 @@ SETTINGS_SQL = (f"SELECT key, value::text AS value_text, version, tenant_id::tex
 CACHE_TTL_SECONDS = 25.0  # technical-constant: reader cache inside the lane's 20-30 s window (CIS cache_s is 30)
 FAILURE_TTL_SECONDS = 60.0  # technical-constant: retry pace after a read error (the app profile's)
 VIEW_RETRY_SECONDS = 300.0  # technical-constant: retry pace while the view is not migrated (the app profile's)
-ENV_FIRST_SWITCH = "TP_SETTINGS_ENV_FIRST"
 _MISSING_VIEW_STATES = ("42P01", "42501")
 
 RATE_NARRATE_PER_HOUR = "tripplanner.rate.narrate_per_hour"
@@ -69,13 +67,12 @@ REQUIRE_REGISTRATION = "tripplanner.handoff.require_registration"
 
 @dataclass(frozen=True)
 class Setting:
-    """One key: its type (int | float | bool), the bounds of its CIS definition, the config attribute that holds the
-    fallback (the env var parsed at import, else the code default) and that env var's name (None: a code constant)."""
+    """One key: its type (int | float | bool), the bounds of its CIS definition and the config attribute that holds the
+    fallback (the code default, equal to the CIS seed)."""
 
     key: str
     kind: str
     attr: str
-    env: Optional[str] = None
     lo: Optional[float] = None
     hi: Optional[float] = None
     tenant_scoped: bool = False
@@ -85,26 +82,24 @@ class Setting:
 
 
 SETTINGS: dict[str, Setting] = {s.key: s for s in (
-    Setting(RATE_NARRATE_PER_HOUR, "int", "TP_RATE_NARRATE_PER_HOUR", "TP_RATE_NARRATE_PER_HOUR", 1, 200),
-    Setting(RATE_SEARCH_PER_MINUTE, "int", "TP_RATE_SEARCH_PER_MINUTE", "TP_RATE_SEARCH_PER_MINUTE", 1, 600),
-    Setting(RATE_SIGNED_IN_FACTOR, "int", "TP_RATE_SIGNED_IN_FACTOR", "TP_RATE_SIGNED_IN_FACTOR", 1, 10),
-    Setting(RATE_SEND_PER_HOUR, "int", "TP_RATE_SEND_PER_HOUR", "TP_RATE_SEND_PER_HOUR", 1, 100),
-    Setting(RATE_SEND_IP_PER_HOUR, "int", "TP_RATE_SEND_IP_PER_HOUR", "TP_RATE_SEND_IP_PER_HOUR", 1, 500),
-    Setting(RATE_CHAT_PER_HOUR, "int", "TP_RATE_CHAT_PER_HOUR", "TP_RATE_CHAT_PER_HOUR", 1, 200),
-    Setting(RATE_CHAT_IP_PER_HOUR, "int", "TP_RATE_CHAT_IP_PER_HOUR", "TP_RATE_CHAT_IP_PER_HOUR", 1, 1000),
-    Setting(PLAN_CHAT_MONTHLY_CAP_USD, "float", "TP_PLAN_CHAT_MONTHLY_CAP_USD", "TP_PLAN_CHAT_MONTHLY_CAP_USD",
-            0, 200),
-    Setting(PLAN_CHAT_TENANT_MONTHLY_CAP_USD, "float", "TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD",
-            "TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD", 0, 200, tenant_scoped=True),
-    Setting(LEAD_TENANT_DAILY_CAP, "int", "TP_LEAD_TENANT_DAILY_CAP", "TP_LEAD_TENANT_DAILY_CAP", 1, 5000,
+    Setting(RATE_NARRATE_PER_HOUR, "int", "TP_RATE_NARRATE_PER_HOUR", 1, 200),
+    Setting(RATE_SEARCH_PER_MINUTE, "int", "TP_RATE_SEARCH_PER_MINUTE", 1, 600),
+    Setting(RATE_SIGNED_IN_FACTOR, "int", "TP_RATE_SIGNED_IN_FACTOR", 1, 10),
+    Setting(RATE_SEND_PER_HOUR, "int", "TP_RATE_SEND_PER_HOUR", 1, 100),
+    Setting(RATE_SEND_IP_PER_HOUR, "int", "TP_RATE_SEND_IP_PER_HOUR", 1, 500),
+    Setting(RATE_CHAT_PER_HOUR, "int", "TP_RATE_CHAT_PER_HOUR", 1, 200),
+    Setting(RATE_CHAT_IP_PER_HOUR, "int", "TP_RATE_CHAT_IP_PER_HOUR", 1, 1000),
+    Setting(PLAN_CHAT_MONTHLY_CAP_USD, "float", "TP_PLAN_CHAT_MONTHLY_CAP_USD", 0, 200),
+    Setting(PLAN_CHAT_TENANT_MONTHLY_CAP_USD, "float", "TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD", 0, 200,
             tenant_scoped=True),
-    Setting(LEAD_HOLD_DAYS, "int", "LEAD_HOLD_DAYS", "TP_LEAD_HOLD_DAYS", 3, 7),
-    Setting(NARRATION_CACHE_TTL_HOURS, "int", "NARRATION_CACHE_TTL_HOURS", "NARRATION_CACHE_TTL_HOURS", 1, 720),
-    Setting(NARRATION_MAX_TOKENS, "int", "NARRATION_MAX_TOKENS", None, 400, 4000),
-    Setting(PLAN_CHAT_MAX_STEPS, "int", "PLAN_CHAT_MAX_STEPS", None, 1, 5),
-    Setting(PLAN_CHAT_MAX_TOKENS, "int", "PLAN_CHAT_MAX_TOKENS", None, 200, 2000),
-    Setting(ADVISOR_HANDOFF_DEMO, "bool", "ADVISOR_HANDOFF_DEMO", "ADVISOR_HANDOFF_DEMO"),
-    Setting(REQUIRE_REGISTRATION, "bool", "REQUIRE_REGISTRATION_BEFORE_HANDOFF", "REQUIRE_REGISTRATION_BEFORE_HANDOFF"),
+    Setting(LEAD_TENANT_DAILY_CAP, "int", "TP_LEAD_TENANT_DAILY_CAP", 1, 5000, tenant_scoped=True),
+    Setting(LEAD_HOLD_DAYS, "int", "LEAD_HOLD_DAYS", 3, 7),
+    Setting(NARRATION_CACHE_TTL_HOURS, "int", "NARRATION_CACHE_TTL_HOURS", 1, 720),
+    Setting(NARRATION_MAX_TOKENS, "int", "NARRATION_MAX_TOKENS", 400, 4000),
+    Setting(PLAN_CHAT_MAX_STEPS, "int", "PLAN_CHAT_MAX_STEPS", 1, 5),
+    Setting(PLAN_CHAT_MAX_TOKENS, "int", "PLAN_CHAT_MAX_TOKENS", 200, 2000),
+    Setting(ADVISOR_HANDOFF_DEMO, "bool", "ADVISOR_HANDOFF_DEMO"),
+    Setting(REQUIRE_REGISTRATION, "bool", "REQUIRE_REGISTRATION_BEFORE_HANDOFF"),
 )}
 
 
@@ -195,7 +190,7 @@ async def refresh(db: Any, *, force: bool = False) -> str:
         _state.source = "last_good" if _state.snapshot is not None else "fallback"
         if missing:
             observability.emit("settings_note", view=VIEW, error=type(e).__name__,
-                               detail=f"{VIEW} is not readable yet (CIS migration 415): env values and code defaults")
+                               detail=f"{VIEW} is not readable yet (CIS migration 415): code defaults")
         else:
             observability.emit("settings_unreadable", level="error", view=VIEW, error=type(e).__name__,
                                detail=str(e)[:200])
@@ -204,18 +199,9 @@ async def refresh(db: Any, *, force: bool = False) -> str:
     return _state.source
 
 
-def _env_first(s: Setting) -> bool:
-    if (os.environ.get(ENV_FIRST_SWITCH) or "off").strip().lower() not in ("on", "true", "1", "yes"):
-        return False
-    return bool(s.env and (os.environ.get(s.env) or "").strip())
-
-
 def resolve(key: str, tenant_id: Optional[str] = None) -> tuple[Any, str, Optional[int]]:
-    """(value, source, version): source env | tenant | platform | fallback (module docstring)."""
+    """(value, source, version): source tenant | platform | fallback (module docstring)."""
     s = SETTINGS[key]
-    if _env_first(s):
-        _once("settings_env_first", (key, "env"), key=key, env=s.env)
-        return s.fallback(), "env", None
     snap = _state.snapshot or {}
     if tenant_id is not None and s.tenant_scoped and (key, str(tenant_id)) in snap:
         value, version = snap[(key, str(tenant_id))]

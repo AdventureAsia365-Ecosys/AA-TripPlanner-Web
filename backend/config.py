@@ -151,8 +151,8 @@ API_KEY_RETRY_AFTER_SECONDS = 10
 
 # --- Leads to the agency tenant (AA-1038 R5 slice 3, root ADR 0019 d11, contract lead.submitted.v1) ---
 # A lead not delivered within this many days is redacted anyway (data standards DM-7.1 row tripplanner.outbox: at most
-# 7 days). The value is clamped to LEAD_HOLD_DAYS_MIN..LEAD_HOLD_DAYS_MAX, so an env typo (TP_LEAD_HOLD_DAYS=30) can
-# never stretch the promise; a value that is not a number counts as the maximum. The floor is 3: the daily expiry
+# 7 days). The value in force (setting tripplanner.leads.hold_days) is clamped to LEAD_HOLD_DAYS_MIN..LEAD_HOLD_DAYS_MAX,
+# so no value can stretch the promise; a value that is not a number counts as the maximum. The floor is 3: the daily expiry
 # needs two tick intervals of headroom inside the hold, one between runs and one failed tick it absorbs
 # (backend/assembly/leads.py hold_cutoff, EXPIRY_TICKS_ABSORBED).
 LEAD_HOLD_DAYS_MAX = 7
@@ -168,11 +168,11 @@ def lead_hold_days(raw: Optional[str]) -> int:
     return max(LEAD_HOLD_DAYS_MIN, min(LEAD_HOLD_DAYS_MAX, days))
 
 
-LEAD_HOLD_DAYS = lead_hold_days(_get("TP_LEAD_HOLD_DAYS", str(LEAD_HOLD_DAYS_MAX)))
+LEAD_HOLD_DAYS = LEAD_HOLD_DAYS_MAX
 # How many leads one tenant may receive in 24 hours (a script on a tenant's public planner could otherwise store
 # traveller contacts and flood the agency's inbox or CRM without limit). Past it, a send is refused before anything is
 # stored (429 lead_cap_reached).
-TP_LEAD_TENANT_DAILY_CAP = int(_get("TP_LEAD_TENANT_DAILY_CAP", "200"))
+TP_LEAD_TENANT_DAILY_CAP = 200
 # The crm channel takes a lead for a tenant only when the CRM listed that tenant's leads within this many seconds
 # (plus one beacon window, ratelimit.BEACON_WINDOW_SECONDS): a CRM that cannot pull a tenant (agency locked,
 # offboarding, not provisioned yet) means 503 lead_channel_unavailable and nothing stored. The CRM pulls every minute.
@@ -224,27 +224,25 @@ GUEST_SESSION_DAYS = 90
 # AA-1034 R0 (root ADR 0019 d8/d11, B2B-only model): Adventure Asia sells to partner agencies only and keeps no
 # end-traveller record of its own. While this is on (the default), POST /trip/{id}/send-to-advisor answers 410
 # `b2b_only` before any write: no `sent` event, no registration (tripplanner.customers), no inquiry.submitted outbox
-# row, so no Booking case. The planner shows a demo notice instead. A code default (not set on the Lambdas); `false`
-# turns the frozen hand-off back on. Leads go to the tenant's CRM later (lead.submitted.v1, R2+).
+# row, so no Booking case. The planner shows a demo notice instead. The setting tripplanner.handoff.advisor_demo (the
+# code default below only while the view is unreadable); false turns the frozen hand-off back on. Leads go to the tenant's CRM later (lead.submitted.v1, R2+).
 def demo_flag(raw: Optional[str]) -> bool:
     """On unless the value is exactly ``false`` (any case): an unset or mistyped value keeps the demo."""
     return (raw or "true").strip().lower() != "false"
 
 
-ADVISOR_HANDOFF_DEMO = demo_flag(_get("ADVISOR_HANDOFF_DEMO"))
+ADVISOR_HANDOFF_DEMO = True
 
-# Feature flag: require registration before send-to-advisor.
-REQUIRE_REGISTRATION_BEFORE_HANDOFF = (
-    _get("REQUIRE_REGISTRATION_BEFORE_HANDOFF", "true").lower() == "true"
-)
+# Feature flag: require registration before send-to-advisor (setting tripplanner.handoff.require_registration).
+REQUIRE_REGISTRATION_BEFORE_HANDOFF = True
 
 # --- AI Phase 0 guards (AA-805) ---
 # Daily hard stop on TripPlanner model spend (the customer-facing stages together, UTC day), read from the shared
 # ledger through catalog.v_llm_app_spend_today_v1 (CIS 323; tripplanner.llm_spend_daily, tp-010, is no longer
-# written since AA-1027 E5). Infra sets it explicitly on both Lambdas (AA-1015); the code
-# default is the same 5.0. When reached, narration falls back to AA text + neutral day lines and free-text search
+# written since AA-1027 E5). The cap in force is the CIS app profile's default_daily_budget_usd (backend/shared/
+# app_profile.py, 5.0 since CIS 414); this is only its fallback (no env var since AA-1096 l5). When reached, narration falls back to AA text + neutral day lines and free-text search
 # to the keyword ranking (AA-642 S0).
-TP_DAILY_SPEND_CAP_USD = float(_get("TP_DAILY_SPEND_CAP_USD", "5.0"))
+TP_DAILY_SPEND_CAP_USD = 5.0
 
 
 def _optional_usd(name: str) -> Optional[float]:
@@ -280,39 +278,39 @@ LLM_STAGE_PARAMS = (_get("LLM_STAGE_PARAMS", "on") or "on").strip().lower() not 
 # 10 narrations per hour per session, 30 searches per minute per traveller IP, a signed-in traveller gets
 # TP_RATE_SIGNED_IN_FACTOR times that. Only requests that would call a model are counted (a cached narration, an
 # all-AA-text narration or an empty query is not).
-TP_RATE_NARRATE_PER_HOUR = int(_get("TP_RATE_NARRATE_PER_HOUR", "10"))
-TP_RATE_SEARCH_PER_MINUTE = int(_get("TP_RATE_SEARCH_PER_MINUTE", "30"))
-TP_RATE_SIGNED_IN_FACTOR = int(_get("TP_RATE_SIGNED_IN_FACTOR", "2"))
+TP_RATE_NARRATE_PER_HOUR = 10
+TP_RATE_SEARCH_PER_MINUTE = 30
+TP_RATE_SIGNED_IN_FACTOR = 2
 # AA-1038 slice 3: "Send to advisor" on an agency tenant's planner (a lead with the traveller's contact), per hour: per
 # guest session and per traveller IP (signed-in factor as above). Counted only when the request would store a lead.
-TP_RATE_SEND_PER_HOUR = int(_get("TP_RATE_SEND_PER_HOUR", "5"))
-TP_RATE_SEND_IP_PER_HOUR = int(_get("TP_RATE_SEND_IP_PER_HOUR", "20"))
+TP_RATE_SEND_PER_HOUR = 5
+TP_RATE_SEND_IP_PER_HOUR = 20
 # AA-1041 slice 2: the planning chat (POST /trip/{id}/chat, stage tp_plan_chat), per hour: messages per guest session
 # and per traveller IP (signed-in factor as above). Counted only when the message would reach a model.
-TP_RATE_CHAT_PER_HOUR = int(_get("TP_RATE_CHAT_PER_HOUR", "20"))
-TP_RATE_CHAT_IP_PER_HOUR = int(_get("TP_RATE_CHAT_IP_PER_HOUR", "40"))
+TP_RATE_CHAT_PER_HOUR = 20
+TP_RATE_CHAT_IP_PER_HOUR = 40
 
 # --- Planning chat money caps (AA-1041 slice 2, migration tp-029) ---
 # Per UTC month, from tripplanner.ai_spend_month (backend/shared/monthly_spend.py): the whole app's chat spend and each
 # tenant's own (the AA demo tenant included). Tech lead, S277: 2 USD a month on Dev. At a cap the chat pauses with a
 # plain message; the rest of the planner is untouched. The daily app cap and an agency tenant's AI budget
 # (llm_gateway.budget_status) apply too.
-TP_PLAN_CHAT_MONTHLY_CAP_USD = float(_get("TP_PLAN_CHAT_MONTHLY_CAP_USD", "2.0"))
-TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD = float(_get("TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD", "2.0"))
+TP_PLAN_CHAT_MONTHLY_CAP_USD = 2.0
+TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD = 2.0
 # Sent by the BFF (web task) with the traveller's address and whether a traveller session is signed in. Trusted ONLY
 # when the request also carries the right x-tripplanner-key (only the BFF has it); otherwise ignored.
 CLIENT_IP_HEADER = "x-tp-client-ip"
 SIGNED_IN_HEADER = "x-tp-signed-in"
 
 # How long a narration in tripplanner.narration_cache is reused for the same itinerary.
-NARRATION_CACHE_TTL_HOURS = int(_get("NARRATION_CACHE_TTL_HOURS", "168"))
+NARRATION_CACHE_TTL_HOURS = 168
 
 # --- Admin-editable settings (S279 thresholds lane L5, AA-1096) ---
 # The rate limits, the planning chat caps, the lead cap and hold, the narration cache TTL, the max_tokens and steps
 # below and the two hand-off switches are read through backend/shared/settings.py from the CIS view
-# catalog.v_app_settings_v1 (edited on the CIS admin page Platform > Settings). The values in this module (the env var
-# when set, else the code default) are only its fallback while the view cannot be read: one release, then the env vars
-# go (Infra lane L6). The three below had no env var: they are code defaults only.
+# catalog.v_app_settings_v1 (edited on the CIS admin page Platform > Settings). The values in this module are code
+# defaults equal to the CIS seed, only the fallback while the view cannot be read. Their env vars were read for one
+# release and are gone (AA-1096 l5; Infra lane L6 removed them from the Lambdas).
 NARRATION_MAX_TOKENS = 1200  # technical-constant: fallback of tripplanner.ai.narration_max_tokens
 PLAN_CHAT_MAX_STEPS = 3  # technical-constant: fallback of tripplanner.ai.plan_chat_max_steps
 PLAN_CHAT_MAX_TOKENS = 700  # technical-constant: fallback of tripplanner.ai.plan_chat_max_tokens
