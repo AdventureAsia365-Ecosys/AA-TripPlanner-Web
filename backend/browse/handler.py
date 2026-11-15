@@ -74,6 +74,8 @@ _TENANT_RE = re.compile(r"^/browse/tenant/([^/]{1,120})$")
 # AA-1094: the tours of a tenant and one tour page (catalog.v_tenant_tour_v1, CIS 404); the tour slug as /catalog/tours.
 _TENANT_TOURS_RE = re.compile(r"^/browse/tenant/([^/]{1,120})/tours$")
 _TENANT_TOUR_RE = re.compile(r"^/browse/tenant/([^/]{1,120})/tours/([a-z0-9-]{1,120})$")
+# AA-1090 R8: an agency's own domain (Host) -> its served tenant (CIS 429 custom_domains); lookup_host checks the shape.
+_TENANT_HOST_RE = re.compile(r"^/browse/tenant-host/([^/]{1,260})$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 _CACHE_HEADERS = {
@@ -147,18 +149,10 @@ async def route(
     if _CAT_DESTS_RE.match(path):
         return _resp(200, await catalog_mod.list_countries(pool=pool), _CACHE_HEADERS)
 
-    # --- AA-1038 R5 slice 2: the served tenant of a /{slug} path (catalog.v_tenant_tripplanner_v1, CIS 379) -----
-    m = _TENANT_RE.match(path)
-    if m:
-        try:
-            site = await tenant_site_mod.lookup(m.group(1), pool=pool)
-        except tenant_site_mod.TenantLookupUnavailable:
-            # Transient: the BFF does not cache it and the page shows a retryable error, never the 404 page.
-            return _resp(503, {"error": "tenant lookup unavailable"}, _NO_STORE_HEADERS)
-        if site is None:
-            return _resp(404, {"error": "tenant not found"}, _NO_STORE_HEADERS)
-        # The BFF keeps its own short cache; a suspension must not sit in a shared cache.
-        return _resp(200, {"tenant": site}, _NO_STORE_HEADERS)
+    # --- AA-1038 R5 slice 2 (/{slug}) and AA-1090 R8 (a custom host): the served tenant (_tenant_site_answer) -----
+    answer = await _tenant_site_answer(path, pool)
+    if answer is not None:
+        return answer
 
     # --- AA-1094: a tenant's own tours (catalog.v_tenant_tour_v1, CIS 404); the slug resolved first, served only ----
     m = _TENANT_TOURS_RE.match(path) or _TENANT_TOUR_RE.match(path)
@@ -295,7 +289,29 @@ _ROUTE_NAMES: tuple[tuple[re.Pattern, str], ...] = (
     (_CAT_TOURS_RE, "catalog_tours"), (_CAT_TOUR_RE, "catalog_tour"), (_CAT_DESTS_RE, "catalog_destinations"),
     (_CAT_DEST_RE, "catalog_destination"), (_CAT_SITEMAP_RE, "catalog_sitemap"), (_CAT_RETIRED_RE, "catalog_retired"),
     (_TENANT_RE, "tenant"), (_TENANT_TOURS_RE, "tenant_tours"), (_TENANT_TOUR_RE, "tenant_tour"),
+    (_TENANT_HOST_RE, "tenant_host"),
 )
+
+
+async def _tenant_site_answer(path: str, pool: Any) -> Optional[dict]:
+    """The served tenant of a /{slug} path (GET /browse/tenant/{slug}, CIS 379) or of a custom host (GET
+    /browse/tenant-host/{host}, CIS 429 custom_domains), else None for any other path."""
+    m = _TENANT_RE.match(path)
+    lookup = tenant_site_mod.lookup
+    if m is None:
+        m = _TENANT_HOST_RE.match(path)
+        lookup = tenant_site_mod.lookup_host
+    if m is None:
+        return None
+    try:
+        site = await lookup(m.group(1), pool=pool)
+    except tenant_site_mod.TenantLookupUnavailable:
+        # Transient: the BFF does not cache it and the page shows a retryable error, never the 404 page.
+        return _resp(503, {"error": "tenant lookup unavailable"}, _NO_STORE_HEADERS)
+    if site is None:
+        return _resp(404, {"error": "tenant not found"}, _NO_STORE_HEADERS)
+    # The BFF keeps its own short cache; a suspension must not sit in a shared cache.
+    return _resp(200, {"tenant": site}, _NO_STORE_HEADERS)
 
 
 def route_name(method: str, path: str) -> str:
