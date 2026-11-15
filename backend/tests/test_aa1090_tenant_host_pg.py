@@ -3,12 +3,12 @@ runtime role.
 
 Runs only with ``pytest --pg-dsn postgresql://postgres@127.0.0.1:<port>/postgres`` (a SUPERUSER DSN of a throwaway
 LOCAL Postgres). The database is the tp-028 replay (``test_tp028_pg.forced_database``) plus a stand-in for the CIS
-contract view ``catalog.v_tenant_tripplanner_v1`` with the CIS 428 column list (``CIS_428_COLUMNS``, copied from
+contract view ``catalog.v_tenant_tripplanner_v1`` with the CIS 429 column list (``CIS_429_COLUMNS``, copied from
 AA-CIS-App tests/integration/test_aa1090_migrations_427_428.py), granted to ``tripplanner`` the way CIS grants it.
 
-Checks: the stand-in has the CIS 428 columns; ``lookup_host`` (HOST_SQL) answers a served tenant's active host as
+Checks: the stand-in has the CIS 429 columns; ``lookup_host`` (HOST_SQL) answers a served tenant's active host as
 ``tripplanner``, nothing for an unknown host or a suspended tenant; the same tenant resolves by slug and by host; a
-view without ``custom_domains`` (a deploy before CIS 428) is a 404, not a 503. Invented hosts only.
+view without ``custom_domains`` (a deploy before CIS 429) is a 404, not a 503. Invented hosts only.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from backend.browse import tenant_site  # noqa: E402
 AGENCY_A = "4b1d7e57-0000-4000-8000-0000000000a1"
 PAUSED = "4b1d7e57-0000-4000-8000-0000000000c3"
 # Copied verbatim from AA-CIS-App tests/integration/test_aa1090_migrations_427_428.py (COLUMNS = 390's + custom_domains).
-CIS_428_COLUMNS = (
+CIS_429_COLUMNS = (
     "tenant_id uuid, slug text, name text, kind text, account_status text, in_service boolean, served boolean, "
     "tp_launcher boolean, tp_branding boolean, theme jsonb, locale text, crm_core boolean, lead_channel text, "
     "lead_webhook_url text, lead_email text, custom_domains text[]"
@@ -103,7 +103,7 @@ async def test_the_stand_in_has_the_cis_428_columns(db):
             "AND a.attnum > 0 AND NOT a.attisdropped")
     finally:
         await su.close()
-    assert cols == CIS_428_COLUMNS
+    assert cols == CIS_429_COLUMNS
 
 
 async def test_a_host_resolves_to_the_same_tenant_as_its_slug_as_the_runtime_role(db, tp_conn):

@@ -5,7 +5,7 @@
 // agency's Host. Here:
 //   * isOwnHost: our public host (NEXT_PUBLIC_SITE_URL), localhost, an IP literal or a one-label name (the container
 //     and target-group health checks) are ours: the request is handled exactly as before;
-//   * any other host is looked up (browse GET /browse/tenant-host/{host}, CIS 428 custom_domains): a served tenant's
+//   * any other host is looked up (browse GET /browse/tenant-host/{host}, CIS 429 custom_domains): a served tenant's
 //     ACTIVE host resolves to its TenantSite, anything else is a 404 (an unknown host never shows AA's site);
 //   * tenantHostPath maps the path on that host to the tenant's pages: "/" -> "/{slug}", "/plan..." ->
 //     "/{slug}/plan...", "/tours/{tour}" -> "/{slug}/tours/{tour}"; "/{slug}/..." (our path) keeps working; the shared
@@ -25,7 +25,7 @@ import {
 } from "./tenantSite.ts";
 import { isTenantSlug } from "./tenantSlug.ts";
 
-// The CIS 427 host shape (lower-case labels, a letter-led last label), at most 253 characters.
+// The CIS 428 host shape (lower-case labels, a letter-led last label), at most 253 characters.
 const HOST_RE = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
 

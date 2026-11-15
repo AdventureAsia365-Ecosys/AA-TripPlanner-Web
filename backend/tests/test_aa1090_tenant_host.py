@@ -1,8 +1,8 @@
 """AA-1090 TripPlanner R8 — an agency's own domain: GET /browse/tenant-host/{host} (backend/browse/tenant_site.py
-lookup_host over CIS 428 catalog.v_tenant_tripplanner_v1.custom_domains), offline with a fake pool.
+lookup_host over CIS 429 catalog.v_tenant_tripplanner_v1.custom_domains), offline with a fake pool.
 
 A served tenant's active host answers the same tenant shape as /browse/tenant/{slug}; an unknown host, an unserved
-tenant, a badly shaped host (an IP, a port only, upper case is normalised) and a deploy before CIS 428 (42703) are the
+tenant, a badly shaped host (an IP, a port only, upper case is normalised) and a deploy before CIS 429 (42703) are the
 same 404; any other read error is a 503 that is never cached. The Postgres check is in test_aa1090_tenant_host_pg.py.
 Invented hosts only.
 """

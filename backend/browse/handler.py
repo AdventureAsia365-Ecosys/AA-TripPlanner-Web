@@ -74,7 +74,7 @@ _TENANT_RE = re.compile(r"^/browse/tenant/([^/]{1,120})$")
 # AA-1094: the tours of a tenant and one tour page (catalog.v_tenant_tour_v1, CIS 404); the tour slug as /catalog/tours.
 _TENANT_TOURS_RE = re.compile(r"^/browse/tenant/([^/]{1,120})/tours$")
 _TENANT_TOUR_RE = re.compile(r"^/browse/tenant/([^/]{1,120})/tours/([a-z0-9-]{1,120})$")
-# AA-1090 R8: an agency's own domain (Host) -> its served tenant (CIS 428 custom_domains); lookup_host checks the shape.
+# AA-1090 R8: an agency's own domain (Host) -> its served tenant (CIS 429 custom_domains); lookup_host checks the shape.
 _TENANT_HOST_RE = re.compile(r"^/browse/tenant-host/([^/]{1,260})$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
@@ -295,7 +295,7 @@ _ROUTE_NAMES: tuple[tuple[re.Pattern, str], ...] = (
 
 async def _tenant_site_answer(path: str, pool: Any) -> Optional[dict]:
     """The served tenant of a /{slug} path (GET /browse/tenant/{slug}, CIS 379) or of a custom host (GET
-    /browse/tenant-host/{host}, CIS 428 custom_domains), else None for any other path."""
+    /browse/tenant-host/{host}, CIS 429 custom_domains), else None for any other path."""
     m = _TENANT_RE.match(path)
     lookup = tenant_site_mod.lookup
     if m is None:

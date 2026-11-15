@@ -13,9 +13,9 @@ on this view. Any other read error (pool, connection, timeout) is TenantLookupUn
 no-store: a transient failure must never look like "no such tenant" (the BFF caches a 404 for 30 s, never a 503).
 
 AA-1090 R8: GET /browse/tenant-host/{host} answers the same served tenant for an ACTIVE custom host of its site (an
-agency's own domain, e.g. trip.<agency domain>): CIS 428 appends custom_domains (text[]) to the view, filled by the
+agency's own domain, e.g. trip.<agency domain>): CIS 429 appends custom_domains (text[]) to the view, filled by the
 CIS job that attached the host to the TripPlanner agency CloudFront distribution. The web proxy calls it for a request whose
-Host is not one of our own hosts. Before CIS 428 the column is absent (42703): every host is a 404, as for the view.
+Host is not one of our own hosts. Before CIS 429 the column is absent (42703): every host is a 404, as for the view.
 
 The answer carries what the planner needs to brand the site (name, theme, locale, the BO-8 badge flag) and the tenant
 id the BFF signs. It holds no personal data. The theme is passed through filtered: only names and values of the shape
@@ -34,10 +34,10 @@ VIEW = "catalog.v_tenant_tripplanner_v1"
 TENANT_SQL = (f"SELECT tenant_id, slug, name, kind, in_service, served, tp_launcher, tp_branding, theme, locale "
               f"FROM {VIEW} WHERE slug = $1")
 
-# AA-1090: the same columns for a request Host (CIS 428 custom_domains; a host is unique across tenants in CIS).
+# AA-1090: the same columns for a request Host (CIS 429 custom_domains; a host is unique across tenants in CIS).
 HOST_SQL = (f"SELECT tenant_id, slug, name, kind, in_service, served, tp_launcher, tp_branding, theme, locale "
             f"FROM {VIEW} WHERE $1 = ANY (custom_domains)")
-# A lower-case host name (CIS 427 tenant_tripplanner_domain_domain_chk), at most 253 characters.
+# A lower-case host name (CIS 428 tenant_tripplanner_domain_domain_chk), at most 253 characters.
 HOST_RE = re.compile(r"^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 _TOKEN_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
@@ -45,7 +45,7 @@ _COLOUR_RE = re.compile(r"^#[0-9a-f]{6}$")
 LOCALES = ("en", "vi")
 # The SQLSTATEs that mean "the view is not there for this role" (a deploy before CIS 379): a 404, not a 503.
 VIEW_ABSENT_SQLSTATES = frozenset({"42P01", "42501"})
-# AA-1090: and "the custom_domains column is not there yet" (a deploy before CIS 428).
+# AA-1090: and "the custom_domains column is not there yet" (a deploy before CIS 429).
 HOST_ABSENT_SQLSTATES = VIEW_ABSENT_SQLSTATES | {"42703"}
 
 
