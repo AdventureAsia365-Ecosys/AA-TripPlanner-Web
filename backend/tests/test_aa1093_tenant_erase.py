@@ -147,6 +147,9 @@ def test_the_census_covers_the_pii_columns_of_the_planned_tables():
                        "tripplanner.customers.email"}
     assert not cleared & set(tenant_erase.CENSUS_KEPT)
     assert tenant_erase.census_sql("tripplanner.sessions") is None
+    # tp-032 / tp-033 (AA-1116): the AI sessions of a tenant are erased with it; ids and times only, no pii column
+    assert "tripplanner.ai_session_month" in tenant_erase.CENSUS_TABLES
+    assert tenant_erase.census_sql("tripplanner.ai_session_month") is None
     assert "tenant_id = $1::uuid" in tenant_erase.census_sql("tripplanner.outbox")
 
 

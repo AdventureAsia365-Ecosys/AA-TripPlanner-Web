@@ -166,6 +166,7 @@ CENSUS: dict[str, tuple[str, dict[str, str]]] = {
                                            "email": "email IS NOT NULL"}),
     "tripplanner.sessions": ("tenant_id = $1::uuid", {}),
     "tripplanner.ai_spend_month": ("scope = 'tenant:' || $1::text", {}),
+    "tripplanner.ai_session_month": ("scope = 'tenant:' || $1::text", {}),   # tp-032 / tp-033 (AA-1116): deleted
 }
 # pii: columns of the planned tables that stay by rule, with the rule. Never checked by the census.
 CENSUS_KEPT: dict[str, str] = {

@@ -85,7 +85,8 @@ Two HTTP Python 3.12 Lambda functions
       ▼
 Postgres (the shared RDS in acc2)
   ├─ tripplanner.*        (owned here — customers, sessions, trip_events, trip_drafts, outbox,
-  │                        narration_cache, component_id_map, job, ai_rate_counter, ai_spend_month (tp-029);
+  │                        narration_cache, component_id_map, job, ai_rate_counter, ai_spend_month (tp-029),
+  │                        ai_session_month (tp-032);
   │                        llm_spend_daily dropped by tp-024)
   ├─ catalog.v_llm_*      (CIS AI gateway contract views, CIS 323: route config + today's spend; CIS 347: app profile)
   ├─ shared.llm_call_log  (INSERT only: one ledger v2 row per attempt, app = 'tripplanner')
@@ -402,9 +403,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `docs/audits/2026-11-13-S279-session/aa1093-plan.md`).** `tp_tenant_erase` (`backend/jobs/tenant_erase.py`) is
   TripPlanner's step of the CIS offboarding saga (decision D4): it deletes every row of one tenant in the four tenant
   tables, deletes the `tripplanner.customers` rows that only this tenant's sessions link (the only FK to customers is
-  `sessions.customer_id`, so the delete runs after the sessions; a customer another tenant's session links stays) and
-  merges its `ai_spend_month` rows into the app scope, through the database function
-  `tripplanner.erase_tenant(tenant, round, dry_run, expect_plan)` (tp-031; SECURITY INVOKER; only under the system
+  `sessions.customer_id`, so the delete runs after the sessions; a customer another tenant's session links stays),
+  deletes its `ai_session_month` rows (scope `tenant:<uuid>`, tp-033, AA-1116) and merges its `ai_spend_month` rows into
+  the app scope, through the database function
+  `tripplanner.erase_tenant(tenant, round, dry_run, expect_plan)` (tp-031, tp-033; SECURITY INVOKER; only under the system
   scope with no tenant bound; session settings pinned). A DRY RUN returns contract table entries
   (`{table, action, rows, digest}`: actions delete / merge / keep, digest = md5 of the sorted
   `<primary key>|<updated_at UTC or empty>` lines, never a value) and the contract `plan_hash` (sha256 of
