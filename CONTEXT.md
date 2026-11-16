@@ -85,7 +85,8 @@ Two HTTP Python 3.12 Lambda functions
       ▼
 Postgres (the shared RDS in acc2)
   ├─ tripplanner.*        (owned here — customers, sessions, trip_events, trip_drafts, outbox,
-  │                        narration_cache, component_id_map, job, ai_rate_counter, ai_spend_month (tp-029);
+  │                        narration_cache, component_id_map, job, ai_rate_counter, ai_spend_month (tp-029),
+  │                        ai_session_month (tp-032);
   │                        llm_spend_daily dropped by tp-024)
   ├─ catalog.v_llm_*      (CIS AI gateway contract views, CIS 323: route config + today's spend; CIS 347: app profile)
   ├─ shared.llm_call_log  (INSERT only: one ledger v2 row per attempt, app = 'tripplanner')
@@ -402,9 +403,10 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `docs/audits/2026-11-13-S279-session/aa1093-plan.md`).** `tp_tenant_erase` (`backend/jobs/tenant_erase.py`) is
   TripPlanner's step of the CIS offboarding saga (decision D4): it deletes every row of one tenant in the four tenant
   tables, deletes the `tripplanner.customers` rows that only this tenant's sessions link (the only FK to customers is
-  `sessions.customer_id`, so the delete runs after the sessions; a customer another tenant's session links stays) and
-  merges its `ai_spend_month` rows into the app scope, through the database function
-  `tripplanner.erase_tenant(tenant, round, dry_run, expect_plan)` (tp-031; SECURITY INVOKER; only under the system
+  `sessions.customer_id`, so the delete runs after the sessions; a customer another tenant's session links stays),
+  deletes its `ai_session_month` rows (scope `tenant:<uuid>`, tp-033, AA-1116) and merges its `ai_spend_month` rows into
+  the app scope, through the database function
+  `tripplanner.erase_tenant(tenant, round, dry_run, expect_plan)` (tp-031, tp-033; SECURITY INVOKER; only under the system
   scope with no tenant bound; session settings pinned). A DRY RUN returns contract table entries
   (`{table, action, rows, digest}`: actions delete / merge / keep, digest = md5 of the sorted
   `<primary key>|<updated_at UTC or empty>` lines, never a value) and the contract `plan_hash` (sha256 of
@@ -934,6 +936,18 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   The bare path / demo tenant has no tenant budget. Every ledger row now carries the request's tenant
   (`tenant.current()`), so CIS Tenant 360 › Cost and the tenant's budget count planner AI. The browse Lambda checks the
   same assertion on search (`/api/browse/search` sends `x-tp-tenant-slug`; the BFF signs it as on `/api/trip`).
+  **AA-1116 (option B, CIS 438, contract 1.9):** the stop share is CIS's, never a literal 100 %: the view appends
+  `alert_pct` / `approval_pct` / `hard_stop` (the tenant's AI budget row, else the CIS settings
+  `cis.billing.ai_*_default`, 80 / 100 / on). With the hard stop on (or a 0 USD budget) AI stops at `approval_pct` of the
+  budget; with it off the budget only alerts, as CIS's own jobs (the daily app caps still apply); one
+  `tenant_ai_budget_alert` line per container, tenant and month at `alert_pct`; a NULL stop share fails closed.
+- **AI sessions quota** (AA-1116, S282 decision 10, `shared/tenant_sessions.py`, tp-032 `tripplanner.ai_session_month`):
+  an AI session is a planner session with at least one AI call in a UTC month, counted once per month on its first AI
+  call (narration, planning chat; search has no session and is not counted). The quota is
+  `catalog.v_tenant_tripplanner_v1.ai_sessions_monthly` (CIS 438, the tenant's resolved `tp.ai_sessions`; NULL = no
+  limit, still counted). A counted session continues past the quota; a new one at the quota is refused (narration basic
+  with `ai_budget_exhausted`, chat `paused` / `budget`); the quota or the count unreadable stops new sessions only (fail
+  closed). Count and insert run under a per-tenant advisory lock. The bare path / demo tenant is exempt.
 
 ### AI (Bedrock)
 

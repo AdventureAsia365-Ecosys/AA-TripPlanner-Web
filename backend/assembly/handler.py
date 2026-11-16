@@ -56,11 +56,12 @@ from backend.assembly import narration_cache
 from backend.assembly import notify as notify_mod
 from backend.assembly import registration as reg_mod
 from backend.assembly import account as account_mod
+from backend.assembly import ai_admission
 from backend.assembly import activities as activities_mod
 from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
 from backend.shared import component_ids, llm_gateway, m2m_auth, observability, ratelimit, tenant, tenant_assertion
-from backend.shared import monthly_spend, settings, tenant_budget
+from backend.shared import monthly_spend, settings, tenant_budget, tenant_sessions
 
 _COMPONENTS_RE = re.compile(r"^/trip/([^/]+)/components$")
 _COMPONENT_ITEM_RE = re.compile(r"^/trip/([^/]+)/components/([^/]+)$")
@@ -353,12 +354,11 @@ async def route(
                 paused = e.reason
         # AA-1015: model narrations per hour per session (a setting; more signed in). Counted only when this request
         # would call the model: a cached answer, an all-AA-text trip, a stopped budget or paused AI costs nothing.
-        if narrate_fn is not None:
-            decision = await ratelimit.hit(conn, ratelimit.SCOPE_NARRATE, ratelimit.KIND_SESSION, session_id,
-                                           signed_in=caller.signed_in)
-            if not decision.allowed:
-                return {"statusCode": 429, "headers": ratelimit.limited_headers(decision, _HEADERS),
-                        "body": json.dumps(ratelimit.limited_body(decision))}
+        if narrate_fn is not None:  # AA-1116: + the tenant's monthly AI sessions quota (ai_admission.py)
+            limited, narrate_fn, budget, paused = await ai_admission.narration(
+                conn, session_id, caller.signed_in, narrate_fn, budget, paused, _HEADERS)
+            if limited is not None:
+                return limited
         try:
             narration, source, ungrounded = await _narrate(conn, itinerary, narrate_fn,
                                                            day_texts=day_texts)
@@ -567,7 +567,7 @@ async def _me(method: str, path: str, *, conn, guest_token: Optional[str],
 
 # AA-1041 slice 2: the planning chat. The reasons a turn is not run, by what the planner tells the traveller.
 _CHAT_BUDGET_REASONS = frozenset({monthly_spend.REASON_APP_CAP, monthly_spend.REASON_TENANT_CAP,
-                                  llm_gateway.REASON_CAP, tenant_budget.REASON_CAP})
+                                  llm_gateway.REASON_CAP, tenant_budget.REASON_CAP, tenant_sessions.REASON_CAP})
 
 
 def _chat_paused(trip_id: str, reason: Optional[str]) -> dict:
@@ -614,14 +614,11 @@ async def _chat(conn, trip_id: str, body: dict, guest_token: Optional[str], call
         route_ = await llm_gateway.load_route(conn, plan_chat.STAGE, borrow_from=plan_chat.LENDER_STAGE)
     except llm_gateway.AiPaused as e:
         return _chat_paused(trip_id, e.reason)
-    limits = [(ratelimit.SCOPE_CHAT, ratelimit.KIND_SESSION, session_id)]
-    if client.ip:
-        limits.append((ratelimit.SCOPE_CHAT_IP, ratelimit.KIND_IP, client.ip))
-    for scope, kind, value in limits:
-        decision = await ratelimit.hit(conn, scope, kind, value, signed_in=caller.signed_in or client.signed_in)
-        if not decision.allowed:
-            return {"statusCode": 429, "headers": ratelimit.limited_headers(decision, _HEADERS),
-                    "body": json.dumps(ratelimit.limited_body(decision))}
+    limited, stop = await ai_admission.chat(conn, session_id, caller.signed_in or client.signed_in, client, _HEADERS)
+    if limited is not None:
+        return limited
+    if stop is not None:  # AA-1116: the tenant's monthly AI sessions quota
+        return _chat_paused(trip_id, stop)
 
     itinerary = await events_mod.current_itinerary(conn, trip_id)
     offered = await chat_tools.countries(conn)

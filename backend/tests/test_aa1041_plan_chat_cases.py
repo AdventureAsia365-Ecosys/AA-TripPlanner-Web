@@ -15,7 +15,7 @@ import pytest
 
 from backend import config
 from backend.assembly import chat_tools, events, handler
-from backend.shared import llm_gateway, monthly_spend, ratelimit, tenant
+from backend.shared import llm_gateway, monthly_spend, ratelimit, tenant, tenant_sessions
 from backend.tests import plan_chat_fakes as fakes
 
 CASES = json.loads((Path(__file__).parent / "fixtures" / "plan_chat_cases.json").read_text(encoding="utf-8"))["cases"]
@@ -92,6 +92,11 @@ def world(monkeypatch):
     monkeypatch.setattr(llm_gateway, "generate_text", generate_text)
     monkeypatch.setattr(llm_gateway, "record", record)
     monkeypatch.setattr(ratelimit, "hit", hit)
+
+    async def admit(db, tenant_id, session_id):              # AA-1116: the sessions quota (test_aa1116_* cover it)
+        return None
+
+    monkeypatch.setattr(tenant_sessions, "admit", admit)
     monkeypatch.setattr(chat_tools.routes_mod, "proposals", fakes.fake_proposals)
     monkeypatch.setattr(chat_tools.routes_mod, "tour_route", fakes.fake_tour_route)
     monkeypatch.setattr(config, "TP_PLAN_CHAT_MONTHLY_CAP_USD", 2.0)

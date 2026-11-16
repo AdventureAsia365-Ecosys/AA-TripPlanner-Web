@@ -4,7 +4,7 @@
   ".github/scripts/migration_numbers.py::number_problems": 14,
   ".github/scripts/workflow_lint.py::lint_workflow": 11,
   "backend/assembly/coverage.py::solve": 14,
-  "backend/assembly/handler.py::_chat": 18,
+  "backend/assembly/handler.py::_chat": 17,
   "backend/assembly/handler.py::_send_lead": 13,
   "backend/assembly/handler.py::route": 64,
   "backend/assembly/handler.py::serve_m2m": 15,
@@ -68,7 +68,7 @@
   "frontend/lib/wafChallenge.ts::reloadForWafToken": 11
  },
  "files": {
-  "backend/assembly/handler.py": 1081,
+  "backend/assembly/handler.py": 1078,
   "backend/browse/catalog.py": 875,
   "backend/shared/llm_gateway.py": 1446,
   "backend/tests/test_assembly.py": 1632,

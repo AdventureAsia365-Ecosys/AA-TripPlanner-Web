@@ -41,16 +41,28 @@ class BudgetDb:
         raise AssertionError(sql)
 
 
-def _row(source="entitlement", monthly=40.0, spent=1.0, calls=3):
+def _row(source="entitlement", monthly=40.0, spent=1.0, calls=3, alert=80, approval=100, hard_stop=True):
     return {"tenant_id": TENANT_A, "budget_source": source, "monthly_usd": monthly, "month_spent_usd": spent,
-            "month_calls": calls}
+            "month_calls": calls, "alert_pct": alert, "approval_pct": approval, "hard_stop": hard_stop}
+
+
+def _b(monthly, spent=0.0, *, source="entitlement", approval=100, hard_stop=True, alert=80):
+    return tb.TenantBudget(TENANT_A, source, monthly, spent, 0, alert, approval, hard_stop)
 
 
 @pytest.mark.parametrize("budget,reason", [
-    (tb.TenantBudget(TENANT_A, "entitlement", 40.0, 39.99), None),
-    (tb.TenantBudget(TENANT_A, "entitlement", 40.0, 40.0), tb.REASON_CAP),
-    (tb.TenantBudget(TENANT_A, "entitlement", 0.0, 0.0), tb.REASON_CAP),
-    (tb.TenantBudget(TENANT_A, "entitlement", None, 999.0), None),             # unlimited by contract
+    (_b(40.0, 39.99), None),
+    (_b(40.0, 40.0), tb.REASON_CAP),
+    (_b(0.0, 0.0), tb.REASON_CAP),
+    (_b(None, 999.0), None),                                                   # unlimited by contract
+    # AA-1116 (CIS 438): the stop share and the hard stop come from CIS
+    (_b(40.0, 31.99, approval=80), None),
+    (_b(40.0, 32.0, approval=80), tb.REASON_CAP),
+    (_b(40.0, 59.0, approval=150), None),
+    (_b(40.0, 999.0, hard_stop=False), None),                                  # alert only, as CIS
+    (_b(0.0, 0.0, hard_stop=False), tb.REASON_CAP),                            # 0 USD = no AI, whatever
+    (_b(40.0, 1.0, approval=None), tb.REASON_UNREADABLE),                      # no stop share: closed
+    (_b(40.0, 1.0, approval=None, hard_stop=None), tb.REASON_UNREADABLE),
     (tb.TenantBudget(TENANT_A, "disabled", 0.0), tb.REASON_CAP),
     (tb.TenantBudget(TENANT_A, "none", None), tb.REASON_NONE),
     (tb.TenantBudget(TENANT_A, "missing", None), tb.REASON_NONE),
@@ -80,6 +92,20 @@ async def test_the_demo_tenant_and_the_bare_path_have_no_tenant_budget():
     assert await tb.check(db, config.DEMO_TENANT_ID) is None
     assert await tb.check(db, config.DEFAULT_TENANT_ID) is None
     assert db.reads == 0
+
+
+@pytest.mark.asyncio
+async def test_alert_share_prints_one_line_a_month(monkeypatch):
+    from backend.shared import observability
+
+    lines = []
+    monkeypatch.setattr(observability, "emit", lambda evt, **kw: lines.append((evt, kw)))
+    db = BudgetDb(row=_row(monthly=10.0, spent=8.5, alert=80, approval=100))
+    assert await tb.check(db, TENANT_A) is None
+    assert await tb.check(db, TENANT_A) is None
+    alerts = [kw for evt, kw in lines if evt == "tenant_ai_budget_alert"]
+    assert len(alerts) == 1 and alerts[0]["alert_pct"] == 80 and alerts[0]["approval_pct"] == 100
+    assert db.reads == 1 and "approval_pct" in tb.BUDGET_SQL and "hard_stop" in tb.BUDGET_SQL
 
 
 @pytest.mark.asyncio
