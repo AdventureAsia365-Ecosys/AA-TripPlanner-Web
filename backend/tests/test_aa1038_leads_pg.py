@@ -53,8 +53,10 @@ CIS_390_COLUMNS = (
     "tp_launcher boolean, tp_branding boolean, theme jsonb, locale text, crm_core boolean, lead_channel text, "
     "lead_webhook_url text, lead_email text"
 )
+# AA-1116: the CIS 438 column list (BUDGET_COLUMNS of AA-CIS-App tests/integration/test_aa1116_migration_438.py), the
+# columns backend/shared/tenant_budget.py BUDGET_SQL reads.
 CIS_390_BUDGET = ("tenant_id uuid, budget_source text, monthly_usd numeric, month_spent_usd numeric(14,6), "
-                  "month_calls integer")
+                  "month_calls integer, alert_pct integer, approval_pct integer, hard_stop boolean")
 VIEW_STANDIN = f"""
 CREATE SCHEMA IF NOT EXISTS catalog;
 CREATE TABLE catalog.zz_tenant_rows ({CIS_390_COLUMNS});
