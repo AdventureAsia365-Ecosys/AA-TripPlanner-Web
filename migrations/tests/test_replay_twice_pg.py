@@ -245,10 +245,15 @@ def replay(pg_dsn):  # noqa: F811
                         superseded[f"{number:03d}"] = "changes the final state" if changed else "no-op"
                     except asyncpg.PostgresError as e:
                         superseded[f"{number:03d}"] = type(e).__name__
+            tenant_keyed = [r["name"] for r in await admin.fetch(TENANT_KEYED_SQL)]
+            erase_src = await admin.fetchval(
+                "SELECT prosrc FROM pg_proc WHERE pronamespace = 'tripplanner'::regnamespace "
+                "AND proname = 'erase_tenant'")
             return {"roles": roles, "registered_1": registered_1, "registered_2": registered_2, "before": before,
                     "after": after, "pass2_errors": pass2_errors, "rerun_exempt": rerun_exempt,
                     "superseded": superseded,
-                    "grants": [dict(r) for r in grants]}
+                    "grants": [dict(r) for r in grants],
+                    "tenant_keyed": tenant_keyed, "erase_src": erase_src or ""}
         finally:
             await admin.close()
 
@@ -344,3 +349,31 @@ def test_runtime_role_keeps_its_grants_on_every_table_and_sequence(replay):
                 and {k for k in dml if g[k]} != RUNTIME_DML_EXCEPTIONS[g["name"]]]
     missing += [g["name"] for g in sequences if not g["seq"]]
     assert tables and sequences and not missing, f"tripplanner lacks its DML / sequence grants on: {missing}"
+
+
+# AA-1116 review (tp-033): every tenant-scoped table of the final schema (a tenant_id column, or a scope column whose
+# CHECK names 'tenant:', the tp-029 spelling) must be planned by tripplanner.erase_tenant (tenant.erasure.v1), or be a
+# reviewed exception here with its rule, so a new table cannot outlive a tenant offboarding unnoticed.
+TENANT_KEYED_SQL = """
+SELECT c.relname::text AS name
+  FROM pg_class c
+ WHERE c.relnamespace = 'tripplanner'::regnamespace AND c.relkind IN ('r', 'p')
+   AND (EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped)
+        OR EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'c'
+                    AND pg_get_constraintdef(k.oid) LIKE '%tenant:%'))
+ ORDER BY 1
+"""
+ERASE_EXCEPTIONS = {
+    # tp-030 / tp-031 (AA-1093): the record of the erasure itself, kept as evidence (data standards DM-7.1).
+    "tenant_erasure_log": "erasure evidence, append-only, never deleted with the tenant's rows",
+}
+
+
+def test_every_tenant_scoped_table_is_planned_by_the_erase(replay):
+    assert "sessions" in replay["tenant_keyed"] and "ai_session_month" in replay["tenant_keyed"]
+    missing = [t for t in replay["tenant_keyed"]
+               if t not in ERASE_EXCEPTIONS and f"'tripplanner.{t}'" not in replay["erase_src"]]
+    assert not missing, (f"tenant-scoped tables tripplanner.erase_tenant does not plan: {missing}; add them to the "
+                         "function (a contract migration) or to ERASE_EXCEPTIONS with the reviewed rule")
+    stale = [t for t in ERASE_EXCEPTIONS if t not in replay["tenant_keyed"]]
+    assert not stale, f"ERASE_EXCEPTIONS names tables that are no longer tenant-scoped: {stale}"
