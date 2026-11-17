@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, agent]
 applies_to: [aa-tripplanner, tripplanner-lambda]
-last_reviewed: 2026-11-11
+last_reviewed: 2026-11-17
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -285,7 +285,7 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   transparent header → tours carousel / grid → places map + list → navy CTA band → "Around {country}" ribbon),
   `/tours/[slug]` (gallery strip / mosaic → title, key facts, chips → highlights → day-by-day timeline → where you go
   → included, sticky "Make it yours" card / bottom bar), a new `/destinations` index (every country, ISR, one
-  `getCountries()` read; in the sitemap and the purge paths), and `/trips`, `/sign-in`, the legal pages, not-found
+  `getCountries()` read; in the sitemap and the purge paths), and the legal pages, not-found
   and the error page on one navy title band (`components/site/PageIntro.tsx`). The planner keeps its layout and
   Inter; only its header turned navy. **LCP photo of a destination / tour page** is resolved on the server
   (`lib/photoResolve.ts`): the catalog photo URL's 302 `Location` (the image CDN) is read once per ISR render (1.5 s
@@ -328,7 +328,9 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   up). A **paused** key stays **404** (temporary). A **superseded** version needs nothing: the slug suffix is the
   stable `source_id`, so the old slug finds the current version and the page permanent-redirects (308) to its slug.
   A tombstone that cannot be read (before CIS 274, grant missing) degrades to the pre-L6 404.
-- `/sign-in` and `/trips` (AA-908): traveller sign-in by email code and My Trips (see "Traveller sign-in in the BFF").
+- `/sign-in` and `/trips` are retired (AA-1115): the traveller sign-in and My Trips pages, their account BFF and
+  Cognito client are gone (see "Traveller sign-in in the BFF"); both paths are the 404 page and stay reserved
+  (`lib/tenantSlug.ts` `RETIRED_PATH_SLUGS`), so an old link never opens a tenant's site.
 - `/privacy` and `/terms` (AA-886): **draft** legal pages (static, `noindex`, not in the sitemap) built on
   `components/site/LegalPage.tsx`, which always shows a "Draft — pending legal review" banner. Paths and
   the draft label live in `lib/legal.ts`; the site footer and the contact form in `TripPanel` (the only
@@ -534,53 +536,16 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
     A guest send is unchanged (`verified: false`, `identity: null`).
   - Log lines: `guest_auth` outcomes, `traveller_auth` (`invalid` / `unavailable`) and `traveller_account` (route,
     outcome, counts); never iss, sub, email or a token.
-- **Traveller sign-in in the BFF (AA-908 S5; root ADR 0006 decisions 1 and 4: email code only, no password).**
-  Option (b): the BFF drives Cognito's public API itself (`lib/cognito.ts`), there is no managed-login redirect.
-  `POST /api/auth/start {email}` calls `SignUp` without a password (a new address), else `InitiateAuth` `USER_AUTH`
-  with `PREFERRED_CHALLENGE=EMAIL_OTP` (an existing one), else `ResendConfirmationCode` (a sign-up never confirmed);
-  the browser gets the same answer in every case.
-  - **Only this BFF may create a traveller (sign-up proof).** `SignUp` carries `ValidationData` `bff_ts` + `bff_proof`
-    = hex HMAC-SHA256(task env `TP_COGNITO_SIGNUP_PROOF_KEY`, `"<email>\n<bff_ts>"`); the Infra pre sign-up trigger
-    refuses a native sign-up without a valid proof less than 5 minutes old. Otherwise anyone could pre-register a
-    traveller's address with a password through the public API and inherit the account once the traveller confirmed
-    it with our code (review round, S250). So every UNCONFIRMED traveller was created here, without a password.
-  - Two fallbacks for Cognito answers the unit tests cannot pin (confirm in the live E2E): a sign-up `Session` older
-    than 3 minutes refused by `ConfirmSignUp` is retried without it (then a sign-in code is mailed), and a sign-in
-    code refused as not authorised while its 3-minute session is still young requests a new sign-up code (an
-    abandoned sign-up may get a simulated challenge under `prevent_user_existence_errors`). `POST /api/auth/verify {code}` confirms (`ConfirmSignUp`, then
-  `InitiateAuth` with its session) or answers the challenge (`RespondToAuthChallenge`), stores the tokens and calls
-  the Lambda's `POST /me/claim` with the guest cookie (best effort). After a sign-up, a first token that does not
-  say `email_verified` is re-minted once with its refresh token (the auto sign-in can carry the attributes from
-  before the confirmation; S251). `POST /api/auth/sign-out` revokes the refresh
-  token (`RevokeToken`), clears the session cookies **and the guest cookie** (the next person on this browser must
-  not open the account's trips), and the client forgets its trip ids. `GET /api/auth/status` (always 200) feeds the
-  header link and the send form; `GET /api/me` (401 `sign_in_required` when signed out) returns the email and the
-  Lambda's `/me/trips`. My Trips shows the sign-in prompt only on 401; any other failure shows Try again and Sign out.
-  - Cookies (`lib/authSession.ts`, sealed with AES-256-GCM by `lib/seal.ts`, a copy of AA-Partner's with its own
-    purposes and salt; key = task env `TP_SESSION_SECRET`): `__Host-tp_auth` (access token, its expiry, email),
-    `__Host-tp_refresh` (refresh token; its own cookie because a Cognito refresh token is about 1.8 kB) and
-    `__Host-tp_signin` (the pending code step, 10 minutes). HttpOnly, Secure, SameSite=Lax, Path=/. When fewer than
-    60 s of the access token remain, the BFF refreshes it (`GetTokensFromRefreshToken`; rotation is on, a rotated
-    refresh token replaces the old one, the 60 s grace covers two parallel refreshes). Only a refresh refused as
-    `NotAuthorizedException` (revoked or expired) signs out; a WAF block, throttling, a Cognito 5xx or a network error
-    keeps the cookies (the still-valid access token is used, else that one request is signed out) so the next
-    request retries.
-    Only the no-store routes `/api/auth/*`, `/api/me` and `/api/trip` set them, never a CDN-cached page.
-  - `/api/trip` forwards the access token (`x-tripplanner-access`) when signed in, so My Trips opens a trip on any
-    browser and signed-in edits link their session.
-  - WAF: every Cognito call carries `x-aa-traveller-bff` = task env `TP_COGNITO_BFF_KEY` (AA-CIS-Infra secret
-    `tripplanner/<env>/cognito-bff-key`) and `X-AA-Traveller-IP` = the first `x-forwarded-for` address, so the Cognito
-    web ACL counts each traveller, not the shared egress address of the web server (Infra rule `BffRatePerTravellerIp`). The two
-    go together: without a valid traveller address neither is sent, and the call is counted per egress IP.
-  - Sign-in claims every unowned guest trip of this browser (§Traveller accounts); the privacy page tells travellers
-    to sign out on a shared computer.
-  - Without `TP_SESSION_SECRET` (32+ characters) sign-in answers 503 `sign_in_unavailable` and the header shows no
-    link: the planner works as a guest. Per-PR previews can sign in only when the env values are set for Preview (new addresses also need `TP_COGNITO_SIGNUP_PROOF_KEY`).
-  - Pages: `/sign-in` (two-step email -> code form, `?next=` same-site path, default `/trips`) and `/trips` (My
-    Trips: status Draft / Sent to an advisor, stops, days, "Open" writes the ids to localStorage and opens `/plan`),
-    both noindex. The header link (`components/AccountLink.tsx`, "My trips" only since AA-1094: no page links to
-    `/sign-in`, travellers are guests under ADR 0019 d11) is fetched by the browser,
-    because the kit pages are CDN-cached. The send form shows the signed-in email read-only.
+- **Traveller sign-in in the BFF: retired (AA-1115, S283; root ADR 0019 d11, travellers are guests).** AA-908 S5's
+  option (b) (the BFF drove Cognito's public API: `lib/cognito.ts`, `/api/auth/*`, `/api/me`, the sealed cookies
+  `__Host-tp_auth` / `__Host-tp_refresh` / `__Host-tp_signin` of `lib/authSession.ts` and `lib/seal.ts`, the
+  `/sign-in` and `/trips` pages, `components/AccountLink.tsx`, `MyTrips.tsx`, `SignInForm.tsx`, `lib/useAccount.ts`)
+  is deleted. No BFF route reads a session cookie, refreshes or forwards an access token (`x-tripplanner-access`) or
+  sends the signed-in flag (`x-tp-signed-in`); the send form always asks for the e-mail. Left for a follow-up: the
+  assembly Lambda's account routes and guards above (no access token reaches them, so every answer is the guest one),
+  `tripplanner.traveller_accounts` (tp-019) and the Infra side (the EXTERNAL `tripplanner` client, the pre sign-up
+  trigger, the task env `TP_SESSION_SECRET`, `TP_COGNITO_BFF_KEY`, `TP_COGNITO_SIGNUP_PROOF_KEY`). A browser that
+  still holds the old cookies keeps them until they expire (30 days at most); nothing reads them.
 - **My Payments on `/trips` (AA-682 S5) is retired (AA-1046, S271).** It read AA-Booking's customer payment requests
   (`booking.customer.v1`); root ADR 0019 made agencies the only customers, so the B2C half of AA-Booking (customer
   invoices and payments) is dropped and the BFF route `/api/me/payments`, `components/MyPayments.tsx` and
@@ -796,9 +761,10 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   30 s for a miss).
 - **Paths on the agency's domain** (`tenantHostPath`): `/` -> `/{slug}`, `/plan...` -> `/{slug}/plan...`,
   `/tours/{tour}` -> `/{slug}/tours/{tour}` (internal rewrites, so the tenant's branding, tours, lead route and guest
-  cookie are those of `/{slug}`); `/{slug}/...` (our path) keeps working; the BFF, static files and the shared pages
-  (sign-in, My Trips, privacy, terms) pass; AA's own catalogue pages (`/destinations`, `/tours`) and another tenant's
-  `/{slug}` are a 404 there. The proxy's matcher is now every path but the build chunks; on our own host it still acts
+  cookie are those of `/{slug}`), AA-1115 `/privacy` -> `/{slug}/privacy` and `/terms` -> `/{slug}/terms` (the
+  agency's own legal pages, never AA's); `/{slug}/...` (our path) keeps working; the BFF and static files pass; AA's
+  own catalogue pages (`/destinations`, `/tours`), the retired `/sign-in` and `/trips` and another tenant's `/{slug}`
+  are a 404 there. The proxy's matcher is now every path but the build chunks; on our own host it still acts
   only on the old paths (`actsOn`).
 - **Edge.** Agency domains are aliases of a TripPlanner AGENCY distribution of their own (the public host keeps its own
   distribution and certificate). AA-CIS-Infra routes every alias of both distributions to this service with a site
@@ -836,12 +802,8 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   grace longer than 7 days is ignored; a malformed secret fails closed (503). A non-current key in use logs
   `tenant_assertion_key_used {key}`. (Before AA-1092 the material was the edge key.) A slug that
   does not resolve is a 404 `unknown_tenant` from the BFF, a lookup that is down a 503 `tenant_lookup_unavailable`; no
-  slug header = no assertion = the default (demo) tenant, exactly as in slice 1. The account calls do the same
-  (`lib/accountProxy.ts`): the planner header's links keep the tenant (`/sign-in?next=/{slug}/plan`,
-  `/trips?tenant={slug}`), the sign-in form sends `x-tp-tenant-slug` so `POST /me/claim` claims that tenant's guest
-  trips (skipped, never claimed into the demo tenant, when the slug does not resolve), and My Trips sends it to
-  `GET /me/trips` and opens a trip in `/{slug}/plan` under that tenant's ids key. Sign-out forgets every ids key
-  (`aa-tripplanner:ids` and `aa-tripplanner:ids:<slug>`).
+  slug header = no assertion = the default (demo) tenant, exactly as in slice 1. (The account calls that carried the
+  tenant too, sign-in claim and My Trips, are retired with the traveller sign-in, AA-1115.)
 - **The Lambda trusts only the signature.** `assembly/handler.py` `tenant_assertion_answer` runs before any
   connection or SQL: a forged, altered, expired (or `exp - iat` over 300 s, or `iat` more than 30 s ahead) assertion is
   401 `tenant_assertion_invalid`, no bind; when no key can be read (AA-1092 above), 503 `tenant_assertion_unavailable`. Log
@@ -865,8 +827,27 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   logo, an AI pill without the AA name, no account link) and its brand-token block; the planner's list links to the
   agency's tour pages, never to AA's `/tours/{slug}`. `PlannerApp` clears the tab's tenant (`lib/plannerTenant.ts`)
   when it unmounts, so an AA page reached without a document load carries no agency. AA's own pages keep AA's brand.
-  No page offers "Sign in" (d11: travellers are guests; `components/AccountLink.tsx` shows only "My trips" to a
-  traveller who still holds a session, on AA's pages).
+  No page offers "Sign in" or "My trips" (d11: travellers are guests; the pages are retired, AA-1115).
+- **Agency-only brand on every /{slug} page (AA-1115, S282 audit 6.3).** `app/[tenant]/layout.tsx` replaces every
+  brand-bearing key of the root layout's metadata (title default and template `%s · <agency>`, description,
+  og:site_name; `lib/brand.ts` `tenantMetadata`), so a tab title or link preview never names Adventure Asia (a slug
+  that does not resolve gets a neutral title). The words the planner's shared components show (narration badge, the
+  catalogue AI label, "built from N tours", the next-stops caption, the AA form's consent, the BO-8 badge) come from
+  `lib/brand.ts` `brandCopy(agency)` through `components/BrandContext.tsx`, which `PlannerApp` provides for an
+  agency's planner (AA's own planner and the AA-hosted demo tenant keep the default, AA's). Messages both sites share
+  (AI paused, route finder, tour list, retired stops, chat intro, the demo notice, the preview line) are worded
+  without a brand. The planner's legal links (lead form, AI notices) go to the agency's own draft pages
+  `/{slug}/privacy` and `/{slug}/terms` (`lib/legal.ts` `legalPaths`; `components/AgencyLegalPage.tsx`: the agency
+  is the controller of the trips sent to it; the AA-hosted demo tenant is redirected to AA's pages). The share view
+  carries the agency bar; an agency tour's 404 is a plain kit state (`app/[tenant]/tours/[tour]/not-found.tsx`), not
+  AA's 404. Guard: `lib/agencyBrand.test.ts` walks the imports of every `app/[tenant]` file (and the root layout):
+  only `lib/brand.ts` may spell the brand, only an allow-listed file may use AA's own words, `brandCopy(name)` and
+  `tenantMetadata` never return it. The one exception is the BO-8 badge when the agency switched it on.
+- **Language of an agency's pages (AA-1115).** One root layout renders `<html lang="en">` (AA's pages stay static);
+  the /{slug} layout marks its content with the tenant locale (`en` | `vi`, CIS site settings) on a `display:
+  contents` wrapper, sets `<html lang>` before paint with an inline script (`lib/tenantLang.ts`) and keeps it on a
+  client-side navigation (`components/TenantLang.tsx`, which gives `en` back on unmount). The planner's EN / VI
+  notices and the lead form's language read `<html lang>`.
 - **Isolation.** Under tenant A's assertion only A's sessions and trips are visible (tp-028 policy `<table>_tenant`):
   another tenant's trip is the same 404 as an unknown one and a mutation is 401 with no write
   (`backend/tests/test_aa1038_tenant_site_pg.py`, two synthetic agencies). The bare path binds the demo tenant, so it
@@ -1041,9 +1022,10 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
 - **Per-visitor AI limits (AA-1015, migration tp-023)**: `backend/shared/ratelimit.py` counts each request that would
   call a model in `tripplanner.ai_rate_counter` (fixed windows, key = HMAC of scope + kind + value keyed with the edge
   key: no IP, session or account stored): narrate 10 / hour / guest session, search 30 / minute / traveller IP, chat
-  (AA-1041) 20 / hour / guest session and 40 / hour / traveller IP, x2 signed in. Over the limit: 429 `rate_limited` with `retry_after_s` and a calm EN / VI line in the planner. The BFF
-  forwards `x-tp-client-ip` (all trip calls and search) and `x-tp-signed-in` (search; narration uses the verified
-  access token); both are trusted only with the right `x-tripplanner-key`. The counter fails open (ERROR line); the
+  (AA-1041) 20 / hour / guest session and 40 / hour / traveller IP (the x2 signed-in allowance no longer applies: the
+  BFF sends no access token or `x-tp-signed-in` since AA-1115). Over the limit: 429 `rate_limited` with `retry_after_s`
+  and a calm EN / VI line in the planner. The BFF forwards `x-tp-client-ip` (all trip calls and search), trusted only
+  with the right `x-tripplanner-key`. The counter fails open (ERROR line); the
   jobs Lambda kind `tp_retention_ai_rate_counter` deletes windows older than 2 days (DM-7.2). Optional stage caps
   `TP_DAILY_SPEND_CAP_SEARCH_USD` / `_COMPOSE_USD` (unset = combined cap only) and a once-a-day `llm_spend_alert`
   line at 80 % and 100 % of a cap.
