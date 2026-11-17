@@ -4,10 +4,12 @@ the agency notice when its AI sessions quota is used up.
 dev (the default, today's behaviour): the app-wide caps (the daily cap, the chat's monthly app cap) stop the AI of
 every agency, and a spend / budget / quota that cannot be read stops it too. prod: those app-wide caps only alert and a
 read error degrades with an error line; an agency's own AI budget and AI sessions quota stay hard. When the quota
-stops a new session the agency's bell gets one notice a month (plain INSERT; the unique index = already told). The
+stops a new session TripPlanner records one ai.allowance_used outbox event a month (tp-034; CIS pulls it into the
+agency's bell), and a degraded check under prod one ai.spend_degraded event a day (the CIS admin bell). The
 traveller notice is neutral (frontend lib/aiNotices.ts). Invented ids only; no network, no database."""
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -195,12 +197,33 @@ async def test_chat_spend_read_error_degrades_on_prod_only(env, lines):
 
 # ── L2 / L4: the AI sessions quota (tenant_sessions.admit) ───────────────────────────────────────────────────────────
 
+class Outbox:
+    """The tp-034 outbox events (ai.allowance_used, ai.spend_degraded) of one container, in memory: ON CONFLICT
+    (idempotency_key) DO NOTHING RETURNING id = None for a key already there; ``error`` makes the next write raise."""
+
+    def __init__(self, error=None):
+        self.error = error
+        self.rows: dict[str, tuple] = {}
+
+    def write(self, sql, args):
+        if self.error:
+            raise self.error
+        tenant_id, event, key, payload = args
+        if key in self.rows:
+            return None
+        self.rows[key] = (tenant_id, event, json.loads(payload))
+        return len(self.rows)
+
+    def events(self, event):
+        return [(k, *v) for k, v in self.rows.items() if v[1] == event]
+
+
 class QuotaDb:
-    """The quota view row, the tp-032 table and the notice INSERT of one tenant, in memory."""
+    """The quota view row, the tp-032 table and the tp-034 outbox of one tenant, in memory."""
 
     def __init__(self, quota=1, used=1, quota_error=None, notice_error=None):
-        self.quota, self.used, self.quota_error, self.notice_error = quota, used, quota_error, notice_error
-        self.notices: list = []
+        self.quota, self.used, self.quota_error = quota, used, quota_error
+        self.outbox = Outbox(notice_error)
 
     async def fetchrow(self, sql, *args):
         if self.quota_error:
@@ -212,13 +235,11 @@ class QuotaDb:
             return None
         if sql == ts.COUNT_SQL:
             return self.used
+        if sql in (ts.NOTICE_SQL, spend_bell.SQL):
+            return self.outbox.write(sql, args)
         raise AssertionError(sql)
 
     async def execute(self, sql, *args):
-        if sql == ts.NOTICE_SQL:
-            if self.notice_error:
-                raise self.notice_error
-            self.notices.append(args)
         return "OK"
 
     @asynccontextmanager
@@ -226,43 +247,51 @@ class QuotaDb:
         yield
 
 
+def test_the_notices_go_to_the_tripplanner_outbox_never_to_a_cis_table():
+    for sql in (ts.NOTICE_SQL, spend_bell.SQL):
+        assert sql.startswith("INSERT INTO tripplanner.outbox ") and "shared." not in sql
+        assert "ON CONFLICT (idempotency_key) DO NOTHING RETURNING id" in sql
+
+
 @pytest.mark.asyncio
 async def test_a_used_up_quota_stops_and_tells_the_agency_once(env, lines):
     db = QuotaDb(quota=1, used=1)
     assert await ts.admit(db, AGENCY, SESSION) == ts.REASON_CAP
     assert await ts.admit(db, AGENCY, SESSION) == ts.REASON_CAP
-    assert len(db.notices) == 1                                   # one attempt per tenant and month per container
-    tenant_id, event, entity_type, entity_id, payload = db.notices[0]
-    assert (tenant_id, event, entity_type) == (AGENCY, "tripplanner.ai_allowance_used", "tripplanner_ai")
-    assert entity_id.startswith("tripplanner:") and '"resets_at"' in payload
+    events = db.outbox.events("ai.allowance_used")
+    assert len(events) == 1                                       # one attempt per tenant and month per container
+    key, tenant_id, _, payload = events[0]
+    assert tenant_id == AGENCY and key.startswith(f"ai.allowance_used:{AGENCY}:")
+    assert set(payload) == {"kind", "month", "resets_at"}         # no personal data (tp-034 outbox_ai_notice_chk)
     env("prod")
     assert await ts.admit(QuotaDb(quota=1, used=1), AGENCY, SESSION) == ts.REASON_CAP   # the plan quota stays hard
 
 
 @pytest.mark.asyncio
 async def test_the_notice_already_written_this_month_is_not_retried(lines):
-    db = QuotaDb(notice_error=PgError("23505"))
+    db = QuotaDb()
+    db.outbox.rows[f"ai.allowance_used:{AGENCY}:2026-11"] = (AGENCY, "ai.allowance_used", {})   # another container
     assert await ts.notify_agency(db, AGENCY, NOV) is False
-    db.notice_error = None
-    assert await ts.notify_agency(db, AGENCY, NOV) is False and db.notices == []
+    db.outbox.rows.clear()
+    assert await ts.notify_agency(db, AGENCY, NOV) is False and db.outbox.rows == {}           # not asked again
 
 
 @pytest.mark.asyncio
 async def test_a_failing_notice_never_raises_and_retries_later(lines, monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(ts, "_clock", lambda: clock[0])
-    db = QuotaDb(notice_error=PgError("42501"))                  # CIS 447 not applied yet: no grant
+    db = QuotaDb(notice_error=PgError("23514"))                  # tp-034 not applied yet: the event CHECK refuses
     assert await ts.notify_agency(db, AGENCY, NOV) is False
-    db.notice_error = None
+    db.outbox.error = None
     assert await ts.notify_agency(db, AGENCY, NOV) is False      # paced
     clock[0] += tb.FAILURE_TTL_SECONDS + 1
-    assert await ts.notify_agency(db, AGENCY, NOV) is True and len(db.notices) == 1
+    assert await ts.notify_agency(db, AGENCY, NOV) is True and len(db.outbox.rows) == 1
 
 
 def test_the_notice_names_the_month_and_the_reset_day():
-    entity, payload = ts.notice_payload(datetime(2026, 12, 9, tzinfo=timezone.utc))
-    assert entity == "tripplanner:2026-12" and payload == {"kind": "tripplanner", "month": "2026-12",
-                                                           "resets_at": "2027-01-01"}
+    key, payload = ts.notice_payload(AGENCY, datetime(2026, 12, 9, tzinfo=timezone.utc))
+    assert key == f"ai.allowance_used:{AGENCY}:2026-12"
+    assert payload == {"kind": "tripplanner", "month": "2026-12", "resets_at": "2027-01-01"}
 
 
 @pytest.mark.asyncio
@@ -275,21 +304,17 @@ async def test_an_unreadable_quota_fails_closed_on_dev_and_degrades_on_prod(env,
     assert any(kw.get("what") == "tenant_sessions_degraded" for _, kw in lines)
 
 
-# ── L4: the staff bell of a degraded check (spend_bell, CIS 447) ─────────────────────────────────────────────────────
+# ── L4: the staff bell event of a degraded check (spend_bell, tp-034) ────────────────────────────────────────────────
 
 class BellDb:
-    """Records the bell INSERTs; ``error`` makes the next one raise."""
+    """Records the bell events; ``error`` makes the next one raise."""
 
     def __init__(self, error=None):
-        self.error = error
-        self.bells: list = []
+        self.outbox = Outbox(error)
 
-    async def execute(self, sql, *args):
-        if sql == spend_bell.SQL:
-            if self.error:
-                raise self.error
-            self.bells.append(args)
-        return "OK"
+    async def fetchval(self, sql, *args):
+        assert sql == spend_bell.SQL
+        return self.outbox.write(sql, args)
 
     @asynccontextmanager
     async def transaction(self):
@@ -302,13 +327,14 @@ async def test_a_degraded_spend_read_raises_one_admin_bell_a_day(monkeypatch, en
     _spent(monkeypatch, error=PgError("57014"))
     _tenant_check(monkeypatch)
     db = BellDb()
-    for _ in range(3):
-        assert (await gw.budget_status(db, "tp_compose"))["exhausted"] is False
-    assert len(db.bells) == 1                                    # once per check and UTC day per container
-    tenant_id, event, entity_type, entity_id, payload = db.bells[0]
-    assert (tenant_id, event, entity_type) == (spend_bell.PLATFORM_TENANT_ID, "platform.tripplanner.spend_degraded",
-                                               "tripplanner_ai")
-    assert entity_id.startswith("spend_unreadable:") and "prod spend rules" in payload
+    with tenant.using(AGENCY, source=tenant.SOURCE_ASSERTION):
+        for _ in range(3):
+            assert (await gw.budget_status(db, "tp_compose"))["exhausted"] is False
+    events = db.outbox.events("ai.spend_degraded")
+    assert len(events) == 1                                      # once per check and UTC day per container
+    key, tenant_id, _, payload = events[0]
+    assert tenant_id == AGENCY and key.startswith("ai.spend_degraded:spend_unreadable:")
+    assert payload["check"] == "spend_unreadable" and payload["stage"] == "tp_compose"
     assert sum(kw.get("what") == "spend_unreadable_degraded" for _, kw in lines) == 3   # the error line every time
 
 
@@ -317,55 +343,51 @@ async def test_dev_raises_no_bell(monkeypatch, env, lines):
     _spent(monkeypatch, error=PgError("57014"))
     _tenant_check(monkeypatch)
     db = BellDb()
-    assert (await gw.budget_status(db, "tp_compose"))["exhausted"] is True
-    assert db.bells == []
+    with tenant.using(AGENCY, source=tenant.SOURCE_ASSERTION):
+        assert (await gw.budget_status(db, "tp_compose"))["exhausted"] is True
+    assert db.outbox.rows == {}
 
 
 @pytest.mark.asyncio
 async def test_the_bell_already_raised_today_is_not_retried_and_a_failure_retries_later(monkeypatch, lines):
     clock = [10.0]
     monkeypatch.setattr(spend_bell, "_clock", lambda: clock[0])
-    db = BellDb(error=PgError("23505"))
-    assert await spend_bell.degraded(db, "tenant_sessions", now=NOV) is False
-    db.error = None
-    assert await spend_bell.degraded(db, "tenant_sessions", now=NOV) is False and db.bells == []
-    db.error = PgError("42501")                                  # CIS 447 not applied yet: no grant
-    assert await spend_bell.degraded(db, "monthly_spend_unreadable", now=NOV) is False
-    db.error = None
-    assert await spend_bell.degraded(db, "monthly_spend_unreadable", now=NOV) is False    # paced
+    db = BellDb()
+    db.outbox.rows["ai.spend_degraded:tenant_sessions:2026-11-17"] = (AGENCY, "ai.spend_degraded", {})
+    assert await spend_bell.degraded(db, "tenant_sessions", tenant_id=AGENCY, now=NOV) is False   # raised already
+    db.outbox.error = PgError("42501")
+    assert await spend_bell.degraded(db, "monthly_spend_unreadable", tenant_id=AGENCY, now=NOV) is False
+    db.outbox.error = None
+    assert await spend_bell.degraded(db, "monthly_spend_unreadable", tenant_id=AGENCY, now=NOV) is False   # paced
     clock[0] += spend_bell.FAILURE_TTL_SECONDS + 1
-    assert await spend_bell.degraded(db, "monthly_spend_unreadable", now=NOV) is True
-    assert db.bells[0][3] == "monthly_spend_unreadable:2026-11-17"
-    assert await spend_bell.degraded(object(), "spend_unreadable", now=NOV) is False      # never raises
-    assert await spend_bell.degraded(None, "spend_unreadable", now=NOV) is False
+    assert await spend_bell.degraded(db, "monthly_spend_unreadable", tenant_id=AGENCY, now=NOV) is True
+    assert "ai.spend_degraded:monthly_spend_unreadable:2026-11-17" in db.outbox.rows
+    assert await spend_bell.degraded(object(), "spend_unreadable", tenant_id=AGENCY, now=NOV) is False  # never raises
+    assert await spend_bell.degraded(None, "spend_unreadable", tenant_id=AGENCY, now=NOV) is False
+
+
+@pytest.mark.asyncio
+async def test_no_bound_tenant_writes_no_event_but_keeps_the_error_line(lines):
+    db = BellDb()
+    assert await spend_bell.degraded(db, "spend_unreadable", now=NOV) is False
+    assert db.outbox.rows == {} and any(kw.get("what") == "spend_unreadable_degraded" for _, kw in lines)
 
 
 @pytest.mark.asyncio
 async def test_the_quota_and_chat_degrades_raise_their_bells(env, lines):
     env("prod")
     db = QuotaDb(quota_error=PgError("42501"))
-    db.bells = []
-    orig = db.execute
-
-    async def execute(sql, *args):
-        if sql == spend_bell.SQL:
-            db.bells.append(args)
-            return "OK"
-        return await orig(sql, *args)
-    db.execute = execute
     assert await ts.admit(db, AGENCY, SESSION) is None
     month = MonthDb(error=PgError("42P01"))
-    month.bells = []
-    month.execute = lambda sql, *args: _record(month, sql, args)
+    month.outbox = Outbox()
+
+    async def fetchval(sql, *args):
+        return month.outbox.write(sql, args)
+    month.fetchval = fetchval
     month.transaction = None
     assert await monthly_spend.check(month, "tp_plan_chat", AGENCY, app_cap_usd=2, tenant_cap_usd=2) is None
-    assert [b[3].split(":")[0] for b in db.bells + month.bells] == ["tenant_sessions", "monthly_spend_unreadable"]
-
-
-async def _record(db, sql, args):
-    if sql == spend_bell.SQL:
-        db.bells.append(args)
-    return "OK"
+    keys = [k for k, *_ in db.outbox.events("ai.spend_degraded") + month.outbox.events("ai.spend_degraded")]
+    assert [k.split(":")[1] for k in keys] == ["tenant_sessions", "monthly_spend_unreadable"]
 
 
 # ── the stage caps and the near-cap share are settings (CIS 447) ────────────────────────────────────────────────────

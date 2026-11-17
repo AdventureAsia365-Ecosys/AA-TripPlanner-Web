@@ -5,7 +5,7 @@ AI spend rules per environment (AA-1126 G3 / L4, setting ``tripplanner.spend.env
   daily cap, a stage cap) stops the AI of every agency; a spend or an agency AI budget that cannot be read fails closed.
 - prod (tech lead policy S283, pay per use): a reached app-wide cap only alerts (``llm_spend_alert`` threshold
   ``cap_alert_only``, the answer carries ``alert_only``); a read error degrades with an ``llm_gateway_error`` line
-  (``*_degraded``), one staff bell per check and UTC day (``spend_bell``, CIS 447), and the call goes on. An agency's
+  (``*_degraded``), one staff bell event per check and UTC day (``spend_bell``, tp-034), and the call goes on. An agency's
   own AI budget (``tenant_budget``) stays hard.
 
 The stage caps and the near-cap share are settings too (CIS 447: ``tripplanner.spend.stage_cap_compose_usd`` /

@@ -60,9 +60,7 @@ _ALLOWED_TRIPPLANNER = {"sessions", "customers", "trip_events", "trip_drafts", "
                         "ai_spend_month",   # tp-029, AA-1041 (the planning chat's monthly caps)
                         "ai_session_month",   # tp-032, AA-1116 (the monthly AI sessions quota)
                         "tenant_erasure_log", "erase_tenant"}   # tp-030, AA-1093 (tenant offboarding)
-# CIS 173: the ledger INSERT of the model gateway; CIS 447 (AA-1126 L2): the INSERT of the agency's AI allowance notice
-# (the tripplanner role may write exactly that row and read nothing of the table).
-_ALLOWED_SHARED = {"llm_call_log", "notifications"}
+_ALLOWED_SHARED = {"llm_call_log"}   # CIS 173: the ledger INSERT of the model gateway
 # AA-1029: AA-Booking's contract view price.from.v1 (Booking bk-039 grants it to role tripplanner), nothing else of booking.
 _ALLOWED_BOOKING = {"v_from_prices"}
 
@@ -88,13 +86,10 @@ def _sql_strings(text: str):
 # S279 L5 (AA-1096): a whole literal that is a settings key ("tripplanner.<area>.<name>", backend/shared/settings.py)
 # is a key of catalog.v_app_settings_v1, not a table.
 _SETTING_KEY = re.compile(r"^tripplanner\.[a-z][a-z0-9_]*\.[a-z0-9_]+$")
-# AA-1126: a whole literal that is a notification event name of the CIS bell, not a table.
-_EVENT_NAMES = {"tripplanner.ai_allowance_used", "platform.tripplanner.spend_degraded"}  # + L4 staff bell
 
 
 def _foreign_reads(text: str) -> list[str]:
-    return [m.group(0) for lit in _sql_strings(text) if not _SETTING_KEY.match(lit) and lit not in _EVENT_NAMES
-            for m in _QUALIFIED.finditer(lit)
+    return [m.group(0) for lit in _sql_strings(text) if not _SETTING_KEY.match(lit) for m in _QUALIFIED.finditer(lit)
             if not _allowed(m.group(1), m.group(2))]
 
 

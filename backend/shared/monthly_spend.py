@@ -90,14 +90,14 @@ async def check(db: Any, stage: str, tenant_id: Optional[str], *, app_cap_usd: f
     if time.monotonic() < _hold_until.get(stage, 0.0):
         if not prod:
             return REASON_UNREADABLE
-        await spend_bell.degraded(db, "monthly_spend_unreadable", stage=stage)
+        await spend_bell.degraded(db, "monthly_spend_unreadable", stage=stage, tenant_id=tenant_id)
         return None
     try:
         spent = await read(db, stage, tenant_id)
     except Exception as e:  # noqa: BLE001 — fail closed (dev), only the type and SQLSTATE are logged
         if prod:
-            await spend_bell.degraded(db, "monthly_spend_unreadable", stage=stage, error=type(e).__name__,
-                                      sqlstate=getattr(e, "sqlstate", None))
+            await spend_bell.degraded(db, "monthly_spend_unreadable", stage=stage, tenant_id=tenant_id,
+                                      error=type(e).__name__, sqlstate=getattr(e, "sqlstate", None))
             return None
         observability.emit("llm_gateway_error", level="error", what="monthly_spend_unreadable", stage=stage,
                            error=type(e).__name__, sqlstate=getattr(e, "sqlstate", None))

@@ -20,10 +20,12 @@ per-visitor limits, and answers None (the call may run) or the reason it may not
   session go on (one ``llm_gateway_error`` line ``tenant_sessions_degraded`` and the day's staff bell,
   ``spend_bell``); a reached quota stays a hard stop.
 
-AA-1126 L2: when the quota stops a new session the agency is told in its own Content studio bell: one
-``shared.notifications`` row ``tripplanner.ai_allowance_used`` per tenant and UTC month (CIS 447: the tripplanner role
-may INSERT exactly that row, nothing else; a second one hits the unique index and counts as "already told"). The
-traveller only sees the neutral notice of the planner (frontend ``lib/aiNotices.ts``). Best effort, never raises.
+AA-1126 L2: when the quota stops a new session the agency is told in its own Content studio bell. TripPlanner writes
+one ``tripplanner.outbox`` event ``ai.allowance_used`` per tenant and UTC month (tp-034; idempotency key
+``ai.allowance_used:<tenant>:<YYYY-MM>``, ``ON CONFLICT DO NOTHING``), and CIS pulls it through the contract view
+``tripplanner.v_ai_notices_v1`` and writes its own bell row (data standards DM-5.4: TripPlanner never writes a CIS
+table). The traveller only sees the neutral notice of the planner (frontend ``lib/aiNotices.ts``). Best effort, never
+raises.
 
 The count and the insert run under a per-tenant transaction advisory lock, so two new sessions at once never pass the
 quota. The quota read is cached like the tenant budget (``tenant_budget.CACHE_TTL_SECONDS`` per tenant and container,
@@ -32,12 +34,11 @@ and is not counted.
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
-
-import json
 from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Optional
 
 from backend.shared import observability, settings, spend_bell, tenant_budget
 
@@ -52,12 +53,11 @@ COUNT_SQL = f"SELECT count(*) AS n FROM {TABLE} WHERE scope = $1 AND month = {_M
 ADD_SQL = (f"INSERT INTO {TABLE} (scope, month, session_id) VALUES ($1, {_MONTH}, $2::uuid)"
            f" ON CONFLICT (scope, month, session_id) DO NOTHING")
 
-NOTICE_EVENT = "tripplanner.ai_allowance_used"
-NOTICE_ENTITY_TYPE = "tripplanner_ai"
-# A plain INSERT: the tripplanner role may not read shared.notifications, so no ON CONFLICT (index inference needs
-# SELECT); the CIS 447 unique index refuses a second notice of the month (UniqueViolation = already told).
-NOTICE_SQL = ("INSERT INTO shared.notifications (tenant_id, actor_type, event_type, entity_type, entity_id, payload,"
-              " target_roles) VALUES ($1::uuid, 'system', $2, $3, $4, $5::jsonb, ARRAY['tenant'])")
+# tp-034: the agency notice is an event of TripPlanner's own outbox (the tenant policy of tp-028 applies: the row is the
+# bound tenant's); CIS pulls it through tripplanner.v_ai_notices_v1. RETURNING nothing = already written this month.
+NOTICE_EVENT = "ai.allowance_used"
+NOTICE_SQL = ("INSERT INTO tripplanner.outbox (tenant_id, event, schema_version, idempotency_key, aggregate_id, payload)"
+              " VALUES ($1::uuid, $2, 1, $3, $1::uuid, $4::jsonb) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id")
 REASON_CAP = "tenant_sessions_cap"
 REASON_UNREADABLE = "tenant_sessions_unreadable"
 TENANT_PREFIX = "tenant:"
@@ -161,34 +161,35 @@ async def _unreadable_stop(db: Any, tenant_id: str) -> Optional[str]:
     return None
 
 
-def notice_payload(now: Optional[datetime] = None) -> tuple[str, dict]:
-    """(entity_id, payload) of this month's notice: ``tripplanner:<YYYY-MM>`` and the day the quota resets."""
+def notice_payload(tenant_id: str, now: Optional[datetime] = None) -> tuple[str, dict]:
+    """(idempotency key, payload) of this month's notice: ``ai.allowance_used:<tenant>:<YYYY-MM>`` and the month and
+    the day the quota resets (no personal data: tp-034 ``outbox_ai_notice_chk``)."""
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     resets = (now.replace(day=1) + timedelta(days=32)).replace(day=1).date()
     month = now.strftime("%Y-%m")
-    return f"tripplanner:{month}", {"kind": "tripplanner", "month": month, "resets_at": resets.isoformat()}
+    return (f"{NOTICE_EVENT}:{tenant_id}:{month}",
+            {"kind": "tripplanner", "month": month, "resets_at": resets.isoformat()})
 
 
 async def notify_agency(db: Any, tenant_id: str, now: Optional[datetime] = None) -> bool:
-    """AA-1126 L2: the agency's bell says its plan's AI sessions are used up this month (module docstring). True when
-    written now. At most one attempt per tenant and month per container (a failed write retries after
-    ``tenant_budget.FAILURE_TTL_SECONDS``). Never raises; runs in its own savepoint so a refusal never aborts the
+    """AA-1126 L2: the outbox event that tells the agency its plan's AI sessions are used up this month (module
+    docstring). True when written now. At most one attempt per tenant and month per container (a failed write retries
+    after ``tenant_budget.FAILURE_TTL_SECONDS``). Never raises; runs in its own savepoint so a refusal never aborts the
     caller's transaction."""
-    entity, payload = notice_payload(now)
+    notice_key, payload = notice_payload(tenant_id, now)
     key = f"{tenant_id}:{payload['month']}"
     if _clock() < _noticed.get(key, 0.0):
         return False
     try:
         async with db.transaction():
-            await db.execute(NOTICE_SQL, tenant_id, NOTICE_EVENT, NOTICE_ENTITY_TYPE, entity, json.dumps(payload))
+            written = await db.fetchval(NOTICE_SQL, tenant_id, NOTICE_EVENT, notice_key, json.dumps(payload))
     except Exception as e:  # noqa: BLE001 — best effort
-        if getattr(e, "sqlstate", None) == "23505":           # the unique index: told already this month
-            _noticed[key] = float("inf")
-            return False
         _noticed[key] = _clock() + tenant_budget.FAILURE_TTL_SECONDS
         observability.emit("tenant_ai_sessions_notice_failed", level="warning", tenant_id=tenant_id,
                            error=type(e).__name__, sqlstate=getattr(e, "sqlstate", None))
         return False
     _noticed[key] = float("inf")
+    if written is None:                                       # the outbox has it already: told this month
+        return False
     observability.emit("tenant_ai_sessions_notice", tenant_id=tenant_id, month=payload["month"])
     return True
