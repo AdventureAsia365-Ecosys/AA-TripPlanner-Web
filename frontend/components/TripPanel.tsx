@@ -16,10 +16,10 @@ import { AiNotice } from "@/ui/AiNotice";
 import AiLabel from "@/components/AiLabel";
 import { aiNotice, narrationNoticeVariant } from "@/lib/aiNotices";
 import { parseNarration } from "@/lib/narration";
-import { LEGAL_LINKS, TERMS_AI_PATH } from "@/lib/legal";
+import { useBrand } from "@/components/BrandContext";
+import type { NarrationSource } from "@/lib/brand";
 import { formatDays } from "@/lib/text";
 import { reasonText, stopLabel, unavailableBanner } from "@/lib/availability";
-import { useAccount } from "@/lib/useAccount";
 import { ADVISOR_HANDOFF_DEMO, DEMO_NOTICE } from "@/lib/advisorDemo";
 import LeadForm from "@/components/LeadForm";
 import { isAgencyPlanner } from "@/lib/leadForm";
@@ -33,41 +33,10 @@ const DAY_KIND_LABEL: Record<string, string> = {
 
 const LONG_TRIP_WARN_DAYS = 25;
 
-// AA-819 (D2): the narration badge per `source` of POST /trip/{id}/narrate. The visible label itself
-// says AI (not only the tap-to-open explanation): AA master text is the CIS writer model's output.
-// `basic` (daily AI budget spent, no AA day at all: neutral name lines) has no AI text and no badge;
-// `master_basic` is the same fallback with some AA days in it.
-const AA_ITINERARY_LABEL = "AA itinerary · Adventure Asia AI";
-const AA_ITINERARY_SHORT = "AA itinerary · AA AI";
-const AA_ITINERARY_TEXT =
-  "Adventure Asia's own itinerary text for these tour days, written by AI from our tour notes and " +
-  "checked by automated quality checks.";
-const NARRATION_LABEL: Record<string, { label: string; shortLabel: string; explanation: string }> = {
-  master: {
-    label: AA_ITINERARY_LABEL,
-    shortLabel: AA_ITINERARY_SHORT,
-    explanation: `${AA_ITINERARY_TEXT} Your advisor confirms every detail.`,
-  },
-  master_basic: {
-    label: AA_ITINERARY_LABEL,
-    shortLabel: AA_ITINERARY_SHORT,
-    explanation:
-      `${AA_ITINERARY_TEXT} AI writing is not available right now (paused, or today's limit is reached), ` +
-      "so the days it does not cover show only their places. Your advisor confirms every detail.",
-  },
-  mixed: {
-    label: "AA itinerary + Adventure Asia AI",
-    shortLabel: "AA itinerary + AA AI",
-    explanation:
-      "Mostly Adventure Asia's own itinerary text, written by AI from our tour notes and checked by " +
-      "automated quality checks; AI also wrote the days it did not cover. Your advisor confirms every detail.",
-  },
-  llm: {
-    label: "Adventure Asia AI narration",
-    shortLabel: "AA AI narration",
-    explanation: "Written by AI from the tour descriptions. Your advisor confirms every detail.",
-  },
-};
+// AA-819 (D2): the narration badge per `source` of POST /trip/{id}/narrate (AA-1115: its words come from the page's brand,
+// components/BrandContext.tsx, so an agency's planner never names Adventure Asia). `basic` (daily AI budget spent, no
+// AA day at all: neutral name lines) has no AI text and no badge; `master_basic` is the same fallback with some AA
+// days in it.
 
 // Map each gateway IATA back to its country, for a "countries visited" count.
 const IATA_TO_COUNTRY: Record<string, string> = Object.entries(
@@ -117,10 +86,6 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
   const totalDays = tripDays + customDays.length;
   const [showReg, setShowReg] = useState(false);
   const [reg, setReg] = useState({ name: "", phone: "", email: "", consent: false });
-  // AA-908: a signed-in traveller's email comes from the account (verified by the code), never typed. The
-  // assembly Lambda reads it from the access token; the field below only shows it.
-  const account = useAccount();
-  const accountEmail = account.signedIn ? account.email : null;
   const [sentMsg, setSentMsg] = useState<string | null>(null);
   const [demoNotice, setDemoNotice] = useState(false);
   // AA-1038 slice 3: on an agency tenant's planner the button opens the trip request form (lead.submitted.v1).
@@ -128,6 +93,9 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
   const agencySlug = plannerTenant();
   const agency = isAgencyPlanner(agencySlug) ? plannerAgency() : null;
   const agencyName = agency?.name || "your travel agency";
+  // AA-1115: the words and legal links of this page's brand (an agency's own, or Adventure Asia's).
+  const { copy, legal } = useBrand();
+  const badge = copy.poweredBy(agency?.brandingBadge ?? false);
   // Per-leg travel estimates between consecutive stops, keyed by the component the leg leaves from. AA-847 slice
   // 6d: a river / road / trail day is a "feature" leg along the line between its two stops (lib/lines.ts planTrip).
   const [legs, setLegs] = useState<Map<string, RouteLeg>>(new Map());
@@ -225,7 +193,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
       setDemoNotice(true);
       return;
     }
-    const res = await send(withCustomer ? { ...reg, email: accountEmail ?? reg.email } : undefined);
+    const res = await send(withCustomer ? reg : undefined);
     if (res.demo) {
       setShowReg(false);
       setDemoNotice(true);
@@ -413,28 +381,28 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
               </div>
             )}
 
-            {/* AA-674: the real Adventure Asia tours this trip is built from. */}
+            {/* AA-674: the real tours this trip is built from. */}
             {coverage && coverage.legs.length > 0 && (
               <div
                 className={`mb-3 rounded-xl border p-3 ${
                   coverage.coverable ? "border-k-line bg-k-card" : "border-k-danger-border bg-k-danger-soft"
                 }`}
-                aria-label="Built from Adventure Asia tours"
+                aria-label={copy.coverage.aria}
               >
                 <p className="text-xs font-semibold text-k-ink">
                   {coverage.coverable
-                    ? `Built from ${coverage.tours} Adventure Asia tour${coverage.tours > 1 ? "s" : ""}`
-                    : "Part of this trip isn't covered by an AA tour"}
+                    ? copy.coverage.built(coverage.tours)
+                    : copy.coverage.uncovered}
                 </p>
                 <ul className="mt-1.5 space-y-1">
                   {coverage.legs.map((leg, i) => (
                     <li key={`${leg.tour_id}-${leg.day_from}-${i}`} className="text-[11px] text-k-body">
-                      <span className="font-medium text-k-ink">{leg.tour_name ?? "AA tour"}</span>
+                      <span className="font-medium text-k-ink">{leg.tour_name ?? copy.coverage.unnamedTour}</span>
                       {" "}· tour day {leg.day_from}
                       {leg.day_to !== leg.day_from ? `–${leg.day_to}` : ""}
                       {coverage.transfers[i] && (
                         <span className={coverage.transfers[i].ok ? "text-k-muted" : "text-k-danger"}>
-                          {" "}→ {coverage.transfers[i].ok ? "transfer" : "no AA link"}
+                          {" "}→ {coverage.transfers[i].ok ? "transfer" : copy.coverage.noLink}
                           {coverage.transfers[i].km != null && ` (${Math.round(coverage.transfers[i].km as number)} km)`}
                         </span>
                       )}
@@ -545,7 +513,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                 </p>
                 <p className="mt-0.5 text-[11px] text-k-muted">
                   {suggestions.some((x) => (x.tour_count ?? 0) > 0)
-                    ? "Where Adventure Asia tours go next from your last stop."
+                    ? copy.nextStops
                     : "Based on what you've pinned."}
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
@@ -585,13 +553,13 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
               {/* AA-819: each narration state labelled honestly. On its own row and opening in
                   the flow: the panel scrolls, so a floating explanation would be clipped and
                   scroll it sideways (S239 review). */}
-              {narration && narrationSource && NARRATION_LABEL[narrationSource] && (
+              {narration && narrationSource && narrationSource in copy.narration && (
                 <AiLabel
                   className="mt-1.5"
                   placement="inline"
-                  label={NARRATION_LABEL[narrationSource].label}
-                  shortLabel={NARRATION_LABEL[narrationSource].shortLabel}
-                  explanation={NARRATION_LABEL[narrationSource].explanation}
+                  label={copy.narration[narrationSource as NarrationSource].label}
+                  shortLabel={copy.narration[narrationSource as NarrationSource].shortLabel}
+                  explanation={copy.narration[narrationSource as NarrationSource].explanation}
                   variant={narrationSource === "llm" ? "outline" : "solid"}
                 />
               )}
@@ -623,13 +591,12 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                   ))}
                   {/* AA-1033: the traveller notice under the narration (AI-written or AI-assisted day text). AA-1040:
                       the narration variant when AI wrote days on this request (llm / mixed), Art. 50(1). */}
-                  <AiNotice size="sm" variant={narrationNoticeVariant(narrationSource)} termsHref={TERMS_AI_PATH}
+                  <AiNotice size="sm" variant={narrationNoticeVariant(narrationSource)} termsHref={legal.termsAi}
                     testId="narration-ai-notice" />
                 </div>
               ) : (
                 <p className="mt-2 text-[11px] text-k-muted">
-                  We&apos;ll pull each day&apos;s story from Adventure
-                  Asia&apos;s own tour itineraries, in your chosen order.
+                  {copy.narrationIntro}
                 </p>
               )}
             </div>
@@ -696,27 +663,12 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                   onChange={(e) => setReg({ ...reg, phone: e.target.value })}
                   className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted"
                 />
-                {accountEmail ? (
-                  <div>
-                    <input
-                      aria-label="Email"
-                      value={accountEmail}
-                      readOnly
-                      data-testid="account-email"
-                      className="w-full cursor-not-allowed rounded-lg border border-k-line bg-k-bg px-3 py-2 text-sm text-k-muted"
-                    />
-                    <p className="mt-1 text-[11px] text-k-muted">
-                      Your signed-in email. Your advisor sees it as confirmed.
-                    </p>
-                  </div>
-                ) : (
-                  <input
-                    placeholder="Email"
-                    value={reg.email}
-                    onChange={(e) => setReg({ ...reg, email: e.target.value })}
-                    className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted"
-                  />
-                )}
+                <input
+                  placeholder="Email"
+                  value={reg.email}
+                  onChange={(e) => setReg({ ...reg, email: e.target.value })}
+                  className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted"
+                />
                 {/* AA-676: explicit contact consent travels with the hand-off to AA-Booking. */}
                 <label className="flex items-start gap-2 text-xs text-k-muted">
                   <input
@@ -725,12 +677,12 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                     onChange={(e) => setReg({ ...reg, consent: e.target.checked })}
                     className="aa-focus mt-0.5"
                   />
-                  <span>An Adventure Asia advisor may contact me about this trip.</span>
+                  <span>{copy.consent}</span>
                 </label>
                 {/* AA-886: the legal pages sit next to the only PII form; a new tab keeps the form as typed. */}
                 <p className="text-[11px] text-k-muted" data-testid="trip-legal-links">
                   How we use your details:{" "}
-                  {LEGAL_LINKS.map((l, i) => (
+                  {legal.links.map((l, i) => (
                     <span key={l.href}>
                       {i > 0 && " · "}
                       <a
@@ -747,7 +699,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                 </p>
                 <button
                   onClick={() => handleSend(true)}
-                  disabled={!reg.name || (!reg.phone && !reg.email && !accountEmail) || !reg.consent}
+                  disabled={!reg.name || (!reg.phone && !reg.email) || !reg.consent}
                   className="aa-focus w-full rounded-xl bg-k-accent px-3 py-2.5 text-sm font-semibold text-k-on-accent shadow-aa-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Register &amp; send
@@ -757,13 +709,13 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
             <p className="mt-2 text-center text-[11px] text-k-muted">
               An advisor confirms logistics before anything is booked.
             </p>
-            {/* BO-8 (root ADR 0019 b8): "Powered by Adventure Asia" only when the agency's tp.branding flag is on
-                (off by default); small, nofollow, never inside an AI text block. */}
-            {agency?.brandingBadge && (
+            {/* BO-8 (root ADR 0019 b8): the "Powered by" badge only when the agency's tp.branding flag is on (off by
+                default; lib/brand.ts poweredBy); small, nofollow, never inside an AI text block. */}
+            {badge && (
               <p className="mt-1 text-center text-[10px] text-k-muted" data-testid="powered-by">
                 Powered by{" "}
-                <a href="https://adventure.asia/" rel="nofollow noopener" target="_blank" className="aa-focus underline">
-                  Adventure Asia
+                <a href={badge.href} rel="nofollow noopener" target="_blank" className="aa-focus underline">
+                  {badge.name}
                 </a>
               </p>
             )}

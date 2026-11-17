@@ -2,7 +2,7 @@
 // frontend unit test frontend/lib/visualPages.test.ts can check that every app/**/page.tsx route is listed here or
 // excluded with a reason.
 //
-// TripPlanner has no signed-in visual run: every page is public (a guest sees /trips and /plan too).
+// TripPlanner has no signed-in visual run: every page is public (AA-1115: the traveller sign-in is retired).
 // A dynamic route names the list page and the link pattern to resolve a real id from (the first match), so the run
 // never depends on a hard-coded catalog slug.
 
@@ -40,10 +40,10 @@ export const PAGES: VisualPage[] = [
   // run reads no catalog id it could put in a fragment).
   { slug: "plan-shared", route: "/plan/shared", path: "/plan/shared", challenged: true },
   { slug: "tenant-plan-shared", route: "/[tenant]/plan/shared", path: "/aa-tripplanner/plan/shared", challenged: true },
-  { slug: "trips", route: "/trips", path: "/trips" },
-  { slug: "sign-in", route: "/sign-in", path: "/sign-in" },
   { slug: "privacy", route: "/privacy", path: "/privacy" },
   { slug: "terms", route: "/terms", path: "/terms" },
+  // AA-1115: any other path under /{slug} is the brand-free agency 404 (app/[tenant]/[...rest]), never AA's.
+  { slug: "tenant-not-found", route: "/[tenant]/[...rest]", path: "/aa-tripplanner/no-such-page", status: 404 },
   // app/not-found.tsx (no page.tsx of its own): the 404 page of an unknown path.
   { slug: "not-found", route: "(not-found)", path: "/this-page-does-not-exist", status: 404 },
 ];
@@ -51,6 +51,12 @@ export const PAGES: VisualPage[] = [
 /** Routes with a page.tsx that the run does not open, each with its reason. */
 export const EXCLUDED: Record<string, string> = {
   "/[tenant]": "AA-1038: a tenant's bare slug only redirects to /{slug}/plan (captured as tenant-plan) or is the 404 page",
+  "/[tenant]/privacy":
+    "AA-1115: an agency's own privacy notice needs a served agency tenant; the demo tenant redirects to /privacy " +
+    "(captured as privacy). Captured by the live check of the synthetic agency",
+  "/[tenant]/terms":
+    "AA-1115: an agency's own terms need a served agency tenant; the demo tenant redirects to /terms (captured as " +
+    "terms). Captured by the live check of the synthetic agency",
   "/[tenant]/tours/[tour]":
     "AA-1094: an agency's own tour page needs a served agency tenant with a finished T2 version; the demo tenant has " +
     "none (404), so the run cannot resolve one. Captured by the live check of the synthetic agency (1440 / 390, light / dark)",

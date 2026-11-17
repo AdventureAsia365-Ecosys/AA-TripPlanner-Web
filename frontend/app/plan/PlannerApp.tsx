@@ -10,6 +10,8 @@ import PlanPrefill from "@/components/PlanPrefill";
 import GuestResetNotice from "@/components/GuestResetNotice";
 import { TripProvider, useTrip, type PlanIntent } from "@/lib/useTrip";
 import { setPlannerTenant, type PlannerAgency } from "@/lib/plannerTenant";
+import { BrandProvider } from "@/components/BrandContext";
+import { isAgencyPlanner } from "@/lib/leadForm";
 import { reloadIntoPlannerDocument } from "@/lib/plannerNav";
 import { whenIdle } from "@/lib/idle";
 import { Icon } from "@/ui/Icon";
@@ -247,6 +249,15 @@ function Layout({ initialMobileView, agency }: { initialMobileView: "map" | "tri
   );
 }
 
+// The agency bar of a /{slug} planner, and the agency whose words and legal pages it shows (AA-1115,
+// components/BrandContext.tsx): an agency's planner only; AA's own planner and the AA-hosted demo tenant keep
+// Adventure Asia's (the demo tenant still has the agency bar with its own trading name, AA-1094).
+function plannerBrand(tenantSlug: string | null, agencyName: string | null) {
+  const headerAgency = tenantSlug && agencyName ? { slug: tenantSlug, name: agencyName } : null;
+  const brandSlug = headerAgency && isAgencyPlanner(tenantSlug) ? tenantSlug : null;
+  return { headerAgency, brandSlug };
+}
+
 export default function PlannerApp({
   intent,
   tenantSlug = null,
@@ -275,14 +286,16 @@ export default function PlannerApp({
     setPlannerTenant(tenantSlug, agencyName === null ? null : { name: agencyName, brandingBadge: agencyBadge });
     return () => setPlannerTenant(null);
   }, [tenantSlug, agencyName, agencyBadge]);
-  const headerAgency = tenantSlug && agencyName ? { slug: tenantSlug, name: agencyName } : null;
+  const { headerAgency, brandSlug } = plannerBrand(tenantSlug, agencyName);
   // AA-837: the planner follows the site theme (ui/core/tokens.css). Its surfaces and form controls use
   // the k-* tokens, so browser-styled controls (country select, days input) stay readable in dark.
   // The Mapbox basemap stays the light outdoors style in both themes (map imagery, not UI text).
   return (
-    <TripProvider initialIntent={intent}>
-      <Layout initialMobileView={intent.ask ? "trip" : "map"} agency={headerAgency} />
-      <GuestResetNotice />
-    </TripProvider>
+    <BrandProvider agency={brandSlug ? agencyName : null} agencySlug={brandSlug}>
+      <TripProvider initialIntent={intent}>
+        <Layout initialMobileView={intent.ask ? "trip" : "map"} agency={headerAgency} />
+        <GuestResetNotice />
+      </TripProvider>
+    </BrandProvider>
   );
 }

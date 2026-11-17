@@ -9,19 +9,22 @@
 
 export const TENANT_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,99}$/;
 
+// AA-1115: top-level pages that were retired (the traveller sign-in and My Trips, B2C gone under root ADR 0019 d11).
+// They stay reserved, so an old /sign-in or /trips link is the 404 page without a lookup, never a tenant's site.
+export const RETIRED_PATH_SLUGS: readonly string[] = ["sign-in", "trips"];
+
 export const RESERVED_TENANT_SLUGS: ReadonlySet<string> = new Set([
   // app/ route folders
   "api",
   "destinations",
   "plan",
   "privacy",
-  "sign-in",
   "terms",
   "tours",
-  "trips",
   // public/ folders (served as /brand/..., /hero/...)
   "brand",
   "hero",
+  ...RETIRED_PATH_SLUGS,
 ]);
 
 export function isTenantSlug(value: unknown): value is string {

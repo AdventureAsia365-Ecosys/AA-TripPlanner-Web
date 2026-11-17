@@ -9,9 +9,9 @@ import { useEffect, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { fetchStopActivities } from "@/lib/api";
 import type { StopActivity } from "@/lib/types";
-import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "@/components/AiLabel";
+import AiLabel from "@/components/AiLabel";
+import { useBrand } from "@/components/BrandContext";
 import { AiNotice } from "@/ui/AiNotice";
-import { TERMS_AI_PATH } from "@/lib/legal";
 
 const LABEL: Record<string, string> = {
   trekking: "Trekking",
@@ -26,6 +26,7 @@ const LABEL: Record<string, string> = {
 
 export default function StopActivities({ destinationId }: { destinationId: string }) {
   const { tripId, itinerary, add, remove } = useTrip();
+  const brand = useBrand(); // AA-1115: an agency's planner shows its own label and terms
   const [items, setItems] = useState<StopActivity[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const pinnedKey = itinerary.map((d) => d.component_id).sort().join(",");
@@ -42,7 +43,7 @@ export default function StopActivities({ destinationId }: { destinationId: strin
 
   if (items === null) return <p className="mt-2 text-[11px] text-k-muted">Loading activities…</p>;
   if (items.length === 0) {
-    return <p className="mt-2 text-[11px] text-k-muted">No other AA activities here.</p>;
+    return <p className="mt-2 text-[11px] text-k-muted">{brand.copy.activities.none}</p>;
   }
 
   const toggle = async (a: StopActivity) => {
@@ -70,7 +71,7 @@ export default function StopActivities({ destinationId }: { destinationId: strin
               <span>
                 <span className="font-medium text-k-ink">{LABEL[a.activity] ?? a.activity}</span>
                 {a.text_extract && <span> — {a.text_extract.slice(0, 90)}</span>}
-                <span className="text-k-muted"> · on {a.tour_count} AA tour{a.tour_count > 1 ? "s" : ""}</span>
+                <span className="text-k-muted"> · {brand.copy.activities.onTours(a.tour_count)}</span>
               </span>
             </label>
           </li>
@@ -84,10 +85,10 @@ export default function StopActivities({ destinationId }: { destinationId: strin
           <AiLabel
             className="mt-1.5"
             placement="inline"
-            label={AI_CATALOG_LABEL} shortLabel={AI_BRAND_SHORT}
-            explanation={AI_CATALOG_EXPLANATION}
+            label={brand.copy.catalogAi.label} shortLabel={brand.copy.catalogAi.shortLabel}
+            explanation={brand.copy.catalogAi.explanation}
           />
-          <AiNotice size="sm" termsHref={TERMS_AI_PATH} className="mt-1" testId="stop-activities-ai-notice" />
+          <AiNotice size="sm" termsHref={brand.legal.termsAi} className="mt-1" testId="stop-activities-ai-notice" />
         </>
       )}
     </>

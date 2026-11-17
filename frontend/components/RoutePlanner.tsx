@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
+import { useBrand } from "@/components/BrandContext";
 import { fetchRoutes } from "@/lib/api";
 import { formatDays } from "@/lib/text";
 import { Icon } from "@/ui/Icon";
@@ -22,6 +23,7 @@ function placesLine(p: RouteProposal): string {
 
 export default function RoutePlanner({ compact = false }: { compact?: boolean }) {
   const { countries, filters, applyRoute, setRoutePreview, intent } = useTrip();
+  const { copy } = useBrand(); // AA-1115: an unnamed tour is "AA tour" on AA's planner only
   // AA-812: pre-filled from the home search / a tour page (/plan?country=&days=&travellers=).
   const [country, setCountry] = useState<string>(intent.country ?? filters.country ?? "");
   const [days, setDays] = useState<number>(Math.max(2, Math.min(30, intent.days ?? 7)));
@@ -67,15 +69,15 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
         className="aa-focus mb-3 w-full rounded-xl border border-dashed border-k-accent-border px-3 py-2 text-xs font-semibold text-k-accent-deep transition hover:bg-k-accent-tint"
       >
         <Icon name="compass" className="mr-1 inline h-3.5 w-3.5 align-[-2px]" />
-        Start from an Adventure Asia route
+        Start from a tour route
       </button>
     );
   }
 
   return (
-    <div className="mb-3 rounded-xl border border-k-line bg-k-card p-3" aria-label="Plan from an AA route">
+    <div className="mb-3 rounded-xl border border-k-line bg-k-card p-3" aria-label="Plan from a tour route">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold text-k-ink">Plan from an Adventure Asia route</p>
+        <p className="text-xs font-semibold text-k-ink">Plan from a tour route</p>
         {compact && (
           <button onClick={() => { setOpen(false); setRoutePreview(null); }} className="aa-focus text-[11px] text-k-muted">
             Close
@@ -122,7 +124,7 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
 
       {proposals && proposals.length === 0 && (
         <p className="mt-2 text-[11px] text-k-muted">
-          No Adventure Asia route of about {formatDays(days)} in {country} yet — try another length.
+          No tour route of about {formatDays(days)} in {country} yet — try another length.
         </p>
       )}
 
@@ -160,7 +162,7 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
               <ul className="mt-1 space-y-0.5">
                 {p.segments.map((s) => (
                   <li key={`${s.tour_id}-${s.day_from}`} className="text-[11px] text-k-body">
-                    {s.tour_name ?? "AA tour"} · day {s.day_from}–{s.day_to}
+                    {s.tour_name ?? copy.coverage.unnamedTour} · day {s.day_from}–{s.day_to}
                   </li>
                 ))}
               </ul>

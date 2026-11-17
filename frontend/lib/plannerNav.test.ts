@@ -67,7 +67,6 @@ test("every in-site way into the planner is a document load", () => {
     "../app/not-found.tsx",
     "../app/destinations/[country]/page.tsx",
     "../app/tours/[slug]/page.tsx",
-    "../components/MyTrips.tsx",
   ]) {
     assert.doesNotMatch(read(f), /from "next\/link"/, f);
   }

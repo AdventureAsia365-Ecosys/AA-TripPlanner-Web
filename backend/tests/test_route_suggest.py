@@ -64,8 +64,8 @@ async def test_route_candidates_come_from_tours_passing_the_last_stop(monkeypatc
     assert (args[1], args[2], args[3]) == (27.47, 89.64, sg.JUNCTION_KM)   # last stop = Thimphu (sequenced)
     assert sorted(args[4]) == ["d-paro", "d-thimphu"]             # pinned places excluded
     by_id = {s["id"]: s for s in out["suggestions"]}
-    assert by_id["d-punakha"]["why"] == "Next on 3 Adventure Asia tours from your last stop"
-    assert by_id["d-haa"]["why"] == "Next on 1 Adventure Asia tour from your last stop (a 22 km transfer)"
+    assert by_id["d-punakha"]["why"] == "Next on 3 tours from your last stop"
+    assert by_id["d-haa"]["why"] == "Next on 1 tour from your last stop (a 22 km transfer)"
     assert by_id["d-punakha"]["tour_count"] == 3
 
 

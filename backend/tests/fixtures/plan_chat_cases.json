@@ -131,7 +131,7 @@
         {"reply": "The Grand Harbour Hotel is lovely, but I can only plan tours.", "kind": "refusal", "proposal": null}
       ],
       "expect": {"status": "ok", "outcome": "refusal", "from_model": false, "action": null,
-                 "reply_excludes": ["Grand Harbour Hotel"], "reply_contains": ["Adventure Asia"]}
+                 "reply_excludes": ["Grand Harbour Hotel"], "reply_contains": ["only plan with the tours and places on this planner"]}
     },
     {
       "id": "tool_says_country_not_offered", "category": "off_catalog",
@@ -361,7 +361,7 @@
       ],
       "expect": {"status": "ok", "outcome": "answer", "from_model": false, "action": "replace",
                  "final": ["Lantern Market Walk", "Mistral Bay Kayaking", "Ember Hills Tea Trail"],
-                 "reply_contains": ["Here is a plan made only from Adventure Asia's tours"], "reply_excludes": ["Zorbu"],
+                 "reply_contains": ["Here is a plan made only from the tours on this planner"], "reply_excludes": ["Zorbu"],
                  "signal": {"server_proposal": true, "ungrounded": 2}}
     },
     {

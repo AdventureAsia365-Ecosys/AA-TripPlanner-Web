@@ -1,6 +1,6 @@
 // AA-1038 R5 hosting (ECS behind CloudFront) — the traveller's own address, for the per-IP AI limits (x-tp-client-ip,
-// lib/tripProxy.ts) and the Cognito per-traveller WAF key (lib/cognito.ts). Which header carries it depends on the
-// edge in front of the server, so the source is a server env value, never something the request can choose:
+// lib/tripProxy.ts; the Cognito per-traveller WAF key left with the traveller sign-in, AA-1115). Which header carries it
+// depends on the edge in front of the server, so the source is a server env value, never something the request can choose:
 //
 //   TP_CLIENT_IP_SOURCE unset / "forwarded" (local `next dev` / `next start`, CI; no edge in front): the first
 //       x-forwarded-for entry, else x-real-ip. Only for a server no traveller reaches (it was the Vercel mode, where

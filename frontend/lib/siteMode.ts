@@ -11,7 +11,7 @@ export const SITE_INDEXING_ENV = "SITE_INDEXING";
 
 /** The footer line on a preview deployment (English UI; the site has no other language yet). */
 export const PREVIEW_SITE_NOTE =
-  "Preview site: a test version of the Adventure Asia trip planner. Trips and requests sent here are not handled as real enquiries.";
+  "Preview site: a test version of this trip planner. Trips and requests sent here are not handled as real enquiries.";
 
 /** The X-Robots-Tag value of a preview deployment. */
 export const PREVIEW_ROBOTS_HEADER = "noindex, nofollow";

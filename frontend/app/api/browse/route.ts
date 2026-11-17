@@ -3,9 +3,7 @@ import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestI
 import { tourRouteBffAnswer } from "@/lib/tourRoute";
 import { browseCacheHeaders } from "@/lib/catalogPurge";
 import { aiLimitHeaders } from "@/lib/tripProxy";
-import { refresh, travellerIp } from "@/lib/cognito";
-import { currentAccess } from "@/lib/authSession";
-import { authEnv, callContext } from "@/lib/authRequest";
+import { clientIp } from "@/lib/clientIp";
 import { edgeGateOn, edgeGateRefusal } from "@/lib/edgeGate";
 import { TENANT_SLUG_HEADER, tenantHeaders } from "@/lib/tenantProxy";
 import { resolveTenant } from "@/lib/tenantSite";
@@ -106,10 +104,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "unknown resource" }, { status: 400 });
   }
 
-  // AA-1015: search calls the embedding model, so it carries the traveller's address and signed-in state for the
-  // per-IP limit (30 a minute, twice that signed in). Only search: the other reads are CDN-cached and call no model.
+  // AA-1015: search calls the embedding model, so it carries the traveller's address for the per-IP limit (30 a
+  // minute; AA-1115: no signed-in allowance, the traveller sign-in is retired). Only search: the other reads are
+  // CDN-cached and call no model.
   let limitHeaders: Record<string, string> = {};
-  let setCookies: string[] = [];
   if (resource === "search") {
     // AA-1038: behind CloudFront and the web ACL's TripPlanner rules (ECS), search is answered only on its protected
     // path (lib/edgeGate.ts): there the rate rule and the Challenge are its bot check, before the Lambda is called.
@@ -120,10 +118,7 @@ export async function GET(req: NextRequest) {
         headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
       });
     }
-    const env = authEnv(process.env);
-    const access = await currentAccess(env.sessionSecret, req.cookies, (rt) => refresh(rt, callContext(env, req.headers)));
-    limitHeaders = aiLimitHeaders(travellerIp(req.headers), access.accessToken !== null);
-    setCookies = access.setCookies;
+    limitHeaders = aiLimitHeaders(clientIp(req.headers));
     // AA-1038 R5 slice 3: a /{slug} planner's search names its tenant, so the Lambda applies that tenant's AI budget
     // and writes the ledger row for it. Signed here exactly as on /api/trip (lib/tenantProxy.ts); no header = AA's site.
     const pick = await tenantHeaders(req.headers.get(TENANT_SLUG_HEADER), TENANT_ASSERTION_KEY, resolveTenant);
@@ -158,7 +153,7 @@ export async function GET(req: NextRequest) {
   }
   const cacheHeaders: Record<string, string> =
     status === 200 ? browseCacheHeaders(cacheControl) : { "cache-control": cacheControl };
-  const res = new NextResponse(body, {
+  return new NextResponse(body, {
     status,
     headers: {
       "content-type": "application/json",
@@ -166,7 +161,4 @@ export async function GET(req: NextRequest) {
       [REQUEST_ID_HEADER]: requestId,
     },
   });
-  // A refreshed (or cleared) traveller session rides on the search answer (no-store), as on /api/trip.
-  for (const c of setCookies) res.headers.append("set-cookie", c);
-  return res;
 }

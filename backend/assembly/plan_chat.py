@@ -490,16 +490,17 @@ SERVER_PROPOSAL_NOTE = ("I have put the first option below as a plan you can app
 
 
 def fallback_reply(offered: list[dict], *, with_proposal: bool, failed: bool = False) -> str:
-    """The server sentence. Without a proposal it names every country AA sells now, by name (S277 smoke: a top-8 by
-    tour count left out countries such as Vietnam); the planner's text wraps."""
+    """The server sentence. Without a proposal it names every country the planner offers now, by name (S277 smoke: a
+    top-8 by tour count left out countries such as Vietnam); the planner's text wraps. AA-1115: no brand name, because
+    an agency's planner (/{slug}/plan) shows it too (tests/test_aa1115_traveller_text_brand.py)."""
     if with_proposal:
-        return ("Here is a plan made only from Adventure Asia's tours. Check the stops below and apply it to your "
+        return ("Here is a plan made only from the tours on this planner. Check the stops below and apply it to your "
                 "trip if it suits you.")
     names = sorted({str(c["country"]) for c in offered if c.get("country")}, key=str.casefold)
     where = (", ".join(names[:-1]) + f" and {names[-1]}") if len(names) > 1 else (names[0] if names else "")
     lead = "I could not work that out. " if failed else ""
-    offer = f" Adventure Asia runs trips in {where}." if where else ""
-    return (f"{lead}I can only plan with Adventure Asia's own tours and places.{offer} Tell me a country and how many "
+    offer = f" This planner has trips in {where}." if where else ""
+    return (f"{lead}I can only plan with the tours and places on this planner.{offer} Tell me a country and how many "
             "days you have, and I will suggest a route.")
 
 

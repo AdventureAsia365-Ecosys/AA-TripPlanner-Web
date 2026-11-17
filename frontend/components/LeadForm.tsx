@@ -20,6 +20,7 @@ import {
   type LeadForm as LeadFormState,
 } from "@/lib/leadForm";
 import { holdWafReload } from "@/lib/wafChallenge";
+import { useBrand } from "@/components/BrandContext";
 
 const INPUT =
   "aa-focus w-full rounded-lg border bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted";
@@ -42,6 +43,8 @@ export default function LeadForm({
   const [serverBad, setServerBad] = useState<string[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // AA-1115: the agency's own legal pages (/{slug}/privacy, /{slug}/terms), next to the form that collects the details.
+  const { legal } = useBrand();
   const bad = touched ? [...leadFormErrors(form), ...serverBad] : serverBad;
   // Typed input lives only here: while it does, a challenged search or narration answers with the bot-check notice
   // instead of reloading the planner (lib/wafChallenge.ts, review S272). Released on unmount or when cleared.
@@ -182,6 +185,23 @@ export default function LeadForm({
       </label>
       <p className="text-[11px] text-k-muted">
         Your details go only to {agency}, who answers this request. The planner keeps no copy once it is delivered.
+      </p>
+      <p className="text-[11px] text-k-muted" data-testid="lead-legal-links">
+        How your details are used:{" "}
+        {legal.links.map((l, i) => (
+          <span key={l.href}>
+            {i > 0 && " · "}
+            <a
+              href={l.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="aa-focus font-semibold text-k-ink underline underline-offset-2 hover:text-k-accent-deep"
+            >
+              {l.label}
+            </a>
+          </span>
+        ))}{" "}
+        (draft)
       </p>
       {message && (
         <p role="alert" className="rounded-lg bg-k-danger-soft px-2.5 py-1.5 text-xs font-medium text-k-danger">

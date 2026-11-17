@@ -7,7 +7,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import LegalPage, { LegalSection } from "@/components/site/LegalPage";
-import { ANTHROPIC_USAGE_POLICY_URL, LEGAL_CONTACT_EMAIL, PRIVACY_PATH } from "@/lib/legal";
+import { ANTHROPIC_USAGE_POLICY_URL, PRIVACY_PATH } from "@/lib/legal";
+import { AA_LEGAL_CONTACT_EMAIL } from "@/lib/brand";
 
 export const metadata: Metadata = {
   title: "Terms of use (draft)",
@@ -122,7 +123,7 @@ export default function TermsPage() {
 
       <LegalSection id="contact" title="9. Contact">
         <p>
-          Questions about these terms: <a href={`mailto:${LEGAL_CONTACT_EMAIL}`}>{LEGAL_CONTACT_EMAIL}</a>. How we handle
+          Questions about these terms: <a href={`mailto:${AA_LEGAL_CONTACT_EMAIL}`}>{AA_LEGAL_CONTACT_EMAIL}</a>. How we handle
           personal data is described in our <Link href={PRIVACY_PATH}>Privacy notice</Link>.
         </p>
       </LegalSection>

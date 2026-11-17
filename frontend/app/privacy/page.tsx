@@ -4,7 +4,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import LegalPage, { LegalSection } from "@/components/site/LegalPage";
-import { COMPANY_PRIVACY_URL, LEGAL_CONTACT_EMAIL, TERMS_PATH } from "@/lib/legal";
+import { TERMS_PATH } from "@/lib/legal";
+import { AA_COMPANY_PRIVACY_URL, AA_LEGAL_CONTACT_EMAIL } from "@/lib/brand";
 
 export const metadata: Metadata = {
   title: "Privacy notice (draft)",
@@ -22,7 +23,7 @@ export default function PrivacyPage() {
         <p>
           This notice explains what personal data the Adventure Asia Trip Planner (this website) collects, why, who
           receives it and what you can ask us to do with it. It covers the Trip Planner only. Adventure Asia&apos;s
-          company-wide policy is at <a href={COMPANY_PRIVACY_URL} className="font-semibold text-k-accent-deep hover:underline" rel="noopener">adventure.asia/privacy-policy</a>.
+          company-wide policy is at <a href={AA_COMPANY_PRIVACY_URL} className="font-semibold text-k-accent-deep hover:underline" rel="noopener">adventure.asia/privacy-policy</a>.
         </p>
       }
     >
@@ -30,7 +31,7 @@ export default function PrivacyPage() {
         <p>
           The Trip Planner is run by Adventure Asia. The legal entity responsible for your data (the data controller)
           and its registered address are [to be confirmed]. For any privacy question or request, write to{" "}
-          <a href={`mailto:${LEGAL_CONTACT_EMAIL}`}>{LEGAL_CONTACT_EMAIL}</a>.
+          <a href={`mailto:${AA_LEGAL_CONTACT_EMAIL}`}>{AA_LEGAL_CONTACT_EMAIL}</a>.
         </p>
       </LegalSection>
 
@@ -51,14 +52,6 @@ export default function PrivacyPage() {
             you agreed.
           </li>
           <li>
-            <strong>Your account, only if you sign in.</strong> Your email address, which you prove with a code we email
-            you (there is no password), is kept by our sign-in service (Amazon Cognito). The planner itself stores only a
-            random account identifier and the time you last signed in, and links the trips you plan to it so you can
-            open them on any device. When you sign in, the trips planned in this browser before you signed in (and not
-            yet in another account) are added to your account, so on a shared computer, sign out when you are done. When
-            you send a trip while signed in, the advisor receives your signed-in email, marked as confirmed.
-          </li>
-          <li>
             <strong>Technical data.</strong> Our hosting providers process your IP address, browser type and the pages
             you request in order to deliver the site and keep it secure.
           </li>
@@ -72,11 +65,6 @@ export default function PrivacyPage() {
             <strong>Guest cookie</strong> (set on the planner page only): a random token that proves a saved trip is
             yours. It cannot be read by scripts on the page, and it lasts up to 400 days, renewed each time you use the
             planner. We store only a one-way hash of it.
-          </li>
-          <li>
-            <strong>Sign-in cookies</strong> (only if you sign in): your encrypted sign-in session, so you stay signed in
-            for up to 30 days, and, for 10 minutes while you enter the emailed code, the step you are on. Scripts on the
-            page cannot read them. Signing out removes them, together with the guest cookie of that browser.
           </li>
           <li>
             <strong>Security cookie</strong> (set when you open the planner): a short-lived token from our website
@@ -125,8 +113,8 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Amazon Web Services</strong> — hosts and delivers this website (Amazon CloudFront and its website
-            firewall), the database, the AI models above (Amazon Bedrock), sign-in (Amazon Cognito) and the emails:
-            advisor notifications and sign-in codes (Amazon SES).
+            firewall), the database, the AI models above (Amazon Bedrock) and the advisor notification emails (Amazon
+            SES).
           </li>
           <li>
             <strong>Mapbox</strong> — map images and the interactive map. Your browser loads them from Mapbox, which
@@ -148,15 +136,14 @@ export default function PrivacyPage() {
           Retention periods are being set and are [to be confirmed]. The current plan: the copy of your contact details
           inside the message that sends your trip to the booking system is removed after 90 days, and the customer record
           in the booking system is kept while your enquiry or booking is active and then for a period [to be confirmed].
-          Trips that were never sent [retention to be confirmed]. A sign-in account is kept while it is in use and is
-          erased with its link to your trips on request [period to be confirmed].
+          Trips that were never sent [retention to be confirmed].
         </p>
       </LegalSection>
 
       <LegalSection id="rights" title="9. Your rights">
         <p>
           You can ask us to show you the data we hold about you, correct it, delete it, or stop contacting you, and you
-          can withdraw your consent at any time. Write to <a href={`mailto:${LEGAL_CONTACT_EMAIL}`}>{LEGAL_CONTACT_EMAIL}</a>.
+          can withdraw your consent at any time. Write to <a href={`mailto:${AA_LEGAL_CONTACT_EMAIL}`}>{AA_LEGAL_CONTACT_EMAIL}</a>.
           The time within which we answer, and your right to complain to a data protection authority, are [to be
           confirmed].
         </p>

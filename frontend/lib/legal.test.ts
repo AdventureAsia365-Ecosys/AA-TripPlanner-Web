@@ -4,7 +4,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { ANTHROPIC_USAGE_POLICY_URL, LEGAL_DRAFT_LABEL, LEGAL_LINKS, PRIVACY_PATH, TERMS_PATH } from "./legal.ts";
+import {
+  ANTHROPIC_USAGE_POLICY_URL,
+  LEGAL_DRAFT_LABEL,
+  LEGAL_LINKS,
+  PRIVACY_PATH,
+  TERMS_AI_PATH,
+  TERMS_PATH,
+  legalPaths,
+} from "./legal.ts";
 
 const src = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
 
@@ -35,10 +43,21 @@ test("the legal shell always renders the draft banner", () => {
   assert.match(s, /<DraftBanner \/>/);
 });
 
-test("the site footer and the contact form link the legal pages", () => {
-  for (const file of ["components/site/SiteFooter.tsx", "components/TripPanel.tsx"]) {
-    assert.match(src(file), /LEGAL_LINKS\.map\(/, `${file} must render LEGAL_LINKS`);
+test("the site footer and the contact forms link the legal pages", () => {
+  assert.match(src("components/site/SiteFooter.tsx"), /LEGAL_LINKS\.map\(/, "the site footer must render LEGAL_LINKS");
+  // AA-1115: the planner's forms link the page's own legal pages (AA's, or an agency's /{slug}/privacy and /terms).
+  for (const file of ["components/TripPanel.tsx", "components/LeadForm.tsx"]) {
+    assert.match(src(file), /legal\.links\.map\(/, `${file} must render the page's legal links`);
   }
+});
+
+test("AA-1115: an agency's planner links the agency's own legal pages, AA's planner keeps /privacy and /terms", () => {
+  assert.deepEqual(legalPaths(null), { privacy: PRIVACY_PATH, terms: TERMS_PATH, termsAi: TERMS_AI_PATH, links: LEGAL_LINKS });
+  const a = legalPaths("quillmere-voyages");
+  assert.equal(a.privacy, "/quillmere-voyages/privacy");
+  assert.equal(a.terms, "/quillmere-voyages/terms");
+  assert.equal(a.termsAi, "/quillmere-voyages/terms#ai");
+  assert.deepEqual(a.links.map((l) => l.href), [a.privacy, a.terms]);
 });
 
 // AA-820 (S266): the "Use of AI" section names the model that writes the narration and links the Anthropic Usage

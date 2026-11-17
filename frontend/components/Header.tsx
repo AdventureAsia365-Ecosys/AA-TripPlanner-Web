@@ -1,15 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import AiLabel, {
-  AI_AGENCY_EXPLANATION,
-  AI_AGENCY_LABEL,
-  AI_BRAND_SHORT,
-  AI_SITE_EXPLANATION,
-  AI_SITE_LABEL,
-} from "@/components/AiLabel";
+import AiLabel, { AI_AGENCY_EXPLANATION, AI_AGENCY_LABEL } from "@/components/AiLabel";
+// AA-1115: Adventure Asia's words come from lib/brand.ts and only in the AA bar below (lib/agencyBrand.test.ts allows
+// this import here only because an agency's planner returns the agency bar first).
+import { AA_BAR, AA_SITE_AI } from "@/lib/brand";
 import { ThemeToggle } from "@/ui/ThemeToggle";
-import AccountLink from "@/components/AccountLink";
 
 // Top brand bar — Adventure Asia wordmark + tagline. Kept slim so the map
 // dominates the viewport (map-first product).
@@ -31,17 +27,17 @@ export default function Header({ agency = null }: { agency?: HeaderAgency | null
       <div className="flex items-center gap-3">
         {/* Official Adventure Asia logo — AA-812: links back to the search-first home. */}
         {/* No prefetch (S255): a prefetch of "/" runs the home hero preload next to the map's own loads. */}
-        <Link href="/" prefetch={false} aria-label="Adventure Asia Trip Planner — home" className="aa-focus">
+        <Link href="/" prefetch={false} aria-label={AA_BAR.homeLabel} className="aa-focus">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/brand/logo-h108.png"
-            alt="Adventure Asia"
+            alt={AA_BAR.logoAlt}
             className="h-9 w-auto"
           />
         </Link>
         {/* AA-805: AI Phase 0 — say plainly, next to the AA mark, that the planner uses AI.
             AA-819: a button with its explanation (touch + keyboard), naming only what is AI. */}
-        <AiLabel label={AI_SITE_LABEL} shortLabel={AI_BRAND_SHORT} explanation={AI_SITE_EXPLANATION} variant="band" />
+        <AiLabel label={AA_SITE_AI.label} shortLabel={AA_SITE_AI.shortLabel} explanation={AA_SITE_AI.explanation} variant="band" />
         <div className="hidden leading-tight sm:block">
           <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-k-band-accent">
             Trip Planner
@@ -56,8 +52,6 @@ export default function Header({ agency = null }: { agency?: HeaderAgency | null
         <span className="hidden text-k-on-band-muted lg:inline">
           Pin experiences · build your trip · hand off to an advisor
         </span>
-        {/* AA-908: My trips for a traveller who still holds a session (AA-1094: no Sign in, travellers are guests). */}
-        <AccountLink tone="band" />
         {/* AA-837: the planner follows the site theme too, so it carries the same toggle. */}
         <ThemeToggle tone="band" />
       </nav>

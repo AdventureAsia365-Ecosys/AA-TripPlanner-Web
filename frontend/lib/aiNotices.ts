@@ -15,10 +15,10 @@ export type AiNoticeLang = "en" | "vi";
 export const AI_NOTICES: Record<AiNoticeLang, Record<AiNoticeKey, string>> = {
   en: {
     narrationPaused:
-      "AI writing is paused right now, so days without Adventure Asia's own itinerary text show only " +
+      "AI writing is paused right now, so days without the tour's own itinerary text show only " +
       "their places. Try again later; your advisor confirms every detail.",
     narrationBudget:
-      "Today's AI writing limit is reached, so days without Adventure Asia's own itinerary text show only " +
+      "Today's AI writing limit is reached, so days without the tour's own itinerary text show only " +
       "their places. Your advisor confirms every detail.",
     narrationLimit:
       "You have asked for many narrations in a short time. Your trip is saved; please try again in a little while.",
@@ -30,10 +30,10 @@ export const AI_NOTICES: Record<AiNoticeLang, Record<AiNoticeKey, string>> = {
   },
   vi: {
     narrationPaused:
-      "Tính năng viết bằng AI đang tạm dừng, nên những ngày chưa có lịch trình riêng của Adventure Asia " +
+      "Tính năng viết bằng AI đang tạm dừng, nên những ngày chưa có lịch trình riêng của tour " +
       "chỉ hiện tên địa điểm. Bạn hãy thử lại sau; chuyên viên tư vấn sẽ xác nhận mọi chi tiết.",
     narrationBudget:
-      "Hôm nay đã đạt giới hạn viết bằng AI, nên những ngày chưa có lịch trình riêng của Adventure Asia " +
+      "Hôm nay đã đạt giới hạn viết bằng AI, nên những ngày chưa có lịch trình riêng của tour " +
       "chỉ hiện tên địa điểm. Chuyên viên tư vấn sẽ xác nhận mọi chi tiết.",
     narrationLimit:
       "Bạn đã yêu cầu viết lịch trình nhiều lần trong thời gian ngắn. Chuyến đi của bạn vẫn được lưu; " +

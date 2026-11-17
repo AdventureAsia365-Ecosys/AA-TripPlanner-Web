@@ -36,9 +36,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { tenant, tour } = await params;
   const found = await load(tenant, tour).catch(() => null);
   if (!found) return { title: "Tour", robots: { index: false, follow: false } };
-  const { site, t } = found;
+  const { t } = found;
   return {
-    title: `${t.seo_title || t.title} · ${site.name}`,
+    // AA-1115: "· <agency>" comes from the /{slug} layout's title template.
+    title: t.seo_title || t.title,
     description: clip(t.seo_meta || t.summary || t.subtitle || t.title),
     // An agency's site is not indexed yet (canonical URLs per tenant are a later slice).
     robots: { index: false, follow: true },
