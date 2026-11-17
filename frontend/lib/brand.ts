@@ -57,7 +57,9 @@ export interface BrandCopy {
   /** The narration badge per `source` of POST /trip/{id}/narrate (`basic` has no AI text and no badge). */
   narration: Record<NarrationSource, Required<AiPill>>;
   /** The "built from N tours" box of the trip panel (AA-674). */
-  coverage: { aria: string; built: (tours: number) => string; uncovered: string; unnamedTour: string };
+  coverage: { aria: string; built: (tours: number) => string; uncovered: string; unnamedTour: string; noLink: string };
+  /** A stop's activities (components/StopActivities.tsx): none left, and "on N tours" after each one. */
+  activities: { none: string; onTours: (tours: number) => string };
   /** The caption of "You might also like" when the suggestions follow the tours' own routes. */
   nextStops: string;
   /** The line under the narration button before a trip is narrated. */
@@ -114,6 +116,11 @@ function aaCopy(): BrandCopy {
       built: (n) => `Built from ${n} ${AA_NAME} ${plural(n, "tour", "tours")}`,
       uncovered: "Part of this trip isn't covered by an AA tour",
       unnamedTour: "AA tour",
+      noLink: "no AA link",
+    },
+    activities: {
+      none: "No other AA activities here.",
+      onTours: (n) => `on ${n} AA ${plural(n, "tour", "tours")}`,
     },
     nextStops: `Where ${AA_NAME} tours go next from your last stop.`,
     narrationIntro: `We'll pull each day's story from ${AA_NAME}'s own tour itineraries, in your chosen order.`,
@@ -166,6 +173,11 @@ function agencyCopy(agency: string): BrandCopy {
       built: (n) => `Built from ${n} ${plural(n, "tour", "tours")}`,
       uncovered: "Part of this trip isn't covered by a tour",
       unnamedTour: "Tour",
+      noLink: "no tour link",
+    },
+    activities: {
+      none: "No other activities here.",
+      onTours: (n) => `on ${n} ${plural(n, "tour", "tours")}`,
     },
     nextStops: "Where the tours go next from your last stop.",
     narrationIntro: "We'll pull each day's story from the tours' own itineraries, in your chosen order.",

@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
+import { useBrand } from "@/components/BrandContext";
 import { fetchRoutes } from "@/lib/api";
 import { formatDays } from "@/lib/text";
 import { Icon } from "@/ui/Icon";
@@ -22,6 +23,7 @@ function placesLine(p: RouteProposal): string {
 
 export default function RoutePlanner({ compact = false }: { compact?: boolean }) {
   const { countries, filters, applyRoute, setRoutePreview, intent } = useTrip();
+  const { copy } = useBrand(); // AA-1115: an unnamed tour is "AA tour" on AA's planner only
   // AA-812: pre-filled from the home search / a tour page (/plan?country=&days=&travellers=).
   const [country, setCountry] = useState<string>(intent.country ?? filters.country ?? "");
   const [days, setDays] = useState<number>(Math.max(2, Math.min(30, intent.days ?? 7)));
@@ -160,7 +162,7 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
               <ul className="mt-1 space-y-0.5">
                 {p.segments.map((s) => (
                   <li key={`${s.tour_id}-${s.day_from}`} className="text-[11px] text-k-body">
-                    {s.tour_name ?? "AA tour"} · day {s.day_from}–{s.day_to}
+                    {s.tour_name ?? copy.coverage.unnamedTour} · day {s.day_from}–{s.day_to}
                   </li>
                 ))}
               </ul>

@@ -41,7 +41,7 @@ def test_far_hop_between_tours_is_a_gap_with_a_reason():
     pins = [_pin("a", "paro", *PARO, "t1", 2), _pin("b", "kathmandu", *KATHMANDU, "t2", 1)]
     out = cv.solve(pins, {})
     assert not out["coverable"]
-    assert out["gaps"][0]["reason"] == "no Adventure Asia tour links these two places"
+    assert out["gaps"][0]["reason"] == "no tour links these two places"
     assert out["gaps"][0]["km"] > 400
 
 

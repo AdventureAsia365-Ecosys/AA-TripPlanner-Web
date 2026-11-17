@@ -48,13 +48,18 @@ test("paths on an agency's domain", () => {
   assert.deepEqual(tenantHostPath("/privacy", s), { kind: "rewrite", path: "/quillmere-voyages/privacy" });
   assert.deepEqual(tenantHostPath("/terms", s), { kind: "rewrite", path: "/quillmere-voyages/terms" });
   // our path keeps working, the BFF and static files pass
-  for (const p of ["/quillmere-voyages", "/quillmere-voyages/plan", "/quillmere-voyages/privacy", "/api/trip",
+  for (const p of ["/quillmere-voyages", "/quillmere-voyages/plan", "/quillmere-voyages/plan/shared",
+    "/quillmere-voyages/privacy", "/quillmere-voyages/terms", "/quillmere-voyages/tours/invented-ridge-5f1e0c2a", "/api/trip",
     "/api/browse/search", "/_next/static/x.js", "/photo-cdn/a.webp", "/brand/logo.svg", "/robots.txt"]) {
     assert.deepEqual(tenantHostPath(p, s), { kind: "pass" }, p);
   }
   // AA's own catalogue, the retired sign-in and My Trips (AA-1115) and another agency's site are not served here
   for (const p of ["/destinations", "/destinations/laos", "/tours", "/ottervale-journeys/plan", "/ottervale-journeys",
-    "/quillmere-voyagesx/plan", "/sign-in", "/trips", "/privacyx", "/terms/x"]) {
+    "/quillmere-voyagesx/plan", "/sign-in", "/trips", "/privacyx", "/terms/x",
+    // AA-1115: an unknown sub-path is the plain 404 here, never AA's own 404 page through a rewrite
+    "/plan/foo", "/plan/shared/x", "/tours/a/b", "/tours/", "/privacy/x", "/quillmere-voyages/unknown",
+    "/quillmere-voyages/plan/foo", "/quillmere-voyages/tours/a/b", "/quillmere-voyages/destinations",
+    "/quillmere-voyages/sign-in"]) {
     assert.deepEqual(tenantHostPath(p, s), { kind: "not_found" }, p);
   }
 });

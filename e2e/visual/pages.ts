@@ -42,6 +42,8 @@ export const PAGES: VisualPage[] = [
   { slug: "tenant-plan-shared", route: "/[tenant]/plan/shared", path: "/aa-tripplanner/plan/shared", challenged: true },
   { slug: "privacy", route: "/privacy", path: "/privacy" },
   { slug: "terms", route: "/terms", path: "/terms" },
+  // AA-1115: any other path under /{slug} is the brand-free agency 404 (app/[tenant]/[...rest]), never AA's.
+  { slug: "tenant-not-found", route: "/[tenant]/[...rest]", path: "/aa-tripplanner/no-such-page", status: 404 },
   // app/not-found.tsx (no page.tsx of its own): the 404 page of an unknown path.
   { slug: "not-found", route: "(not-found)", path: "/this-page-does-not-exist", status: 404 },
 ];

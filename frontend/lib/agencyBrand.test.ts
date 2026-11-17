@@ -91,6 +91,53 @@ test("no file an agency page reaches spells Adventure Asia (lib/brand.ts only)",
   assert.deepEqual(offenders, [], "move the words to lib/brand.ts (brandCopy for shared components)");
 });
 
+// "AA" as a word in the copy of a file an agency page reaches ("no AA link", "on 3 AA tours") names Adventure Asia too.
+// Identifiers such as AA_BAR or aa-site are not words here; string keys and test ids that are never shown are listed.
+function aaWords(src: string): string[] {
+  return [...src.matchAll(/[^\n]*\bAA\b[^\n]*/g)].map((m) => m[0].trim());
+}
+
+test("no file an agency page reaches shows \"AA\" as a word outside lib/brand.ts and the allow-list", () => {
+  const files = reached([...tenantEntries(), "app/layout.tsx"]);
+  const offenders = [...files]
+    .filter((f) => f !== BRAND_FILE && !(f in AA_WORDS_ALLOWED))
+    .flatMap((f) => aaWords(code(read(f))).map((line) => `${f}: ${line}`));
+  assert.deepEqual(offenders, [], "route the words through brandCopy (lib/brand.ts)");
+});
+
+// The agency 404 (components/TenantNotFound.tsx): a page under /{slug} that can call notFound() must have a not-found
+// file in its own segment or a parent segment below app/[tenant], else Next shows the root app/not-found.tsx, which is
+// Adventure Asia's 404 (its bar, footer and catalogue links). The bare /{slug} is the one exception: an unknown slug
+// there is no agency's site, and AA's own 404 for unknown top-level paths stays.
+const NOT_FOUND_EXCEPTIONS: Record<string, string> = {
+  "app/[tenant]/page.tsx": "the bare /{slug}: a served slug only redirects to its planner; an unknown one is AA's 404",
+};
+
+test("every /{slug} page that can be a 404 has the brand-free agency 404, and unknown sub-paths reach it", () => {
+  const pages = tenantEntries().filter((f) => f.endsWith("/page.tsx"));
+  for (const page of pages) {
+    if (!/\bnotFound\(\)/.test(code(read(page)))) continue;
+    if (page in NOT_FOUND_EXCEPTIONS) continue;
+    let dir = dirname(page);
+    let found = false;
+    while (dir.startsWith("app/[tenant]/")) {
+      if (existsSync(join(ROOT, dir, "not-found.tsx"))) {
+        found = true;
+        break;
+      }
+      dir = dirname(dir);
+    }
+    assert.ok(found, `${page}: add a not-found.tsx (components/TenantNotFound) in its segment`);
+  }
+  const notFounds = tenantEntries().filter((f) => f.endsWith("/not-found.tsx"));
+  assert.ok(notFounds.length >= 5, notFounds.join(", "));
+  for (const f of notFounds) assert.match(read(f), /<TenantNotFound\b/, `${f}: use components/TenantNotFound`);
+  // An unknown /{slug}/... path has a page (a catch-all that is always a 404), so it never falls to the root 404.
+  assert.match(code(read("app/[tenant]/[...rest]/page.tsx")), /notFound\(\);/);
+  assert.ok(existsSync(join(ROOT, "app/[tenant]/[...rest]/not-found.tsx")));
+  for (const [f, why] of Object.entries(NOT_FOUND_EXCEPTIONS)) assert.ok(existsSync(join(ROOT, f)) && why.length > 20, f);
+});
+
 test("only the allow-listed files an agency page reaches use Adventure Asia's own words", () => {
   const files = reached(tenantEntries());
   for (const f of files) {

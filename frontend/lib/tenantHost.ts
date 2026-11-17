@@ -7,11 +7,12 @@
 //     and target-group health checks) are ours: the request is handled exactly as before;
 //   * any other host is looked up (browse GET /browse/tenant-host/{host}, CIS 429 custom_domains): a served tenant's
 //     ACTIVE host resolves to its TenantSite, anything else is a 404 (an unknown host never shows AA's site);
-//   * tenantHostPath maps the path on that host to the tenant's pages: "/" -> "/{slug}", "/plan..." ->
-//     "/{slug}/plan...", "/tours/{tour}" -> "/{slug}/tours/{tour}", AA-1115 "/privacy" and "/terms" -> the agency's
-//     own legal pages "/{slug}/privacy", "/{slug}/terms" (never AA's); "/{slug}/..." (our path) keeps working; the BFF
-//     and static files pass; AA's own catalogue pages, the retired sign-in and My Trips (AA-1115) and another tenant's
-//     path are a 404 on an agency's domain.
+//   * tenantHostPath maps the path on that host to the tenant's pages, and only to pages that exist: "/" -> "/{slug}",
+//     "/plan" and "/plan/shared" -> "/{slug}/plan...", "/tours/{tour}" (one segment) -> "/{slug}/tours/{tour}", AA-1115
+//     "/privacy" and "/terms" -> the agency's own legal pages "/{slug}/privacy", "/{slug}/terms" (never AA's); the same
+//     pages under "/{slug}" (our path) keep working; the BFF and static files pass. Anything else (AA's own catalogue
+//     pages, the retired sign-in and My Trips, another tenant's path, AA-1115 an unknown sub-path such as /plan/x or
+//     /tours/a/b) is the plain 404 below, so an agency's domain never reaches Adventure Asia's app/not-found.tsx.
 // Cache: per server instance, like the slug resolver (lib/tenantSite.ts): a served answer for TENANT_TTL_MS, a miss for
 // TENANT_MISS_TTL_MS; a lookup that could not answer throws TenantLookupUnavailable and is not cached. No next/*
 // import, so `npm test` runs it.
@@ -34,9 +35,13 @@ const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
 // passes any more (the sign-in and My Trips are retired; the legal pages are the agency's own, below).
 const PASS_PREFIXES = ["/api/", "/_next/", "/photo-cdn/", "/brand/", "/hero/"];
 const PASS_PATHS = new Set(["/icon.svg", "/favicon.ico", "/robots.txt", "/sitemap.xml"]);
-// Paths that become the tenant's own pages (a prefix also takes its sub-paths).
-const TENANT_PREFIXES = ["/plan", "/tours"];
-const TENANT_PATHS = new Set(["/plan", "/privacy", "/terms"]);
+// The tenant's own pages (app/[tenant]/...), as the path after "/{slug}": exactly these, nothing under them.
+const TENANT_PATHS = new Set(["/plan", "/plan/shared", "/privacy", "/terms"]);
+const TENANT_TOUR_RE = /^\/tours\/[^/]+$/;
+
+function isTenantPage(path: string): boolean {
+  return TENANT_PATHS.has(path) || TENANT_TOUR_RE.test(path);
+}
 
 /** The request's host: lower-case, without a port or a trailing root dot ("" when absent). */
 export function requestHost(raw: string | null | undefined): string {
@@ -63,15 +68,16 @@ export function isOwnHost(host: string, ownHost: string): boolean {
 export type HostPathDecision = { kind: "pass" } | { kind: "rewrite"; path: string } | { kind: "not_found" };
 
 function passes(pathname: string, slug: string): boolean {
-  return PASS_PATHS.has(pathname) || PASS_PREFIXES.some((p) => pathname.startsWith(p))
-    || pathname === `/${slug}` || pathname.startsWith(`/${slug}/`);
+  if (PASS_PATHS.has(pathname) || PASS_PREFIXES.some((p) => pathname.startsWith(p))) return true;
+  if (pathname === `/${slug}` || pathname === `/${slug}/`) return true;
+  return pathname.startsWith(`/${slug}/`) && isTenantPage(pathname.slice(slug.length + 1));
 }
 
-// The tenant page a path becomes on the agency's domain, or null (AA's own pages, /tours alone, another tenant).
+// The tenant page a path becomes on the agency's domain, or null (AA's own pages, /tours alone, an unknown sub-path,
+// another tenant).
 function tenantTarget(pathname: string, slug: string): string | null {
   if (pathname === "/" || pathname === "") return `/${slug}`;
-  const tenantPage = TENANT_PATHS.has(pathname) || TENANT_PREFIXES.some((p) => pathname.startsWith(`${p}/`));
-  return tenantPage ? `/${slug}${pathname}` : null;
+  return isTenantPage(pathname) ? `/${slug}${pathname}` : null;
 }
 
 /** What the path means on the tenant's own domain (see the header). */

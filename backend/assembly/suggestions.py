@@ -354,7 +354,7 @@ def _rerank_by_route(
         why = "Similar to places you've pinned"
         if c.get("tour_count"):
             tours = int(c["tour_count"])
-            why = f"Next on {tours} Adventure Asia tour{'s' if tours > 1 else ''} from your last stop"
+            why = f"Next on {tours} tour{'s' if tours > 1 else ''} from your last stop"
             if (c.get("transfer_km") or 0) > 1:
                 why += f" (a {round(float(c['transfer_km']))} km transfer)"
         elif last_stop is not None and dist is not None and dist != float("inf"):

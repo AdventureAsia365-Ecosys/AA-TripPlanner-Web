@@ -759,12 +759,13 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   tenant's host answers; an unknown host, an unserved tenant and a deploy before CIS 429 (42703) are a plain 404 page
   (`no-store`, never AA's site); a lookup error is a 503 page, never cached. Per-instance cache as for the slug (60 s,
   30 s for a miss).
-- **Paths on the agency's domain** (`tenantHostPath`): `/` -> `/{slug}`, `/plan...` -> `/{slug}/plan...`,
-  `/tours/{tour}` -> `/{slug}/tours/{tour}` (internal rewrites, so the tenant's branding, tours, lead route and guest
-  cookie are those of `/{slug}`), AA-1115 `/privacy` -> `/{slug}/privacy` and `/terms` -> `/{slug}/terms` (the
-  agency's own legal pages, never AA's); `/{slug}/...` (our path) keeps working; the BFF and static files pass; AA's
-  own catalogue pages (`/destinations`, `/tours`), the retired `/sign-in` and `/trips` and another tenant's `/{slug}`
-  are a 404 there. The proxy's matcher is now every path but the build chunks; on our own host it still acts
+- **Paths on the agency's domain** (`tenantHostPath`), real pages only: `/` -> `/{slug}`, `/plan` and `/plan/shared`
+  -> `/{slug}/plan...`, `/tours/{tour}` (one segment) -> `/{slug}/tours/{tour}` (internal rewrites, so the tenant's
+  branding, tours, lead route and guest cookie are those of `/{slug}`), AA-1115 `/privacy` -> `/{slug}/privacy` and
+  `/terms` -> `/{slug}/terms` (the agency's own legal pages, never AA's); the same pages under `/{slug}` (our path)
+  keep working; the BFF and static files pass. Anything else (AA's own catalogue pages, the retired `/sign-in` and
+  `/trips`, another tenant's `/{slug}`, an unknown sub-path such as `/plan/x` or `/tours/a/b`) is the proxy's plain
+  404 there. The proxy's matcher is now every path but the build chunks; on our own host it still acts
   only on the old paths (`actsOn`).
 - **Edge.** Agency domains are aliases of a TripPlanner AGENCY distribution of their own (the public host keeps its own
   distribution and certificate). AA-CIS-Infra routes every alias of both distributions to this service with a site
@@ -839,10 +840,13 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   without a brand. The planner's legal links (lead form, AI notices) go to the agency's own draft pages
   `/{slug}/privacy` and `/{slug}/terms` (`lib/legal.ts` `legalPaths`; `components/AgencyLegalPage.tsx`: the agency
   is the controller of the trips sent to it; the AA-hosted demo tenant is redirected to AA's pages). The share view
-  carries the agency bar; an agency tour's 404 is a plain kit state (`app/[tenant]/tours/[tour]/not-found.tsx`), not
-  AA's 404. Guard: `lib/agencyBrand.test.ts` walks the imports of every `app/[tenant]` file (and the root layout):
-  only `lib/brand.ts` may spell the brand, only an allow-listed file may use AA's own words, `brandCopy(name)` and
-  `tenantMetadata` never return it. The one exception is the BO-8 badge when the agency switched it on.
+  carries the agency bar; a page under /{slug} that is not found is a plain kit state (`components/TenantNotFound.tsx`,
+  the not-found files of `app/[tenant]/` and the always-404 catch-all `app/[tenant]/[...rest]`), not AA's 404 (only
+  an unknown bare `/{slug}` keeps it). Guard: `lib/agencyBrand.test.ts` walks the imports of every `app/[tenant]`
+  file (and the root layout): only `lib/brand.ts` may spell the brand or show "AA" as a word, only an allow-listed
+  file may use AA's own words, `brandCopy(name)` and `tenantMetadata` never return it, every /{slug} page that can be
+  a 404 has the agency 404. Backend twin: `backend/tests/test_aa1115_traveller_text_brand.py` (no string literal of
+  `backend/assembly` / `backend/browse` names the brand unless allow-listed with the reason no traveller sees it). The one exception is the BO-8 badge when the agency switched it on.
 - **Language of an agency's pages (AA-1115).** One root layout renders `<html lang="en">` (AA's pages stay static);
   the /{slug} layout marks its content with the tenant locale (`en` | `vi`, CIS site settings) on a `display:
   contents` wrapper, sets `<html lang>` before paint with an inline script (`lib/tenantLang.ts`) and keeps it on a

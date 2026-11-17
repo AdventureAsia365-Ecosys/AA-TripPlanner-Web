@@ -214,7 +214,7 @@ def test_the_fallback_names_every_sold_country_by_name():
                for name, n in [("Zelmar", 40), ("Borvia", 30), ("Quenland", 20), ("Avoria", 12), ("Mirth", 9),
                                ("Tavora", 8), ("Norland", 7), ("Kestria", 5), ("Ulvar", 2), ("Dunmere", 1)]]
     reply = plan_chat.fallback_reply(offered, with_proposal=False)
-    assert ("runs trips in Avoria, Borvia, Dunmere, Kestria, Mirth, Norland, Quenland, Tavora, Ulvar and Zelmar."
+    assert ("has trips in Avoria, Borvia, Dunmere, Kestria, Mirth, Norland, Quenland, Tavora, Ulvar and Zelmar."
             in reply)
     assert plan_chat.fallback_reply([], with_proposal=False).startswith("I can only plan")
 

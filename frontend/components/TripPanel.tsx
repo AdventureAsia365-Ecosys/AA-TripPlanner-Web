@@ -402,7 +402,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                       {leg.day_to !== leg.day_from ? `–${leg.day_to}` : ""}
                       {coverage.transfers[i] && (
                         <span className={coverage.transfers[i].ok ? "text-k-muted" : "text-k-danger"}>
-                          {" "}→ {coverage.transfers[i].ok ? "transfer" : "no AA link"}
+                          {" "}→ {coverage.transfers[i].ok ? "transfer" : copy.coverage.noLink}
                           {coverage.transfers[i].km != null && ` (${Math.round(coverage.transfers[i].km as number)} km)`}
                         </span>
                       )}

@@ -100,7 +100,7 @@ def solve(pins: list[dict], options: dict[str, set], junction_km: float = JUNCTI
                  "ok": hop is not None and hop <= junction_km}
             transfers_out.append(t)
             if not t["ok"]:
-                gaps_out.append({**t, "reason": "no Adventure Asia tour links these two places"})
+                gaps_out.append({**t, "reason": "no tour links these two places"})
         legs.append({"tour_id": tour, "day_from": day, "day_to": day, "pins": [str(pin["id"])]})
     for leg in legs:
         leg["days"] = leg["day_to"] - leg["day_from"] + 1

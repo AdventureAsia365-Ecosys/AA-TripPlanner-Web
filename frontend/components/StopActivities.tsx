@@ -43,7 +43,7 @@ export default function StopActivities({ destinationId }: { destinationId: strin
 
   if (items === null) return <p className="mt-2 text-[11px] text-k-muted">Loading activities…</p>;
   if (items.length === 0) {
-    return <p className="mt-2 text-[11px] text-k-muted">No other AA activities here.</p>;
+    return <p className="mt-2 text-[11px] text-k-muted">{brand.copy.activities.none}</p>;
   }
 
   const toggle = async (a: StopActivity) => {
@@ -71,7 +71,7 @@ export default function StopActivities({ destinationId }: { destinationId: strin
               <span>
                 <span className="font-medium text-k-ink">{LABEL[a.activity] ?? a.activity}</span>
                 {a.text_extract && <span> — {a.text_extract.slice(0, 90)}</span>}
-                <span className="text-k-muted"> · on {a.tour_count} AA tour{a.tour_count > 1 ? "s" : ""}</span>
+                <span className="text-k-muted"> · {brand.copy.activities.onTours(a.tour_count)}</span>
               </span>
             </label>
           </li>

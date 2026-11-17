@@ -5,7 +5,7 @@ import {
   itineraryParagraphs,
   tenantTextMark,
   tenantPlanHref,
-  tenantPlanPathFromTourPath,
+  tenantPlanPathFromPath,
   tenantTourPath,
   tenantToursPath,
   tourHref,
@@ -86,9 +86,13 @@ test("the tenant text mark says AI, when, and whether the agency edited it", () 
   assert.equal(tenantTextMark(undefined)["data-ai-generated"], "true");
 });
 
-test("AA-1115: a tour page's 404 offers the agency's planner, on our host and on the agency's own domain", () => {
-  assert.equal(tenantPlanPathFromTourPath("/quillmere-voyages/tours/invented-ridge-5f1e0c2a"), "/quillmere-voyages/plan");
+test("AA-1115: an agency page's 404 offers the agency's planner, on our host and on the agency's own domain", () => {
+  assert.equal(tenantPlanPathFromPath("/quillmere-voyages/tours/invented-ridge-5f1e0c2a"), "/quillmere-voyages/plan");
   // the agency's own domain shows /tours/{tour} in the address bar; /plan there is the agency's planner
-  assert.equal(tenantPlanPathFromTourPath("/tours/invented-ridge-5f1e0c2a"), "/plan");
-  for (const odd of ["", null, undefined, "/", "/Bad Slug/tours/x"]) assert.equal(tenantPlanPathFromTourPath(odd), "/plan");
+  assert.equal(tenantPlanPathFromPath("/tours/invented-ridge-5f1e0c2a"), "/plan");
+  assert.equal(tenantPlanPathFromPath("/quillmere-voyages/plan/shared"), "/quillmere-voyages/plan");
+  assert.equal(tenantPlanPathFromPath("/quillmere-voyages/no-such-page/x"), "/quillmere-voyages/plan");
+  // the agency's own domain: the unprefixed paths (a reserved first segment is never a slug)
+  for (const own of ["/plan/shared", "/privacy", "/terms"]) assert.equal(tenantPlanPathFromPath(own), "/plan", own);
+  for (const odd of ["", null, undefined, "/", "/Bad Slug/tours/x"]) assert.equal(tenantPlanPathFromPath(odd), "/plan");
 });
