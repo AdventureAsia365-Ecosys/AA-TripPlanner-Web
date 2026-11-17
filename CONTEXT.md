@@ -853,7 +853,9 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   (`backend/tests/test_aa1038_tenant_site_pg.py`, two synthetic agencies). The bare path binds the demo tenant, so it
   sees demo rows only; a connection with no tenant bound sees no row (FORCE slice, tp-028).
 - **Not in this slice.** The tenant brand, `lead.submitted.v1` and the per-tenant AI caps came with slice 3
-  (below); FORCE RLS (tp-028) and the ECS + CloudFront hosting move came after it; the launcher snippet is a later slice.
+  (below); FORCE RLS (tp-028) and the ECS + CloudFront hosting move came after it. The launcher (AA-1115, entitlement
+  `tp.launcher`) is a snippet the agency copies from its Add-ons page in AA-Partner: one link that opens its planner
+  (its own domain's `/plan`, else `/{slug}/plan`) in a new tab; nothing changes here (no iframe, CSP unchanged).
 
 #### Leads, brand and the per-tenant AI cap (R5 slice 3, AA-1038)
 
