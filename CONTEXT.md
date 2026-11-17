@@ -845,7 +845,12 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   an unknown bare `/{slug}` keeps it). Guard: `lib/agencyBrand.test.ts` walks the imports of every `app/[tenant]`
   file (and the root layout): only `lib/brand.ts` may spell the brand or show "AA" as a word, only an allow-listed
   file may use AA's own words, `brandCopy(name)` and `tenantMetadata` never return it, every /{slug} page that can be
-  a 404 has the agency 404. Backend twin: `backend/tests/test_aa1115_traveller_text_brand.py` (no string literal of
+  a 404 has the agency 404. Next renders the root `app/not-found.tsx` into the RSC payload of every page, an agency's
+  included, so AA's 404 sits behind a client boundary (`components/site/AaNotFound.tsx`, its body
+  `AaNotFoundPage.tsx` loaded with `next/dynamic` only when shown): the root 404's server part names no brand
+  (agencyBrand test), and CI runs `frontend/scripts/check-agency-render.mjs` after the build (`next start` against a
+  fake browse API with one invented agency: its pages on our host and on its own domain carry no "Adventure Asia" /
+  "AA AI"; AA's own pages and the prerendered AA 404 still do). Backend twin: `backend/tests/test_aa1115_traveller_text_brand.py` (no string literal of
   `backend/assembly` / `backend/browse` names the brand unless allow-listed with the reason no traveller sees it). The one exception is the BO-8 badge when the agency switched it on.
 - **Language of an agency's pages (AA-1115).** One root layout renders `<html lang="en">` (AA's pages stay static);
   the /{slug} layout marks its content with the tenant locale (`en` | `vi`, CIS site settings) on a `display:

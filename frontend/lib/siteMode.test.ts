@@ -55,8 +55,11 @@ test("the root layout, robots.ts and the footer use the site mode", () => {
   assert.match(src("app/layout.tsx"), /robots: layoutRobots\(isLiveSite\(\)\)/);
   assert.match(src("app/robots.ts"), /robotsFor\(isLiveSite\(\), siteUrl\(\)\)/);
   const footer = src("components/site/SiteFooter.tsx");
-  assert.match(footer, /const preview = !isLiveSite\(\)/);
+  assert.match(footer, /\{ preview = !isLiveSite\(\) \}/);
   assert.match(footer, /\{PREVIEW_SITE_NOTE\}/);
+  // AA's 404 renders its footer in the browser bundle (no server env there): the server passes the mode in.
+  assert.match(src("app/not-found.tsx"), /<AaNotFound preview=\{!isLiveSite\(\)\} \/>/);
+  assert.match(src("components/site/AaNotFoundPage.tsx"), /<SiteFooter preview=\{preview\} \/>/);
 });
 
 test("the preview note says what the site is, in plain English, without issue ids", () => {
