@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.16.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.15.0...v0.16.0) (2026-11-17)
+
+
+### Features
+
+* agency-only branding on every tenant page and the traveller sign-in retired ([#273](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/273)) ([66dabde](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/66dabde028d50821d3171bfec421e694bc3b5f80))
+* tp-032 AI sessions month table and tp-033 erase of its tenant rows ([#270](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/270)) ([9d979a6](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/9d979a63070db66f1b4607066587052d63f17989))
+* TripPlanner AI sessions quota and the CIS stop share ([#271](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/271)) ([27e84bf](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/27e84bf7d010a07bd2b6d51b83b175b708872ff4))
+
+
+### Bug Fixes
+
+* keep Adventure Asia's 404 out of every agency page's payload ([#274](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/274)) ([58eace3](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/58eace37a25d6c449349969e4ac6d197802e8079))
+
 ## [0.15.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.14.0...v0.15.0) (2026-11-15)
 
 
