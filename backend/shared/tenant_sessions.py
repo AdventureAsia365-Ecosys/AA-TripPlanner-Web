@@ -17,7 +17,8 @@ per-visitor limits, and answers None (the call may run) or the reason it may not
 - **fail closed for new sessions**: the quota unreadable (CIS 438 not applied, the view not granted, any read error),
   no row for the tenant, or the count unreadable / unwritable (tp-032 not applied): ``REASON_UNREADABLE``. AA-1126 L4:
   under the prod spend rules (``tripplanner.spend.environment``, CIS Platform › Settings) the same read errors let the
-  session go on (one ``llm_gateway_error`` line ``tenant_sessions_degraded``); a reached quota stays a hard stop.
+  session go on (one ``llm_gateway_error`` line ``tenant_sessions_degraded`` and the day's staff bell,
+  ``spend_bell``); a reached quota stays a hard stop.
 
 AA-1126 L2: when the quota stops a new session the agency is told in its own Content studio bell: one
 ``shared.notifications`` row ``tripplanner.ai_allowance_used`` per tenant and UTC month (CIS 447: the tripplanner role
@@ -38,7 +39,7 @@ from typing import Any, Callable, Optional
 import json
 from datetime import datetime, timedelta, timezone
 
-from backend.shared import observability, settings, tenant_budget
+from backend.shared import observability, settings, spend_bell, tenant_budget
 
 TABLE = "tripplanner.ai_session_month"
 VIEW = "catalog.v_tenant_tripplanner_v1"
@@ -127,11 +128,11 @@ async def admit(db: Any, tenant_id: Optional[str], session_id: Optional[str]) ->
             return None
     except Exception as e:  # noqa: BLE001 — tp-032 missing or a read error: closed for a new session (dev)
         _unreadable("tenant_sessions_count_unreadable", e)
-        return _unreadable_stop(tid)
+        return await _unreadable_stop(db, tid)
     q = await quota(db, tid)
     if not q.readable:
         observability.emit("tenant_ai_sessions_stop", reason=REASON_UNREADABLE, tenant_id=tid)
-        return _unreadable_stop(tid)
+        return await _unreadable_stop(db, tid)
     try:
         async with db.transaction():
             await db.execute(LOCK_SQL, s)
@@ -144,19 +145,19 @@ async def admit(db: Any, tenant_id: Optional[str], session_id: Optional[str]) ->
                 await db.execute(ADD_SQL, s, session_id)
     except Exception as e:  # noqa: BLE001 — the count could not be kept: closed for a new session (dev)
         _unreadable("tenant_sessions_write_failed", e)
-        return _unreadable_stop(tid)
+        return await _unreadable_stop(db, tid)
     if capped:
         await notify_agency(db, tid)
         return REASON_CAP
     return None
 
 
-def _unreadable_stop(tenant_id: str) -> Optional[str]:
+async def _unreadable_stop(db: Any, tenant_id: str) -> Optional[str]:
     """``REASON_UNREADABLE`` (dev: fail closed), or None under the prod spend rules (AA-1126 L4: degrade, one error
-    line)."""
+    line and the day's staff bell, ``spend_bell``)."""
     if not settings.spend_prod():
         return REASON_UNREADABLE
-    observability.emit("llm_gateway_error", level="error", what="tenant_sessions_degraded", tenant_id=tenant_id)
+    await spend_bell.degraded(db, "tenant_sessions", tenant_id=tenant_id)
     return None
 
 

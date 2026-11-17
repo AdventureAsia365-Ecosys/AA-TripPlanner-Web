@@ -522,7 +522,7 @@ class StageSpendDb:
 async def test_without_stage_caps_only_the_combined_cap_applies(monkeypatch):
     """Unset stage caps (the default) = the AA-805 behaviour: one combined read, one combined cap."""
     monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_USD", 5.0)
-    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_COMPOSE_USD", None)
+    monkeypatch.setattr(config, "TP_DAILY_SPEND_CAP_COMPOSE_USD", 0.0)
     db = StageSpendDb({"tp_compose": 3.0, "tp_search_embed": 1.0})
     status = await gw.budget_status(db, "tp_compose")
     assert status == {"spent_usd": 4.0, "cap_usd": 5.0, "exhausted": False, "reason": None, "near_cap": True}

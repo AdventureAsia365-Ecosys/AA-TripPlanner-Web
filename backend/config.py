@@ -245,17 +245,15 @@ REQUIRE_REGISTRATION_BEFORE_HANDOFF = True
 TP_DAILY_SPEND_CAP_USD = 5.0
 
 
-def _optional_usd(name: str) -> Optional[float]:
-    raw = (_get(name, "") or "").strip()
-    return float(raw) if raw else None
-
-
-# AA-1015: separate daily caps per stage, so search and narration cannot use each other's share. Unset (the default)
-# = no stage cap: only the combined cap above applies, as before. Both caps apply when a stage cap is set.
-TP_DAILY_SPEND_CAP_SEARCH_USD = _optional_usd("TP_DAILY_SPEND_CAP_SEARCH_USD")
-TP_DAILY_SPEND_CAP_COMPOSE_USD = _optional_usd("TP_DAILY_SPEND_CAP_COMPOSE_USD")
-# AA-1015: share of a cap at which the gateway prints the "near cap" alert line (and budget_status says near_cap).
-SPEND_NEAR_CAP_RATIO = 0.8
+# AA-1015, settings since AA-1126 (CIS 447): separate daily caps per stage, so search and narration cannot use each
+# other's share (tripplanner.spend.stage_cap_search_usd / _compose_usd; 0 = no stage cap: only the app cap applies),
+# and the share of a cap at which the gateway prints the "near cap" alert and budget_status says near_cap
+# (tripplanner.spend.near_cap_pct). The administrator edits them on CIS Platform › Settings (TripPlanner tab); these
+# are only the fallbacks while the view cannot be read, equal to the CIS seed (tests/test_s279_settings.py). The env
+# vars TP_DAILY_SPEND_CAP_SEARCH_USD / _COMPOSE_USD are retired (never set on the Lambdas).
+TP_DAILY_SPEND_CAP_SEARCH_USD = 0.0
+TP_DAILY_SPEND_CAP_COMPOSE_USD = 0.0
+SPEND_NEAR_CAP_PCT = 80
 
 # --- Route deadline (AA-642 S263 E1) ---
 # Wall-time budget of one text-generation request across every model / account of its route

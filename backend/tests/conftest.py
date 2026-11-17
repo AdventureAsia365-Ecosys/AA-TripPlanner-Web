@@ -90,3 +90,13 @@ def _tenant_assertion_key_shell(monkeypatch):
     monkeypatch.setattr(tenant_assertion, "_fetch_secret", lambda name: None)
     yield
     tenant_assertion.reset_cache()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_spend_bell():
+    """AA-1126 L4: the degraded-check staff bell is paced per container (module global); every test starts empty."""
+    from backend.shared import spend_bell
+
+    spend_bell.clear()
+    yield
+    spend_bell.clear()

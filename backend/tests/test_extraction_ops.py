@@ -89,7 +89,7 @@ def _sql_strings(text: str):
 # is a key of catalog.v_app_settings_v1, not a table.
 _SETTING_KEY = re.compile(r"^tripplanner\.[a-z][a-z0-9_]*\.[a-z0-9_]+$")
 # AA-1126: a whole literal that is a notification event name of the CIS bell, not a table.
-_EVENT_NAMES = {"tripplanner.ai_allowance_used"}
+_EVENT_NAMES = {"tripplanner.ai_allowance_used", "platform.tripplanner.spend_degraded"}  # + L4 staff bell
 
 
 def _foreign_reads(text: str) -> list[str]:

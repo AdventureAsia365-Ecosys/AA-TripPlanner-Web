@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import pytest
 
 from backend import config
-from backend.shared import app_profile, monthly_spend, observability, settings, tenant
+from backend.shared import app_profile, monthly_spend, observability, settings, spend_bell, spend_rules, tenant
 from backend.shared import llm_gateway as gw
 from backend.shared import tenant_budget as tb
 from backend.shared import tenant_sessions as ts
@@ -273,3 +273,130 @@ async def test_an_unreadable_quota_fails_closed_on_dev_and_degrades_on_prod(env,
     env("prod")
     assert await ts.admit(db, AGENCY, SESSION) is None
     assert any(kw.get("what") == "tenant_sessions_degraded" for _, kw in lines)
+
+
+# ── L4: the staff bell of a degraded check (spend_bell, CIS 447) ─────────────────────────────────────────────────────
+
+class BellDb:
+    """Records the bell INSERTs; ``error`` makes the next one raise."""
+
+    def __init__(self, error=None):
+        self.error = error
+        self.bells: list = []
+
+    async def execute(self, sql, *args):
+        if sql == spend_bell.SQL:
+            if self.error:
+                raise self.error
+            self.bells.append(args)
+        return "OK"
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_a_degraded_spend_read_raises_one_admin_bell_a_day(monkeypatch, env, lines):
+    env("prod")
+    _spent(monkeypatch, error=PgError("57014"))
+    _tenant_check(monkeypatch)
+    db = BellDb()
+    for _ in range(3):
+        assert (await gw.budget_status(db, "tp_compose"))["exhausted"] is False
+    assert len(db.bells) == 1                                    # once per check and UTC day per container
+    tenant_id, event, entity_type, entity_id, payload = db.bells[0]
+    assert (tenant_id, event, entity_type) == (spend_bell.PLATFORM_TENANT_ID, "platform.tripplanner.spend_degraded",
+                                               "tripplanner_ai")
+    assert entity_id.startswith("spend_unreadable:") and "prod spend rules" in payload
+    assert sum(kw.get("what") == "spend_unreadable_degraded" for _, kw in lines) == 3   # the error line every time
+
+
+@pytest.mark.asyncio
+async def test_dev_raises_no_bell(monkeypatch, env, lines):
+    _spent(monkeypatch, error=PgError("57014"))
+    _tenant_check(monkeypatch)
+    db = BellDb()
+    assert (await gw.budget_status(db, "tp_compose"))["exhausted"] is True
+    assert db.bells == []
+
+
+@pytest.mark.asyncio
+async def test_the_bell_already_raised_today_is_not_retried_and_a_failure_retries_later(monkeypatch, lines):
+    clock = [10.0]
+    monkeypatch.setattr(spend_bell, "_clock", lambda: clock[0])
+    db = BellDb(error=PgError("23505"))
+    assert await spend_bell.degraded(db, "tenant_sessions", now=NOV) is False
+    db.error = None
+    assert await spend_bell.degraded(db, "tenant_sessions", now=NOV) is False and db.bells == []
+    db.error = PgError("42501")                                  # CIS 447 not applied yet: no grant
+    assert await spend_bell.degraded(db, "monthly_spend_unreadable", now=NOV) is False
+    db.error = None
+    assert await spend_bell.degraded(db, "monthly_spend_unreadable", now=NOV) is False    # paced
+    clock[0] += spend_bell.FAILURE_TTL_SECONDS + 1
+    assert await spend_bell.degraded(db, "monthly_spend_unreadable", now=NOV) is True
+    assert db.bells[0][3] == "monthly_spend_unreadable:2026-11-17"
+    assert await spend_bell.degraded(object(), "spend_unreadable", now=NOV) is False      # never raises
+    assert await spend_bell.degraded(None, "spend_unreadable", now=NOV) is False
+
+
+@pytest.mark.asyncio
+async def test_the_quota_and_chat_degrades_raise_their_bells(env, lines):
+    env("prod")
+    db = QuotaDb(quota_error=PgError("42501"))
+    db.bells = []
+    orig = db.execute
+
+    async def execute(sql, *args):
+        if sql == spend_bell.SQL:
+            db.bells.append(args)
+            return "OK"
+        return await orig(sql, *args)
+    db.execute = execute
+    assert await ts.admit(db, AGENCY, SESSION) is None
+    month = MonthDb(error=PgError("42P01"))
+    month.bells = []
+    month.execute = lambda sql, *args: _record(month, sql, args)
+    month.transaction = None
+    assert await monthly_spend.check(month, "tp_plan_chat", AGENCY, app_cap_usd=2, tenant_cap_usd=2) is None
+    assert [b[3].split(":")[0] for b in db.bells + month.bells] == ["tenant_sessions", "monthly_spend_unreadable"]
+
+
+async def _record(db, sql, args):
+    if sql == spend_bell.SQL:
+        db.bells.append(args)
+    return "OK"
+
+
+# ── the stage caps and the near-cap share are settings (CIS 447) ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_the_stage_caps_and_the_warning_share_come_from_the_view(monkeypatch, env, lines):
+    rows = [{"key": settings.STAGE_CAP_SEARCH_USD, "value_text": "1", "version": 3, "tenant_id": None},
+            {"key": settings.NEAR_CAP_PCT, "value_text": "60", "version": 2, "tenant_id": None}]
+
+    async def read(db):
+        return rows
+    monkeypatch.setattr(settings, "read", read)
+    settings.invalidate()
+    await settings.refresh(object(), force=True)
+    try:
+        assert spend_rules._stage_cap("tp_search_embed") == 1.0
+        assert spend_rules._stage_cap("tp_compose") is None          # 0 (the seed) = no stage cap
+        assert spend_rules.near_ratio() == 0.6
+
+        async def spent(db, stages):
+            return 1.2 if stages == ["tp_search_embed"] else 1.5
+        monkeypatch.setattr(gw, "_spent", spent)
+        _tenant_check(monkeypatch)
+        out = await gw.budget_status(object(), "tp_search_embed")
+        assert out["exhausted"] is True and out["stage_cap_usd"] == 1.0
+        env("prod")
+        assert (await gw.budget_status(object(), "tp_search_embed"))["alert_only"] is True   # prod: alert only
+    finally:
+        settings.invalidate()
+
+
+def test_the_cap_settings_fall_back_to_the_cis_seed():
+    assert settings.get(settings.STAGE_CAP_COMPOSE_USD) == 0.0 and settings.get(settings.STAGE_CAP_SEARCH_USD) == 0.0
+    assert settings.get(settings.NEAR_CAP_PCT) == 80 and spend_rules.near_ratio() == 0.8

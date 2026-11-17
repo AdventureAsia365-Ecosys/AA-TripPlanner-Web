@@ -64,6 +64,9 @@ PLAN_CHAT_MAX_TOKENS = "tripplanner.ai.plan_chat_max_tokens"
 ADVISOR_HANDOFF_DEMO = "tripplanner.handoff.advisor_demo"
 REQUIRE_REGISTRATION = "tripplanner.handoff.require_registration"
 SPEND_ENVIRONMENT = "tripplanner.spend.environment"  # AA-1126 (CIS 447): dev | prod
+STAGE_CAP_COMPOSE_USD = "tripplanner.spend.stage_cap_compose_usd"  # AA-1126 (CIS 447): 0 = no stage cap
+STAGE_CAP_SEARCH_USD = "tripplanner.spend.stage_cap_search_usd"
+NEAR_CAP_PCT = "tripplanner.spend.near_cap_pct"
 SPEND_DEV, SPEND_PROD = "dev", "prod"
 
 
@@ -104,6 +107,9 @@ SETTINGS: dict[str, Setting] = {s.key: s for s in (
     Setting(ADVISOR_HANDOFF_DEMO, "bool", "ADVISOR_HANDOFF_DEMO"),
     Setting(REQUIRE_REGISTRATION, "bool", "REQUIRE_REGISTRATION_BEFORE_HANDOFF"),
     Setting(SPEND_ENVIRONMENT, "enum", "TP_SPEND_ENVIRONMENT", allowed=(SPEND_DEV, SPEND_PROD)),
+    Setting(STAGE_CAP_COMPOSE_USD, "float", "TP_DAILY_SPEND_CAP_COMPOSE_USD", 0, 200),
+    Setting(STAGE_CAP_SEARCH_USD, "float", "TP_DAILY_SPEND_CAP_SEARCH_USD", 0, 200),
+    Setting(NEAR_CAP_PCT, "int", "SPEND_NEAR_CAP_PCT", 50, 99),
 )}
 
 

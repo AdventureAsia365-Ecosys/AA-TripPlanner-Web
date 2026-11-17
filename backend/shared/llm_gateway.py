@@ -1373,11 +1373,11 @@ async def _spent(db: Any, stages: Optional[list]) -> float:
 
 async def budget_status(db: Any, stage: Optional[str] = None) -> dict:
     """Today's (UTC) customer-facing (ONLINE_STAGES) model spend against TP_DAILY_SPEND_CAP_USD and, when
-    `stage` has a stage cap (AA-1015: TP_DAILY_SPEND_CAP_COMPOSE_USD / _SEARCH_USD), that stage's spend
+    `stage` has a stage cap (AA-1015; settings tripplanner.spend.stage_cap_*_usd since AA-1126), that stage's spend
     against it. Both caps apply; with no stage cap set only the combined cap does (behaviour unchanged).
 
     Returns {"spent_usd", "cap_usd", "exhausted", "reason", "near_cap"} (+ "stage", "stage_spent_usd",
-    "stage_cap_usd" when a stage cap applies). `near_cap` is True from SPEND_NEAR_CAP_RATIO (80 %) of
+    "stage_cap_usd" when a stage cap applies). `near_cap` is True from tripplanner.spend.near_cap_pct (80 %) of
     either cap, and the first time a container sees 80 % or 100 % of a cap on a UTC day it prints one
     `llm_spend_alert` line. Fails CLOSED (AA-642 S0, root ADR 0009 decision 6): when the spend view cannot
     be read, or a ledger write failed in the last SPEND_UNREADABLE_HOLD_SECONDS, `exhausted` is True
@@ -1399,7 +1399,7 @@ async def budget_status(db: Any, stage: Optional[str] = None) -> dict:
     # AA-1038 R5 slice 3: the tenant's own monthly AI budget (CIS 390), after the app caps. A reached tenant budget is
     # a cap (reason REASON_CAP, scope tenant: narration says ai_budget_exhausted); a budget that cannot be decided is a
     # pause for that tenant only (fail closed; AA-1126 L4: degrades under prod). The bare path / demo tenant has none.
-    reason = spend_rules.tenant_reason(await tenant_budget.check(db, tenant.current_id()), stage)
+    reason = await spend_rules.tenant_reason(db, await tenant_budget.check(db, tenant.current_id()), stage)
     if reason is not None:
         out.update(exhausted=True, reason=REASON_CAP if reason == tenant_budget.REASON_CAP else reason,
                    scope="tenant", tenant_reason=reason)
@@ -1419,10 +1419,10 @@ async def _app_caps(db: Any, stage: Optional[str], cap: float, stages: Optional[
             _error("spend_unreadable", stage, e)
             spent = None
     if spent is None:
-        return spend_rules.unreadable(core_budget.unreadable(cap).as_dict(), stage)
+        return await spend_rules.unreadable(db, core_budget.unreadable(cap).as_dict(), stage)
     _alert(scope, spent, cap, source)
     if stage_cap is not None and stage_spent is not None:
         _alert(str(stage), stage_spent, stage_cap)
-    decision = core_budget.decide(spent, cap, near_ratio=config.SPEND_NEAR_CAP_RATIO, stage=stage,
+    decision = core_budget.decide(spent, cap, near_ratio=spend_rules.near_ratio(), stage=stage,
                                   stage_spent=stage_spent, stage_cap=stage_cap)
     return spend_rules.over_cap(decision.as_dict(), scope=scope, stage=stage, spent=spent)

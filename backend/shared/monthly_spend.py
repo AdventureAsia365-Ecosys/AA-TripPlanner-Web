@@ -10,7 +10,7 @@ here: one row per (stage, scope, month), scope ``app`` (every tenant) or ``tenan
 Fail mode: CLOSED, like the daily cap (AA-642 S0). A read that fails (tp-029 not applied yet, a DB error) answers
 ``REASON_UNREADABLE``, so the chat pauses. AA-1126 (G3 / L4): under the prod spend rules
 (``tripplanner.spend.environment``, CIS Platform › Settings) the app cap only alerts and a read error (or a held
-stage) lets the turn go on with an error line; the tenant cap stays hard. A write that fails (the spend would
+stage) lets the turn go on with an error line and the day's staff bell (``spend_bell``); the tenant cap stays hard. A write that fails (the spend would
 undercount) holds the stage closed in this container for :data:`WRITE_FAILED_HOLD_SECONDS` and prints one ERROR line.
 
 Between the read and the write of one turn other turns can run, so a burst may pass the cap by the cost of the turns
@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from backend.shared import observability, settings
+from backend.shared import observability, settings, spend_bell
 
 TABLE = "tripplanner.ai_spend_month"
 SCOPE_APP = "app"
@@ -90,15 +90,18 @@ async def check(db: Any, stage: str, tenant_id: Optional[str], *, app_cap_usd: f
     if time.monotonic() < _hold_until.get(stage, 0.0):
         if not prod:
             return REASON_UNREADABLE
-        observability.emit("llm_gateway_error", level="error", what="monthly_spend_unreadable_degraded", stage=stage)
+        await spend_bell.degraded(db, "monthly_spend_unreadable", stage=stage)
         return None
     try:
         spent = await read(db, stage, tenant_id)
     except Exception as e:  # noqa: BLE001 — fail closed (dev), only the type and SQLSTATE are logged
-        observability.emit("llm_gateway_error", level="error",
-                           what="monthly_spend_unreadable_degraded" if prod else "monthly_spend_unreadable",
-                           stage=stage, error=type(e).__name__, sqlstate=getattr(e, "sqlstate", None))
-        return None if prod else REASON_UNREADABLE
+        if prod:
+            await spend_bell.degraded(db, "monthly_spend_unreadable", stage=stage, error=type(e).__name__,
+                                      sqlstate=getattr(e, "sqlstate", None))
+            return None
+        observability.emit("llm_gateway_error", level="error", what="monthly_spend_unreadable", stage=stage,
+                           error=type(e).__name__, sqlstate=getattr(e, "sqlstate", None))
+        return REASON_UNREADABLE
     if spent.app_usd >= app_cap_usd:
         observability.emit("llm_spend_alert", level="error", threshold="cap_alert_only" if prod else "cap",
                            scope="app_month", stage=stage, spent_usd=round(spent.app_usd, 6), cap_usd=app_cap_usd)
