@@ -9,7 +9,6 @@ import { SiteLink } from "@/ui/SiteLink";
 import AiLabel, { AI_BRAND_SHORT, AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
 import { ThemeToggle } from "@/ui/ThemeToggle";
 import { buttonClass } from "@/ui";
-import AccountLink from "@/components/AccountLink";
 import HeaderScrollState from "./HeaderScrollState";
 import MobileMenu from "./MobileMenu";
 
@@ -53,8 +52,6 @@ export default function SiteHeader({ overHero = false }: { overHero?: boolean })
                 {l.label}
               </SiteLink>
             ))}
-            {/* AA-908: My trips (AA-1094: no Sign in), fetched by the browser (this header is on CDN-cached pages). */}
-            <AccountLink tone="band" className="hidden md:inline" />
             <span className="hidden md:inline-flex">
               <ThemeToggle tone="band" />
             </span>

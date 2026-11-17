@@ -2,7 +2,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CLOUDFRONT_XFF_HOPS, clientIp, clientIpSource, viewerAddressIp } from "./clientIp.ts";
-import { travellerIp } from "./cognito.ts";
 
 const h = (m: Record<string, string>) => ({ get: (n: string) => m[n.toLowerCase()] ?? null });
 
@@ -43,8 +42,8 @@ test("viewer address parsing refuses values without a port or with junk", () => 
   assert.equal(viewerAddressIp("[2001:db8::1]:443"), "2001:db8::1");
 });
 
-test("lib/cognito travellerIp follows the same source", () => {
+test("the source decides which header gives the address", () => {
   const headers = h({ "cloudfront-viewer-address": "203.0.113.9:443", "x-forwarded-for": "192.0.2.1, 10.0.1.5" });
-  assert.equal(travellerIp(headers, "cloudfront"), "203.0.113.9");
-  assert.equal(travellerIp(headers, "forwarded"), "192.0.2.1");
+  assert.equal(clientIp(headers, "cloudfront"), "203.0.113.9");
+  assert.equal(clientIp(headers, "forwarded"), "192.0.2.1");
 });

@@ -7,8 +7,8 @@
 //   the lookup is down      -> 503 tenant_lookup_unavailable (retryable; never reported as an unknown tenant);
 //   anything else           -> 404 unknown_tenant, and the Lambda is not called;
 //   no edge key configured  -> 503 (the Lambda could not check an assertion either).
-// Used by every BFF route that calls the assembly Lambda for a traveller: /api/trip, /api/me and the /me/claim of
-// /api/auth/verify (lib/accountProxy.ts).
+// Used by every BFF route that calls a Lambda for a planner of a tenant: /api/trip and the search of /api/browse
+// (AA-1115: the account routes /api/me and /api/auth/* are retired with the traveller sign-in).
 
 import { TENANT_ASSERTION_HEADER, normaliseEdgeKey, signTenantAssertion } from "./tenantAssertion.ts";
 import { TenantLookupUnavailable, type TenantSite } from "./tenantSite.ts";

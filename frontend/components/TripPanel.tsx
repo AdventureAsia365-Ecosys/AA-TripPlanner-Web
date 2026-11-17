@@ -19,7 +19,6 @@ import { parseNarration } from "@/lib/narration";
 import { LEGAL_LINKS, TERMS_AI_PATH } from "@/lib/legal";
 import { formatDays } from "@/lib/text";
 import { reasonText, stopLabel, unavailableBanner } from "@/lib/availability";
-import { useAccount } from "@/lib/useAccount";
 import { ADVISOR_HANDOFF_DEMO, DEMO_NOTICE } from "@/lib/advisorDemo";
 import LeadForm from "@/components/LeadForm";
 import { isAgencyPlanner } from "@/lib/leadForm";
@@ -117,10 +116,6 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
   const totalDays = tripDays + customDays.length;
   const [showReg, setShowReg] = useState(false);
   const [reg, setReg] = useState({ name: "", phone: "", email: "", consent: false });
-  // AA-908: a signed-in traveller's email comes from the account (verified by the code), never typed. The
-  // assembly Lambda reads it from the access token; the field below only shows it.
-  const account = useAccount();
-  const accountEmail = account.signedIn ? account.email : null;
   const [sentMsg, setSentMsg] = useState<string | null>(null);
   const [demoNotice, setDemoNotice] = useState(false);
   // AA-1038 slice 3: on an agency tenant's planner the button opens the trip request form (lead.submitted.v1).
@@ -225,7 +220,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
       setDemoNotice(true);
       return;
     }
-    const res = await send(withCustomer ? { ...reg, email: accountEmail ?? reg.email } : undefined);
+    const res = await send(withCustomer ? reg : undefined);
     if (res.demo) {
       setShowReg(false);
       setDemoNotice(true);
@@ -696,27 +691,12 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                   onChange={(e) => setReg({ ...reg, phone: e.target.value })}
                   className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted"
                 />
-                {accountEmail ? (
-                  <div>
-                    <input
-                      aria-label="Email"
-                      value={accountEmail}
-                      readOnly
-                      data-testid="account-email"
-                      className="w-full cursor-not-allowed rounded-lg border border-k-line bg-k-bg px-3 py-2 text-sm text-k-muted"
-                    />
-                    <p className="mt-1 text-[11px] text-k-muted">
-                      Your signed-in email. Your advisor sees it as confirmed.
-                    </p>
-                  </div>
-                ) : (
-                  <input
-                    placeholder="Email"
-                    value={reg.email}
-                    onChange={(e) => setReg({ ...reg, email: e.target.value })}
-                    className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted"
-                  />
-                )}
+                <input
+                  placeholder="Email"
+                  value={reg.email}
+                  onChange={(e) => setReg({ ...reg, email: e.target.value })}
+                  className="aa-focus w-full rounded-lg border border-k-line bg-k-card px-3 py-2 text-sm text-k-ink placeholder:text-k-muted"
+                />
                 {/* AA-676: explicit contact consent travels with the hand-off to AA-Booking. */}
                 <label className="flex items-start gap-2 text-xs text-k-muted">
                   <input
@@ -747,7 +727,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                 </p>
                 <button
                   onClick={() => handleSend(true)}
-                  disabled={!reg.name || (!reg.phone && !reg.email && !accountEmail) || !reg.consent}
+                  disabled={!reg.name || (!reg.phone && !reg.email) || !reg.consent}
                   className="aa-focus w-full rounded-xl bg-k-accent px-3 py-2.5 text-sm font-semibold text-k-on-accent shadow-aa-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Register &amp; send

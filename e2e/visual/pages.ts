@@ -2,7 +2,7 @@
 // frontend unit test frontend/lib/visualPages.test.ts can check that every app/**/page.tsx route is listed here or
 // excluded with a reason.
 //
-// TripPlanner has no signed-in visual run: every page is public (a guest sees /trips and /plan too).
+// TripPlanner has no signed-in visual run: every page is public (AA-1115: the traveller sign-in is retired).
 // A dynamic route names the list page and the link pattern to resolve a real id from (the first match), so the run
 // never depends on a hard-coded catalog slug.
 
@@ -40,8 +40,6 @@ export const PAGES: VisualPage[] = [
   // run reads no catalog id it could put in a fragment).
   { slug: "plan-shared", route: "/plan/shared", path: "/plan/shared", challenged: true },
   { slug: "tenant-plan-shared", route: "/[tenant]/plan/shared", path: "/aa-tripplanner/plan/shared", challenged: true },
-  { slug: "trips", route: "/trips", path: "/trips" },
-  { slug: "sign-in", route: "/sign-in", path: "/sign-in" },
   { slug: "privacy", route: "/privacy", path: "/privacy" },
   { slug: "terms", route: "/terms", path: "/terms" },
   // app/not-found.tsx (no page.tsx of its own): the 404 page of an unknown path.

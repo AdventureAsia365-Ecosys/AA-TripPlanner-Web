@@ -9,37 +9,29 @@ import { REQUEST_ID_HEADER } from "./requestId.ts";
 // trip reads both need it: the Lambda answers 404 to a read without the owner's token. The token is
 // never logged or echoed.
 // AA-871: and the request id (lib/requestId.ts), which the Lambda binds to its log lines.
-// AA-908: and, only when the traveller is signed in, the Cognito access token (lib/authSession.ts), which lets the
-// account that owns a trip open it from any browser and links the trips it edits. Never logged or echoed.
-export const ACCESS_TOKEN_HEADER = "x-tripplanner-access"; // backend config.ACCESS_TOKEN_HEADER
+// AA-1115: the traveller sign-in is retired (AA-908's Cognito access token and the signed-in allowance are gone with
+// /sign-in and /trips; travellers are guests, root ADR 0019 d11), so the BFF never sends the access token header
+// (x-tripplanner-access) or the signed-in flag (x-tp-signed-in) any more.
 
 // AA-1015: the per-IP / per-session AI limits. The Lambda only sees the web server's address, so the BFF forwards the
-// traveller's (lib/cognito.ts travellerIp: CloudFront-Viewer-Address behind the edge) and whether a traveller session is signed
-// in (a higher allowance). The Lambda trusts both only together with the shared key (backend/shared/ratelimit.py).
+// traveller's (lib/clientIp.ts: CloudFront-Viewer-Address behind the edge). The Lambda trusts it only together with
+// the shared key (backend/shared/ratelimit.py).
 export const CLIENT_IP_HEADER = "x-tp-client-ip"; // backend config.CLIENT_IP_HEADER
-export const SIGNED_IN_HEADER = "x-tp-signed-in"; // backend config.SIGNED_IN_HEADER
 
-export function aiLimitHeaders(clientIp?: string | null, signedIn = false): Record<string, string> {
-  const h: Record<string, string> = {};
-  if (clientIp) h[CLIENT_IP_HEADER] = clientIp;
-  if (signedIn) h[SIGNED_IN_HEADER] = "1";
-  return h;
+export function aiLimitHeaders(clientIp?: string | null): Record<string, string> {
+  return clientIp ? { [CLIENT_IP_HEADER]: clientIp } : {};
 }
 
 export function tripHeaders(
   apiKey: string,
   guestToken?: string | null,
   requestId?: string | null,
-  accessToken?: string | null,
   clientIp?: string | null,
 ): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
   if (apiKey) h["x-tripplanner-key"] = apiKey;
   if (guestToken) h[GUEST_TOKEN_HEADER] = guestToken;
   if (requestId) h[REQUEST_ID_HEADER] = requestId;
-  if (accessToken) h[ACCESS_TOKEN_HEADER] = `Bearer ${accessToken}`;
-  // The narration limit is per session and the signed-in state comes from the verified access token, so only the
-  // address rides here.
   return { ...h, ...aiLimitHeaders(clientIp) };
 }
 

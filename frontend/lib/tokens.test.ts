@@ -2,7 +2,8 @@
 // (Tailwind text-display|h1|h3|lead|body|small|caption|kicker|script, rounded-card…, shadow-e1…,
 // duration-fast…, ease-std…). Raw font sizes, hex colours, raw durations / easings, rgba() shadows and the
 // old rounded-2xl / shadow-aa are not allowed in the files below, so a later edit cannot slide back.
-// S254 (slices 5–6+): the destination, tour, destinations-index, trips, sign-in, legal, not-found and error pages.
+// S254 (slices 5–6+): the destination, tour, destinations-index, legal, not-found and error pages (the trips and
+// sign-in pages were retired by AA-1115).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -12,11 +13,7 @@ const FILES = [
   "app/destinations/page.tsx",
   "app/destinations/[country]/page.tsx",
   "app/not-found.tsx",
-  "app/sign-in/page.tsx",
   "app/tours/[slug]/page.tsx",
-  "app/trips/page.tsx",
-  "components/MyTrips.tsx",
-  "components/SignInForm.tsx",
   "components/site/LegalPage.tsx",
   "components/site/PageHero.tsx",
   "components/site/PageIntro.tsx",

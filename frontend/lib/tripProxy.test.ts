@@ -4,10 +4,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GUEST_TOKEN_HEADER } from "./guestToken.ts";
 import {
-  ACCESS_TOKEN_HEADER,
   CLIENT_IP_HEADER,
   EMPTY_TRIP_BODY,
-  SIGNED_IN_HEADER,
   aiLimitHeaders,
   parseTripBody,
   tripHeaders,
@@ -38,13 +36,11 @@ test("no token, no guest header (the Lambda then answers a read with 404)", () =
   assert.equal("x-tripplanner-key" in tripHeaders("", TOKEN), false);
 });
 
-test("AA-908: the access token is forwarded only when the traveller is signed in", () => {
-  assert.equal(ACCESS_TOKEN_HEADER, "x-tripplanner-access");
-  assert.equal(tripHeaders("key-1", TOKEN, "r1", "a.b.c")[ACCESS_TOKEN_HEADER], "Bearer a.b.c");
-  for (const t of [null, undefined, ""]) {
-    assert.equal(ACCESS_TOKEN_HEADER in tripHeaders("key-1", TOKEN, "r1", t), false);
-  }
-  assert.equal(ACCESS_TOKEN_HEADER in tripHeaders("key-1", TOKEN), false);
+test("AA-1115: the retired traveller sign-in sends no access token and no signed-in flag", () => {
+  const h = tripHeaders("key-1", TOKEN, "r1", "198.51.100.20");
+  assert.equal("x-tripplanner-access" in h, false);
+  assert.equal("x-tp-signed-in" in h, false);
+  assert.equal("x-tp-signed-in" in aiLimitHeaders("198.51.100.20"), false);
 });
 
 test("each read maps to its assembly Lambda path", () => {
@@ -97,19 +93,16 @@ test("other reads and other statuses pass through untouched", () => {
   assert.deepEqual(tripReadAnswer("itinerary", 500, "boom"), { status: 500, body: "boom" });
 });
 
-// AA-1015: the per-IP / per-session AI limits need the traveller's address and signed-in state at the Lambda.
-test("the AI limit headers carry the traveller address and the signed-in flag, nothing when unknown", () => {
-  assert.deepEqual(aiLimitHeaders("203.0.113.7", true), { [CLIENT_IP_HEADER]: "203.0.113.7", [SIGNED_IN_HEADER]: "1" });
+// AA-1015: the per-IP / per-session AI limits need the traveller's address at the Lambda.
+test("the AI limit headers carry the traveller address, nothing when unknown", () => {
   assert.deepEqual(aiLimitHeaders("203.0.113.7"), { [CLIENT_IP_HEADER]: "203.0.113.7" });
-  assert.deepEqual(aiLimitHeaders(null, false), {});
+  assert.deepEqual(aiLimitHeaders(null), {});
   assert.equal(CLIENT_IP_HEADER, "x-tp-client-ip");
-  assert.equal(SIGNED_IN_HEADER, "x-tp-signed-in");
 });
 
 test("trip calls forward the traveller address next to the shared key", () => {
-  const h = tripHeaders("key-1", TOKEN, "req-1", null, "198.51.100.20");
+  const h = tripHeaders("key-1", TOKEN, "req-1", "198.51.100.20");
   assert.equal(h[CLIENT_IP_HEADER], "198.51.100.20");
   assert.equal(h["x-tripplanner-key"], "key-1");
-  assert.equal(SIGNED_IN_HEADER in h, false); // narration reads the signed-in state from the verified access token
   assert.equal(CLIENT_IP_HEADER in tripHeaders("key-1", TOKEN), false);
 });

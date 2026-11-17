@@ -44,15 +44,17 @@ test("paths on an agency's domain", () => {
   assert.deepEqual(tenantHostPath("/plan/shared", s), { kind: "rewrite", path: "/quillmere-voyages/plan/shared" });
   assert.deepEqual(tenantHostPath("/tours/invented-ridge-5f1e0c2a", s),
     { kind: "rewrite", path: "/quillmere-voyages/tours/invented-ridge-5f1e0c2a" });
-  // our path keeps working, the BFF, static files and the shared pages pass
-  for (const p of ["/quillmere-voyages", "/quillmere-voyages/plan", "/api/trip", "/api/browse/search",
-    "/_next/static/x.js", "/photo-cdn/a.webp", "/brand/logo.svg", "/sign-in", "/trips", "/privacy", "/terms",
-    "/robots.txt"]) {
+  // AA-1115: the legal pages are the agency's own, never AA's
+  assert.deepEqual(tenantHostPath("/privacy", s), { kind: "rewrite", path: "/quillmere-voyages/privacy" });
+  assert.deepEqual(tenantHostPath("/terms", s), { kind: "rewrite", path: "/quillmere-voyages/terms" });
+  // our path keeps working, the BFF and static files pass
+  for (const p of ["/quillmere-voyages", "/quillmere-voyages/plan", "/quillmere-voyages/privacy", "/api/trip",
+    "/api/browse/search", "/_next/static/x.js", "/photo-cdn/a.webp", "/brand/logo.svg", "/robots.txt"]) {
     assert.deepEqual(tenantHostPath(p, s), { kind: "pass" }, p);
   }
-  // AA's own catalogue and another agency's site are not served on this agency's domain
+  // AA's own catalogue, the retired sign-in and My Trips (AA-1115) and another agency's site are not served here
   for (const p of ["/destinations", "/destinations/laos", "/tours", "/ottervale-journeys/plan", "/ottervale-journeys",
-    "/quillmere-voyagesx/plan"]) {
+    "/quillmere-voyagesx/plan", "/sign-in", "/trips", "/privacyx", "/terms/x"]) {
     assert.deepEqual(tenantHostPath(p, s), { kind: "not_found" }, p);
   }
 });

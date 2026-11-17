@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
+import { RETIRED_PATH_SLUGS } from "./tenantSlug.ts";
 import {
   RESERVED_TENANT_SLUGS,
   TENANT_MISS_TTL_MS,
@@ -17,11 +18,7 @@ import {
 import {
   IDS_KEY,
   TENANT_SLUG_HEADER as CLIENT_HEADER,
-  accountLinks,
-  clearGuestIdKeys,
   idsStorageKey,
-  myTripsTargets,
-  tenantOfPath,
   tenantRequestHeaders,
 } from "./plannerTenant.ts";
 import { STORAGE_KEY } from "./guestIds.ts";
@@ -118,12 +115,14 @@ test("a reserved slug (a static top-level path) is never a tenant and is not loo
   assert.ok(isTenantSlug("aa-tripplanner"));
 });
 
-test("the reserved list is exactly the top-level folders of app/ and public/ (a new route updates it)", () => {
+test("the reserved list is exactly the top-level folders of app/ and public/ plus the retired paths", () => {
   const app = readdirSync(new URL("../app/", import.meta.url), { withFileTypes: true })
     .filter((d) => d.isDirectory() && !d.name.startsWith("[") && !d.name.startsWith("(") && !d.name.startsWith("_"))
     .map((d) => d.name);
   const pub = readdirSync(new URL("../public/", import.meta.url)).map((n) => n.replace(/\.[^.]+$/, ""));
-  const servable = [...new Set([...app, ...pub])].filter((n) => TENANT_SLUG_RE.test(n)).sort();
+  // AA-1115: a retired top-level page (/sign-in, /trips) stays reserved, so its old links never open a tenant.
+  const servable = [...new Set([...app, ...pub, ...RETIRED_PATH_SLUGS])].filter((n) => TENANT_SLUG_RE.test(n)).sort();
+  for (const retired of RETIRED_PATH_SLUGS) assert.ok(!app.includes(retired), `${retired} is retired: no app/ folder`);
   assert.deepEqual([...RESERVED_TENANT_SLUGS].sort(), servable);
 });
 
@@ -143,50 +142,4 @@ test("the planner's ids key and header (bare path unchanged)", () => {
   assert.equal(idsStorageKey("quillmere-voyages"), `${STORAGE_KEY}:quillmere-voyages`);
   assert.deepEqual(tenantRequestHeaders(null), {});
   assert.deepEqual(tenantRequestHeaders("quillmere-voyages"), { "x-tp-tenant-slug": "quillmere-voyages" });
-});
-
-test("sign-out forgets the bare ids key and every tenant's ids key, nothing else", () => {
-  const data = new Map<string, string>([
-    [STORAGE_KEY, "{}"],
-    [`${STORAGE_KEY}:quillmere-voyages`, "{}"],
-    [`${STORAGE_KEY}:ottervale-journeys`, "{}"],
-    ["aa-tripplanner:reset-notice", "1"],
-    ["aa-tripplanner:idsx", "keep"],
-    ["theme", "dark"],
-  ]);
-  const storage = {
-    get length() {
-      return data.size;
-    },
-    key: (i: number) => [...data.keys()][i] ?? null,
-    removeItem: (k: string) => {
-      data.delete(k);
-    },
-  };
-  clearGuestIdKeys(storage);
-  assert.deepEqual([...data.keys()].sort(), ["aa-tripplanner:idsx", "aa-tripplanner:reset-notice", "theme"]);
-});
-
-test("the tenant of a same-site path (sign-in next, My Trips)", () => {
-  assert.equal(tenantOfPath("/quillmere-voyages/plan"), "quillmere-voyages");
-  assert.equal(tenantOfPath("/quillmere-voyages"), "quillmere-voyages");
-  assert.equal(tenantOfPath("/quillmere-voyages/plan?country=vn"), "quillmere-voyages");
-  assert.equal(tenantOfPath("/trips?tenant=quillmere-voyages"), "quillmere-voyages");
-  for (const bare of ["/trips", "/plan", "/plan?tenant=Bad Slug", "/", "", null, "//evil.example/x", "https://x/y",
-    "/tours/some-tour", "/trips?tenant=plan"]) {
-    assert.equal(tenantOfPath(bare), null, String(bare));
-  }
-});
-
-test("account links and My Trips targets keep the tenant; the bare paths are unchanged", () => {
-  assert.deepEqual(accountLinks(null), { signIn: "/sign-in", trips: "/trips" });
-  const a = accountLinks("quillmere-voyages");
-  assert.equal(a.trips, "/trips?tenant=quillmere-voyages");
-  assert.equal(new URL(a.signIn, "https://x").searchParams.get("next"), "/quillmere-voyages/plan");
-  assert.equal(tenantOfPath(new URL(a.signIn, "https://x").searchParams.get("next")), "quillmere-voyages");
-  assert.deepEqual(myTripsTargets(null), { idsKey: STORAGE_KEY, planner: "/plan", signIn: "/sign-in?next=/trips" });
-  const t = myTripsTargets("quillmere-voyages");
-  assert.equal(t.idsKey, idsStorageKey("quillmere-voyages"));
-  assert.equal(t.planner, "/quillmere-voyages/plan");
-  assert.equal(tenantOfPath(new URL(t.signIn, "https://x").searchParams.get("next")), "quillmere-voyages");
 });

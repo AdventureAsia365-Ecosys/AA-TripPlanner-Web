@@ -6,7 +6,6 @@ import Link from "next/link";
 import { useRef } from "react";
 import { Icon } from "@/ui";
 import { ThemeToggle } from "@/ui/ThemeToggle";
-import AccountLink from "@/components/AccountLink";
 
 export default function MobileMenu({ links }: { links: { href: string; label: string }[] }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -51,9 +50,6 @@ export default function MobileMenu({ links }: { links: { href: string; label: st
                 </Link>
               </li>
             ))}
-            <li className="flex min-h-12 items-center">
-              <AccountLink tone="band" className="!px-0 !text-lead" />
-            </li>
           </ul>
           <div className="mt-4 flex items-center gap-3 text-small text-k-on-band-muted">
             <ThemeToggle tone="band" /> Theme

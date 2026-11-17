@@ -9,7 +9,6 @@ import AiLabel, {
   AI_SITE_LABEL,
 } from "@/components/AiLabel";
 import { ThemeToggle } from "@/ui/ThemeToggle";
-import AccountLink from "@/components/AccountLink";
 
 // Top brand bar — Adventure Asia wordmark + tagline. Kept slim so the map
 // dominates the viewport (map-first product).
@@ -56,8 +55,6 @@ export default function Header({ agency = null }: { agency?: HeaderAgency | null
         <span className="hidden text-k-on-band-muted lg:inline">
           Pin experiences · build your trip · hand off to an advisor
         </span>
-        {/* AA-908: My trips for a traveller who still holds a session (AA-1094: no Sign in, travellers are guests). */}
-        <AccountLink tone="band" />
         {/* AA-837: the planner follows the site theme too, so it carries the same toggle. */}
         <ThemeToggle tone="band" />
       </nav>
