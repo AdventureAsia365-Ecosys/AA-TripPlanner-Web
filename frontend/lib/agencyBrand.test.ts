@@ -105,6 +105,49 @@ test("no file an agency page reaches shows \"AA\" as a word outside lib/brand.ts
   assert.deepEqual(offenders, [], "route the words through brandCopy (lib/brand.ts)");
 });
 
+// AA-1115 follow-up (S283 live check): Next renders the root app/not-found.tsx into the RSC payload of EVERY page (the
+// not-found boundary of the root layout), an agency's pages included, even when nothing is missing. The import walk
+// above started at the /{slug} files and the root layout only, so AA's 404 (bar, AI band, footer) sat unseen in the
+// HTML of /{slug}/plan, /privacy and /terms. The root not-found's SERVER part (the files it reaches up to a "use client"
+// module, whose output is only a reference in the payload) must be as brand-free as an agency page; AA's words live
+// behind the client boundary, loaded on demand (next/dynamic). scripts/check-agency-render.mjs checks the built pages.
+const isClientModule = (f: string) => /^\s*["']use client["']/.test(read(f));
+
+function reachedUntilClient(entries: string[]): { server: Set<string>; client: Set<string> } {
+  const server = new Set<string>();
+  const client = new Set<string>();
+  const queue = [...entries];
+  while (queue.length) {
+    const f = queue.shift() as string;
+    if (server.has(f) || client.has(f)) continue;
+    if (isClientModule(f)) {
+      client.add(f);
+      continue;
+    }
+    server.add(f);
+    for (const m of read(f).matchAll(IMPORT_RE)) {
+      const r = resolveImport(f, m[1] ?? m[2]);
+      if (r) queue.push(r);
+    }
+  }
+  return { server, client };
+}
+
+test("the root 404, rendered into every page's payload, has no brand word in its server part", () => {
+  const { server, client } = reachedUntilClient(["app/not-found.tsx"]);
+  assert.ok(client.has("components/site/AaNotFound.tsx"), "app/not-found.tsx renders AA's 404 through its client boundary");
+  const offenders = [...server].filter((f) => BRAND_RE.test(code(read(f))) || aaWords(code(read(f))).length > 0);
+  assert.deepEqual(offenders, [], "keep AA's words behind components/site/AaNotFound.tsx");
+  for (const f of server) {
+    assert.doesNotMatch(code(read(f)), /\bAA_[A-Z_]+\b|brandCopy\(/, `${f}: AA's words in the root 404's server part`);
+  }
+  // The body is loaded on demand, so an agency page's browser never fetches AA's 404 either.
+  const boundary = code(read("components/site/AaNotFound.tsx"));
+  assert.match(boundary, /dynamic\(\(\) => import\("\.\/AaNotFoundPage"\)\)/);
+  assert.doesNotMatch(boundary, /import\s+AaNotFoundPage\s+from/, "a static import would put AA's 404 in every page's bundle");
+  assert.doesNotMatch(boundary, /ssr:\s*false/, "AA's 404 keeps its server-rendered HTML");
+});
+
 // The agency 404 (components/TenantNotFound.tsx): a page under /{slug} that can call notFound() must have a not-found
 // file in its own segment or a parent segment below app/[tenant], else Next shows the root app/not-found.tsx, which is
 // Adventure Asia's 404 (its bar, footer and catalogue links). The bare /{slug} is the one exception: an unknown slug
@@ -202,11 +245,14 @@ test("an agency's metadata replaces every brand-bearing key of the root layout's
     assert.doesNotMatch(JSON.stringify(meta), BRAND_RE);
     assert.doesNotMatch(JSON.stringify(meta), AA_WORD_RE);
     // A page title "X" becomes "X · <agency>", never "X · Adventure Asia".
-    const title = meta.title as { default: string; template: string };
-    assert.ok(title.default && title.template.includes("%s"));
+    const title = meta.title as { default?: string; absolute?: string; template: string };
+    assert.ok((title.default || title.absolute) && title.template.includes("%s"));
     const og = meta.openGraph as { siteName: string };
     if (site) {
       assert.equal(title.template, `%s · ${site.name}`);
+      // `absolute`, so the root template never wraps the agency's own title (the agency 404 read "… · Adventure Asia").
+      assert.equal(title.absolute, `Trip planner · ${site.name}`);
+      assert.equal(title.default, undefined);
       assert.equal(og.siteName, site.name);
     }
   }

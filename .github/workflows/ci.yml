@@ -400,3 +400,8 @@ jobs:
         # Build must pass without any secrets. NEXT_PUBLIC_MAPBOX_TOKEN is
         # intentionally unset here — the app builds and degrades gracefully.
         run: npm run build
+
+      - name: Agency pages render no Adventure Asia brand (built app)
+        # AA-1115 follow-up: `next start` on the build above against a fake browse API (one invented agency, localhost
+        # only, no key); fails when an agency page's HTML (RSC payload included) names Adventure Asia or "AA AI".
+        run: node scripts/check-agency-render.mjs

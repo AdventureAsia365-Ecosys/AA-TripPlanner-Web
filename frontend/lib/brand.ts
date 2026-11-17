@@ -205,6 +205,9 @@ export interface TenantMetaSite {
  * key of AA_SITE_METADATA (title default and template, description, og:site_name), so no tab title, description or
  * link preview of an agency's page names Adventure Asia. `site` null: a slug that does not resolve (the 404 page), a
  * neutral title with no brand at all.
+ * The agency's own title is `absolute`, not `default`: Next applies the root layout's template ("%s · Adventure Asia")
+ * to a layout's `default` when that layout's title is the page's (the agency 404 under /{slug}, where no page sets a
+ * title), so the tab read "Trip planner · <agency> · Adventure Asia". `template` still names the agency on every page.
  */
 export function tenantMetadata(site: TenantMetaSite | null) {
   if (!site) {
@@ -215,7 +218,7 @@ export function tenantMetadata(site: TenantMetaSite | null) {
     };
   }
   return {
-    title: { default: `Trip planner · ${site.name}`, template: `%s · ${site.name}` },
+    title: { absolute: `Trip planner · ${site.name}`, template: `%s · ${site.name}` },
     description: `Plan your trip with ${site.name}: shape it on the map day by day and send it to ${site.name}.`,
     openGraph: {
       siteName: site.name,

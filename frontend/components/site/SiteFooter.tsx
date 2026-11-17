@@ -20,8 +20,9 @@ const EXPLORE = [
 
 const link = "inline-flex min-h-8 items-center text-small text-k-on-band-muted transition-colors duration-fast ease-std hover:text-k-band-accent";
 
-export default function SiteFooter() {
-  const preview = !isLiveSite();
+// `preview` is passed by AA's 404 (components/site/AaNotFoundPage.tsx), which renders in the browser bundle where the
+// server env is not set; every server page leaves it out and the server env decides.
+export default function SiteFooter({ preview = !isLiveSite() }: { preview?: boolean }) {
   return (
     <footer className="tp-on-dark border-t border-k-band-line bg-k-band text-k-on-band-muted">
       <div className="mx-auto max-w-page px-gutter py-section">
