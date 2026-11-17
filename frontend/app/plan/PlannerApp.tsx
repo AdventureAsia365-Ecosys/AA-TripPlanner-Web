@@ -10,6 +10,8 @@ import PlanPrefill from "@/components/PlanPrefill";
 import GuestResetNotice from "@/components/GuestResetNotice";
 import { TripProvider, useTrip, type PlanIntent } from "@/lib/useTrip";
 import { setPlannerTenant, type PlannerAgency } from "@/lib/plannerTenant";
+import { BrandProvider } from "@/components/BrandContext";
+import { isAgencyPlanner } from "@/lib/leadForm";
 import { reloadIntoPlannerDocument } from "@/lib/plannerNav";
 import { whenIdle } from "@/lib/idle";
 import { Icon } from "@/ui/Icon";
@@ -276,13 +278,18 @@ export default function PlannerApp({
     return () => setPlannerTenant(null);
   }, [tenantSlug, agencyName, agencyBadge]);
   const headerAgency = tenantSlug && agencyName ? { slug: tenantSlug, name: agencyName } : null;
+  // AA-1115: an agency's planner shows its own words and legal pages (components/BrandContext.tsx); AA's own planner
+  // and the AA-hosted demo tenant keep Adventure Asia's.
+  const brandSlug = isAgencyPlanner(tenantSlug) && agencyName ? tenantSlug : null;
   // AA-837: the planner follows the site theme (ui/core/tokens.css). Its surfaces and form controls use
   // the k-* tokens, so browser-styled controls (country select, days input) stay readable in dark.
   // The Mapbox basemap stays the light outdoors style in both themes (map imagery, not UI text).
   return (
-    <TripProvider initialIntent={intent}>
-      <Layout initialMobileView={intent.ask ? "trip" : "map"} agency={headerAgency} />
-      <GuestResetNotice />
-    </TripProvider>
+    <BrandProvider agency={brandSlug ? agencyName : null} agencySlug={brandSlug}>
+      <TripProvider initialIntent={intent}>
+        <Layout initialMobileView={intent.ask ? "trip" : "map"} agency={headerAgency} />
+        <GuestResetNotice />
+      </TripProvider>
+    </BrandProvider>
   );
 }

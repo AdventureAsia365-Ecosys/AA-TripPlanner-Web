@@ -20,6 +20,6 @@ export function isB2bOnly(status: number, body: { error?: string } | null | unde
 export const DEMO_NOTICE = {
   title: "This planner is a demo",
   body:
-    "Adventure Asia plans and runs trips with travel agencies, so trips are not sent to an advisor from here and " +
-    "no contact details are collected. Keep shaping the trip on the map; your travel agency can book it with us.",
+    "Trips are planned and booked with travel agencies, so trips are not sent to an advisor from here and no " +
+    "contact details are collected. Keep shaping the trip on the map; your travel agency can book it.",
 };

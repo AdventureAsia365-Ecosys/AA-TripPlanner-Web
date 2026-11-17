@@ -35,23 +35,8 @@ const STYLE: Record<AiLabelTone, { solid: string; outline: string; band: string;
   },
 };
 
-// Shared wording for catalog text written by the CIS writer model (tour pages, map experience
-// descriptions, stop activities).
-// Brand name of the AI label (Nghiệp, S239): full on wider screens, "AA AI" below the sm breakpoint.
-export const AI_BRAND_LABEL = "Adventure Asia AI";
-export const AI_BRAND_SHORT = "AA AI";
-export const AI_CATALOG_LABEL = AI_BRAND_LABEL;
-export const AI_CATALOG_EXPLANATION =
-  "Written by an AI model from Adventure Asia's own tour notes and checked by automated quality checks; " +
-  "tours the checks flag are reviewed by our team. Your advisor confirms every detail before you book.";
-
-// The site-wide pill next to the AA mark (Header, SiteHeader).
-export const AI_SITE_LABEL = AI_BRAND_LABEL;
-export const AI_SITE_EXPLANATION =
-  "Tour descriptions and day-by-day itineraries are written by AI from Adventure Asia's own tour notes " +
-  "and checked by automated quality checks. Trip narration carries its own Adventure Asia AI label, " +
-  "which says how much of it AI wrote. The planner's place search and its “You might also like” suggestions use AI to match your words " +
-  "and the places you picked. An Adventure Asia advisor reviews every trip before you book.";
+// AA-1115: Adventure Asia's own pill wording (the site pill, the catalogue text label) lives in lib/brand.ts (AA_SITE_AI,
+// AA_CATALOG_AI, brandCopy), so this component, which an agency's pages render too, never spells the brand.
 
 // AA-1094: the same pill on an agency's own pages (/{slug}/plan, /{slug}/tours/...), without the Adventure Asia brand:
 // the tour text there is the agency's AI rewrite (CIS T2, in the agency's style; a version the agency edited says so in

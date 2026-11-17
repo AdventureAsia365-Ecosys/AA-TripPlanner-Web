@@ -49,6 +49,12 @@ export const PAGES: VisualPage[] = [
 /** Routes with a page.tsx that the run does not open, each with its reason. */
 export const EXCLUDED: Record<string, string> = {
   "/[tenant]": "AA-1038: a tenant's bare slug only redirects to /{slug}/plan (captured as tenant-plan) or is the 404 page",
+  "/[tenant]/privacy":
+    "AA-1115: an agency's own privacy notice needs a served agency tenant; the demo tenant redirects to /privacy " +
+    "(captured as privacy). Captured by the live check of the synthetic agency",
+  "/[tenant]/terms":
+    "AA-1115: an agency's own terms need a served agency tenant; the demo tenant redirects to /terms (captured as " +
+    "terms). Captured by the live check of the synthetic agency",
   "/[tenant]/tours/[tour]":
     "AA-1094: an agency's own tour page needs a served agency tenant with a finished T2 version; the demo tenant has " +
     "none (404), so the run cannot resolve one. Captured by the live check of the synthetic agency (1440 / 390, light / dark)",

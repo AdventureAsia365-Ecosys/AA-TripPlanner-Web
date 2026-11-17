@@ -24,7 +24,7 @@ import {
   type ChatProposal,
 } from "@/lib/planChat";
 import { noticeLang } from "@/lib/aiNotices";
-import { TERMS_AI_PATH } from "@/lib/legal";
+import { useBrand } from "@/components/BrandContext";
 import { AiNotice } from "@/ui/AiNotice";
 import { Badge } from "@/ui/Badge";
 import { Button } from "@/ui/Button";
@@ -95,6 +95,7 @@ function ProposalCard({
 
 export default function PlanChat() {
   const { tripId, sessionId, applyChatProposal } = useTrip();
+  const brand = useBrand(); // AA-1115: an agency's planner shows its own label and terms
   // The page language (`<html lang>`), English on the server, like the planner's other notices (lib/aiNotices.ts).
   const lang = typeof document !== "undefined" ? noticeLang(document.documentElement.lang) : "en";
   const [lines, setLines] = useState<Line[]>([]);
@@ -201,7 +202,7 @@ export default function PlanChat() {
                     {l.text}
                   </p>
                   {showsAiLabel(l) && (
-                    <AiNotice size="sm" variant="narration" termsHref={TERMS_AI_PATH} className="mt-1 px-1"
+                    <AiNotice size="sm" variant="narration" termsHref={brand.legal.termsAi} className="mt-1 px-1"
                       testId="chat-ai-notice" />
                   )}
                   {l.proposal && (

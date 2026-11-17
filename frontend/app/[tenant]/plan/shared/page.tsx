@@ -11,14 +11,11 @@ import { brandThemeCss } from "@/ui/core/brandTheme";
 
 type Props = { params: Promise<{ tenant: string }> };
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { tenant } = await params;
-  const site = isTenantSlug(tenant) ? await resolveTenant(tenant).catch(() => null) : null;
-  return {
-    title: site ? `Shared trip · ${site.name}` : "Shared trip",
-    robots: { index: false, follow: false },
-  };
-}
+// AA-1115: the agency's name comes from the /{slug} layout's title template ("Shared trip · <agency>").
+export const metadata: Metadata = {
+  title: "Shared trip",
+  robots: { index: false, follow: false },
+};
 
 export default async function TenantSharedTripPage({ params }: Props) {
   const { tenant } = await params;
@@ -30,7 +27,8 @@ export default async function TenantSharedTripPage({ params }: Props) {
     <div className="min-h-full bg-k-bg">
       {brand && <style data-testid="tenant-brand">{brand}</style>}
       <div className="tp-no-print">
-        <Header />
+        {/* AA-1115: the agency's bar (its name, no Adventure Asia logo), as on /{slug}/plan. */}
+        <Header agency={{ slug: site.slug, name: site.name }} />
       </div>
       <SharedTripView planHref={`/${site.slug}/plan`} agencyName={site.name} />
     </div>

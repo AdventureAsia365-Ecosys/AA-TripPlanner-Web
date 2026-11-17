@@ -6,9 +6,9 @@ import type { DestinationDetail } from "@/lib/types";
 import { useTrip } from "@/lib/useTrip";
 import ActivityIcon from "./ActivityIcon";
 import GeocodeAttribution from "./GeocodeAttribution";
-import AiLabel, { AI_BRAND_SHORT, AI_CATALOG_EXPLANATION, AI_CATALOG_LABEL } from "./AiLabel";
+import AiLabel from "./AiLabel";
+import { useBrand } from "@/components/BrandContext";
 import { AiNotice } from "@/ui/AiNotice";
-import { TERMS_AI_PATH } from "@/lib/legal";
 import { ErrorState, LoadingState } from "@/ui/States";
 
 interface Props {
@@ -22,6 +22,7 @@ function label(v: string): string {
 
 export default function DestinationPopup({ destinationId, onClose }: Props) {
   const { add, remove, inTripComponentIds, itinerary } = useTrip();
+  const brand = useBrand(); // AA-1115: an agency's planner shows its own label and terms
   // AA-906 (React Compiler lint, no setState in an effect body): the fetched detail is tagged with
   // the destination it belongs to, so "loading" is derived (no answer yet for this id) instead of set
   // from the effect. As before, the previous detail stays on screen until the new one lands.
@@ -109,8 +110,8 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
               <AiLabel
                 className="mt-1"
                 placement="inline"
-                label={AI_CATALOG_LABEL} shortLabel={AI_BRAND_SHORT}
-                explanation={AI_CATALOG_EXPLANATION}
+                label={brand.copy.catalogAi.label} shortLabel={brand.copy.catalogAi.shortLabel}
+                explanation={brand.copy.catalogAi.explanation}
               />
             )}
           </div>
@@ -180,7 +181,7 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
         {/* AA-1033: the planner has no site footer, so the traveller notice sits under the AI-written experience text
             (outside the scrolling list, so it stays in view). */}
         {!loading && detail?.components.some((c) => c.text_extract) && (
-          <AiNotice size="sm" termsHref={TERMS_AI_PATH} className="mt-2" testId="popup-ai-notice" />
+          <AiNotice size="sm" termsHref={brand.legal.termsAi} className="mt-2" testId="popup-ai-notice" />
         )}
         {detail?.located_by === "geoapify" && <GeocodeAttribution className="mt-2 px-0" />}
       </div>

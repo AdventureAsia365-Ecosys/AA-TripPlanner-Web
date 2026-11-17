@@ -113,7 +113,7 @@ export default function TourListPane() {
     <div className="absolute inset-0 z-[15] overflow-y-auto bg-k-bg px-4 pb-20 pt-4" aria-label="Tours list">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-semibold text-k-ink">
-          {filters.country ? `Tours in ${filters.country}` : plannerTenant() ? "All tours" : "All Adventure Asia tours"}
+          {filters.country ? `Tours in ${filters.country}` : "All tours"}
           {load.state === "done" && <span className="ml-1.5 font-normal text-k-muted">({load.total})</span>}
           <span className="block text-[11px] font-normal text-k-muted">Change the country on the Map view.</span>
         </p>
@@ -158,7 +158,7 @@ export default function TourListPane() {
         <p className="mt-6 rounded-xl border border-dashed border-k-line bg-k-card p-4 text-center text-xs text-k-muted">
           {month
             ? `No tours ${filters.country ? `in ${filters.country} ` : ""}list ${MONTH_NAMES[month - 1]} as a good time to go. Try another month.`
-            : `No ${load.source === "tenant" ? "" : "Adventure Asia "}tours ${filters.country ? `in ${filters.country} ` : ""}yet. Try another country.`}
+            : `No tours ${filters.country ? `in ${filters.country} ` : ""}yet. Try another country.`}
         </p>
       )}
       {load.state === "done" && load.tours.length > 0 && (

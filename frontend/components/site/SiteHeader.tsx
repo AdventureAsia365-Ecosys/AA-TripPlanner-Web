@@ -6,7 +6,8 @@
 // into a native <dialog> menu (MobileMenu); a "Skip to content" link comes first in the tab order.
 // AA-1038: SiteLink = next/link, except a planner href renders a plain <a> (a document load, ui/SiteLink.tsx).
 import { SiteLink } from "@/ui/SiteLink";
-import AiLabel, { AI_BRAND_SHORT, AI_SITE_EXPLANATION, AI_SITE_LABEL } from "@/components/AiLabel";
+import AiLabel from "@/components/AiLabel";
+import { AA_SITE_AI } from "@/lib/brand";
 import { ThemeToggle } from "@/ui/ThemeToggle";
 import { buttonClass } from "@/ui";
 import HeaderScrollState from "./HeaderScrollState";
@@ -40,7 +41,7 @@ export default function SiteHeader({ overHero = false }: { overHero?: boolean })
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/brand/logo-h108.png" alt="Adventure Asia" width={50} height={32} className="h-8 w-auto lg:h-9" />
             </SiteLink>
-            <AiLabel tone="kit" variant="band" label={AI_SITE_LABEL} shortLabel={AI_BRAND_SHORT} explanation={AI_SITE_EXPLANATION} />
+            <AiLabel tone="kit" variant="band" label={AA_SITE_AI.label} shortLabel={AA_SITE_AI.shortLabel} explanation={AA_SITE_AI.explanation} />
           </div>
           <nav aria-label="Main" className="flex items-center gap-1.5 md:gap-2">
             {SITE_NAV.map((l) => (

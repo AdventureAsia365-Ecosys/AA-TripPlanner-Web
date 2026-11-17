@@ -4,7 +4,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import LegalPage, { LegalSection } from "@/components/site/LegalPage";
-import { COMPANY_PRIVACY_URL, LEGAL_CONTACT_EMAIL, TERMS_PATH } from "@/lib/legal";
+import { TERMS_PATH } from "@/lib/legal";
+import { AA_COMPANY_PRIVACY_URL, AA_LEGAL_CONTACT_EMAIL } from "@/lib/brand";
 
 export const metadata: Metadata = {
   title: "Privacy notice (draft)",
@@ -22,7 +23,7 @@ export default function PrivacyPage() {
         <p>
           This notice explains what personal data the Adventure Asia Trip Planner (this website) collects, why, who
           receives it and what you can ask us to do with it. It covers the Trip Planner only. Adventure Asia&apos;s
-          company-wide policy is at <a href={COMPANY_PRIVACY_URL} className="font-semibold text-k-accent-deep hover:underline" rel="noopener">adventure.asia/privacy-policy</a>.
+          company-wide policy is at <a href={AA_COMPANY_PRIVACY_URL} className="font-semibold text-k-accent-deep hover:underline" rel="noopener">adventure.asia/privacy-policy</a>.
         </p>
       }
     >
@@ -30,7 +31,7 @@ export default function PrivacyPage() {
         <p>
           The Trip Planner is run by Adventure Asia. The legal entity responsible for your data (the data controller)
           and its registered address are [to be confirmed]. For any privacy question or request, write to{" "}
-          <a href={`mailto:${LEGAL_CONTACT_EMAIL}`}>{LEGAL_CONTACT_EMAIL}</a>.
+          <a href={`mailto:${AA_LEGAL_CONTACT_EMAIL}`}>{AA_LEGAL_CONTACT_EMAIL}</a>.
         </p>
       </LegalSection>
 
@@ -142,7 +143,7 @@ export default function PrivacyPage() {
       <LegalSection id="rights" title="9. Your rights">
         <p>
           You can ask us to show you the data we hold about you, correct it, delete it, or stop contacting you, and you
-          can withdraw your consent at any time. Write to <a href={`mailto:${LEGAL_CONTACT_EMAIL}`}>{LEGAL_CONTACT_EMAIL}</a>.
+          can withdraw your consent at any time. Write to <a href={`mailto:${AA_LEGAL_CONTACT_EMAIL}`}>{AA_LEGAL_CONTACT_EMAIL}</a>.
           The time within which we answer, and your right to complain to a data protection authority, are [to be
           confirmed].
         </p>

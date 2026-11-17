@@ -146,7 +146,7 @@ export const CHAT_COPY: Record<AiNoticeLang, ChatCopy> = {
   en: {
     title: "Plan with chat",
     intro:
-      "Ask for a route and the planner's AI assistant suggests one from Adventure Asia's own tours and places. " +
+      "Ask for a route and the planner's AI assistant suggests one from the tours and places of this planner. " +
       "Nothing changes in your trip until you apply a suggestion.",
     examples: ["A 5-day route at an easy pace", "Add a cooking class", "Make my trip one day shorter"],
     placeholder: "Ask about a country, a number of days or an activity",
@@ -177,7 +177,7 @@ export const CHAT_COPY: Record<AiNoticeLang, ChatCopy> = {
   vi: {
     title: "Lên kế hoạch bằng trò chuyện",
     intro:
-      "Hãy hỏi một lộ trình, trợ lý AI sẽ gợi ý từ chính các tour và địa điểm của Adventure Asia. Chuyến đi của " +
+      "Hãy hỏi một lộ trình, trợ lý AI sẽ gợi ý từ các tour và địa điểm của trang lập kế hoạch này. Chuyến đi của " +
       "bạn chỉ thay đổi khi bạn áp dụng gợi ý.",
     examples: ["Lộ trình 5 ngày, nhịp nhẹ nhàng", "Thêm một lớp học nấu ăn", "Rút ngắn chuyến đi một ngày"],
     placeholder: "Hỏi về một quốc gia, số ngày hoặc một hoạt động",

@@ -19,16 +19,12 @@ type Props = {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { tenant } = await params;
-  // A lookup that is down gives the generic title here; the page itself throws it to app/[tenant]/error.tsx.
-  const site = isTenantSlug(tenant) ? await resolveTenant(tenant).catch(() => null) : null;
-  return {
-    title: site ? `Trip planner · ${site.name}` : "Trip planner",
-    // Personal planning state: keep it out of search results (as /plan).
-    robots: { index: false, follow: false },
-  };
-}
+// AA-1115: the agency's name comes from the /{slug} layout's title template ("Trip planner · <agency>").
+export const metadata: Metadata = {
+  title: "Trip planner",
+  // Personal planning state: keep it out of search results (as /plan).
+  robots: { index: false, follow: false },
+};
 
 export default async function TenantPlanPage({ params, searchParams }: Props) {
   const { tenant } = await params;

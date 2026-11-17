@@ -20,7 +20,7 @@ export function unavailableBanner(stops: Pick<UnavailableStop, "reason">[]): str
   const what = n === 1 ? "One stop in this trip is" : `${n} stops in this trip are`;
   const allRetired = stops.every((s) => s.reason === "retired");
   return allRetired
-    ? `${what} no longer offered by Adventure Asia. Remove ${n === 1 ? "it" : "them"} or ask an advisor for an alternative.`
+    ? `${what} no longer offered. Remove ${n === 1 ? "it" : "them"} or ask an advisor for an alternative.`
     : `${what} not available right now. You can keep ${n === 1 ? "it" : "them"} for later, remove ${
         n === 1 ? "it" : "them"
       }, or ask an advisor.`;

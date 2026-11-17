@@ -67,15 +67,15 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
         className="aa-focus mb-3 w-full rounded-xl border border-dashed border-k-accent-border px-3 py-2 text-xs font-semibold text-k-accent-deep transition hover:bg-k-accent-tint"
       >
         <Icon name="compass" className="mr-1 inline h-3.5 w-3.5 align-[-2px]" />
-        Start from an Adventure Asia route
+        Start from a tour route
       </button>
     );
   }
 
   return (
-    <div className="mb-3 rounded-xl border border-k-line bg-k-card p-3" aria-label="Plan from an AA route">
+    <div className="mb-3 rounded-xl border border-k-line bg-k-card p-3" aria-label="Plan from a tour route">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold text-k-ink">Plan from an Adventure Asia route</p>
+        <p className="text-xs font-semibold text-k-ink">Plan from a tour route</p>
         {compact && (
           <button onClick={() => { setOpen(false); setRoutePreview(null); }} className="aa-focus text-[11px] text-k-muted">
             Close
@@ -122,7 +122,7 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
 
       {proposals && proposals.length === 0 && (
         <p className="mt-2 text-[11px] text-k-muted">
-          No Adventure Asia route of about {formatDays(days)} in {country} yet — try another length.
+          No tour route of about {formatDays(days)} in {country} yet — try another length.
         </p>
       )}
 

@@ -5,6 +5,7 @@ import {
   itineraryParagraphs,
   tenantTextMark,
   tenantPlanHref,
+  tenantPlanPathFromTourPath,
   tenantTourPath,
   tenantToursPath,
   tourHref,
@@ -83,4 +84,11 @@ test("the tenant text mark says AI, when, and whether the agency edited it", () 
     "data-ai-human-edited": "true",
   });
   assert.equal(tenantTextMark(undefined)["data-ai-generated"], "true");
+});
+
+test("AA-1115: a tour page's 404 offers the agency's planner, on our host and on the agency's own domain", () => {
+  assert.equal(tenantPlanPathFromTourPath("/quillmere-voyages/tours/invented-ridge-5f1e0c2a"), "/quillmere-voyages/plan");
+  // the agency's own domain shows /tours/{tour} in the address bar; /plan there is the agency's planner
+  assert.equal(tenantPlanPathFromTourPath("/tours/invented-ridge-5f1e0c2a"), "/plan");
+  for (const odd of ["", null, undefined, "/", "/Bad Slug/tours/x"]) assert.equal(tenantPlanPathFromTourPath(odd), "/plan");
 });

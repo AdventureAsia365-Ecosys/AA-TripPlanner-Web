@@ -79,3 +79,11 @@ export function tenantTextMark(ai: { generated_at: string | null; human_edited: 
   };
   return ai?.generated_at ? { ...base, "data-ai-generated-at": ai.generated_at } : base;
 }
+
+// AA-1115: the planner a tour page's 404 offers (app/[tenant]/tours/[tour]/not-found.tsx, which gets no params): on our
+// host the address is /{slug}/tours/{tour} -> /{slug}/plan; on an agency's own domain the browser shows /tours/{tour}
+// (proxy.ts rewrites it) -> /plan, which that domain maps to the agency's planner.
+export function tenantPlanPathFromTourPath(pathname: string | null | undefined): string {
+  const first = (pathname ?? "").split("/")[1] ?? "";
+  return isTenantSlug(first) ? `/${first}/plan` : "/plan";
+}

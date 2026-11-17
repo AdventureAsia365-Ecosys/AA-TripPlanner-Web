@@ -6,8 +6,10 @@ import Link from "next/link";
 import PageIntro from "@/components/site/PageIntro";
 import SiteFooter from "@/components/site/SiteFooter";
 import SiteHeader from "@/components/site/SiteHeader";
-import { LEGAL_CONTACT_EMAIL, LEGAL_DRAFT_LABEL, LEGAL_UPDATED, LEGAL_VERSION } from "@/lib/legal";
+import { LEGAL_DRAFT_LABEL, LEGAL_UPDATED, LEGAL_VERSION } from "@/lib/legal";
+import { AA_LEGAL_CONTACT_EMAIL } from "@/lib/brand";
 import { Icon } from "@/ui";
+import { LegalSection } from "./LegalSection";
 
 export function DraftBanner() {
   return (
@@ -22,8 +24,8 @@ export function DraftBanner() {
         <p className="mt-1">
           This is a working draft. Adventure Asia&apos;s legal counsel has not reviewed or approved it, and it
           may change before the Trip Planner launches. Parts marked [to be confirmed] are still open. Questions:{" "}
-          <a href={`mailto:${LEGAL_CONTACT_EMAIL}`} className="font-semibold text-k-accent-deep hover:underline">
-            {LEGAL_CONTACT_EMAIL}
+          <a href={`mailto:${AA_LEGAL_CONTACT_EMAIL}`} className="font-semibold text-k-accent-deep hover:underline">
+            {AA_LEGAL_CONTACT_EMAIL}
           </a>
           .
         </p>
@@ -32,19 +34,8 @@ export function DraftBanner() {
   );
 }
 
-/** One numbered section; `id` gives it a link target. */
-export function LegalSection({ id, title, children }: { id: string; title: string; children: ReactNode }) {
-  return (
-    <section id={id} aria-labelledby={`${id}-title`} className="scroll-mt-[calc(var(--tp-header-h)+16px)] pt-8">
-      <h2 id={`${id}-title`} className="text-h3 text-k-ink">
-        {title}
-      </h2>
-      <div className="mt-3 space-y-3 text-body text-k-body [&_a]:font-semibold [&_a]:text-k-accent-deep [&_a:hover]:underline [&_li]:ml-5 [&_li]:list-disc [&_li]:pl-1 [&_ul]:space-y-1.5">
-        {children}
-      </div>
-    </section>
-  );
-}
+// AA-1115: the section component lives in ./LegalSection.tsx (an agency's legal pages use it too, without this shell).
+export { LegalSection };
 
 export default function LegalPage({
   title,
