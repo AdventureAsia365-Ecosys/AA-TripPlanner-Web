@@ -40,6 +40,7 @@ SEED = {
     "tripplanner.ai.plan_chat_max_tokens": (700, 200, 2000, False),
     "tripplanner.handoff.advisor_demo": (True, None, None, False),
     "tripplanner.handoff.require_registration": (True, None, None, False),
+    "tripplanner.spend.environment": ("dev", None, None, False),       # AA-1126 (CIS 447): dev | prod
 }
 TENANT = "7e1d0c4a-5b2f-4c3e-9a10-1096aa0a1096"
 OTHER = "7e1d0c4a-5b2f-4c3e-9a10-1096aa0a2222"

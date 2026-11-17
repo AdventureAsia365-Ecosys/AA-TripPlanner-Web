@@ -1,6 +1,6 @@
 // AA-642 S0 (root ADR 0009 decisions 5 and 6): the plain notices a traveller sees when the AI part of
 // the planner is not used for a request — AI paused (the spend counter or the route config cannot be
-// read, or the model provider is down) or the daily AI budget is spent, and (AA-1015) when this visitor reached the
+// read, or the model provider is down) or an AI allowance is used up (neutral wording, AA-1126), and (AA-1015) when this visitor reached the
 // per-session narration limit or the per-IP search limit (429), or the bot check refused the request (403
 // bot_check_failed, lib/botCheck.ts). The answer itself is still
 // useful (basic day lines, keyword search), so a notice is a calm sentence, never a spinner or an error.
@@ -17,9 +17,11 @@ export const AI_NOTICES: Record<AiNoticeLang, Record<AiNoticeKey, string>> = {
     narrationPaused:
       "AI writing is paused right now, so days without the tour's own itinerary text show only " +
       "their places. Try again later; your advisor confirms every detail.",
+    // AA-1126 L2: neutral for the traveller. The stop may be the agency's monthly plan allowance or an app-wide daily
+    // cap; the agency is told the real reason in its own Content studio bell, never the traveller.
     narrationBudget:
-      "Today's AI writing limit is reached, so days without the tour's own itinerary text show only " +
-      "their places. Your advisor confirms every detail.",
+      "AI-written trip days are not available for this planner right now, so days without the tour's own " +
+      "itinerary text show only their places. Your advisor confirms every detail.",
     narrationLimit:
       "You have asked for many narrations in a short time. Your trip is saved; please try again in a little while.",
     searchLimit:
@@ -33,8 +35,8 @@ export const AI_NOTICES: Record<AiNoticeLang, Record<AiNoticeKey, string>> = {
       "Tính năng viết bằng AI đang tạm dừng, nên những ngày chưa có lịch trình riêng của tour " +
       "chỉ hiện tên địa điểm. Bạn hãy thử lại sau; chuyên viên tư vấn sẽ xác nhận mọi chi tiết.",
     narrationBudget:
-      "Hôm nay đã đạt giới hạn viết bằng AI, nên những ngày chưa có lịch trình riêng của tour " +
-      "chỉ hiện tên địa điểm. Chuyên viên tư vấn sẽ xác nhận mọi chi tiết.",
+      "Hiện trang lập kế hoạch này chưa có phần lịch trình viết bằng AI, nên những ngày chưa có lịch trình " +
+      "riêng của tour chỉ hiện tên địa điểm. Chuyên viên tư vấn sẽ xác nhận mọi chi tiết.",
     narrationLimit:
       "Bạn đã yêu cầu viết lịch trình nhiều lần trong thời gian ngắn. Chuyến đi của bạn vẫn được lưu; " +
       "vui lòng thử lại sau ít phút.",

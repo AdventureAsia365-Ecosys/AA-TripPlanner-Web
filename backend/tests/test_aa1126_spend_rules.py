@@ -1,0 +1,275 @@
+"""AA-1126 (offline): TripPlanner's AI spend rules per environment (setting tripplanner.spend.environment, CIS 447) and
+the agency notice when its AI sessions quota is used up.
+
+dev (the default, today's behaviour): the app-wide caps (the daily cap, the chat's monthly app cap) stop the AI of
+every agency, and a spend / budget / quota that cannot be read stops it too. prod: those app-wide caps only alert and a
+read error degrades with an error line; an agency's own AI budget and AI sessions quota stay hard. When the quota
+stops a new session the agency's bell gets one notice a month (plain INSERT; the unique index = already told). The
+traveller notice is neutral (frontend lib/aiNotices.ts). Invented ids only; no network, no database."""
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+
+import pytest
+
+from backend import config
+from backend.shared import app_profile, monthly_spend, observability, settings, tenant
+from backend.shared import llm_gateway as gw
+from backend.shared import tenant_budget as tb
+from backend.shared import tenant_sessions as ts
+
+AGENCY = "6b2d1ef6-0000-4000-8000-000000001126"
+SESSION = "6b2d1ef6-0000-4000-8000-0000000000a1"
+NOV = datetime(2026, 11, 17, 8, 0, tzinfo=timezone.utc)
+
+
+class PgError(Exception):
+    def __init__(self, sqlstate):
+        super().__init__("synthetic")
+        self.sqlstate = sqlstate
+
+
+@pytest.fixture
+def lines(monkeypatch):
+    out: list = []
+    monkeypatch.setattr(observability, "emit", lambda evt, **kw: out.append((evt, kw)))
+    return out
+
+
+@pytest.fixture
+def env(monkeypatch):
+    """Set the spend environment: env("prod") / env("dev")."""
+    def _set(value):
+        monkeypatch.setattr(settings, "spend_prod", lambda: value == "prod")
+    _set("dev")
+    return _set
+
+
+@pytest.fixture(autouse=True)
+def _clean(monkeypatch):
+    tb.clear()
+    ts.clear()
+    monkeypatch.setattr(gw, "_spend_unreadable_until", 0.0)
+
+    async def default(_db):
+        return app_profile.DEFAULT
+    monkeypatch.setattr(app_profile, "current", default)
+    yield
+    tb.clear()
+    ts.clear()
+
+
+# ── the setting ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_the_setting_is_an_enum_dev_or_prod_with_the_dev_default():
+    s = settings.SETTINGS[settings.SPEND_ENVIRONMENT]
+    assert s.kind == "enum" and s.allowed == ("dev", "prod") and s.fallback() == config.TP_SPEND_ENVIRONMENT == "dev"
+    assert settings.problem(s, "prod") is None and settings.problem(s, "dev") is None
+    assert settings.problem(s, "staging") and settings.problem(s, True)
+
+
+@pytest.mark.asyncio
+async def test_spend_prod_follows_the_view(monkeypatch):
+    rows = [{"key": settings.SPEND_ENVIRONMENT, "value_text": '"prod"', "version": 2, "tenant_id": None}]
+
+    async def read(db):
+        return rows
+    monkeypatch.setattr(settings, "read", read)
+    settings.invalidate()
+    await settings.refresh(object(), force=True)
+    assert settings.spend_prod() is True
+    rows[0]["value_text"] = '"staging"'                      # refused by its definition: the fallback (dev) serves
+    settings.invalidate()
+    await settings.refresh(object(), force=True)
+    assert settings.spend_prod() is False
+    settings.invalidate()
+
+
+# ── G3 / L4: the daily app cap and the spend read (llm_gateway.budget_status) ────────────────────────────────────────
+
+def _spent(monkeypatch, usd=None, error=None):
+    async def spent(db, stages):
+        if error:
+            raise error
+        return usd
+    monkeypatch.setattr(gw, "_spent", spent)
+
+
+def _tenant_check(monkeypatch, reason=None):
+    async def check(db, tenant_id):
+        return reason
+    monkeypatch.setattr(tb, "check", check)
+
+
+@pytest.mark.asyncio
+async def test_dev_the_daily_app_cap_stops(monkeypatch, env, lines):
+    _spent(monkeypatch, float(config.TP_DAILY_SPEND_CAP_USD) + 1)
+    _tenant_check(monkeypatch)
+    out = await gw.budget_status(object(), "tp_compose")
+    assert out["exhausted"] is True and out["reason"] == gw.REASON_CAP
+
+
+@pytest.mark.asyncio
+async def test_prod_the_daily_app_cap_only_alerts(monkeypatch, env, lines):
+    env("prod")
+    _spent(monkeypatch, float(config.TP_DAILY_SPEND_CAP_USD) + 1)
+    _tenant_check(monkeypatch)
+    out = await gw.budget_status(object(), "tp_compose")
+    assert out["exhausted"] is False and out["alert_only"] is True
+    assert any(e == "llm_spend_alert" and kw.get("threshold") == "cap_alert_only" for e, kw in lines)
+
+
+@pytest.mark.asyncio
+async def test_prod_an_unreadable_spend_degrades_dev_fails_closed(monkeypatch, env, lines):
+    _spent(monkeypatch, error=PgError("57014"))
+    _tenant_check(monkeypatch)
+    closed = await gw.budget_status(object(), "tp_compose")
+    assert closed["exhausted"] is True and closed["reason"] == gw.REASON_SPEND_UNREADABLE
+    env("prod")
+    open_ = await gw.budget_status(object(), "tp_compose")
+    assert open_["exhausted"] is False and open_["degraded"] == gw.REASON_SPEND_UNREADABLE
+    assert any(kw.get("what") == "spend_unreadable_degraded" for _, kw in lines)
+
+
+@pytest.mark.asyncio
+async def test_prod_keeps_the_agency_budget_hard_and_degrades_its_read_error(monkeypatch, env, lines):
+    env("prod")
+    _spent(monkeypatch, 0.5)
+    _tenant_check(monkeypatch, tb.REASON_CAP)
+    with tenant.using(AGENCY, source=tenant.SOURCE_ASSERTION):
+        capped = await gw.budget_status(object(), "tp_compose")
+    assert capped["exhausted"] is True and capped["scope"] == "tenant"
+    _tenant_check(monkeypatch, tb.REASON_UNREADABLE)
+    with tenant.using(AGENCY, source=tenant.SOURCE_ASSERTION):
+        degraded = await gw.budget_status(object(), "tp_compose")
+    assert degraded["exhausted"] is False
+    assert any(kw.get("what") == "tenant_budget_unreadable_degraded" for _, kw in lines)
+    env("dev")
+    with tenant.using(AGENCY, source=tenant.SOURCE_ASSERTION):
+        closed = await gw.budget_status(object(), "tp_compose")
+    assert closed["exhausted"] is True and closed["reason"] == tb.REASON_UNREADABLE
+
+
+# ── G3 / L4: the chat's monthly app cap (monthly_spend.check) ────────────────────────────────────────────────────────
+
+class MonthDb:
+    def __init__(self, app=0.0, ten=0.0, error=None):
+        self.app, self.ten, self.error = app, ten, error
+
+    async def fetch(self, sql, stage, scopes):
+        if self.error:
+            raise self.error
+        rows = [{"scope": monthly_spend.SCOPE_APP, "cost_usd": self.app, "calls": 1}]
+        if len(scopes) > 1:
+            rows.append({"scope": scopes[1], "cost_usd": self.ten, "calls": 1})
+        return rows
+
+
+@pytest.mark.asyncio
+async def test_chat_app_cap_stops_on_dev_alerts_on_prod(env, lines):
+    db = MonthDb(app=3.0)
+    assert await monthly_spend.check(db, "tp_plan_chat", AGENCY, app_cap_usd=2, tenant_cap_usd=2) \
+        == monthly_spend.REASON_APP_CAP
+    env("prod")
+    assert await monthly_spend.check(db, "tp_plan_chat", AGENCY, app_cap_usd=2, tenant_cap_usd=2) is None
+    assert any(kw.get("threshold") == "cap_alert_only" for _, kw in lines)
+
+
+@pytest.mark.asyncio
+async def test_chat_tenant_cap_stays_hard_on_prod(env, lines):
+    env("prod")
+    db = MonthDb(app=0.1, ten=2.5)
+    assert await monthly_spend.check(db, "tp_plan_chat", AGENCY, app_cap_usd=2, tenant_cap_usd=2) \
+        == monthly_spend.REASON_TENANT_CAP
+
+
+@pytest.mark.asyncio
+async def test_chat_spend_read_error_degrades_on_prod_only(env, lines):
+    db = MonthDb(error=PgError("42P01"))
+    assert await monthly_spend.check(db, "tp_plan_chat", AGENCY, app_cap_usd=2, tenant_cap_usd=2) \
+        == monthly_spend.REASON_UNREADABLE
+    env("prod")
+    assert await monthly_spend.check(db, "tp_plan_chat", AGENCY, app_cap_usd=2, tenant_cap_usd=2) is None
+
+
+# ── L2 / L4: the AI sessions quota (tenant_sessions.admit) ───────────────────────────────────────────────────────────
+
+class QuotaDb:
+    """The quota view row, the tp-032 table and the notice INSERT of one tenant, in memory."""
+
+    def __init__(self, quota=1, used=1, quota_error=None, notice_error=None):
+        self.quota, self.used, self.quota_error, self.notice_error = quota, used, quota_error, notice_error
+        self.notices: list = []
+
+    async def fetchrow(self, sql, *args):
+        if self.quota_error:
+            raise self.quota_error
+        return {"tenant_id": args[0], "ai_sessions_monthly": self.quota}
+
+    async def fetchval(self, sql, *args):
+        if sql == ts.COUNTED_SQL:
+            return None
+        if sql == ts.COUNT_SQL:
+            return self.used
+        raise AssertionError(sql)
+
+    async def execute(self, sql, *args):
+        if sql == ts.NOTICE_SQL:
+            if self.notice_error:
+                raise self.notice_error
+            self.notices.append(args)
+        return "OK"
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_a_used_up_quota_stops_and_tells_the_agency_once(env, lines):
+    db = QuotaDb(quota=1, used=1)
+    assert await ts.admit(db, AGENCY, SESSION) == ts.REASON_CAP
+    assert await ts.admit(db, AGENCY, SESSION) == ts.REASON_CAP
+    assert len(db.notices) == 1                                   # one attempt per tenant and month per container
+    tenant_id, event, entity_type, entity_id, payload = db.notices[0]
+    assert (tenant_id, event, entity_type) == (AGENCY, "tripplanner.ai_allowance_used", "tripplanner_ai")
+    assert entity_id.startswith("tripplanner:") and '"resets_at"' in payload
+    env("prod")
+    assert await ts.admit(QuotaDb(quota=1, used=1), AGENCY, SESSION) == ts.REASON_CAP   # the plan quota stays hard
+
+
+@pytest.mark.asyncio
+async def test_the_notice_already_written_this_month_is_not_retried(lines):
+    db = QuotaDb(notice_error=PgError("23505"))
+    assert await ts.notify_agency(db, AGENCY, NOV) is False
+    db.notice_error = None
+    assert await ts.notify_agency(db, AGENCY, NOV) is False and db.notices == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_notice_never_raises_and_retries_later(lines, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(ts, "_clock", lambda: clock[0])
+    db = QuotaDb(notice_error=PgError("42501"))                  # CIS 447 not applied yet: no grant
+    assert await ts.notify_agency(db, AGENCY, NOV) is False
+    db.notice_error = None
+    assert await ts.notify_agency(db, AGENCY, NOV) is False      # paced
+    clock[0] += tb.FAILURE_TTL_SECONDS + 1
+    assert await ts.notify_agency(db, AGENCY, NOV) is True and len(db.notices) == 1
+
+
+def test_the_notice_names_the_month_and_the_reset_day():
+    entity, payload = ts.notice_payload(datetime(2026, 12, 9, tzinfo=timezone.utc))
+    assert entity == "tripplanner:2026-12" and payload == {"kind": "tripplanner", "month": "2026-12",
+                                                           "resets_at": "2027-01-01"}
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_quota_fails_closed_on_dev_and_degrades_on_prod(env, lines):
+    db = QuotaDb(quota_error=PgError("42501"))
+    assert await ts.admit(db, AGENCY, SESSION) == ts.REASON_UNREADABLE
+    ts.clear()
+    env("prod")
+    assert await ts.admit(db, AGENCY, SESSION) is None
+    assert any(kw.get("what") == "tenant_sessions_degraded" for _, kw in lines)

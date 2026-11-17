@@ -297,6 +297,13 @@ TP_RATE_CHAT_IP_PER_HOUR = 40
 # (llm_gateway.budget_status) apply too.
 TP_PLAN_CHAT_MONTHLY_CAP_USD = 2.0
 TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD = 2.0
+
+# --- AI spend rules per environment (AA-1126, CIS 447: setting tripplanner.spend.environment, dev | prod) ---
+# dev (today's behaviour): the app-wide caps (the daily AI cap of the app profile, the stage caps, the chat's monthly
+# app cap) stop the AI of every agency, and a spend / quota / budget that cannot be read stops it too. prod (tech lead
+# policy S283, pay per use): those app-wide caps only alert, and a read error degrades with a warning; an agency's own
+# AI sessions quota and AI budget stay hard. Edited on CIS Platform › Settings (TripPlanner tab).
+TP_SPEND_ENVIRONMENT = "dev"
 # Sent by the BFF (web task) with the traveller's address and whether a traveller session is signed in. Trusted ONLY
 # when the request also carries the right x-tripplanner-key (only the BFF has it); otherwise ignored.
 CLIENT_IP_HEADER = "x-tp-client-ip"

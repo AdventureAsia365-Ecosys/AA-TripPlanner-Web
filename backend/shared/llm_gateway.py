@@ -122,7 +122,7 @@ from backend.aa_llm import budget as core_budget
 from backend.aa_llm import contract, ledger, pricing
 from backend.aa_llm import errors as core_errors
 from backend.shared import app_profile, bedrock_satellite, llm_breaker, observability, prompt_registry
-from backend.shared import tenant, tenant_budget
+from backend.shared import settings, tenant, tenant_budget
 from backend.shared.bedrock_satellite import BedrockError, ClientFactory
 
 APP = "tripplanner"
@@ -1420,26 +1420,46 @@ async def budget_status(db: Any, stage: Optional[str] = None) -> dict:
     else:
         cap, stages, scope, source = float(config.TP_DAILY_SPEND_CAP_USD), list(ONLINE_STAGES), "total", "env"
     stage_cap = _stage_cap(stage)
-    if spend_unreadable_flag_active():
-        return core_budget.unreadable(cap).as_dict()
-    try:
-        spent = await _spent(db, stages)
-        stage_spent = await _spent(db, [stage]) if stage_cap is not None else None
-    except Exception as e:  # noqa: BLE001
-        _error("spend_unreadable", stage, e)
-        return core_budget.unreadable(cap).as_dict()
-    _alert(scope, spent, cap, source)
-    if stage_cap is not None and stage_spent is not None:
-        _alert(str(stage), stage_spent, stage_cap)
-    decision = core_budget.decide(spent, cap, near_ratio=config.SPEND_NEAR_CAP_RATIO, stage=stage,
-                                  stage_spent=stage_spent, stage_cap=stage_cap)
-    out = decision.as_dict()
-    if out["exhausted"]:
-        return out
+    # AA-1126 G3 / L4: under the prod spend rules (tripplanner.spend.environment) the app-wide caps only alert and an
+    # unreadable spend degrades with a warning; an agency's own budget below stays hard. dev: as before.
+    prod = settings.spend_prod()
+    spent = stage_spent = None
+    unreadable = spend_unreadable_flag_active()
+    if not unreadable:
+        try:
+            spent = await _spent(db, stages)
+            stage_spent = await _spent(db, [stage]) if stage_cap is not None else None
+        except Exception as e:  # noqa: BLE001
+            _error("spend_unreadable", stage, e)
+            unreadable = True
+    if unreadable:
+        if not prod:
+            return core_budget.unreadable(cap).as_dict()
+        observability.emit("llm_gateway_error", level="error", what="spend_unreadable_degraded", stage=stage)
+        out = {"spent_usd": None, "cap_usd": cap, "exhausted": False, "reason": None, "near_cap": False,
+               "degraded": REASON_SPEND_UNREADABLE}
+    else:
+        _alert(scope, spent, cap, source)
+        if stage_cap is not None and stage_spent is not None:
+            _alert(str(stage), stage_spent, stage_cap)
+        decision = core_budget.decide(spent, cap, near_ratio=config.SPEND_NEAR_CAP_RATIO, stage=stage,
+                                      stage_spent=stage_spent, stage_cap=stage_cap)
+        out = decision.as_dict()
+        if out["exhausted"] and not prod:
+            return out
+        if out["exhausted"]:
+            observability.emit("llm_spend_alert", level="error", threshold="cap_alert_only", scope=scope,
+                               stage=stage, spent_usd=round(float(spent or 0.0), 6), cap_usd=cap)
+            out.update(exhausted=False, reason=None, alert_only=True)
     # AA-1038 R5 slice 3: the tenant's own monthly AI budget (CIS 390), after the app caps. A reached tenant budget is
     # a cap (reason REASON_CAP, scope tenant: narration says ai_budget_exhausted); a budget that cannot be decided is a
-    # pause for that tenant only (fail closed). The bare path / demo tenant has none (tenant_budget.exempt).
+    # pause for that tenant only (fail closed; AA-1126 L4: under prod an unreadable budget degrades with a warning).
+    # The bare path / demo tenant has none (tenant_budget.exempt).
     reason = await tenant_budget.check(db, tenant.current_id())
+    if reason == tenant_budget.REASON_UNREADABLE and prod:
+        observability.emit("llm_gateway_error", level="error", what="tenant_budget_unreadable_degraded", stage=stage,
+                           tenant_id=tenant.current_id())
+        reason = None
     if reason is not None:
         out.update(exhausted=True, reason=REASON_CAP if reason == tenant_budget.REASON_CAP else reason,
                    scope="tenant", tenant_reason=reason)
