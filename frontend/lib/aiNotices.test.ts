@@ -32,3 +32,12 @@ test("a 429 maps to the limit notice of its route, in both languages", () => {
   assert.equal(limitNotice("search"), "searchLimit");
   assert.ok(AI_NOTICES.vi.searchLimit && AI_NOTICES.en.narrationLimit);
 });
+
+// AA-1126 L2: the traveller's notice for a used-up AI allowance is neutral: no "today" (the agency quota is monthly), no
+// limit, quota or plan words the traveller cannot act on; the agency reads the real reason in its own bell.
+test("the allowance notice is neutral for the traveller, in both languages", () => {
+  const en = AI_NOTICES.en.narrationBudget.toLowerCase();
+  for (const word of ["today", "limit", "quota", "plan's", "budget", "upgrade"]) assert.ok(!en.includes(word), word);
+  const vi = AI_NOTICES.vi.narrationBudget.toLowerCase();
+  for (const word of ["hôm nay", "giới hạn", "hạn mức", "ngân sách"]) assert.ok(!vi.includes(word), word);
+});
