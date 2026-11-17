@@ -117,38 +117,57 @@ const AA_PAGES = [
 const AA_STATIC_404 = ".next/server/app/_not-found.html";
 const AA_404_MARKUP = /<header[^>]*class="tp-header[\s\S]*>Off the trail<[\s\S]*<footer[^>]*>[\s\S]*© Adventure Asia<\/p>/;
 
+// One agency page: the expected status, no brand word anywhere in the HTML, the agency's name on a 200.
+function agencyPageProblems(where, r, status) {
+  const problems = [];
+  if (r.status !== status) problems.push(`${where}: status ${r.status}, expected ${status}`);
+  const hit = r.html.match(BRAND_RE);
+  if (hit) {
+    const i = hit.index ?? 0;
+    problems.push(`${where}: names Adventure Asia: …${r.html.slice(Math.max(0, i - 120), i + 80)}…`);
+  }
+  if (status === 200 && !r.html.includes(AGENCY.name)) problems.push(`${where}: the agency's name is missing`);
+  return problems;
+}
+
+async function checkAgencyPages(port, failures) {
+  for (const [label, path, host, status] of AGENCY_PAGES) {
+    const where = `${label} (${host ?? ""}${path})`;
+    const problems = agencyPageProblems(where, await get(port, path, host), status);
+    failures.push(...problems);
+    console.log(`${problems.length ? "FAIL" : "ok  "} ${where}`);
+  }
+}
+
+async function checkAaPages(port, failures) {
+  for (const [label, path, status] of AA_PAGES) {
+    const r = await get(port, path, null);
+    const ok = r.status === status && /Adventure Asia/.test(r.html);
+    if (!ok) failures.push(`${label} (${path}): status ${r.status} (expected ${status}), or the AA brand is missing`);
+    console.log(`${ok ? "ok  " : "FAIL"} ${label} (${path}): ${r.status}, keeps the AA brand`);
+  }
+}
+
+function checkStatic404(failures) {
+  const static404 = readFileSync(join(FRONTEND, AA_STATIC_404), "utf8");
+  const ssr = AA_404_MARKUP.test(static404) && !static404.includes("__next_error__");
+  if (!ssr) failures.push(`${AA_STATIC_404}: AA's bar, band or footer is not server-rendered`);
+  console.log(`${ssr ? "ok  " : "FAIL"} AA 404 prerendered with its bar, band and footer (${AA_STATIC_404})`);
+}
+
 async function main() {
   const port = Number(process.env.RENDER_CHECK_PORT || 3917);
   const browse = await fakeBrowse();
   const next = await startNext(port, browse.address().port);
   const failures = [];
   try {
-    for (const [label, path, host, status] of AGENCY_PAGES) {
-      const r = await get(port, path, host);
-      const where = `${label} (${host ? `${host}` : ""}${path})`;
-      if (r.status !== status) failures.push(`${where}: status ${r.status}, expected ${status}`);
-      const hit = r.html.match(BRAND_RE);
-      if (hit) {
-        const i = hit.index ?? 0;
-        failures.push(`${where}: names Adventure Asia: …${r.html.slice(Math.max(0, i - 120), i + 80)}…`);
-      }
-      if (status === 200 && !r.html.includes(AGENCY.name)) failures.push(`${where}: the agency's name is missing`);
-      console.log(`${hit || r.status !== status ? "FAIL" : "ok  "} ${where}: ${r.status}, ${r.html.length} bytes`);
-    }
-    for (const [label, path, status] of AA_PAGES) {
-      const r = await get(port, path, null);
-      const ok = r.status === status && /Adventure Asia/.test(r.html);
-      if (!ok) failures.push(`${label} (${path}): status ${r.status} (expected ${status}), AA brand ${ok ? "" : "missing"}`);
-      console.log(`${ok ? "ok  " : "FAIL"} ${label} (${path}): ${r.status}, keeps the AA brand`);
-    }
+    await checkAgencyPages(port, failures);
+    await checkAaPages(port, failures);
   } finally {
     next.kill();
     browse.close();
   }
-  const static404 = readFileSync(join(FRONTEND, AA_STATIC_404), "utf8");
-  const ssr = AA_404_MARKUP.test(static404) && !static404.includes("__next_error__");
-  if (!ssr) failures.push(`${AA_STATIC_404}: AA's bar, band or footer is not server-rendered`);
-  console.log(`${ssr ? "ok  " : "FAIL"} AA 404 prerendered with its bar, band and footer (${AA_STATIC_404})`);
+  checkStatic404(failures);
   if (failures.length) {
     console.error(`\n${failures.length} rendered-brand failure(s):\n- ${failures.join("\n- ")}`);
     process.exit(1);
