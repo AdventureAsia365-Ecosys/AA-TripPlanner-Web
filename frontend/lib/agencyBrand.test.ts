@@ -136,6 +136,11 @@ test("every /{slug} page that can be a 404 has the brand-free agency 404, and un
   assert.match(code(read("app/[tenant]/[...rest]/page.tsx")), /notFound\(\);/);
   assert.ok(existsSync(join(ROOT, "app/[tenant]/[...rest]/not-found.tsx")));
   for (const [f, why] of Object.entries(NOT_FOUND_EXCEPTIONS)) assert.ok(existsSync(join(ROOT, f)) && why.length > 20, f);
+  // A slug that is no served tenant is no agency's site: the layout sends it to the root 404 (AA's own host only), so
+  // the agency 404 and its "Plan a trip" link are never shown for a planner that does not exist.
+  const layout = code(read("app/[tenant]/layout.tsx"));
+  assert.match(layout, /if \(!isTenantSlug\(tenant\)\) notFound\(\);/);
+  assert.match(layout, /if \(site === null\) notFound\(\);/);
 });
 
 test("only the allow-listed files an agency page reaches use Adventure Asia's own words", () => {
