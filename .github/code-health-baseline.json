@@ -41,7 +41,7 @@
   "frontend/components/PlanPrefill.tsx::PlanPrefill": 21,
   "frontend/components/RoutePlanner.tsx::RoutePlanner": 17,
   "frontend/components/SharedTripView.tsx::SharedTripView": 30,
-  "frontend/components/TourListPane.tsx::TourListPane": 23,
+  "frontend/components/TourListPane.tsx::TourListPane": 21,
   "frontend/components/TourListPane.tsx::TourListPane.map()#2": 11,
   "frontend/components/TripPanel.tsx::TripPanel": 60,
   "frontend/components/site/TourCard.tsx::TourCard": 32,

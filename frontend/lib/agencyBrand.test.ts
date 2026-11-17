@@ -186,7 +186,7 @@ test("the agency's planner, share view and tour page use the agency bar, and the
   }
   const app = read("app/plan/PlannerApp.tsx");
   assert.match(app, /<BrandProvider agency=\{brandSlug \? agencyName : null\} agencySlug=\{brandSlug\}>/);
-  assert.match(app, /const brandSlug = isAgencyPlanner\(tenantSlug\) && agencyName \? tenantSlug : null;/);
+  assert.match(app, /const brandSlug = headerAgency && isAgencyPlanner\(tenantSlug\) \? tenantSlug : null;/);
   for (const page of ["privacy", "terms"]) {
     const src = read(`app/[tenant]/${page}/page.tsx`);
     assert.match(src, /<AgencyLegalPage\b/);

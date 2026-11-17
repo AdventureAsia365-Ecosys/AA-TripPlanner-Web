@@ -249,6 +249,15 @@ function Layout({ initialMobileView, agency }: { initialMobileView: "map" | "tri
   );
 }
 
+// The agency bar of a /{slug} planner, and the agency whose words and legal pages it shows (AA-1115,
+// components/BrandContext.tsx): an agency's planner only; AA's own planner and the AA-hosted demo tenant keep
+// Adventure Asia's (the demo tenant still has the agency bar with its own trading name, AA-1094).
+function plannerBrand(tenantSlug: string | null, agencyName: string | null) {
+  const headerAgency = tenantSlug && agencyName ? { slug: tenantSlug, name: agencyName } : null;
+  const brandSlug = headerAgency && isAgencyPlanner(tenantSlug) ? tenantSlug : null;
+  return { headerAgency, brandSlug };
+}
+
 export default function PlannerApp({
   intent,
   tenantSlug = null,
@@ -277,10 +286,7 @@ export default function PlannerApp({
     setPlannerTenant(tenantSlug, agencyName === null ? null : { name: agencyName, brandingBadge: agencyBadge });
     return () => setPlannerTenant(null);
   }, [tenantSlug, agencyName, agencyBadge]);
-  const headerAgency = tenantSlug && agencyName ? { slug: tenantSlug, name: agencyName } : null;
-  // AA-1115: an agency's planner shows its own words and legal pages (components/BrandContext.tsx); AA's own planner
-  // and the AA-hosted demo tenant keep Adventure Asia's.
-  const brandSlug = isAgencyPlanner(tenantSlug) && agencyName ? tenantSlug : null;
+  const { headerAgency, brandSlug } = plannerBrand(tenantSlug, agencyName);
   // AA-837: the planner follows the site theme (ui/core/tokens.css). Its surfaces and form controls use
   // the k-* tokens, so browser-styled controls (country select, days input) stay readable in dark.
   // The Mapbox basemap stays the light outdoors style in both themes (map imagery, not UI text).
