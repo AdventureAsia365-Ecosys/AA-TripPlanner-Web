@@ -174,10 +174,15 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   `tripplanner.lumiguides.it.com` is a CNAME to the distribution (S272 cut-over; the DNS switch and its Vercel
   rollback target were removed at the Vercel retirement). Rollback = redeploy the previous image (Deploy Web Dev on
   the reverted commit). Runbook: root `docs/ops/runbooks/tripplanner-web-ecs-cutover.md`.
-- **Security headers (AA-876)** on every response (`frontend/next.config.mjs`, same list as the CIS admin and
-  portal): HSTS, `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, a minimal
-  CSP (`frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'` — no `script-src` yet),
-  `Permissions-Policy` (camera, microphone, geolocation off), and no `x-powered-by`. `frame-ancestors 'none'`
+- **Security headers (AA-876; AA-1111 S284 after the ZAP baseline)** on every response, the proxy's own 404 / 410 /
+  503 pages included (`frontend/next.config.mjs`, same list as the CIS admin, the Booking admin and the CRM web):
+  HSTS (two years, sub-domains, no preload), `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
+  `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`, `Permissions-Policy` (camera, microphone,
+  geolocation, payment, usb off), no `x-powered-by`, and a full CSP (`contentSecurityPolicy()`): `frame-ancestors
+  'none'` first, `default-src 'self'`, `connect-src` self + the Mapbox API / tile / telemetry hosts, blob workers for
+  Mapbox GL, images from any https host, `form-action 'self'`, `object-src 'none'`. `script-src` keeps
+  `'unsafe-inline'` (no nonce): the home, destination and tour pages are prerendered and CDN-cached, a nonce needs a
+  per-request render (follow-up in `docs/implementation-notes/AA-1111-headers.md`). `frame-ancestors 'none'`
   blocks any partner iframe of TripPlanner until an allow-list is designed (KAN-20 B2B). A deploy fails red if the
   public host (through CloudFront) or the PR's preview image lacks any of them (`.github/scripts/check_security_headers.sh`
   in `deploy-web-dev.yml`; TripPlanner has no UI smoke workflow, so this is its header smoke).
