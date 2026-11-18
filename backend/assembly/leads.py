@@ -702,7 +702,7 @@ def ses_mailer(message: dict) -> None:
 
 # The display name of a lead e-mail's sender: the agency's trading name, in code points (an RFC 5322 phrase has no
 # hard limit; a long one only wraps the header). technical-constant: a header-length bound, not a policy value.
-SENDER_NAME_MAX = 78
+SENDER_NAME_MAX = 78  # technical-constant: e-mail header display-name length bound, not a policy value
 _HEADER_UNSAFE = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]")
 
 
