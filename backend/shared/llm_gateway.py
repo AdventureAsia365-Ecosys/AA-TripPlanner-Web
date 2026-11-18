@@ -122,7 +122,8 @@ from backend.aa_llm import budget as core_budget
 from backend.aa_llm import contract, ledger, pricing
 from backend.aa_llm import errors as core_errors
 from backend.shared import app_profile, bedrock_satellite, llm_breaker, observability, prompt_registry
-from backend.shared import tenant, tenant_budget
+from backend.shared import spend_rules, tenant, tenant_budget
+from backend.shared.spend_rules import _alert, _alerted, _stage_cap  # noqa: F401 — moved (AA-1126), same names
 from backend.shared.bedrock_satellite import BedrockError, ClientFactory
 
 APP = "tripplanner"
@@ -1351,34 +1352,7 @@ def spend_unreadable_flag_active() -> bool:
     return time.monotonic() < _spend_unreadable_until
 
 
-# AA-1015: the stage caps (config, unset = none) and the once-per-day alert lines.
-def _stage_cap(stage: Optional[str]) -> Optional[float]:
-    caps = {"tp_compose": config.TP_DAILY_SPEND_CAP_COMPOSE_USD,
-            "tp_search_embed": config.TP_DAILY_SPEND_CAP_SEARCH_USD}
-    cap = caps.get(stage) if stage else None
-    return float(cap) if cap is not None else None
-
-
-# (UTC day, scope, threshold) already announced by this container, so a busy day prints each alert once.
-_alerted: set[tuple[str, str, str]] = set()
-
-
-def _alert(scope: str, spent: float, cap: float, cap_source: str = "env") -> None:
-    """One `llm_spend_alert` line per container, UTC day, scope and threshold: 'near' at
-    SPEND_NEAR_CAP_RATIO of the cap (level warning), 'cap' when reached (level error). `cap_source`: 'app_profile'
-    (scope 'app': every stage against the profile's budget; the CIS ops check alerts on the same numbers, bell +
-    e-mail) or 'env' (scope 'total': the online stages against TP_DAILY_SPEND_CAP_USD; a stage scope)."""
-    threshold = core_budget.threshold(spent, cap, config.SPEND_NEAR_CAP_RATIO)
-    if threshold is None:
-        return
-    level = "error" if threshold == core_budget.THRESHOLD_CAP else "warning"
-    key = (time.strftime("%Y-%m-%d", time.gmtime()), scope, threshold)
-    if key in _alerted:
-        return
-    _alerted.add(key)
-    observability.emit("llm_spend_alert", level=level, threshold=threshold, scope=scope,
-                       spent_usd=round(spent, 6), cap_usd=cap, ratio=config.SPEND_NEAR_CAP_RATIO,
-                       cap_source=cap_source)
+# AA-1015 stage caps and alert lines, AA-1126 spend rules per environment: backend/shared/spend_rules.py
 
 
 # AA-1025 H1b: the whole app's spend today (every tp_* stage, offline ones included), for the app profile's cap: the
@@ -1399,11 +1373,11 @@ async def _spent(db: Any, stages: Optional[list]) -> float:
 
 async def budget_status(db: Any, stage: Optional[str] = None) -> dict:
     """Today's (UTC) customer-facing (ONLINE_STAGES) model spend against TP_DAILY_SPEND_CAP_USD and, when
-    `stage` has a stage cap (AA-1015: TP_DAILY_SPEND_CAP_COMPOSE_USD / _SEARCH_USD), that stage's spend
+    `stage` has a stage cap (AA-1015; settings tripplanner.spend.stage_cap_*_usd since AA-1126), that stage's spend
     against it. Both caps apply; with no stage cap set only the combined cap does (behaviour unchanged).
 
     Returns {"spent_usd", "cap_usd", "exhausted", "reason", "near_cap"} (+ "stage", "stage_spent_usd",
-    "stage_cap_usd" when a stage cap applies). `near_cap` is True from SPEND_NEAR_CAP_RATIO (80 %) of
+    "stage_cap_usd" when a stage cap applies). `near_cap` is True from tripplanner.spend.near_cap_pct (80 %) of
     either cap, and the first time a container sees 80 % or 100 % of a cap on a UTC day it prints one
     `llm_spend_alert` line. Fails CLOSED (AA-642 S0, root ADR 0009 decision 6): when the spend view cannot
     be read, or a ledger write failed in the last SPEND_UNREADABLE_HOLD_SECONDS, `exhausted` is True
@@ -1419,28 +1393,36 @@ async def budget_status(db: Any, stage: Optional[str] = None) -> dict:
         cap, stages, scope, source = profile.default_daily_budget_usd, None, "app", "app_profile"
     else:
         cap, stages, scope, source = float(config.TP_DAILY_SPEND_CAP_USD), list(ONLINE_STAGES), "total", "env"
-    stage_cap = _stage_cap(stage)
-    if spend_unreadable_flag_active():
-        return core_budget.unreadable(cap).as_dict()
-    try:
-        spent = await _spent(db, stages)
-        stage_spent = await _spent(db, [stage]) if stage_cap is not None else None
-    except Exception as e:  # noqa: BLE001
-        _error("spend_unreadable", stage, e)
-        return core_budget.unreadable(cap).as_dict()
-    _alert(scope, spent, cap, source)
-    if stage_cap is not None and stage_spent is not None:
-        _alert(str(stage), stage_spent, stage_cap)
-    decision = core_budget.decide(spent, cap, near_ratio=config.SPEND_NEAR_CAP_RATIO, stage=stage,
-                                  stage_spent=stage_spent, stage_cap=stage_cap)
-    out = decision.as_dict()
+    out = await _app_caps(db, stage, cap, stages, scope, source)
     if out["exhausted"]:
         return out
     # AA-1038 R5 slice 3: the tenant's own monthly AI budget (CIS 390), after the app caps. A reached tenant budget is
     # a cap (reason REASON_CAP, scope tenant: narration says ai_budget_exhausted); a budget that cannot be decided is a
-    # pause for that tenant only (fail closed). The bare path / demo tenant has none (tenant_budget.exempt).
-    reason = await tenant_budget.check(db, tenant.current_id())
+    # pause for that tenant only (fail closed; AA-1126 L4: degrades under prod). The bare path / demo tenant has none.
+    reason = await spend_rules.tenant_reason(db, await tenant_budget.check(db, tenant.current_id()), stage)
     if reason is not None:
         out.update(exhausted=True, reason=REASON_CAP if reason == tenant_budget.REASON_CAP else reason,
                    scope="tenant", tenant_reason=reason)
     return out
+
+
+async def _app_caps(db: Any, stage: Optional[str], cap: float, stages: Optional[list], scope: str, source: str) -> dict:
+    """The app-wide caps of budget_status: today's spend against the app cap and the stage cap; under the prod spend
+    rules (AA-1126 G3 / L4, spend_rules) a reached cap only alerts and an unreadable spend degrades."""
+    stage_cap = _stage_cap(stage)
+    spent = stage_spent = None
+    if not spend_unreadable_flag_active():
+        try:
+            spent = await _spent(db, stages)
+            stage_spent = await _spent(db, [stage]) if stage_cap is not None else None
+        except Exception as e:  # noqa: BLE001
+            _error("spend_unreadable", stage, e)
+            spent = None
+    if spent is None:
+        return await spend_rules.unreadable(db, core_budget.unreadable(cap).as_dict(), stage)
+    _alert(scope, spent, cap, source)
+    if stage_cap is not None and stage_spent is not None:
+        _alert(str(stage), stage_spent, stage_cap)
+    decision = core_budget.decide(spent, cap, near_ratio=spend_rules.near_ratio(), stage=stage,
+                                  stage_spent=stage_spent, stage_cap=stage_cap)
+    return spend_rules.over_cap(decision.as_dict(), scope=scope, stage=stage, spent=spent)

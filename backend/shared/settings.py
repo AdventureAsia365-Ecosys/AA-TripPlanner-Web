@@ -63,6 +63,11 @@ PLAN_CHAT_MAX_STEPS = "tripplanner.ai.plan_chat_max_steps"
 PLAN_CHAT_MAX_TOKENS = "tripplanner.ai.plan_chat_max_tokens"
 ADVISOR_HANDOFF_DEMO = "tripplanner.handoff.advisor_demo"
 REQUIRE_REGISTRATION = "tripplanner.handoff.require_registration"
+SPEND_ENVIRONMENT = "tripplanner.spend.environment"  # AA-1126 (CIS 447): dev | prod
+STAGE_CAP_COMPOSE_USD = "tripplanner.spend.stage_cap_compose_usd"  # AA-1126 (CIS 447): 0 = no stage cap
+STAGE_CAP_SEARCH_USD = "tripplanner.spend.stage_cap_search_usd"
+NEAR_CAP_PCT = "tripplanner.spend.near_cap_pct"
+SPEND_DEV, SPEND_PROD = "dev", "prod"
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,7 @@ class Setting:
     lo: Optional[float] = None
     hi: Optional[float] = None
     tenant_scoped: bool = False
+    allowed: tuple = ()                    # kind "enum": the allowed values (AA-1126)
 
     def fallback(self) -> Any:
         return getattr(config, self.attr)
@@ -100,6 +106,10 @@ SETTINGS: dict[str, Setting] = {s.key: s for s in (
     Setting(PLAN_CHAT_MAX_TOKENS, "int", "PLAN_CHAT_MAX_TOKENS", 200, 2000),
     Setting(ADVISOR_HANDOFF_DEMO, "bool", "ADVISOR_HANDOFF_DEMO"),
     Setting(REQUIRE_REGISTRATION, "bool", "REQUIRE_REGISTRATION_BEFORE_HANDOFF"),
+    Setting(SPEND_ENVIRONMENT, "enum", "TP_SPEND_ENVIRONMENT", allowed=(SPEND_DEV, SPEND_PROD)),
+    Setting(STAGE_CAP_COMPOSE_USD, "float", "TP_DAILY_SPEND_CAP_COMPOSE_USD", 0, 200),
+    Setting(STAGE_CAP_SEARCH_USD, "float", "TP_DAILY_SPEND_CAP_SEARCH_USD", 0, 200),
+    Setting(NEAR_CAP_PCT, "int", "SPEND_NEAR_CAP_PCT", 50, 99),
 )}
 
 
@@ -107,6 +117,8 @@ def problem(s: Setting, value: Any) -> Optional[str]:
     """Why ``value`` (JSON-decoded) does not fit ``s``; None when it fits. Pure."""
     if s.kind == "bool":
         return None if isinstance(value, bool) else "not true or false"
+    if s.kind == "enum":
+        return None if isinstance(value, str) and value in s.allowed else f"not one of {', '.join(s.allowed)}"
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return "not a number"
     if s.kind == "int" and float(value) != int(value):
@@ -227,3 +239,13 @@ def status() -> dict:
     tenants = sorted({t for (_k, t) in (_state.snapshot or {}) if t is not None})
     return {"view": VIEW, "source": _state.source, "error": _state.error, "settings": out,
             "tenant_overrides": len(tenants)}
+
+
+def spend_prod() -> bool:
+    """AA-1126: True when ``tripplanner.spend.environment`` says prod (the pay-per-use rules: app-wide caps alert only,
+    a read error degrades with a warning). The last snapshot, never the database; dev (the stricter rules) on any
+    doubt."""
+    try:
+        return get(SPEND_ENVIRONMENT) == SPEND_PROD
+    except Exception:  # noqa: BLE001 — never on the call path
+        return False

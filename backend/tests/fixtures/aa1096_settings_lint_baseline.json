@@ -32,7 +32,6 @@
   "config.py:LLM_ROUTE_DEADLINE_MAX_S",
   "config.py:LLM_ROUTE_DEADLINE_MIN_ATTEMPT_S",
   "config.py:LONG_TRIP_WARN_DAYS",
-  "config.py:SPEND_NEAR_CAP_RATIO",
   "config.py:TP_DAILY_SPEND_CAP_USD",
   "jobs/lead_deliver.py:EXPIRE_BUDGET_S",
   "jobs/lead_deliver.py:EXPIRE_MAX",

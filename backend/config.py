@@ -245,17 +245,15 @@ REQUIRE_REGISTRATION_BEFORE_HANDOFF = True
 TP_DAILY_SPEND_CAP_USD = 5.0
 
 
-def _optional_usd(name: str) -> Optional[float]:
-    raw = (_get(name, "") or "").strip()
-    return float(raw) if raw else None
-
-
-# AA-1015: separate daily caps per stage, so search and narration cannot use each other's share. Unset (the default)
-# = no stage cap: only the combined cap above applies, as before. Both caps apply when a stage cap is set.
-TP_DAILY_SPEND_CAP_SEARCH_USD = _optional_usd("TP_DAILY_SPEND_CAP_SEARCH_USD")
-TP_DAILY_SPEND_CAP_COMPOSE_USD = _optional_usd("TP_DAILY_SPEND_CAP_COMPOSE_USD")
-# AA-1015: share of a cap at which the gateway prints the "near cap" alert line (and budget_status says near_cap).
-SPEND_NEAR_CAP_RATIO = 0.8
+# AA-1015, settings since AA-1126 (CIS 447): separate daily caps per stage, so search and narration cannot use each
+# other's share (tripplanner.spend.stage_cap_search_usd / _compose_usd; 0 = no stage cap: only the app cap applies),
+# and the share of a cap at which the gateway prints the "near cap" alert and budget_status says near_cap
+# (tripplanner.spend.near_cap_pct). The administrator edits them on CIS Platform › Settings (TripPlanner tab); these
+# are only the fallbacks while the view cannot be read, equal to the CIS seed (tests/test_s279_settings.py). The env
+# vars TP_DAILY_SPEND_CAP_SEARCH_USD / _COMPOSE_USD are retired (never set on the Lambdas).
+TP_DAILY_SPEND_CAP_SEARCH_USD = 0.0
+TP_DAILY_SPEND_CAP_COMPOSE_USD = 0.0
+SPEND_NEAR_CAP_PCT = 80
 
 # --- Route deadline (AA-642 S263 E1) ---
 # Wall-time budget of one text-generation request across every model / account of its route
@@ -297,6 +295,13 @@ TP_RATE_CHAT_IP_PER_HOUR = 40
 # (llm_gateway.budget_status) apply too.
 TP_PLAN_CHAT_MONTHLY_CAP_USD = 2.0
 TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD = 2.0
+
+# --- AI spend rules per environment (AA-1126, CIS 447: setting tripplanner.spend.environment, dev | prod) ---
+# dev (today's behaviour): the app-wide caps (the daily AI cap of the app profile, the stage caps, the chat's monthly
+# app cap) stop the AI of every agency, and a spend / quota / budget that cannot be read stops it too. prod (tech lead
+# policy S283, pay per use): those app-wide caps only alert, and a read error degrades with a warning; an agency's own
+# AI sessions quota and AI budget stay hard. Edited on CIS Platform › Settings (TripPlanner tab).
+TP_SPEND_ENVIRONMENT = "dev"
 # Sent by the BFF (web task) with the traveller's address and whether a traveller session is signed in. Trusted ONLY
 # when the request also carries the right x-tripplanner-key (only the BFF has it); otherwise ignored.
 CLIENT_IP_HEADER = "x-tp-client-ip"
