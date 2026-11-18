@@ -7,6 +7,8 @@ refuse before any SQL; the bare path / demo tenant keeps its demo answer. Invent
 """
 from __future__ import annotations
 
+import email.header
+import email.utils
 import hashlib
 import hmac
 import json
@@ -219,6 +221,8 @@ def test_email_delivery(monkeypatch):
     monkeypatch.setattr(config, "TP_LEAD_EMAIL_FROM", "planner@example.invalid")
     assert leads.deliver_email("desk@quillmere.example.invalid", _lead(), "Quillmere Voyages", send=sent.append) is None
     msg = sent[0]
+    # AA-1116 (S282 TripPlanner sales model, item 5): the agency's name is the sender's display name
+    assert msg["FromEmailAddress"] == "Quillmere Voyages <planner@example.invalid>"
     assert msg["Destination"] == {"ToAddresses": ["desk@quillmere.example.invalid"]}
     assert msg["ReplyToAddresses"] == ["ada@example.invalid"]
     text = msg["Content"]["Simple"]["Body"]["Text"]["Data"]
@@ -230,6 +234,30 @@ def test_email_delivery(monkeypatch):
     assert leads.deliver_email("d@example.invalid", _lead(), "Q", send=boom) == "email_runtimeerror"
     monkeypatch.setattr(config, "TP_LEAD_EMAIL_FROM", "")
     assert leads.deliver_email("d@example.invalid", _lead(), "Q", send=sent.append) == "email_sender_unavailable"
+
+
+def test_sender_address_carries_the_agency_name(monkeypatch):
+    """AA-1116: AA's verified SES address under the agency's trading name; safe for a mail header."""
+    monkeypatch.setattr(config, "TP_LEAD_EMAIL_FROM", "Adventure Asia Planner <planner@example.invalid>")
+    # a display name in the configured sender is replaced by the agency's
+    assert leads.sender_address("Quillmere Voyages") == "Quillmere Voyages <planner@example.invalid>"
+    # specials are quoted, never parsed as another address
+    assert leads.sender_address('Lantern, "Coast" Tours') == '"Lantern, \\"Coast\\" Tours" <planner@example.invalid>'
+    # a line break or control character never reaches the header (no header injection)
+    out = leads.sender_address("Jade Bay\r\nBcc: someone@example.invalid\x00")
+    assert "\r" not in out and "\n" not in out and "\x00" not in out
+    assert email.utils.parseaddr(out) == ("Jade Bay Bcc: someone@example.invalid", "planner@example.invalid")
+    # non-ASCII names are MIME encoded (RFC 2047) and decode back to the name
+    encoded = leads.sender_address("Du lịch Hồ Sen")
+    assert encoded.endswith(" <planner@example.invalid>") and encoded.isascii() and "=?utf-8?" in encoded
+    name, addr = email.utils.parseaddr(encoded)
+    assert str(email.header.make_header(email.header.decode_header(name))) == "Du lịch Hồ Sen"
+    # an empty or missing name falls back to the bare address; the name is capped
+    assert leads.sender_address("  \t ") == "planner@example.invalid"
+    assert leads.sender_address(None) == "planner@example.invalid"
+    assert len(leads.sender_display_name("x" * 500)) == leads.SENDER_NAME_MAX
+    # an unusable configured sender is passed through as it is (SES refuses it; the daily run counts the attempt)
+    assert leads.sender_address("Quillmere Voyages", "not-an-address") == "not-an-address"
 
 
 @pytest.mark.asyncio
