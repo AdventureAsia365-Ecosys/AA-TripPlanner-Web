@@ -909,7 +909,10 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   POST). webhook: one signed POST right after the commit (`X-AA-Signature: t=<unix s>,v1=<hex HMAC-SHA256(key,
   "<t>." + body)>`, key per tenant = HMAC-SHA256(master, "aa-tripplanner lead webhook v1:" + tenant id), master from
   `TP_LEAD_WEBHOOK_KEY` or Secrets Manager `tripplanner/<env>/lead-webhook-key`). email: one SES e-mail from
-  `TP_LEAD_EMAIL_FROM`, Reply-To the traveller. Delivered = payload redacted at once (ids only).
+  `TP_LEAD_EMAIL_FROM` under the agency's trading name as the sender's display name (AA-1116, `leads.sender_address`:
+  control characters out, MIME encoded when not ASCII), Reply-To the traveller. Delivered = payload redacted at once
+  (ids only). The live proof of the webhook and e-mail channels on a synthetic agency (signature, Reply-To, sender
+  name) is the root `tools/uat/tp-lead-proof.cjs` (root runbook `docs/ops/runbooks/pilot-rehearsal.md` step 6b).
 - **Hold window.** Jobs Lambda kind `tp_lead_deliver` (daily, 3 attempts): FIRST, batch after batch (500 rows per
   transaction, 90 s budget, a failing batch tried again at once), every pending lead older than
   `TP_LEAD_HOLD_DAYS` (clamped 3..7) minus two tick intervals and a 1 h margin (`leads.hold_cutoff`, 4 d 23 h at 7

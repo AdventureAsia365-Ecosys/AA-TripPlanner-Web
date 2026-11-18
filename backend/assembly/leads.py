@@ -37,11 +37,15 @@ Delivery:
     HMAC-SHA256(master, "aa-tripplanner lead webhook v1:" + tenant_id) as its 64-character lowercase hex text, used as
     ASCII bytes (``webhook_key``; AA hands the tenant its key); only a public address is ever posted to
     (``urllib_post`` refuses a private, loopback or link-local one);
-  * email: one SES e-mail right after the commit (``deliver_email``), Reply-To the traveller, the same retries.
+  * email: one SES e-mail right after the commit (``deliver_email``), Reply-To the traveller, the same retries. The
+    sender is AA's verified SES address (``config.TP_LEAD_EMAIL_FROM``) under the agency's trading name as its display
+    name (``sender_address``, AA-1116: the S282 TripPlanner sales model, item 5), so the agency's desk sees its own
+    planner's name, never Adventure Asia's.
 """
 from __future__ import annotations
 
 import concurrent.futures
+import email.utils
 import hashlib
 import hmac
 import ipaddress
@@ -696,12 +700,40 @@ def ses_mailer(message: dict) -> None:
     client.send_email(**message)
 
 
+# The display name of a lead e-mail's sender: the agency's trading name, in code points (an RFC 5322 phrase has no
+# hard limit; a long one only wraps the header). technical-constant: a header-length bound, not a policy value.
+SENDER_NAME_MAX = 78
+_HEADER_UNSAFE = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]")
+
+
+def sender_display_name(tenant_name: Any) -> str:
+    """The agency's trading name made safe for the From display name: Unicode NFC, control characters and line breaks
+    removed (no header injection), whitespace collapsed, at most ``SENDER_NAME_MAX`` code points. Empty when nothing
+    is left."""
+    if not isinstance(tenant_name, str):
+        return ""
+    text = _HEADER_UNSAFE.sub(" ", unicodedata.normalize("NFC", tenant_name))
+    return " ".join(text.split())[:SENDER_NAME_MAX].strip()
+
+
+def sender_address(tenant_name: Any, from_address: Optional[str] = None) -> str:
+    """The From of a lead e-mail: the address of ``config.TP_LEAD_EMAIL_FROM`` (any display name it carries is
+    replaced) under the agency's trading name. A non-ASCII name is MIME encoded (RFC 2047), a name with specials is
+    quoted (``email.utils.formataddr``). No usable name = the bare address."""
+    configured = config.TP_LEAD_EMAIL_FROM if from_address is None else from_address
+    _, address = email.utils.parseaddr(configured or "")
+    if not address or "@" not in address:
+        return configured or ""
+    name = sender_display_name(tenant_name)
+    return email.utils.formataddr((name, address), charset="utf-8") if name else address
+
+
 def deliver_email(to: str, payload: dict, tenant_name: str, *, send: Mailer = ses_mailer) -> Optional[str]:
-    """None when SES accepted the e-mail, else an error code."""
+    """None when SES accepted the e-mail, else an error code. The sender shows the agency's name (``sender_address``)."""
     if not config.TP_LEAD_EMAIL_FROM:
         return "email_sender_unavailable"
     subject, text = email_text(payload, tenant_name)
-    message = {"FromEmailAddress": config.TP_LEAD_EMAIL_FROM, "Destination": {"ToAddresses": [to]},
+    message = {"FromEmailAddress": sender_address(tenant_name), "Destination": {"ToAddresses": [to]},
                "ReplyToAddresses": [payload["traveller"]["email"]],
                "Content": {"Simple": {"Subject": {"Data": subject[:200]}, "Body": {"Text": {"Data": text}}}}}
     try:
