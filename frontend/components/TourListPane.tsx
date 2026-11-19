@@ -173,7 +173,8 @@ export default function TourListPane() {
                   alt={t.cover_source === "tour" ? "" : coverAlt(t)}
                   title={t.cover_source === "tour" ? undefined : coverAlt(t)}
                   loading="lazy"
-                  className="h-20 w-24 shrink-0 rounded-lg object-cover"
+                  // AA-1130: tinted like the no-photo box until the photo paints (no blank white slot).
+                  className="h-20 w-24 shrink-0 rounded-lg bg-k-accent-tint object-cover"
                 />
               ) : (
                 <div aria-hidden className="h-20 w-24 shrink-0 rounded-lg bg-k-accent-tint" />

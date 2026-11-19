@@ -9,6 +9,7 @@ import { TENANT_SLUG_HEADER, tenantHeaders } from "@/lib/tenantProxy";
 import { resolveTenant } from "@/lib/tenantSite";
 import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
 import { tenantToursPath } from "@/lib/tenantTours";
+import { scopedUpstreamPath } from "@/lib/routeFinder";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -103,6 +104,13 @@ export async function GET(req: NextRequest) {
   } else {
     return NextResponse.json({ error: "unknown resource" }, { status: 400 });
   }
+  // AA-1130: an agency's planner names its tenant on the route finder's reads (countries, routes, tour-route), so the
+  // Lambda proposes only the tours the agency sells, under its own titles. A malformed slug never reaches the Lambda.
+  const scoped = scopedUpstreamPath(resource, upstreamPath, q.get("tenant"));
+  if (scoped === null) {
+    return NextResponse.json({ error: "bad tenant" }, { status: 400, headers: { "cache-control": "no-store" } });
+  }
+  upstreamPath = scoped;
 
   // AA-1015: search calls the embedding model, so it carries the traveller's address for the per-IP limit (30 a
   // minute; AA-1115: no signed-in allowance, the traveller sign-in is retired). Only search: the other reads are
