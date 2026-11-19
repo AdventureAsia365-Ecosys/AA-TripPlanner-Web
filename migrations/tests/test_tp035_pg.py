@@ -25,6 +25,7 @@ TP035 = MIGRATIONS / "035_lead_webhook_key.sql"
 TABLE = "tripplanner.lead_webhook_key"
 TENANT = "7a1c0de5-0000-4000-8000-000000001139"
 ACTOR = "crm-member:7a1c0de5-0000-4000-8000-0000000000aa"
+STUDIO_ACTOR = "studio-member:7a1c0de5-0000-4000-8000-0000000000bb"
 
 # The statements of backend/assembly/planner_admin.py (AA-1139 code PR), written out here so this migration test does
 # not depend on the code that ships after it (MIG-4).
@@ -108,7 +109,7 @@ def test_runtime_role_runs_the_code_statements(db):
                 scope = f"tenant:{TENANT}"
                 before = await su.fetchrow(READ, scope)
                 first = await su.fetchrow(ROTATE, scope, ACTOR)
-                second = await su.fetchrow(ROTATE, scope, ACTOR)
+                second = await su.fetchrow(ROTATE, scope, STUDIO_ACTOR)  # a studio owner's rotation (no CRM add-on)
                 after = await su.fetchrow(READ, scope)
                 other = await su.fetchrow(READ, "tenant:00000000-0000-4000-8000-000000000000")
                 raise _Rollback((before, first["version"], second["version"], after["version"], other))
@@ -126,6 +127,8 @@ def test_runtime_role_runs_the_code_statements(db):
     (f"tenant:{TENANT}", 0, ACTOR),
     (f"tenant:{TENANT}", 1, "admin:someone"),
     (f"tenant:{TENANT}", 1, "crm-member:Jane Example"),
+    (f"tenant:{TENANT}", 1, "studio-member:not-a-uuid"),
+    (f"tenant:{TENANT}", 1, "owner-member:7a1c0de5-0000-4000-8000-0000000000bb"),
 ])
 def test_checks_refuse_bad_rows(db, scope, version, actor):
     async def check():

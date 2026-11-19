@@ -13,7 +13,9 @@
 --                the tenant row-level security of tp-028; the code always filters by the bound tenant's scope).
 --   version      the key version in force, 1 or more (CHECK); a rotation adds 1.
 --   rotated_at   when the version was set.
---   rotated_by   who rotated it: 'crm-member:<uuid>' (the CRM member id the CRM names, never a name or an e-mail).
+--   rotated_by   who rotated it: 'crm-member:<uuid>' (the CRM member id the CRM names) or 'studio-member:<uuid>'
+--                (the Content studio membership id, for an agency without the CRM add-on: the CRM relays the studio
+--                owner's rotation after CIS confirmed the membership); never a name or an e-mail.
 -- No secret is stored: the key is derived from the master secret and the version at signing time.
 -- No personal data: a version number, a time and a member id. At most one row per tenant.
 -- Retention (data standards DM-7.1, root row added before this copy): kept while the tenant's planner exists (the key
@@ -48,7 +50,7 @@ CREATE TABLE IF NOT EXISTS tripplanner.lead_webhook_key (
         CHECK (scope ~ '^tenant:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     CONSTRAINT lead_webhook_key_version_chk CHECK (version >= 1 AND version <= 1000000),
     CONSTRAINT lead_webhook_key_actor_chk
-        CHECK (rotated_by ~ '^crm-member:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+        CHECK (rotated_by ~ '^(crm|studio)-member:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 );
 
 COMMENT ON TABLE tripplanner.lead_webhook_key IS
