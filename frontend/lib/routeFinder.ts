@@ -24,9 +24,10 @@ export function withTenant(params: URLSearchParams, tenant: string | null | unde
 /**
  * BFF: the upstream path of a route finder read with the browser's tenant passed on (`?tenant=` / `&tenant=`).
  * null = a tenant was given that cannot be a slug (the BFF answers 400, nothing reaches the Lambda). Only the scoped
- * resources take it; any other path comes back unchanged.
+ * resources take it; any other path comes back unchanged (a null path, already refused, stays null).
  */
-export function scopedUpstreamPath(resource: string | null, path: string, tenant: string | null): string | null {
+export function scopedUpstreamPath(resource: string | null, path: string | null, tenant: string | null): string | null {
+  if (path === null) return null;
   if (!resource || !SCOPED_RESOURCES.has(resource) || tenant === null || tenant === "") return path;
   if (!isTenantSlug(tenant)) return null;
   return `${path}${path.includes("?") ? "&" : "?"}tenant=${encodeURIComponent(tenant)}`;

@@ -24,6 +24,8 @@ test("the BFF passes the tenant to the countries, routes and tour-route reads on
     "/browse/routes?country=Laos&days=7");
   assert.equal(scopedUpstreamPath("routes", "/browse/routes?country=Laos&days=7", ""),
     "/browse/routes?country=Laos&days=7");
+  // a path the BFF already refused stays refused
+  assert.equal(scopedUpstreamPath("tenant-tours", null, null), null);
   // other resources never carry it
   assert.equal(scopedUpstreamPath("tiles", "/browse/tiles/1_2?", "quillmere-voyages"), "/browse/tiles/1_2?");
   // a slug that cannot be a tenant is refused before the Lambda (the BFF answers 400)

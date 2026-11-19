@@ -115,18 +115,7 @@ async def route(
         return _resp(200, data, _CACHE_HEADERS)
 
     if _ROUTES_RE.match(path):
-        def _q(key: str) -> str:
-            v = query.get(key)
-            return str((v[0] if v else "") if isinstance(v, list) else (v or "")).strip()
-        country, days_raw = _q("country"), _q("days")
-        if not country or not days_raw.isdigit() or not 2 <= int(days_raw) <= 30:
-            return _resp(400, {"error": "country and days (2-30) required"}, _NO_STORE_HEADERS)
-        refused, scope = await _tenant_scope(query, pool)
-        if refused:
-            return refused
-        async with pool.acquire() as conn:
-            data = await routes_mod.proposals(conn, country, int(days_raw), scope=scope)
-        return _resp(200, data, _CACHE_HEADERS)
+        return await _routes_answer(query, pool)
 
     # --- AA-812: catalog reads (CIS catalog views only) ---------------------------------------
     if _CAT_TOURS_RE.match(path):
@@ -189,35 +178,7 @@ async def route(
         return _resp(200, await catalog_mod.sitemap(pool=pool), _CACHE_HEADERS)
 
     if _TOUR_ROUTE_RE.match(path):
-        def _q(key: str) -> str:
-            v = query.get(key)
-            return str((v[0] if v else "") if isinstance(v, list) else (v or "")).strip()
-        tid, sid = _q("tour_id"), _q("source_id")
-        if tid and not _UUID_RE.match(tid):
-            return _resp(400, {"error": "tour_id must be a uuid"}, _NO_STORE_HEADERS)
-        if sid and not _SOURCE_ID_RE.match(sid):
-            return _resp(400, {"error": "source_id is malformed"}, _NO_STORE_HEADERS)
-        if not tid and not sid:
-            return _resp(400, {"error": "tour_id (uuid) or source_id required"}, _NO_STORE_HEADERS)
-        refused, scope = await _tenant_scope(query, pool)
-        if refused:
-            return refused
-        async with pool.acquire() as conn:
-            current = await routes_mod.resolve_tour_id(conn, tid or None, sid or None)
-            if scope is not None:
-                # AA-1130: an agency's planner opens only a tour the agency sells, under its own title.
-                key = (await conn.fetchval(routes_mod.SOURCE_BY_TOUR_SQL, current) if current else None) or sid
-                if key not in scope:
-                    return _resp(404, {"error": "no planner route for this tour", "tour": None}, _NO_STORE_HEADERS)
-            proposal = await routes_mod.tour_route(conn, current) if current else None
-            fallback = await routes_mod.tour_fallback(conn, current) if current and proposal is None else None
-        if scope is not None:
-            proposal, fallback = routes_mod.scope_tour_route(proposal, fallback, scope[key].get("title"))
-        if proposal is None:
-            # The planner pre-fills country + days and shows the tour's day list from `tour`.
-            return _resp(404, {"error": "no planner route for this tour", "tour": fallback},
-                         _NO_STORE_HEADERS)
-        return _resp(200, {"tour_id": current, "proposal": proposal}, _CACHE_HEADERS)
+        return await _tour_route_answer(query, pool)
 
     if _COUNTRIES_RE.match(path):
         refused, scope = await _tenant_scope(query, pool)
@@ -331,6 +292,56 @@ async def _tenant_site_answer(path: str, pool: Any) -> Optional[dict]:
     return _resp(200, {"tenant": site}, _NO_STORE_HEADERS)
 
 
+def _one(query: dict, key: str) -> str:
+    """One query value as a stripped string ("" when absent)."""
+    v = query.get(key)
+    return str((v[0] if v else "") if isinstance(v, list) else (v or "")).strip()
+
+
+async def _routes_answer(query: dict, pool: Any) -> dict:
+    """GET /browse/routes?country=&days=[&tenant=]: AA-674 whole-route proposals (AA-1130: an agency's own tours)."""
+    country, days_raw = _one(query, "country"), _one(query, "days")
+    if not country or not days_raw.isdigit() or not 2 <= int(days_raw) <= 30:
+        return _resp(400, {"error": "country and days (2-30) required"}, _NO_STORE_HEADERS)
+    refused, scope = await _tenant_scope(query, pool)
+    if refused:
+        return refused
+    async with pool.acquire() as conn:
+        data = await routes_mod.proposals(conn, country, int(days_raw), scope=scope)
+    return _resp(200, data, _CACHE_HEADERS)
+
+
+async def _tour_route_answer(query: dict, pool: Any) -> dict:
+    """GET /browse/tour-route?tour_id=&source_id=[&tenant=]: AA-812 one tour's route (AA-1130: a tour the agency sells,
+    under its title)."""
+    tid, sid = _one(query, "tour_id"), _one(query, "source_id")
+    if tid and not _UUID_RE.match(tid):
+        return _resp(400, {"error": "tour_id must be a uuid"}, _NO_STORE_HEADERS)
+    if sid and not _SOURCE_ID_RE.match(sid):
+        return _resp(400, {"error": "source_id is malformed"}, _NO_STORE_HEADERS)
+    if not tid and not sid:
+        return _resp(400, {"error": "tour_id (uuid) or source_id required"}, _NO_STORE_HEADERS)
+    refused, scope = await _tenant_scope(query, pool)
+    if refused:
+        return refused
+    async with pool.acquire() as conn:
+        current = await routes_mod.resolve_tour_id(conn, tid or None, sid or None)
+        if scope is not None:
+            # AA-1130: an agency's planner opens only a tour the agency sells, under its own title.
+            key = (await conn.fetchval(routes_mod.SOURCE_BY_TOUR_SQL, current) if current else None) or sid
+            if key not in scope:
+                return _resp(404, {"error": "no planner route for this tour", "tour": None}, _NO_STORE_HEADERS)
+        proposal = await routes_mod.tour_route(conn, current) if current else None
+        fallback = await routes_mod.tour_fallback(conn, current) if current and proposal is None else None
+    if scope is not None:
+        proposal, fallback = routes_mod.scope_tour_route(proposal, fallback, scope[key].get("title"))
+    if proposal is None:
+        # The planner pre-fills country + days and shows the tour's day list from `tour`.
+        return _resp(404, {"error": "no planner route for this tour", "tour": fallback},
+                     _NO_STORE_HEADERS)
+    return _resp(200, {"tour_id": current, "proposal": proposal}, _CACHE_HEADERS)
+
+
 async def _tenant_scope(query: dict, pool: Any) -> tuple[Optional[dict], Optional[dict[str, dict]]]:
     """AA-1130 (S283 audit T1): (refusal, scope) for the route finder's reads (countries, routes, tour-route) of an
     agency's planner, which names its tenant (`tenant=<slug>`, unsigned: the answer is the agency's public tour list).
@@ -339,8 +350,7 @@ async def _tenant_scope(query: dict, pool: Any) -> tuple[Optional[dict], Optiona
     (tenant_tours.served_scope), empty when it sells none; the AA-hosted demo tenant: None (it serves the AA
     catalogue). An unknown or unserved slug is a 404 before any catalogue read; a lookup or view read that cannot
     answer is a 503 no-store, never the unscoped AA list."""
-    v = query.get("tenant")
-    slug = str((v[0] if v else "") if isinstance(v, list) else (v or "")).strip()
+    slug = _one(query, "tenant")
     if not slug:
         return None, None
     try:

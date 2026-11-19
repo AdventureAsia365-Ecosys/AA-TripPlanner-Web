@@ -25,8 +25,29 @@ function placesLine(p: RouteProposal): string {
   return names.join(" › ");
 }
 
-export default function RoutePlanner({ compact = false }: { compact?: boolean }) {
-  const { countries: allCountries, countriesLoaded, filters, applyRoute, setRoutePreview, intent } = useTrip();
+// AA-1130: "Whole tour", or "Full route · days 1–7 of 8" when the route is shorter than its tour.
+function RouteBadgeChip({ p }: { p: RouteProposal }) {
+  const badge = routeBadge(p);
+  if (!badge) return null;
+  return (
+    <span
+      data-testid="route-badge"
+      className={`ml-1.5 rounded-full bg-k-accent-tint px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-k-accent-deep${badge.kind === "whole" ? " uppercase" : ""}`}
+    >
+      {badge.label}
+    </span>
+  );
+}
+
+// AA-1130: an agency page whose agency sells no tour has no route finder (lib/routeFinder.ts showRouteFinder).
+export default function RouteFinderGate({ compact = false }: { compact?: boolean }) {
+  const { countries, countriesLoaded } = useTrip();
+  if (!showRouteFinder(plannerTenant(), countriesLoaded, countries)) return null;
+  return <RoutePlanner compact={compact} />;
+}
+
+function RoutePlanner({ compact }: { compact: boolean }) {
+  const { countries: allCountries, filters, applyRoute, setRoutePreview, intent } = useTrip();
   const countries = headingCountries(allCountries);
   const { copy } = useBrand(); // AA-1115: an unnamed tour is "AA tour" on AA's planner only
   // AA-812: pre-filled from the home search / a tour page (/plan?country=&days=&travellers=).
@@ -66,8 +87,6 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
       setApplying(null);
     }
   };
-
-  if (!showRouteFinder(plannerTenant(), countriesLoaded, allCountries)) return null;
 
   if (!open) {
     return (
@@ -147,18 +166,7 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold text-k-ink">
                   {formatDays(p.total_days)}
-                  {(() => {
-                    // AA-1130: "Whole tour" only when the route covers every day of the tour.
-                    const badge = routeBadge(p);
-                    return badge ? (
-                      <span
-                        data-testid="route-badge"
-                        className={`ml-1.5 rounded-full bg-k-accent-tint px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-k-accent-deep${badge.kind === "whole" ? " uppercase" : ""}`}
-                      >
-                        {badge.label}
-                      </span>
-                    ) : null;
-                  })()}
+                  <RouteBadgeChip p={p} />
                   {p.transfers > 0 && (
                     <span className="ml-1.5 text-[10px] font-normal text-k-muted">
                       2 tours · {Math.round(p.transfer_km)} km transfer
