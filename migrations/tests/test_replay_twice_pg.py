@@ -366,6 +366,10 @@ SELECT c.relname::text AS name
 ERASE_EXCEPTIONS = {
     # tp-030 / tp-031 (AA-1093): the record of the erasure itself, kept as evidence (data standards DM-7.1).
     "tenant_erasure_log": "erasure evidence, append-only, never deleted with the tenant's rows",
+    # tp-035 (AA-1139): the version number of a tenant's lead webhook signing key. No personal data and no secret (the
+    # key needs the environment's master secret); after offboarding it signs nothing (no route, no lead). Planned by the
+    # next erase_tenant contract file (delete), listed here until then.
+    "lead_webhook_key": "a key version number only (no personal data, no secret); deleted by a later erase file",
 }
 
 
