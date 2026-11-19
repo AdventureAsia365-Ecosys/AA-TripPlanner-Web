@@ -32,7 +32,7 @@ function RouteBadgeChip({ p }: { p: RouteProposal }) {
   return (
     <span
       data-testid="route-badge"
-      className={`ml-1.5 rounded-full bg-k-accent-tint px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-k-accent-deep${badge.kind === "whole" ? " uppercase" : ""}`}
+      className={`ml-1.5 inline-block whitespace-nowrap rounded-full bg-k-accent-tint px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-k-accent-deep${badge.kind === "whole" ? " uppercase" : ""}`}
     >
       {badge.label}
     </span>

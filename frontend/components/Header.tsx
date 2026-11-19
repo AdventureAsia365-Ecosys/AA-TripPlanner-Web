@@ -68,7 +68,7 @@ function AgencyHeader({ agency }: { agency: HeaderAgency }) {
   return (
     <header
       data-testid="agency-header"
-      className="tp-on-dark z-30 flex items-center justify-between border-b border-k-band-edge bg-k-band px-5 text-k-on-band"
+      className="tp-on-dark z-30 flex items-center justify-between gap-3 border-b border-k-band-edge bg-k-band px-5 text-k-on-band"
       style={{ height: "56px", flexShrink: 0 }}
     >
       <div className="flex min-w-0 items-center gap-3">
