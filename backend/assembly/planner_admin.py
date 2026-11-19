@@ -1,7 +1,8 @@
 """AA-1139 — the agency app's TripPlanner module, TripPlanner side: an agency's leads with their delivery status, its
 usage this month, and its lead webhook signing key (version, rotation). Contract: root
-``docs/contracts/lead.submitted.v1.openapi.yaml`` 1.1 (tag ``planner``), served under ``/trip/m2m/v1`` by
-``handler.serve_m2m`` with an M2M token of the CRM client, scope ``tripplanner.leads/manage``
+``docs/contracts/lead.submitted.v1.openapi.yaml`` 1.1 (tag ``planner``), served under ``/trip/m2m/v1`` by :func:`m2m`
+(the assembly Lambda's M2M entry; any other M2M path goes on to ``handler.serve_m2m``, the lead pull) with an M2M token
+of the CRM client, scope ``tripplanner.leads/manage``
 (:data:`backend.shared.m2m_auth.SCOPE_LEADS_MANAGE`). The agency app (AA-Partner CRM API) is the only caller; it checks
 the person's agency role first (root ADR 0008a: it never reads this schema).
 
@@ -26,12 +27,13 @@ daily run tries again inside the hold), ``rejected`` (the CRM refused it), ``exp
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from backend.assembly import leads as leads_mod
-from backend.shared import observability, settings, tenant_sessions
+from backend.shared import m2m_auth, observability, settings, tenant, tenant_sessions
 
 VIEW = "catalog.v_tenant_tripplanner_v1"
 TENANT_SQL = f"SELECT tenant_id, ai_sessions_monthly FROM {VIEW} WHERE tenant_id = $1"
@@ -54,7 +56,7 @@ ROTATE_SQL = (
     "rotated_by = EXCLUDED.rotated_by RETURNING version, rotated_at")
 
 STATUSES = ("pending", "retrying", "delivered", "rejected", "expired")
-DEFAULT_LIMIT = 50
+DEFAULT_LIMIT = leads_mod.PAGE_MAX   # one page of the list, the contract maximum
 ACTOR_RE = re.compile(r"^crm-member:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_:]{0,63}$")
 
@@ -156,3 +158,81 @@ async def rotate_key(conn: Any, tenant_id: str, actor: str) -> dict:
     observability.emit("lead_webhook_key_rotated", tenant_id=tenant_id, version=version)
     return {"version": version, "rotated_at": _iso(row["rotated_at"]),
             "key": leads_mod.webhook_key(master, tenant_id, version).decode()}
+
+
+# --- the M2M routes ---------------------------------------------------------------------------------------------------
+
+PATH_RE = re.compile(r"^/trip/m2m/v1/tenants/([^/]+)/planner/(leads|usage|webhook-key|webhook-key/rotate)$")
+METHODS = {"leads": "GET", "usage": "GET", "webhook-key": "GET", "webhook-key/rotate": "POST"}
+_HEADERS = {"content-type": "application/json", "cache-control": "no-store"}
+
+
+def _resp(status: int, body: dict) -> dict:
+    return {"statusCode": status, "headers": _HEADERS, "body": json.dumps(body, default=str)}
+
+
+async def m2m(method: str, path: str, body: dict, authorization: Optional[str],
+              fallback: Callable[..., Awaitable[dict]]) -> dict:
+    """The assembly Lambda's M2M entry: ``.../planner/*`` here, any other ``/trip/m2m/`` path to ``fallback`` (the lead
+    pull, ``handler.serve_m2m``)."""
+    if PATH_RE.match(path):
+        return await serve(method, path, body, authorization)
+    return await fallback(method, path, body, authorization)
+
+
+def parse(method: str, path: str, body: dict) -> tuple[str, str, int, str]:
+    """(tenant id, route, limit, actor) of a planner request, or :class:`Refused` (no connection is taken)."""
+    match = PATH_RE.match(path)
+    if match is None or METHODS[match.group(2)] != method:
+        raise Refused(404, "not_found")
+    tenant_raw, what = match.group(1), match.group(2)
+    if not leads_mod.is_uuid(tenant_raw):
+        raise Refused(400, "invalid_tenant_id")
+    limit, actor = DEFAULT_LIMIT, ""
+    if what == "leads":
+        raw = body.get("limit", DEFAULT_LIMIT)
+        if not str(raw).isdigit() or not 1 <= int(raw) <= leads_mod.PAGE_MAX:
+            raise Refused(400, "invalid_limit")
+        limit = int(raw)
+    if what == "webhook-key/rotate":
+        actor = valid_actor(body)
+    return tenant_raw, what, limit, actor
+
+
+async def answer(conn: Any, tenant_id: str, what: str, limit: int, actor: str) -> dict:
+    """The body of one planner route for the bound tenant (CIS must list it: else 404 unknown_tenant)."""
+    row = await tenant_row(conn, tenant_id)
+    if what == "leads":
+        return await leads(conn, tenant_id, limit)
+    if what == "usage":
+        return await usage(conn, tenant_id, row["ai_sessions_monthly"])
+    if what == "webhook-key":
+        return await key_info(conn, tenant_id)
+    return await rotate_key(conn, tenant_id, actor)
+
+
+async def serve(method: str, path: str, body: dict, authorization: Optional[str], *, acquire=None,
+                verify=None) -> dict:
+    """GET .../planner/leads, .../planner/usage, .../planner/webhook-key and POST .../planner/webhook-key/rotate. The
+    bearer (scope tripplanner.leads/manage) is verified before any SQL; the connection is then bound to the path's
+    tenant (source m2m), so the tp-025 policy filters the outbox as well."""
+    verify = verify or m2m_auth.verify_bearer
+    try:
+        await verify(authorization, m2m_auth.SCOPE_LEADS_MANAGE)
+        tenant_raw, what, limit, actor = parse(method, path, body)
+    except (m2m_auth.Refused, Refused) as e:
+        if isinstance(e, m2m_auth.Refused):
+            observability.emit("m2m_refused", code=e.code)
+        return _resp(e.status, {"error": e.code})
+    try:
+        if acquire is None:
+            from backend.shared.db import get_pool
+            acquire = (await get_pool()).acquire
+        async with acquire() as conn, tenant.bound(conn, tenant_raw, source=tenant.SOURCE_M2M) as tid:
+            return _resp(200, await answer(conn, tid, what, limit, actor))
+    except Refused as e:
+        return _resp(e.status, {"error": e.code})
+    except Exception as e:  # noqa: BLE001
+        observability.emit("assembly_error", route=f"m2m_planner_{what}", error=type(e).__name__)
+        observability.capture(e)
+        return _resp(503, {"error": "unavailable"})

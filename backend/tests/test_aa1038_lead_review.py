@@ -116,6 +116,9 @@ class SendConn:
     async def execute(self, sql, *args):
         return "SELECT 1"
 
+    async def fetchval(self, sql, *args):  # AA-1139: the webhook key version (no row = version 0)
+        return None
+
     def transaction(self):
         @asynccontextmanager
         async def tx():

@@ -1,5 +1,5 @@
 """AA-1139 integration — the agency app's TripPlanner module routes on the tp-031 replay plus tp-032 and tp-035, as the
-runtime role with FORCE row-level security (tp-028), through ``handler.serve_m2m`` (M2M verify faked).
+runtime role with FORCE row-level security (tp-028), through ``planner_admin.serve`` (M2M verify faked).
 
 Runs only with ``pytest --pg-dsn postgresql://postgres@127.0.0.1:<port>/postgres`` (a SUPERUSER DSN of a throwaway
 LOCAL Postgres). A stand-in for the CIS view ``catalog.v_tenant_tripplanner_v1`` (the two columns read here) is granted
@@ -33,7 +33,7 @@ from test_tp013_pg import MIGRATIONS  # noqa: E402
 from test_tp031_pg import erasure_database  # noqa: E402
 
 from backend import config  # noqa: E402
-from backend.assembly import handler, leads  # noqa: E402
+from backend.assembly import leads, planner_admin  # noqa: E402
 from backend.shared import m2m_auth  # noqa: E402
 
 TP032 = MIGRATIONS / "032_ai_session_month.sql"
@@ -127,7 +127,7 @@ async def _call(conn, method, path, body=None):
         assert scope == m2m_auth.SCOPE_LEADS_MANAGE
         return "crm-client"
 
-    out = await handler.serve_m2m(method, path, body or {}, "Bearer synthetic", acquire=acquire, verify=verify)
+    out = await planner_admin.serve(method, path, body or {}, "Bearer synthetic", acquire=acquire, verify=verify)
     return out["statusCode"], json.loads(out["body"])
 
 

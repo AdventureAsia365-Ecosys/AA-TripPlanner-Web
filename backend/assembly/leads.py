@@ -35,9 +35,8 @@ Delivery:
   * webhook: one signed POST right after the commit (``deliver_webhook``, ``config.LEAD_WEBHOOK_TIMEOUT_S``), then the
     daily run retries; ``X-AA-Signature: t=<unix s>,v1=<hex HMAC-SHA256(key, "<t>." + body)>``, key per tenant =
     HMAC-SHA256(master, "aa-tripplanner lead webhook v1:" + tenant_id) as its 64-character lowercase hex text, used as
-    ASCII bytes (``webhook_key``); since AA-1139 the agency owner rotates it in the agency app (tp-035 keeps the
-    version n, the key of version n >= 1 adds ":" + n to the message) and sees the new key once; only a public address
-    is ever posted to
+    ASCII bytes (``webhook_key``; AA-1139: versioned, rotated in the agency app, ``webhook_keys.py``); only a public
+    address is ever posted to
     (``urllib_post`` refuses a private, loopback or link-local one);
   * email: one SES e-mail right after the commit (``deliver_email``), Reply-To the traveller, the same retries. The
     sender is AA's verified SES address (``config.TP_LEAD_EMAIL_FROM``) under the agency's trading name as its display
@@ -65,6 +64,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from backend import config
+from backend.assembly.webhook_keys import (  # noqa: F401 (re-exported; AA-1139 versioned keys)
+    KEY_VERSION_SQL, WEBHOOK_KEY_LABEL, webhook_key, webhook_key_version)
 from backend.shared import observability, ratelimit, settings
 
 EVENT = "lead.submitted"
@@ -80,9 +81,6 @@ MAX_NAME, MAX_EMAIL, MAX_PHONE, MAX_MESSAGE = 120, 254, 40, 1000
 MAX_ADULTS, MAX_CHILDREN = 50, 20
 MAX_TOURS, MAX_STOPS, MAX_COUNTRIES, MAX_DAYS = 30, 12, 12, 90
 PAGE_MAX = 50
-WEBHOOK_KEY_LABEL = b"aa-tripplanner lead webhook v1:"
-# tp-035 (AA-1139): the version of a tenant's webhook signing key (scope tenant:<uuid>; no row = version 0).
-KEY_VERSION_SQL = "SELECT version FROM tripplanner.lead_webhook_key WHERE scope = $1"
 
 VIEW = "catalog.v_tenant_tripplanner_v1"
 # Column names, never * (the CIS test test_aa1038_migration_390.py runs this exact statement as tripplanner).
@@ -317,39 +315,6 @@ def _secret_key() -> Optional[bytes]:
         observability.emit("lead_webhook_key_unavailable", error=type(e).__name__)
     _secret_cache.update(value=value, until=now + (600.0 if value else 60.0))
     return value
-
-
-def webhook_key(master: bytes, tenant_id: str, version: int = 0) -> bytes:
-    """The tenant's webhook signing key as bytes: the hex of HMAC-SHA256(master, label + tenant id) for version 0 (no
-    rotation yet, the key every tenant had before AA-1139), and of HMAC-SHA256(master, label + tenant id + ":" + n)
-    for version n >= 1 (``tripplanner.lead_webhook_key``, tp-035: the agency owner rotates it in the agency app)."""
-    if version < 0:
-        raise ValueError("a key version is 0 or more")
-    message = WEBHOOK_KEY_LABEL + tenant_id.encode() + (f":{version}".encode() if version else b"")
-    return hmac.new(master, message, hashlib.sha256).hexdigest().encode()
-
-
-async def webhook_key_version(conn: Any, tenant_id: str) -> Optional[int]:
-    """The version of the tenant's webhook signing key (tp-035; no row = 0). Before tp-035 is applied the table is
-    missing (42P01): version 0, the key every tenant has then. Any other read error is None: the caller does not sign
-    with a key that may be the wrong one (``webhook_key_unavailable``, the lead waits for the daily retry). A read
-    inside a transaction runs in a savepoint, so a failure never aborts the caller's transaction."""
-    async def read() -> Optional[int]:
-        value = await conn.fetchval(KEY_VERSION_SQL, f"tenant:{tenant_id}")
-        return int(value) if value is not None else 0
-
-    try:
-        in_tx = getattr(conn, "is_in_transaction", None)
-        if callable(in_tx) and in_tx():
-            async with conn.transaction():
-                return await read()
-        return await read()
-    except Exception as e:  # noqa: BLE001 — only the type and SQLSTATE are logged
-        if getattr(e, "sqlstate", None) == "42P01":
-            return 0
-        observability.emit("lead_webhook_key_version_unreadable", error=type(e).__name__,
-                           sqlstate=getattr(e, "sqlstate", None))
-        return None
 
 
 def channel_ready(route: Route, *, resolve: Optional[Resolver] = None) -> bool:

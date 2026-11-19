@@ -1,5 +1,5 @@
 """AA-1139 (offline): the agency app's TripPlanner module, TripPlanner side (backend/assembly/planner_admin.py and
-``handler.serve_m2m_planner``, contract lead.submitted.v1 1.1 tag planner).
+its M2M entry ``planner_admin.m2m``, contract lead.submitted.v1 1.1 tag planner).
 
 Checks: the rotatable webhook key (version 0 is the key every tenant had, version n adds ":" + n, the delivery signs
 with the stored version and sends nothing when the version cannot be read); the planner routes need the manage scope
@@ -146,8 +146,8 @@ async def test_planner_routes_need_the_manage_scope_before_any_sql(refusal):
         scopes.append(scope)
         raise refusal
 
-    out = await handler.serve_m2m("GET", f"{BASE}/leads", {}, "Bearer x", acquire=_no_sql_acquire(used),
-                                  verify=verify)
+    out = await planner_admin.serve("GET", f"{BASE}/leads", {}, "Bearer x", acquire=_no_sql_acquire(used),
+                                    verify=verify)
     assert (out["statusCode"], json.loads(out["body"])) == (refusal.status, {"error": refusal.code})
     assert used == [] and scopes == [m2m_auth.SCOPE_LEADS_MANAGE] == ["tripplanner.leads/manage"]
 
@@ -164,8 +164,8 @@ async def test_a_deliver_scope_token_cannot_reach_the_planner_routes(monkeypatch
     used: list = []
     try:
         m2m_auth.set_verifier(Verifier())
-        out = await handler.serve_m2m("POST", f"{BASE}/webhook-key/rotate", {"actor": MEMBER}, "Bearer t",
-                                      acquire=_no_sql_acquire(used))
+        out = await planner_admin.serve("POST", f"{BASE}/webhook-key/rotate", {"actor": MEMBER}, "Bearer t",
+                                        acquire=_no_sql_acquire(used))
     finally:
         m2m_auth.set_verifier(None)
     assert out["statusCode"] == 403 and used == []
@@ -187,7 +187,7 @@ async def test_planner_bad_requests_take_no_connection(method, path, body, statu
     async def verify(_auth, scope=None):
         return "crm-client"
 
-    out = await handler.serve_m2m(method, path, body, "Bearer x", acquire=_no_sql_acquire(used), verify=verify)
+    out = await planner_admin.serve(method, path, body, "Bearer x", acquire=_no_sql_acquire(used), verify=verify)
     assert (out["statusCode"], json.loads(out["body"])) == (status, {"error": code}) and used == []
 
 
@@ -253,7 +253,7 @@ async def _call(method, path, body=None, conn=None):
         assert scope == m2m_auth.SCOPE_LEADS_MANAGE
         return "crm-client"
 
-    out = await handler.serve_m2m(method, path, body or {}, "Bearer x", acquire=acquire, verify=verify)
+    out = await planner_admin.serve(method, path, body or {}, "Bearer x", acquire=acquire, verify=verify)
     return out["statusCode"], json.loads(out["body"]), conn
 
 
@@ -322,6 +322,26 @@ async def test_rotation_without_a_master_secret_writes_nothing(monkeypatch):
     status, body, _ = await _call("POST", f"{BASE}/webhook-key/rotate", {"actor": MEMBER}, conn=conn)
     assert (status, body) == (503, {"error": "webhook_key_unavailable"})
     assert not any(sql == planner_admin.ROTATE_SQL for _, sql, _ in conn.seen)
+
+
+@pytest.mark.asyncio
+async def test_the_m2m_entry_sends_planner_paths_here_and_the_rest_to_the_pull(monkeypatch):
+    seen = []
+
+    async def serve(method, path, body, authorization):
+        seen.append(("planner", path))
+        return {"statusCode": 200}
+
+    async def fallback(method, path, body, authorization):
+        seen.append(("pull", path))
+        return {"statusCode": 200}
+
+    monkeypatch.setattr(planner_admin, "serve", serve)
+    await planner_admin.m2m("GET", f"{BASE}/usage", {}, "Bearer x", fallback)
+    await planner_admin.m2m("GET", f"/trip/m2m/v1/tenants/{TENANT}/leads", {}, "Bearer x", fallback)
+    await planner_admin.m2m("GET", f"{BASE}/other", {}, "Bearer x", fallback)
+    assert seen == [("planner", f"{BASE}/usage"), ("pull", f"/trip/m2m/v1/tenants/{TENANT}/leads"),
+                    ("pull", f"{BASE}/other")]
 
 
 @pytest.mark.asyncio

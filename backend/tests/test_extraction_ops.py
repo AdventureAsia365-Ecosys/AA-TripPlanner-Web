@@ -59,7 +59,8 @@ _ALLOWED_TRIPPLANNER = {"sessions", "customers", "trip_events", "trip_drafts", "
                         "ai_rate_counter",   # tp-023, AA-1015
                         "ai_spend_month",   # tp-029, AA-1041 (the planning chat's monthly caps)
                         "ai_session_month",   # tp-032, AA-1116 (the monthly AI sessions quota)
-                        "tenant_erasure_log", "erase_tenant"}   # tp-030, AA-1093 (tenant offboarding)
+                        "tenant_erasure_log", "erase_tenant",   # tp-030, AA-1093 (tenant offboarding)
+                        "lead_webhook_key"}   # tp-035, AA-1139 (the rotatable lead webhook signing key)
 _ALLOWED_SHARED = {"llm_call_log"}   # CIS 173: the ledger INSERT of the model gateway
 # AA-1029: AA-Booking's contract view price.from.v1 (Booking bk-039 grants it to role tripplanner), nothing else of booking.
 _ALLOWED_BOOKING = {"v_from_prices"}
