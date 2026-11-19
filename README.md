@@ -9,7 +9,8 @@ AA-Booking app.
 - **Domain and architecture:** [`CONTEXT.md`](CONTEXT.md) — read before designing a change.
 - **Ecosystem:** `AA-Ecosys/docs/ecosystem-architecture.md`, ADRs in `AA-Ecosys/docs/adr/`
   (ADR 0002: only CIS writes content), schema owners in `AA-Ecosys/docs/database/schema-ownership.md`.
-- Spec: `.kiro/specs/tripplanner-mvp/` · Implementation notes: `docs/implementation-notes/`.
+- Specs: `.kiro/specs/AA-<n>-<slug>/` (the v0.3 MVP spec is archived in `.kiro/specs/_archive/tripplanner-mvp/`) ·
+  Implementation notes: `docs/implementation-notes/`.
 
 ## Architecture
 

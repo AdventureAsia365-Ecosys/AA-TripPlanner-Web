@@ -49,7 +49,7 @@ Lambda A: Browse                Lambda B: Assembly
 
 ## 3. Spec v0.3 ban đầu đã đặt ra những gì (tóm tắt các task)
 
-Theo `.kiro/specs/tripplanner-mvp/tasks.md` gốc:
+Theo `.kiro/specs/_archive/tripplanner-mvp/tasks.md` gốc:
 1. Scaffold repo.
 2. Schema DB (migrations 001, 002).
 3. Extraction pipeline (đọc tour_atoms → phân loại → verify → geocode →

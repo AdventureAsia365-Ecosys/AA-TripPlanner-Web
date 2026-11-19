@@ -1,6 +1,6 @@
 # Task assessment — AA-TripPlanner-Web (spec v0.3)
 
-Assessment of each task in `.kiro/specs/tripplanner-mvp/tasks.md`:
+Assessment of each task in `.kiro/specs/_archive/tripplanner-mvp/tasks.md`:
 what Kiro can do autonomously, what needs real DB / secrets, and what is
 a human/Terraform gate. Legend:
 
