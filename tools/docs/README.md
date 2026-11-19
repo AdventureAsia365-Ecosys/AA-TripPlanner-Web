@@ -1,24 +1,28 @@
 # Docs lint tools (AA-888)
 
 The checks behind [`.github/workflows/docs-lint.yml`](../../.github/workflows/docs-lint.yml). The rules are the
-ecosystem docs standard (AA-Ecosys `docs/STYLE.md`, private repo).
+ecosystem docs standard (AA-Ecosys `docs/STYLE.md`).
 
 ## Vendored copy
 
-These files are copies of AA-Ecosys `tools/docs/`, the source of truth, and must stay byte-identical with it and
-with the copies in AA-Booking and AA-CIS-Infra: `docslib.py`, `check_docs_text.py`, `check_adr_index.py`,
-`check_frontmatter.py`, `test_docs_tools.py`, `lychee.toml`, `requirements.txt`. The schema
+These files are copies of AA-Ecosys `tools/docs/`, the source of truth, and must stay byte-identical with it and with
+the copies in AA-Booking, AA-Partner, AA-TripPlanner-Web and AA-CIS-Infra: `docslib.py`, `check_docs_text.py`,
+`check_adr_index.py`, `check_frontmatter.py`, `test_docs_tools.py`, `lychee.toml`, `requirements.txt`. The schema
 [`docs/templates/frontmatter.schema.json`](../../docs/templates/frontmatter.schema.json) is a copy of AA-Ecosys
-`docs/templates/frontmatter.schema.json`. Only this README is repo-specific. The root-only alarm runbook check
-(`check_alarm_runbooks.py`) is not copied: this repo has no generated alarm catalog.
+`docs/templates/frontmatter.schema.json`. Only this README is repo-specific. `test_docs_tools.py` tests only these
+vendored scripts; a root-only tool (for example the AI gateway names check) keeps its tests in its own root file
+(AA-1134). `check_docs_text.py retired-phrases` (AA-1134) flags phrases that describe a retired thing as live; this
+repo's docs job does not run it yet.
 
-Change a rule in AA-Ecosys first, then copy the files to every app repo and AA-CIS-Infra in the same session. There
-is no automatic drift check: the root repo is private, so this repo's CI cannot read it. Compare from the workspace
-root when you touch these files:
+Change a rule in AA-Ecosys first, then copy the files to the four other repos in the same session. There is no
+automatic drift check yet (the root repo is public now, so a CI check could read it: a follow-up). Compare from the
+workspace root when you touch these files:
 
 ```bash
-for f in docslib.py check_docs_text.py check_adr_index.py check_frontmatter.py test_docs_tools.py lychee.toml requirements.txt; do cmp tools/docs/$f apps/AA-TripPlanner-Web/tools/docs/$f; done
+for f in docslib.py check_docs_text.py check_adr_index.py check_frontmatter.py test_docs_tools.py lychee.toml requirements.txt; do for r in apps/AA-Booking apps/AA-Partner apps/AA-TripPlanner-Web infra/AA-CIS-Infra; do cmp tools/docs/$f $r/tools/docs/$f; done; done
 ```
+
+The root-only alarm runbook check (`check_alarm_runbooks.py`) is not copied: this repo has no generated alarm catalog.
 
 ## What runs here
 
