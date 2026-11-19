@@ -4,11 +4,15 @@
 // The traveller says where they're heading and for how many days, and gets whole routes built
 // from real Adventure Asia tours (one tour, or two chained at a junction). Hovering a route
 // previews it on the map; "Start with this route" pins it, then the traveller edits it.
+// AA-1130 (S283 audit T1): on an agency's planner it proposes only the tours the agency sells, under the agency's own
+// titles, and is hidden when the agency sells none; "Heading to" lists only countries with a tour (lib/routeFinder.ts).
 
 import { useEffect, useRef, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { useBrand } from "@/components/BrandContext";
 import { fetchRoutes } from "@/lib/api";
+import { plannerTenant } from "@/lib/plannerTenant";
+import { headingCountries, routeBadge, showRouteFinder } from "@/lib/routeFinder";
 import { formatDays } from "@/lib/text";
 import { Icon } from "@/ui/Icon";
 import type { RouteProposal } from "@/lib/types";
@@ -21,8 +25,30 @@ function placesLine(p: RouteProposal): string {
   return names.join(" › ");
 }
 
-export default function RoutePlanner({ compact = false }: { compact?: boolean }) {
-  const { countries, filters, applyRoute, setRoutePreview, intent } = useTrip();
+// AA-1130: "Whole tour", or "Full route · days 1–7 of 8" when the route is shorter than its tour.
+function RouteBadgeChip({ p }: { p: RouteProposal }) {
+  const badge = routeBadge(p);
+  if (!badge) return null;
+  return (
+    <span
+      data-testid="route-badge"
+      className={`ml-1.5 inline-block whitespace-nowrap rounded-full bg-k-accent-tint px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-k-accent-deep${badge.kind === "whole" ? " uppercase" : ""}`}
+    >
+      {badge.label}
+    </span>
+  );
+}
+
+// AA-1130: an agency page whose agency sells no tour has no route finder (lib/routeFinder.ts showRouteFinder).
+export default function RouteFinderGate({ compact = false }: { compact?: boolean }) {
+  const { countries, countriesLoaded } = useTrip();
+  if (!showRouteFinder(plannerTenant(), countriesLoaded, countries)) return null;
+  return <RoutePlanner compact={compact} />;
+}
+
+function RoutePlanner({ compact }: { compact: boolean }) {
+  const { countries: allCountries, filters, applyRoute, setRoutePreview, intent } = useTrip();
+  const countries = headingCountries(allCountries);
   const { copy } = useBrand(); // AA-1115: an unnamed tour is "AA tour" on AA's planner only
   // AA-812: pre-filled from the home search / a tour page (/plan?country=&days=&travellers=).
   const [country, setCountry] = useState<string>(intent.country ?? filters.country ?? "");
@@ -140,11 +166,7 @@ export default function RoutePlanner({ compact = false }: { compact?: boolean })
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold text-k-ink">
                   {formatDays(p.total_days)}
-                  {p.whole_tour && (
-                    <span className="ml-1.5 rounded-full bg-k-accent-tint px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-k-accent-deep">
-                      Whole tour
-                    </span>
-                  )}
+                  <RouteBadgeChip p={p} />
                   {p.transfers > 0 && (
                     <span className="ml-1.5 text-[10px] font-normal text-k-muted">
                       2 tours · {Math.round(p.transfer_km)} km transfer

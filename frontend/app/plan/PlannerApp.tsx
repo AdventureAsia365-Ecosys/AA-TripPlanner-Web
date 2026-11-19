@@ -44,6 +44,11 @@ const MOBILE_BREAKPOINT = 768;
 
 // AA-812: Map | List switch over the map area. The map stays mounted under the list (Mapbox keeps
 // its canvas), the list is an overlay.
+// AA-1130 (S283 audit T1): where the map is narrow (a phone, and the side-by-side layout up to xl, where the map is the
+// viewport less the 25rem trip panel) the switch sits above the Geoapify / OpenStreetMap attribution
+// (GeocodeAttribution, bottom-8 left-2), which the OSM licence requires to stay readable; from xl it is clear of it.
+const PANE_TOGGLE_BOTTOM = "bottom-16 xl:bottom-4";
+
 function PaneToggle({ pane, setPane }: { pane: "map" | "list"; setPane: (p: "map" | "list") => void }) {
   const btn = (p: "map" | "list", label: string) => (
     <button
@@ -57,7 +62,10 @@ function PaneToggle({ pane, setPane }: { pane: "map" | "list"; setPane: (p: "map
     </button>
   );
   return (
-    <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 overflow-hidden rounded-full border border-k-line bg-k-card shadow-aa">
+    <div
+      data-testid="pane-toggle"
+      className={`absolute ${PANE_TOGGLE_BOTTOM} left-1/2 z-20 flex -translate-x-1/2 overflow-hidden rounded-full border border-k-line bg-k-card shadow-aa`}
+    >
       {btn("map", "Map")}
       {btn("list", "List of tours")}
     </div>

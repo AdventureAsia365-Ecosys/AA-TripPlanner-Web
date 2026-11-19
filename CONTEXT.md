@@ -828,12 +828,25 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   list, never the AA catalogue). The same predicate exempts AA's own planner from the tenant AI budget and the agency
   lead route (`tenant_budget.exempt`). Before CIS 404 is applied (42P01 / 42501) an agency lists no tour.
   No price on an agency's page (the agency is the merchant of record, ADR 0019 b5).
+- **The route finder of an agency's planner (AA-1130, S283 audit T1).** On `/{slug}/plan` the route finder's reads
+  name the tenant (`tenant=<slug>` on `GET /browse/countries`, `/browse/routes`, `/browse/tour-route`; BFF and client
+  in `frontend/lib/routeFinder.ts`). The browse Lambda narrows them to the tours the agency sells
+  (`tenant_tours.served_scope`: its rows of `catalog.v_tenant_tour_v1`): routes and chains only over those source ids
+  (`routes.SINGLE_SCOPED_SQL` / `CHAIN_SCOPED_SQL`), each segment named with the agency's own title, the countries
+  those of its tours, a tour route only for a tour it sells (its "not on the map" fallback keeps no AA day title). An
+  agency that sells no tour gets no proposal and its planner hides the finder; an unknown slug is 404, a read that
+  cannot answer 503, never the unscoped AA list. AA's planner and the AA-hosted demo tenant are not narrowed. Every
+  country carries `tour_count` (live catalogue tours, or the agency's), and "Heading to" lists only countries with a
+  tour; the map's country filter keeps every country with experiences. The map, search and the trip's coverage still
+  read AA's graph on an agency's planner (the per-tenant graph of ADR 0019 S278 is later).
 - **Brand on the agency's pages only (AA-1094, S278 audit M21).** `/{slug}/plan` and `/{slug}/tours/{tour}` carry
   the agency's bar (`components/Header.tsx` `agency`: its trading name, linking to its planner, no Adventure Asia
   logo, an AI pill without the AA name, no account link) and its brand-token block; the planner's list links to the
   agency's tour pages, never to AA's `/tours/{slug}`. `PlannerApp` clears the tab's tenant (`lib/plannerTenant.ts`)
   when it unmounts, so an AA page reached without a document load carries no agency. AA's own pages keep AA's brand.
-  No page offers "Sign in" or "My trips" (d11: travellers are guests; the pages are retired, AA-1115).
+  No page offers "Sign in" or "My trips" (d11: travellers are guests; the pages are retired, AA-1115). AA-1130: the
+  agency bar also carries the agency's Privacy and Terms links, so every /{slug} page keeps them in view, and the
+  agency tour page has its "Make it yours" call to action under the facts and a legal line at its end.
 - **Agency-only brand on every /{slug} page (AA-1115, S282 audit 6.3).** `app/[tenant]/layout.tsx` replaces every
   brand-bearing key of the root layout's metadata (title default and template `%s · <agency>`, description,
   og:site_name; `lib/brand.ts` `tenantMetadata`), so a tab title or link preview never names Adventure Asia (a slug

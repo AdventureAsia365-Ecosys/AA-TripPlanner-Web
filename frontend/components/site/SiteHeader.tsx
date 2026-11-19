@@ -1,7 +1,7 @@
 // AA-812 — header of the kit pages (home, tour, destination). The AI-assisted label from AA-805
 // stays next to the AA mark (AA-819: a button that explains itself on tap or keyboard).
-// AA-995 (spec §3.1 + immersive grafts) — navy header. Solid `--tp-band` by default (tour, legal, sign-in
-// pages, and every page without JS). With `overHero` (home) it sits transparent on a dark scrim over the
+// AA-995 (spec §3.1 + immersive grafts) — navy header. Solid `--tp-band` by default (tour, legal and
+// destination pages, and every page without JS). With `overHero` (home) it sits transparent on a dark scrim over the
 // photo hero and turns solid once the hero has scrolled away (HeaderScrollState). Below md the links move
 // into a native <dialog> menu (MobileMenu); a "Skip to content" link comes first in the tab order.
 // AA-1038: SiteLink = next/link, except a planner href renders a plain <a> (a document load, ui/SiteLink.tsx).

@@ -57,8 +57,11 @@ interface TripState {
   // AA-1015: set when this visitor reached the search limit (429) or the bot check refused the search (403);
   // cleared by the next answered search.
   searchNotice: AiNoticeKey | null;
-  // Countries that actually have components (for the country-first filter).
+  // Countries that actually have components (for the country-first filter). AA-1130: on an agency's planner only
+  // the countries of the tours it sells; each says how many tours it has (the route finder lists those with one).
   countries: CountryOption[];
+  // AA-1130: the country list has answered (an agency page with no country then hides its route finder).
+  countriesLoaded: boolean;
   // Next-to-pin suggestions, refreshed as the trip changes.
   suggestions: Suggestion[];
   // A destination the UI wants to open (e.g. from a suggestion click). The
@@ -174,6 +177,7 @@ export function TripProvider({
   );
   const [status, setStatus] = useState<string>("draft");
   const [countries, setCountries] = useState<CountryOption[]>([]);
+  const [countriesLoaded, setCountriesLoaded] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [focusDestinationId, setFocusDestinationId] = useState<string | null>(
     null,
@@ -224,7 +228,10 @@ export function TripProvider({
   useEffect(() => {
     let active = true;
     api.fetchCountries().then((cs) => {
-      if (active) setCountries(cs);
+      if (!active) return;
+      // A failed read leaves the list empty but not "loaded": an agency's route finder is not hidden for it.
+      setCountries(cs ?? []);
+      setCountriesLoaded(cs !== null);
     });
     return () => {
       active = false;
@@ -539,6 +546,7 @@ export function TripProvider({
     searching,
     searchNotice,
     countries,
+    countriesLoaded,
     suggestions,
     focusDestinationId,
     focusDestination: setFocusDestinationId,
@@ -586,6 +594,7 @@ export function TripProvider({
     searching,
     searchNotice,
     countries,
+    countriesLoaded,
     suggestions,
     focusDestinationId,
     setFocusDestinationId,

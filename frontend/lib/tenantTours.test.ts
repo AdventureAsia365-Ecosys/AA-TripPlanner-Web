@@ -61,6 +61,13 @@ test("plan this trip stays on the tenant's planner", () => {
   assert.equal(q.get("tour"), "770a38dd-4e7b-4b55-9ded-0e9ced757301");
   assert.equal(q.get("source"), "5f1e0c2a-7d3b-4c9e-8a61-2b4d6f8e0a13");
   assert.equal(q.get("days"), "30");
+  assert.equal(q.get("ask"), null);
+  // AA-1130: the top card's "Ask <agency>" opens the trip view once the route is pinned
+  const ask = new URLSearchParams(
+    tenantPlanHref("quillmere-voyages", { tour_id: "t", source_id: "s", country: null, duration_days: null }, true)
+      .split("?")[1],
+  );
+  assert.equal(ask.get("ask"), "1");
 });
 
 test("the itinerary text splits into paragraphs on blank lines", () => {

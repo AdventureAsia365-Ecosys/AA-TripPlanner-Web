@@ -3,6 +3,9 @@
 // its trading name in the bar, its brand tokens (the same kit core brand-token block as /{slug}/plan), no Adventure
 // Asia logo, no AA price (the agency is the merchant of record) and no account link (travellers are guests, d11).
 // The planner's tour list on /{slug}/plan opens these pages; "Plan this trip" goes back to the agency's planner.
+// AA-1130 (S283 audit T1): the call to action also sits near the top, under the facts ("Make it yours", like the AA
+// tour page's card), so it is not 5,000 px down after a long itinerary; the page ends with the agency's own Privacy
+// and Terms links (the agency bar carries them too) and the AI notice links the agency's "Use of AI" terms.
 // An unknown or unserved slug, a tour the agency did not make its own, or one AA no longer serves is the 404 page; a
 // lookup that cannot answer throws to app/[tenant]/error.tsx (retryable). An older tour slug (a title change) answers
 // 308 to the current one, as the AA tour pages do.
@@ -14,6 +17,7 @@ import { getTenantTour } from "@/lib/catalog";
 import { clip, daysText } from "@/lib/text";
 import { isTenantSlug, resolveTenant } from "@/lib/tenantSite";
 import { itineraryParagraphs, tenantPlanHref, tenantTextMark, tenantTourPath } from "@/lib/tenantTours";
+import { legalPaths } from "@/lib/legal";
 import { brandThemeCss } from "@/ui/core/brandTheme";
 import { AiNotice, ButtonLink, Icon } from "@/ui";
 
@@ -62,6 +66,8 @@ export default async function TenantTourPage({ params }: Props) {
   ].filter(Boolean) as { icon: string; label: string; value: string }[];
   const paragraphs = itineraryParagraphs(t.itinerary_text);
   const planHref = tenantPlanHref(site.slug, t);
+  const askHref = tenantPlanHref(site.slug, t, true);
+  const legal = legalPaths(site.slug);
 
   return (
     <div className="min-h-screen bg-k-bg text-k-ink" data-testid="tenant-tour-page">
@@ -101,6 +107,28 @@ export default async function TenantTourPage({ params }: Props) {
           </dl>
         )}
 
+        <section
+          aria-labelledby="make-it-yours"
+          className="mt-6 rounded-panel border border-k-line bg-k-card p-4 md:p-5"
+          data-testid="tenant-tour-cta-top"
+        >
+          <h2 id="make-it-yours" className="text-h3 text-k-ink">
+            Make it yours
+          </h2>
+          <p className="mt-1 max-w-[60ch] text-small text-k-muted">
+            Start from this itinerary on the map, change what you like, and {site.name} confirms every detail and price
+            in your quote.
+          </p>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <ButtonLink href={planHref} variant="primary" size="lg">
+              <Icon name="route" className="h-4 w-4" /> Customise this trip
+            </ButtonLink>
+            <ButtonLink href={askHref} variant="secondary" size="lg">
+              <Icon name="chat" className="h-4 w-4" /> Ask {site.name}
+            </ButtonLink>
+          </div>
+        </section>
+
         {t.summary && (
           <p className="mt-6 max-w-[72ch] text-body text-k-body" {...mark}>
             {t.summary}
@@ -136,7 +164,7 @@ export default async function TenantTourPage({ params }: Props) {
           </section>
         )}
 
-        <AiNotice className="mt-6 max-w-[72ch]" testId="tenant-tour-ai-notice" />
+        <AiNotice className="mt-6 max-w-[72ch]" testId="tenant-tour-ai-notice" termsHref={legal.termsAi} />
 
         <div className="mt-10 flex flex-wrap items-center gap-3 border-t border-k-line pt-6">
           <ButtonLink href={planHref} variant="primary" size="lg" data-testid="tenant-tour-plan">
@@ -144,6 +172,23 @@ export default async function TenantTourPage({ params }: Props) {
           </ButtonLink>
           <p className="text-small text-k-muted">{site.name} confirms every detail and price in your quote.</p>
         </div>
+
+        <footer className="mt-10 border-t border-k-line pt-4 text-caption text-k-muted" data-testid="tenant-tour-legal">
+          <ul className="flex flex-wrap gap-4">
+            {legal.links.map((l) => (
+              <li key={l.href}>
+                <a href={l.href} className="aa-focus underline-offset-2 hover:text-k-ink hover:underline">
+                  {l.label}
+                </a>
+              </li>
+            ))}
+            <li>
+              <a href={legal.termsAi} className="aa-focus underline-offset-2 hover:text-k-ink hover:underline">
+                Use of AI
+              </a>
+            </li>
+          </ul>
+        </footer>
       </main>
     </div>
   );

@@ -41,14 +41,17 @@ export function tourHref(tenant: string | null | undefined, source: TourListSour
   return `/tours/${tourSlug}`;
 }
 
-/** The tenant's planner with this tour pre-filled ("Plan this trip" on the tenant's tour page). */
+/** The tenant's planner with this tour pre-filled ("Plan this trip" on the tenant's tour page). AA-1130: `ask` opens
+ * the trip view once the route is pinned, to send it to the agency (as the AA tour page's "Ask an advisor"). */
 export function tenantPlanHref(
   tenant: string,
   t: { tour_id: string; source_id: string; country: string | null; duration_days: number | null },
+  ask = false,
 ): string {
   const p = new URLSearchParams({ tour: t.tour_id, source: t.source_id });
   if (t.country) p.set("country", t.country);
   if (t.duration_days) p.set("days", String(Math.max(2, Math.min(30, t.duration_days))));
+  if (ask) p.set("ask", "1");
   return `/${tenant}/plan?${p}`;
 }
 

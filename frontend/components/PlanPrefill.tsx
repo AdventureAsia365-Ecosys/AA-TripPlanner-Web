@@ -69,7 +69,8 @@ export default function PlanPrefill({ onApplied }: { onApplied?: () => void }) {
   const box = "pointer-events-auto mx-auto max-w-md rounded-xl border border-k-line bg-k-card px-3 py-2.5 text-xs text-k-ink shadow-aa";
 
   return (
-    <div className="pointer-events-none absolute inset-x-3 bottom-16 z-20" role="status">
+    // AA-1130: above the Map / List switch, which sits higher where the map is narrow (app/plan/PlannerApp.tsx).
+    <div className="pointer-events-none absolute inset-x-3 bottom-28 z-20 xl:bottom-16" role="status">
       <div className={box}>
         {st.s === "confirm" && (
           <>

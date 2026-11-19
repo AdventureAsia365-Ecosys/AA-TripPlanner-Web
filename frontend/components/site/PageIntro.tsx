@@ -1,5 +1,5 @@
-// AA-995 — the title band of the customer pages that have no photo hero (/destinations, /trips, /sign-in, the legal
-// pages, not-found and the error page): navy (--tp-band) under the solid header, the logo's mountain lines, an
+// AA-995 — the title band of the customer pages that have no photo hero (/destinations, the legal pages, not-found
+// and the error page): navy (--tp-band) under the solid header, the logo's mountain lines, an
 // optional breadcrumb, an optional Satisfy kicker (titles only, <= 6 words, >= 28 px), the page's one h1, a lead and
 // optional actions. One component, so every utility page opens the same way (consistent, not one-off).
 // Contrast on navy (lib/contrast.test.ts): on-band 13.67 / 16.62, on-band-muted 9.98 / 10.55, band-accent 8.06 / 9.30.
@@ -28,7 +28,7 @@ export default function PageIntro({
   crumbs?: Crumb[];
   // Actions or extra lines under the lead.
   children?: ReactNode;
-  // Narrow text column (sign-in, status pages) instead of the page width.
+  // Narrow text column (not-found and status pages) instead of the page width.
   narrow?: boolean;
   // role="alert" on the lead for error pages (what ErrorState gave them before).
   leadRole?: "alert" | "status";

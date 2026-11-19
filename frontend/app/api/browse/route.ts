@@ -9,6 +9,7 @@ import { TENANT_SLUG_HEADER, tenantHeaders } from "@/lib/tenantProxy";
 import { resolveTenant } from "@/lib/tenantSite";
 import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
 import { tenantToursPath } from "@/lib/tenantTours";
+import { scopedUpstreamPath } from "@/lib/routeFinder";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -48,7 +49,8 @@ export async function GET(req: NextRequest) {
   const filters = new URLSearchParams();
   passthroughFilters(q, filters);
 
-  let upstreamPath: string;
+  // null = a tenant slug that cannot be one (400 below, nothing reaches the Lambda).
+  let upstreamPath: string | null;
   if (resource === "tiles") {
     const tileId = q.get("tile_id") ?? "";
     upstreamPath = `/browse/tiles/${encodeURIComponent(tileId)}?${filters}`;
@@ -86,11 +88,7 @@ export async function GET(req: NextRequest) {
   } else if (resource === "tenant-tours") {
     // AA-1094: an agency's own tours on its planner (/{slug}/plan; CIS catalog.v_tenant_tour_v1). The Lambda resolves
     // the slug (served tenants only, 404 otherwise); a slug that cannot be a tenant never reaches it.
-    const path = tenantToursPath(q.get("tenant"), q);
-    if (!path) {
-      return NextResponse.json({ error: "bad tenant" }, { status: 400, headers: { "cache-control": "no-store" } });
-    }
-    upstreamPath = path;
+    upstreamPath = tenantToursPath(q.get("tenant"), q);
   } else if (resource === "tour-route") {
     // AA-812: one tour's whole route ("Customise this trip").
     // source_id (stable) lets the Lambda resolve the current tour_id after a CIS re-upload.
@@ -102,6 +100,12 @@ export async function GET(req: NextRequest) {
     upstreamPath = `/browse/tour-route?${r}`;
   } else {
     return NextResponse.json({ error: "unknown resource" }, { status: 400 });
+  }
+  // AA-1130: an agency's planner names its tenant on the route finder's reads (countries, routes, tour-route), so the
+  // Lambda proposes only the tours the agency sells, under its own titles. A malformed slug never reaches the Lambda.
+  upstreamPath = scopedUpstreamPath(resource, upstreamPath, q.get("tenant"));
+  if (upstreamPath === null) {
+    return NextResponse.json({ error: "bad tenant" }, { status: 400, headers: { "cache-control": "no-store" } });
   }
 
   // AA-1015: search calls the embedding model, so it carries the traveller's address for the per-IP limit (30 a

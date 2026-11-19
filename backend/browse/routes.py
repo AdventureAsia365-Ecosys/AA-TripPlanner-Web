@@ -38,7 +38,7 @@ SINGLE_SQL = """
            l.source_id AS tour_id, l.day_from, l.day_to, l.days, cardinality(l.destination_ids) AS places,
            (l.day_from = sp.first_day AND l.day_to = sp.last_day) AS whole
     FROM catalog.v_tour_leg l JOIN span sp USING (source_id)
-    WHERE $1 = ANY(l.countries) AND l.days BETWEEN $2::int - $3::int AND $2::int
+    WHERE $1 = ANY(l.countries) AND l.days BETWEEN $2::int - $3::int AND $2::int/*scope*/
     ORDER BY l.source_id, (l.day_from = sp.first_day AND l.day_to = sp.last_day) DESC,
              abs(l.days - $2::int), l.day_from
 """
@@ -59,7 +59,7 @@ CHAIN_SQL = """
     ), legs AS MATERIALIZED (
         SELECT l.source_id, l.day_from, l.day_to, l.days, l.start_destination_id, l.end_destination_id,
                l.destination_ids
-        FROM catalog.v_tour_leg l WHERE $1 = ANY(l.countries) AND l.days < $2::int
+        FROM catalog.v_tour_leg l WHERE $1 = ANY(l.countries) AND l.days < $2::int/*scope*/
     ), a AS MATERIALIZED (
         SELECT l.* FROM legs l JOIN span sp ON sp.source_id = l.source_id AND l.day_from = sp.first_day
     ), j AS MATERIALIZED (
@@ -82,6 +82,16 @@ CHAIN_SQL = """
     LIMIT 40
 """
 
+# AA-1130 (S283 audit T1, root ADR 0019 S278): on an agency's planner the route finder proposes only the tours that
+# agency sells (its rows of catalog.v_tenant_tour_v1, tenant_tours.served_scope). The leg reads take the agency's
+# source ids as $4; both legs of a chain come from the filtered `legs`, so a chain never borrows an AA tour. The
+# unscoped reads (AA's planner, the AA-hosted demo tenant) keep their three parameters and their plans.
+_SCOPE = "\n      AND l.source_id = ANY($4::text[])"
+SINGLE_SCOPED_SQL = SINGLE_SQL.replace("/*scope*/", _SCOPE)
+CHAIN_SCOPED_SQL = CHAIN_SQL.replace("/*scope*/", _SCOPE)
+SINGLE_SQL = SINGLE_SQL.replace("/*scope*/", "")
+CHAIN_SQL = CHAIN_SQL.replace("/*scope*/", "")
+
 DAYS_SQL = """
     SELECT s.source_id AS tour_id, s.day_index, s.destination_id::text AS destination_id,
            d.name, d.lat, d.lng, d.country
@@ -99,8 +109,10 @@ COMPONENTS_SQL = """
 """
 
 # Current tour_id + title per source_id (catalog.v_tour: no RLS for readers, no tenant needed).
+# AA-1130: duration_days is the tour's own length, so a proposal from its first to last stop day that is shorter than
+# the tour says so ("Full route · days 1–7 of 8"), instead of "Whole tour".
 TOURS_BY_SOURCE_SQL = """
-    SELECT source_id, tour_id::text AS tour_id, title FROM catalog.v_tour
+    SELECT source_id, tour_id::text AS tour_id, title, duration_days FROM catalog.v_tour
     WHERE source_id = ANY($1::text[])
 """
 SOURCE_BY_TOUR_SQL = "SELECT source_id FROM catalog.v_tour WHERE tour_id = $1::uuid"
@@ -156,7 +168,15 @@ def day_by_day(proposal: dict, stops: dict[str, list[dict]],
     return out
 
 
-async def proposals(conn: Any, country: str, days: int) -> dict:
+async def proposals(conn: Any, country: str, days: int, scope: Optional[dict[str, dict]] = None) -> dict:
+    """The route proposals for a country and a length.
+
+    AA-1130: `scope` (tenant_tours.served_scope) is an agency's tours by source_id with its own title: only those
+    tours are proposed and each segment carries the agency's title, never AA's. None = AA's planner (every tour); an
+    empty scope (an agency that sells no tour) proposes nothing and reads nothing."""
+    if scope is not None and not scope:
+        return {"country": country, "days": days, "proposals": []}
+    only = sorted(scope) if scope is not None else None
     # AA-847: plan the two candidate reads for THESE arguments every time. asyncpg caches the
     # prepared statement, and after five runs Postgres may switch to a generic plan whose 1-row
     # estimates nest-loop over the catalog views (EXPLAIN 11.7 ms against 841 ms timed on Dev).
@@ -164,8 +184,12 @@ async def proposals(conn: Any, country: str, days: int) -> dict:
     # connection's life keep the default plan_cache_mode.
     async with conn.transaction():
         await conn.execute(FORCE_CUSTOM_PLAN_SQL)
-        singles = [dict(r) for r in await conn.fetch(SINGLE_SQL, country, days, SLACK)]
-        chains = [dict(r) for r in await conn.fetch(CHAIN_SQL, country, days, SLACK)]
+        if only is None:
+            singles = [dict(r) for r in await conn.fetch(SINGLE_SQL, country, days, SLACK)]
+            chains = [dict(r) for r in await conn.fetch(CHAIN_SQL, country, days, SLACK)]
+        else:
+            singles = [dict(r) for r in await conn.fetch(SINGLE_SCOPED_SQL, country, days, SLACK, only)]
+            chains = [dict(r) for r in await conn.fetch(CHAIN_SCOPED_SQL, country, days, SLACK, only)]
     picked = rank(singles, chains, days)
     tours = sorted({t for p in picked for t, _, _ in p["segments"]})
     stops: dict[str, list[dict]] = {}
@@ -176,9 +200,14 @@ async def proposals(conn: Any, country: str, days: int) -> dict:
         comps.setdefault((r["tour_id"], r["day_index"]), []).append(dict(r))
     names: dict[str, str] = {}
     current: dict[str, str] = {}  # source_id -> current catalog tour_id
+    lengths: dict[str, Optional[int]] = {}  # source_id -> the tour's own duration_days
     if tours:
         for r in await conn.fetch(TOURS_BY_SOURCE_SQL, tours):
             names[r["source_id"]], current[r["source_id"]] = r["title"], r["tour_id"]
+            lengths[r["source_id"]] = r["duration_days"]
+    if scope is not None:
+        # AA-1130: the agency's own title of the tour, never AA's (scope only holds tours the agency sells).
+        names = {t: scope[t].get("title") for t in tours if t in scope}
     out = []
     for p in picked:
         segments = [{"tour_id": t, "tour_name": names.get(t), "day_from": a, "day_to": b,
@@ -188,8 +217,23 @@ async def proposals(conn: Any, country: str, days: int) -> dict:
             row["source_id"] = row["tour_id"]
             row["tour_id"] = current.get(row["source_id"], row["source_id"])
         out.append({"total_days": p["total_days"], "transfers": p["transfers"], "transfer_km": p["transfer_km"],
-                    "whole_tour": p["whole"], "segments": segments, "days": day_list})
+                    "whole_tour": p["whole"], "segments": segments, "days": day_list,
+                    # AA-1130: a one-tour proposal names its tour's own length (None for a chain or an unknown
+                    # length), so "whole tour" from the first to the last stop day can say "days 1–7 of 8".
+                    "tour_days": lengths.get(p["segments"][0][0]) if len(p["segments"]) == 1 else None})
     return {"country": country, "days": days, "proposals": out}
+
+
+def scope_tour_route(proposal: Optional[dict], fallback: Optional[dict], title: Optional[str]
+                     ) -> tuple[Optional[dict], Optional[dict]]:
+    """AA-1130: a tour's route on an agency's planner (the tour is one the agency sells) carries the agency's title,
+    and its "not on the map" fallback keeps only the title, country and length: the day titles are AA's text."""
+    if proposal is not None:
+        for seg in proposal["segments"]:
+            seg["tour_name"] = title
+    if fallback is not None:
+        fallback = {**fallback, "title": title, "days": []}
+    return proposal, fallback
 
 
 # AA-812: the whole route of ONE tour, so its page can open the planner pre-filled ("Customise this

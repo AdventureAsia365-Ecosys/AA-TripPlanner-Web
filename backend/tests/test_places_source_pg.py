@@ -45,7 +45,7 @@ CREATE OPERATOR <=> (LEFTARG = text, RIGHTARG = text, FUNCTION = public.tp_cos);
 SCHEMA = """
 CREATE SCHEMA tripplanner; CREATE SCHEMA catalog;
 CREATE TABLE catalog.v_tour (source_system text DEFAULT 'cis', source_id text, tour_id uuid, title text,
-    country text, duration_days int);
+    country text, duration_days int, lifecycle_stage text);
 CREATE TABLE catalog.v_tour_day (tour_id uuid, day_number int, title text);
 CREATE TABLE catalog.v_tour_place (tour_id uuid, day_number int, position int, destination_id uuid,
     destination_name text, lat float8, lng float8, country text);
@@ -222,8 +222,8 @@ async def test_tiles_countries_and_by_country(pool):
     _, body = await _get(pool, "/browse/tiles/19_102", {"activity": "culinary", "country": "Laos", "season": "11"})
     assert _pins(body) == [(str(D["LPB"]), 1)]
     _, body = await _get(pool, "/browse/countries")
-    assert body == {"countries": [{"country": "Laos", "component_count": 9},
-                                  {"country": "Vietnam", "component_count": 3}]}
+    assert body == {"countries": [{"country": "Laos", "component_count": 9, "tour_count": 2},  # AA-1130
+                                  {"country": "Vietnam", "component_count": 3, "tour_count": 1}]}
     _, body = await _get(pool, "/browse/by-country", {"country": "Laos"})
     assert _pins(body) == sorted([(str(D["VTE"]), 2), (str(D["VV"]), 1), (str(D["LPB"]), 5), (str(D["PKS"]), 1)])
 
@@ -1209,7 +1209,7 @@ async def test_aa1041_chat_tools_read_over_the_views(pool):
     model references, never component ids."""
     from backend.assembly import chat_tools
 
-    await pool.execute("ALTER TABLE catalog.v_tour ADD COLUMN summary text, ADD COLUMN lifecycle_stage text")
+    await pool.execute("ALTER TABLE catalog.v_tour ADD COLUMN summary text")
     await pool.execute("UPDATE catalog.v_tour SET summary = 'Slow river days and old town food' "
                        "WHERE source_id = 'src-a'")
     await pool.execute("UPDATE catalog.v_tour SET lifecycle_stage = 'retired' WHERE source_id = 'src-c'")

@@ -23,6 +23,7 @@ import { readChatAnswer, type ChatAnswer } from "./planChat";
 import { isWafChallenge, throughWafEdge } from "./wafChallenge";
 // AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
 import { plannerTenant, tenantFetch } from "./plannerTenant";
+import { withTenant } from "./routeFinder";
 import type { LeadBody } from "./leadForm";
 
 function filterParams(f: BrowseFilters): string {
@@ -145,11 +146,17 @@ export async function fetchDestination(
   return res.json();
 }
 
-export async function fetchCountries(): Promise<CountryOption[]> {
-  const res = await fetch(`/api/browse?resource=countries`);
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.countries ?? [];
+// AA-1130: on an agency's planner the countries are those of the tours the agency sells (lib/routeFinder.ts).
+// null = the read failed (not "no country").
+export async function fetchCountries(): Promise<CountryOption[] | null> {
+  try {
+    const res = await fetch(`/api/browse?${withTenant(new URLSearchParams({ resource: "countries" }), plannerTenant())}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.countries ?? [];
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchByCountry(
@@ -401,9 +408,10 @@ export async function fetchSuggestions(
 
 // --- AA-674 / Jira PR-11 ----------------------------------------------------
 
-// Whole-route proposals from real AA tours for a country and a number of days.
+// Whole-route proposals from real AA tours for a country and a number of days. AA-1130: on an agency's planner only
+// the tours the agency sells, under its own titles (lib/routeFinder.ts).
 export async function fetchRoutes(country: string, days: number): Promise<RouteProposal[]> {
-  const p = new URLSearchParams({ resource: "routes", country, days: String(days) });
+  const p = withTenant(new URLSearchParams({ resource: "routes", country, days: String(days) }), plannerTenant());
   const res = await fetch(`/api/browse?${p}`);
   if (!res.ok) return [];
   const data = await res.json();
@@ -493,7 +501,8 @@ export async function fetchTourRoute(
   sourceId?: string,
 ): Promise<TourRouteResult> {
   try {
-    const p = new URLSearchParams({ resource: "tour-route" });
+    // AA-1130: on an agency's planner the tour route carries the agency's title (a tour it sells only).
+    const p = withTenant(new URLSearchParams({ resource: "tour-route" }), plannerTenant());
     if (tourId) p.set("tour_id", tourId);
     if (sourceId) p.set("source_id", sourceId);
     const res = await fetch(`/api/browse?${p}`);

@@ -6,6 +6,8 @@ import AiLabel, { AI_AGENCY_EXPLANATION, AI_AGENCY_LABEL } from "@/components/Ai
 // this import here only because an agency's planner returns the agency bar first).
 import { AA_BAR, AA_SITE_AI } from "@/lib/brand";
 import { ThemeToggle } from "@/ui/ThemeToggle";
+import { legalPaths } from "@/lib/legal";
+import { isAgencyPlanner } from "@/lib/leadForm";
 
 // Top brand bar — Adventure Asia wordmark + tagline. Kept slim so the map
 // dominates the viewport (map-first product).
@@ -15,6 +17,9 @@ import { ThemeToggle } from "@/ui/ThemeToggle";
 // AA-1094 (S278 audit M21, root ADR 0019 d10 / d11): on an agency's planner (/{slug}/plan) the bar is the agency's: its
 // trading name (its brand colours come from the page's brand-token block), linking back to its own planner, never the
 // Adventure Asia logo or a link to AA's home. No account link there: travellers of an agency are guests (d11).
+// AA-1130 (S283 audit T1): the agency bar carries the agency's own Privacy and Terms links (lib/legal.ts legalPaths),
+// so every /{slug} page (planner, shared trip, tour page, the legal pages) keeps them in view; the planner is
+// full-height and has no footer of its own.
 export type HeaderAgency = { slug: string; name: string };
 
 export default function Header({ agency = null }: { agency?: HeaderAgency | null }) {
@@ -63,7 +68,7 @@ function AgencyHeader({ agency }: { agency: HeaderAgency }) {
   return (
     <header
       data-testid="agency-header"
-      className="tp-on-dark z-30 flex items-center justify-between border-b border-k-band-edge bg-k-band px-5 text-k-on-band"
+      className="tp-on-dark z-30 flex items-center justify-between gap-3 border-b border-k-band-edge bg-k-band px-5 text-k-on-band"
       style={{ height: "56px", flexShrink: 0 }}
     >
       <div className="flex min-w-0 items-center gap-3">
@@ -80,7 +85,17 @@ function AgencyHeader({ agency }: { agency: HeaderAgency }) {
           Trip Planner
         </span>
       </div>
-      <nav className="flex items-center gap-2 text-sm">
+      <nav className="flex shrink-0 items-center gap-2 text-sm" aria-label="Legal and display">
+        <ul className="flex items-center gap-2.5 text-[11px] text-k-on-band-muted" data-testid="agency-legal-links">
+          {/* The AA-hosted demo tenant keeps AA's own pages, as its planner's forms do (PlannerApp plannerBrand). */}
+          {legalPaths(isAgencyPlanner(agency.slug) ? agency.slug : null).links.map((l) => (
+            <li key={l.href}>
+              <a href={l.href} className="aa-focus underline-offset-2 hover:text-k-on-band hover:underline">
+                {l.label}
+              </a>
+            </li>
+          ))}
+        </ul>
         <ThemeToggle tone="band" />
       </nav>
     </header>
