@@ -10,6 +10,9 @@
 - **CI/CD:** `deploy-lambdas.yml` đã nâng `configure-aws-credentials` `@v4`→`@v6` (Node 24). Deploy
   Lambda qua OIDC role `aa-tripplanner-dev-app-deploy` (định nghĩa ở AA-CIS-Infra, KHÔNG ở repo này).
 - Sơ đồ tổng hệ: `~/projects/AA-Ecosys/docs/ecosystem-architecture.md`.
+- Repo gọn (AA-1161): chỉ commit code, test, config, docs chữ và vài ảnh chính đã nén (≤ 500 KiB/ảnh, ≤ 10 MiB/PR;
+  `tools/docs/compress_images.py` của AA-Ecosys). Build artifact (`dist/`, zip), binary, file > 5 MiB → CI / S3 / Drive,
+  không commit; `tools/repo/lean_guard.py` chặn ở pre-push và CI.
 
 ## SẢN PHẨM
 B2C map-first trip planner (Adventure Asia). Khách vô danh duyệt điểm đến → ghim component
