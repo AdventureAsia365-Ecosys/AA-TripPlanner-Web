@@ -295,6 +295,30 @@ async def test_usage_is_the_month_sessions_against_the_quota(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_usage_refreshes_the_settings_on_the_bound_connection_before_reading_the_cap(monkeypatch):
+    """The lead cap is a tenant-overridable setting: the snapshot is refreshed on the bound connection (the tenant is
+    set) before the answer reads it, like the other routes of the assembly Lambda."""
+    calls: list = []
+
+    async def refresh(conn, *, force=False):
+        bound = ("execute", "SELECT set_config('app.tenant_id', $1, false)", (TENANT,)) in conn.seen
+        calls.append(("refresh", bound, len(conn.seen)))
+        return "view"
+
+    def get(key, tenant_id=None):
+        calls.append(("get", key, tenant_id))
+        return 40 if key == settings.LEAD_TENANT_DAILY_CAP else None
+
+    monkeypatch.setattr(settings, "refresh", refresh)
+    monkeypatch.setattr(settings, "get", get)
+    status, body, conn = await _call("GET", f"{BASE}/usage")
+    assert status == 200 and body["leads_24h"] == {"count": 5, "cap": 40}
+    assert calls[0][:2] == ("refresh", True)
+    assert ("get", settings.LEAD_TENANT_DAILY_CAP, TENANT) in calls[1:]
+    assert not any(kind == "fetchrow" for kind, *_ in conn.seen[:calls[0][2]])  # before any tenant read
+
+
+@pytest.mark.asyncio
 async def test_key_info_never_carries_the_key(monkeypatch):
     monkeypatch.setattr(config, "TP_LEAD_WEBHOOK_KEY", "synthetic-master")
     status, body, _ = await _call("GET", f"{BASE}/webhook-key")

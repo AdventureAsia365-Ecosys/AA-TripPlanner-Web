@@ -218,7 +218,8 @@ async def serve(method: str, path: str, body: dict, authorization: Optional[str]
                 verify=None) -> dict:
     """GET .../planner/leads, .../planner/usage, .../planner/webhook-key and POST .../planner/webhook-key/rotate. The
     bearer (scope tripplanner.leads/manage) is verified before any SQL; the connection is then bound to the path's
-    tenant (source m2m), so the tp-025 policy filters the outbox as well."""
+    tenant (source m2m), so the tp-025 policy filters the outbox as well. The admin-editable settings are refreshed on
+    that connection before the answer (like ``handler.serve``), so ``leads_24h.cap`` reads the tenant's override."""
     verify = verify or m2m_auth.verify_bearer
     try:
         await verify(authorization, m2m_auth.SCOPE_LEADS_MANAGE)
@@ -232,6 +233,7 @@ async def serve(method: str, path: str, body: dict, authorization: Optional[str]
             from backend.shared.db import get_pool
             acquire = (await get_pool()).acquire
         async with acquire() as conn, tenant.bound(conn, tenant_raw, source=tenant.SOURCE_M2M) as tid:
+            await settings.refresh(conn)  # S279 L5: the admin-editable settings (lead cap override), never raises
             return _resp(200, await answer(conn, tid, what, limit, actor))
     except Refused as e:
         return _resp(e.status, {"error": e.code})
