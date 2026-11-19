@@ -178,6 +178,7 @@ async def test_a_deliver_scope_token_cannot_reach_the_planner_routes(monkeypatch
     ("GET", f"{BASE}/leads", {"limit": "51"}, 400, "invalid_limit"),
     ("POST", f"{BASE}/webhook-key/rotate", {}, 400, "invalid_actor"),
     ("POST", f"{BASE}/webhook-key/rotate", {"actor": "admin:someone"}, 400, "invalid_actor"),
+    ("POST", f"{BASE}/webhook-key/rotate", {"actor": "studio-member:Jane Example"}, 400, "invalid_actor"),
     ("POST", f"{BASE}/usage", {}, 404, "not_found"),
     ("GET", f"{BASE}/webhook-key/rotate", {}, 404, "not_found"),
 ])
@@ -312,6 +313,17 @@ async def test_rotation_shows_the_new_key_once(monkeypatch):
     assert ("fetchrow", planner_admin.ROTATE_SQL, (f"tenant:{TENANT}", MEMBER)) in conn.seen
     _, info, _ = await _call("GET", f"{BASE}/webhook-key", conn=conn)
     assert "key" not in info and info["version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_studio_owner_may_rotate_the_key(monkeypatch):
+    """An agency without the CRM add-on: the CRM names the Content studio membership (it asked CIS first)."""
+    monkeypatch.setattr(config, "TP_LEAD_WEBHOOK_KEY", "synthetic-master")
+    studio = "studio-member:5c6d7e8f-0000-4000-8000-0000000000bb"
+    conn = _Conn(key_row={"version": 1, "rotated_at": T0})
+    status, body, _ = await _call("POST", f"{BASE}/webhook-key/rotate", {"actor": studio}, conn=conn)
+    assert status == 200 and body["version"] == 2
+    assert ("fetchrow", planner_admin.ROTATE_SQL, (f"tenant:{TENANT}", studio)) in conn.seen
 
 
 @pytest.mark.asyncio

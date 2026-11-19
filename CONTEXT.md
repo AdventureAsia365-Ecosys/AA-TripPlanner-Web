@@ -933,7 +933,8 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   `leads` (the newest leads, ids / times / channel / status pending | retrying | delivered | rejected | expired /
   tries / last error code, and this UTC month's counts; never a traveller field), `usage` (this month's AI sessions
   against `ai_sessions_monthly`, the leads of the last 24 hours against the lead cap setting), `webhook-key` (version
-  and time, never the key) and `POST webhook-key/rotate` (`{"actor": "crm-member:<uuid>"}`: the next version and its
+  and time, never the key) and `POST webhook-key/rotate` (`{"actor": "crm-member:<uuid>"}`, or `"studio-member:<uuid>"` for the Content
+  studio owner of an agency without the CRM add-on: the next version and its
   key, shown once; 503 `webhook_key_unavailable` without a master secret, nothing written). An M2M token of the CRM
   client with its own scope `tripplanner.leads/manage` (the pull's `deliver` token reaches none of them), checked
   before any SQL; the connection binds the path's tenant; a tenant CIS does not list is 404 `unknown_tenant`. The

@@ -42,6 +42,7 @@ AGENCY_A = "6d7e8f90-0000-4000-8000-0000000011a1"
 AGENCY_B = "6d7e8f90-0000-4000-8000-0000000011b2"
 UNKNOWN = "6d7e8f90-0000-4000-8000-0000000011c3"
 MEMBER = "crm-member:6d7e8f90-0000-4000-8000-0000000000aa"
+STUDIO_MEMBER = "studio-member:6d7e8f90-0000-4000-8000-0000000000bb"
 STANDIN = f"""
 CREATE SCHEMA IF NOT EXISTS catalog;
 CREATE TABLE catalog.zz_tp_rows (tenant_id uuid, ai_sessions_monthly integer);
@@ -168,7 +169,7 @@ async def test_rotation_writes_the_next_version_and_the_delivery_signs_with_it(d
         _, first = await _call(conn, "POST", f"/trip/m2m/v1/tenants/{AGENCY_B}/planner/webhook-key/rotate",
                                {"actor": MEMBER})
         _, second = await _call(conn, "POST", f"/trip/m2m/v1/tenants/{AGENCY_B}/planner/webhook-key/rotate",
-                                {"actor": MEMBER})
+                                {"actor": STUDIO_MEMBER})  # a studio owner (no CRM add-on): tp-035's CHECK takes it
         _, info = await _call(conn, "GET", f"/trip/m2m/v1/tenants/{AGENCY_B}/planner/webhook-key")
         assert await leads.webhook_key_version(conn, AGENCY_B) == 2
         assert await leads.webhook_key_version(conn, AGENCY_A) == 0

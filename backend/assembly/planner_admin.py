@@ -12,8 +12,11 @@ the person's agency role first (root ADR 0008a: it never reads this schema).
                                                          (``tp.ai_sessions``, CIS 438; null = no limit) and the
                                                          leads of the last 24 hours against the tenant's lead cap
   GET  /trip/m2m/v1/tenants/{id}/planner/webhook-key      the key version and when it was rotated (never the key)
-  POST /trip/m2m/v1/tenants/{id}/planner/webhook-key/rotate  {"actor": "crm-member:<uuid>"} -> the new version and,
-                                                         once, the new key (the agency app shows it once)
+  POST /trip/m2m/v1/tenants/{id}/planner/webhook-key/rotate  {"actor": "crm-member:<uuid>" | "studio-member:<uuid>"}
+                                                         -> the new version and, once, the new key (the agency app
+                                                         shows it once); ``studio-member`` is the Content studio
+                                                         owner of an agency without the CRM add-on (the CRM checked
+                                                         the membership with CIS first)
 
 What never leaves: a traveller's name, e-mail, phone or message (a pending lead still holds them; the list reads ids,
 times and states only), the webhook URL or the e-mail address (CIS serves the route), the master secret. A tenant is
@@ -57,7 +60,7 @@ ROTATE_SQL = (
 
 STATUSES = ("pending", "retrying", "delivered", "rejected", "expired")
 DEFAULT_LIMIT = leads_mod.PAGE_MAX   # one page of the list, the contract maximum
-ACTOR_RE = re.compile(r"^crm-member:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+ACTOR_RE = re.compile(r"^(crm|studio)-member:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_:]{0,63}$")
 
 
