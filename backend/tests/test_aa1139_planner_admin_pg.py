@@ -154,8 +154,8 @@ async def test_usage_counts_this_month_sessions_against_the_quota(db):
         status_u, body_u = await _call(conn, "GET", f"/trip/m2m/v1/tenants/{UNKNOWN}/planner/usage")
     finally:
         await conn.close()
-    assert (status_a, body_a["ai_sessions"], body_a["leads_24h"]["count"]) == (200, {"used": 3, "quota": 300}, 3)
-    assert (status_b, body_b["ai_sessions"]) == (200, {"used": 0, "quota": None})
+    assert (status_a, body_a["ai_allowance"], body_a["leads_24h"]["count"]) == (200, {"used": 3, "quota": 300}, 3)
+    assert (status_b, body_b["ai_allowance"]) == (200, {"used": 0, "quota": None})
     assert (status_u, body_u) == (404, {"error": "unknown_tenant"})
 
 

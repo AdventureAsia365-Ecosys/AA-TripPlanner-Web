@@ -128,7 +128,7 @@ async def usage(conn: Any, tenant_id: str, quota: Optional[int], *, now: Optiona
     leads_24h = int(await conn.fetchval(LEADS_24H_SQL, tenant_id) or 0)
     stamp = now or datetime.now(timezone.utc)
     return {"month": stamp.strftime("%Y-%m"),
-            "ai_sessions": {"used": used, "quota": int(quota) if quota is not None else None},
+            "ai_allowance": {"used": used, "quota": int(quota) if quota is not None else None},
             "leads_24h": {"count": leads_24h, "cap": int(settings.get(settings.LEAD_TENANT_DAILY_CAP, tenant_id))}}
 
 

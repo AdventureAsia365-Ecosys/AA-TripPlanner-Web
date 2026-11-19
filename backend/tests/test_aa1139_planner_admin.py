@@ -285,12 +285,12 @@ async def test_usage_is_the_month_sessions_against_the_quota(monkeypatch):
                         else None)
     status, body, conn = await _call("GET", f"{BASE}/usage")
     assert status == 200
-    assert body["ai_sessions"] == {"used": 17, "quota": 300} and body["leads_24h"] == {"count": 5, "cap": 200}
+    assert body["ai_allowance"] == {"used": 17, "quota": 300} and body["leads_24h"] == {"count": 5, "cap": 200}
     assert len(body["month"]) == 7
     assert ("fetchval", planner_admin.tenant_sessions.COUNT_SQL, (f"tenant:{TENANT}",)) in conn.seen
     _, open_body, _ = await _call("GET", f"{BASE}/usage", conn=_Conn(view_row={"tenant_id": TENANT,
                                                                                "ai_sessions_monthly": None}))
-    assert open_body["ai_sessions"]["quota"] is None
+    assert open_body["ai_allowance"]["quota"] is None
 
 
 @pytest.mark.asyncio
