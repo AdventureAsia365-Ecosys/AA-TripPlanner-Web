@@ -122,7 +122,7 @@ from backend.aa_llm import budget as core_budget
 from backend.aa_llm import contract, ledger, pricing
 from backend.aa_llm import errors as core_errors
 from backend.shared import app_profile, bedrock_satellite, llm_breaker, observability, prompt_registry
-from backend.shared import spend_rules, tenant, tenant_budget
+from backend.shared import connection_share, spend_rules, tenant, tenant_budget
 from backend.shared.spend_rules import _alert, _alerted, _stage_cap  # noqa: F401 — moved (AA-1126), same names
 from backend.shared.bedrock_satellite import BedrockError, ClientFactory
 
@@ -512,6 +512,7 @@ async def load_route(db: Any, stage: str, *, borrow_from: Optional[str] = None) 
     read still pauses AI; once CIS seeds a row for `stage`, that row wins at the next cache refresh."""
     route = await (_load_route(db, stage, borrow_from=borrow_from) if borrow_from else _load_route(db, stage))
     await refuse_if_ai_off(db, route)
+    await connection_share.refresh(db)    # AA-1143: TripPlanner's share per connection (cached, fails open)
     return route
 
 
@@ -668,20 +669,31 @@ def deployment_plan(route: Route, model: Model, *, now: Optional[float] = None) 
             continue
         candidates.append(d)
     for d in candidates:
-        cls = llm_breaker.shared_skip_class(
-            connection_circuit_class=d.connection_circuit_class, circuit_open_until=d.circuit_open_until,
-            probe_until=d.probe_until, last_error_class=d.last_error_class, now=now)
-        source = "gateway"
-        if cls is None:
-            cls, source = llm_breaker.local.open_class(d.connection_key, model.key), "container"
-        if cls:
-            plan.circuit_skips.append((d.connection_key, cls))
-            plan.notes.append(f"{model.key}@{d.connection_key}: circuit open ({cls})")
-            observability.emit("llm_deployment_skip", stage=route.stage, model=model.key,
-                               connection=d.connection_key, reason="circuit_open", error_class=cls, source=source)
-            continue
-        plan.items.append(d)
+        if not _left_out(route, model, d, plan, now):
+            plan.items.append(d)
     return plan
+
+
+def _left_out(route: Route, model: Model, d: Deployment, plan: Plan, now: float) -> bool:
+    """True (with its note) when a callable deployment is left out now: TripPlanner's share of the connection used up
+    and enforced (AA-1143, ``connection_share.leave_out``: logged either way), else an open circuit (the CIS state from
+    the view, then this container's)."""
+    if connection_share.leave_out(route.stage, d.connection_key):
+        plan.notes.append(f"{model.key}@{d.connection_key}: TripPlanner's monthly share is used up")
+        return True
+    cls = llm_breaker.shared_skip_class(
+        connection_circuit_class=d.connection_circuit_class, circuit_open_until=d.circuit_open_until,
+        probe_until=d.probe_until, last_error_class=d.last_error_class, now=now)
+    source = "gateway"
+    if cls is None:
+        cls, source = llm_breaker.local.open_class(d.connection_key, model.key), "container"
+    if not cls:
+        return False
+    plan.circuit_skips.append((d.connection_key, cls))
+    plan.notes.append(f"{model.key}@{d.connection_key}: circuit open ({cls})")
+    observability.emit("llm_deployment_skip", stage=route.stage, model=model.key,
+                       connection=d.connection_key, reason="circuit_open", error_class=cls, source=source)
+    return True
 
 
 def as_deployment(model: Model, d: Any) -> Deployment:

@@ -302,6 +302,11 @@ TP_PLAN_CHAT_TENANT_MONTHLY_CAP_USD = 2.0
 # policy S283, pay per use): those app-wide caps only alert, and a read error degrades with a warning; an agency's own
 # AI sessions quota and AI budget stay hard. Edited on CIS Platform › Settings (TripPlanner tab).
 TP_SPEND_ENVIRONMENT = "dev"
+# AA-1143 (CIS 456: setting tripplanner.spend.connection_share_enforce): what TripPlanner does when its share of an LLM
+# connection's monthly budget (CIS AI gateway › Budgets, read through catalog.v_llm_connection_cap_v2) is used up.
+# False (log only, the first release of the shares): a log line, the call goes on. True: under the dev spend rules the
+# connection is left out of the route. The fallback when the setting cannot be read; edited on Platform › Settings.
+TP_CONNECTION_SHARE_ENFORCE = False
 # Sent by the BFF (web task) with the traveller's address and whether a traveller session is signed in. Trusted ONLY
 # when the request also carries the right x-tripplanner-key (only the BFF has it); otherwise ignored.
 CLIENT_IP_HEADER = "x-tp-client-ip"
