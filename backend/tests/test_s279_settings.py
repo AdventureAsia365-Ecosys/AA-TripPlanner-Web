@@ -44,6 +44,7 @@ SEED = {
     "tripplanner.spend.stage_cap_compose_usd": (0.0, 0, 200, False),  # AA-1126 (CIS 447): 0 = no stage cap
     "tripplanner.spend.stage_cap_search_usd": (0.0, 0, 200, False),
     "tripplanner.spend.near_cap_pct": (80, 50, 99, False),
+    "tripplanner.spend.connection_share_enforce": (False, None, None, False),   # AA-1143 (CIS 456): log only
 }
 TENANT = "7e1d0c4a-5b2f-4c3e-9a10-1096aa0a1096"
 OTHER = "7e1d0c4a-5b2f-4c3e-9a10-1096aa0a2222"

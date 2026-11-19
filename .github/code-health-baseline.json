@@ -11,12 +11,11 @@
   "backend/assembly/leads.py::validate": 22,
   "backend/assembly/plan_chat.py::build_proposal": 12,
   "backend/browse/catalog.py::fill_fallback_covers": 11,
-  "backend/browse/handler.py::route": 47,
+  "backend/browse/handler.py::route": 41,
   "backend/browse/search.py::_query_vector": 11,
   "backend/jobs/lead_deliver.py::retry": 12,
   "backend/jobs/redact.py::redact_payload": 15,
   "backend/scripts/prompt_registry_check.py::problems": 11,
-  "backend/shared/llm_gateway.py::deployment_plan": 11,
   "backend/shared/llm_gateway.py::generate_text": 13,
   "backend/shared/observability.py::before_send": 14,
   "backend/shared/tenant_assertion.py::verify": 14,
@@ -64,7 +63,7 @@
  "files": {
   "backend/assembly/handler.py": 1078,
   "backend/browse/catalog.py": 875,
-  "backend/shared/llm_gateway.py": 1446,
+  "backend/shared/llm_gateway.py": 1440,
   "backend/tests/test_assembly.py": 1632,
   "backend/tests/test_places_source_pg.py": 1239,
   "frontend/components/MapView.tsx": 1077

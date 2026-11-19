@@ -1038,6 +1038,13 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   stage would be logged but neither counted nor capped here, so a backfill never takes search/narration down.
   Over the cap narration falls back to AA text + neutral day lines (`ai_budget_exhausted`) and search
   answers the keyword ranking (200, `ai_budget_exhausted`; it was a 503 before AA-642 S0).
+- **Connection budget share (AA-1143, decision G3, CIS 455 / 456)**: a connection's monthly budget is one set of rows
+  in CIS (its total, one share per app, CIS taking the remainder; CIS AI gateway › Budgets). `backend/shared/
+  connection_share.py` reads TripPlanner's rows of `catalog.v_llm_connection_cap_v2` (by column name, cached 20 s,
+  refreshed by `load_route`, fails open). With no share of its own TripPlanner spends inside the CIS remainder (today);
+  with one, its own spend counts against it. A reached share is logged (`llm_connection_share_reached`, once per
+  connection and cache window); `deployment_plan` leaves the connection out only when the setting
+  `tripplanner.spend.connection_share_enforce` is on (default off: log only first) and the spend rules are dev.
 - **App profile (AA-1025 H1b, CIS 347)**: `backend/shared/app_profile.py` reads TripPlanner's row of the CIS app
   profile (`shared.llm_app_profile`, CIS 345) through `catalog.v_llm_app_profile_v1` (cached 20 s per container,
   fails open: no row / no view / a read error = AI on and no profile budget; `TP_APP_PROFILE=off` skips the read). AI
