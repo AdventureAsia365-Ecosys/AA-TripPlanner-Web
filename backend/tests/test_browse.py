@@ -268,8 +268,8 @@ async def test_route_method_not_allowed():
 @pytest.mark.asyncio
 async def test_route_countries_returns_list_and_cache_headers():
     pool = FakePool(fetch_rows=[
-        {"country": "Laos", "component_count": 120},
-        {"country": "Nepal", "component_count": 80},
+        {"country": "Laos", "component_count": 120, "tour_count": 3},
+        {"country": "Nepal", "component_count": 80, "tour_count": 0},
     ])
     resp = await h.route("GET", "/browse/countries", {}, pool=pool)
     assert resp["statusCode"] == 200
@@ -277,3 +277,4 @@ async def test_route_countries_returns_list_and_cache_headers():
     body = json.loads(resp["body"])
     assert body["countries"][0]["country"] == "Laos"
     assert body["countries"][0]["component_count"] == 120
+    assert [c["tour_count"] for c in body["countries"]] == [3, 0]   # AA-1130

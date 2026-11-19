@@ -8,6 +8,7 @@ Routes:
   GET /browse/stops?ids=<component uuid>,…    (AA-1041: stops by id with their place photo, for the trip panel
       and the read-only share / print view)
   GET /browse/routes?country=Nepal&days=10   (AA-674: whole-route proposals from real tours)
+      &tenant=<slug> on countries, routes and tour-route: an agency's planner, only the tours it sells (AA-1130)
   GET /browse/tour-route?tour_id=<uuid>&source_id=<id>  (AA-812: one tour's whole route, for
       "Customise"; source_id, when known, resolves the current tour_id)
   GET /browse/catalog/tours?country=&min_days=&max_days=&month=&sort=&limit=&offset=
@@ -120,8 +121,11 @@ async def route(
         country, days_raw = _q("country"), _q("days")
         if not country or not days_raw.isdigit() or not 2 <= int(days_raw) <= 30:
             return _resp(400, {"error": "country and days (2-30) required"}, _NO_STORE_HEADERS)
+        refused, scope = await _tenant_scope(query, pool)
+        if refused:
+            return refused
         async with pool.acquire() as conn:
-            data = await routes_mod.proposals(conn, country, int(days_raw))
+            data = await routes_mod.proposals(conn, country, int(days_raw), scope=scope)
         return _resp(200, data, _CACHE_HEADERS)
 
     # --- AA-812: catalog reads (CIS catalog views only) ---------------------------------------
@@ -195,10 +199,20 @@ async def route(
             return _resp(400, {"error": "source_id is malformed"}, _NO_STORE_HEADERS)
         if not tid and not sid:
             return _resp(400, {"error": "tour_id (uuid) or source_id required"}, _NO_STORE_HEADERS)
+        refused, scope = await _tenant_scope(query, pool)
+        if refused:
+            return refused
         async with pool.acquire() as conn:
             current = await routes_mod.resolve_tour_id(conn, tid or None, sid or None)
+            if scope is not None:
+                # AA-1130: an agency's planner opens only a tour the agency sells, under its own title.
+                key = (await conn.fetchval(routes_mod.SOURCE_BY_TOUR_SQL, current) if current else None) or sid
+                if key not in scope:
+                    return _resp(404, {"error": "no planner route for this tour", "tour": None}, _NO_STORE_HEADERS)
             proposal = await routes_mod.tour_route(conn, current) if current else None
             fallback = await routes_mod.tour_fallback(conn, current) if current and proposal is None else None
+        if scope is not None:
+            proposal, fallback = routes_mod.scope_tour_route(proposal, fallback, scope[key].get("title"))
         if proposal is None:
             # The planner pre-fills country + days and shows the tour's day list from `tour`.
             return _resp(404, {"error": "no planner route for this tour", "tour": fallback},
@@ -206,7 +220,10 @@ async def route(
         return _resp(200, {"tour_id": current, "proposal": proposal}, _CACHE_HEADERS)
 
     if _COUNTRIES_RE.match(path):
-        data = await countries_mod.list_countries(pool=pool)
+        refused, scope = await _tenant_scope(query, pool)
+        if refused:
+            return refused
+        data = await countries_mod.list_countries(pool=pool, scope=scope)
         return _resp(200, data, _CACHE_HEADERS)
 
     if _BY_COUNTRY_RE.match(path):
@@ -312,6 +329,27 @@ async def _tenant_site_answer(path: str, pool: Any) -> Optional[dict]:
         return _resp(404, {"error": "tenant not found"}, _NO_STORE_HEADERS)
     # The BFF keeps its own short cache; a suspension must not sit in a shared cache.
     return _resp(200, {"tenant": site}, _NO_STORE_HEADERS)
+
+
+async def _tenant_scope(query: dict, pool: Any) -> tuple[Optional[dict], Optional[dict[str, dict]]]:
+    """AA-1130 (S283 audit T1): (refusal, scope) for the route finder's reads (countries, routes, tour-route) of an
+    agency's planner, which names its tenant (`tenant=<slug>`, unsigned: the answer is the agency's public tour list).
+
+    No `tenant`: (None, None), every tour (AA's planner). A served agency: the tours it sells by source_id
+    (tenant_tours.served_scope), empty when it sells none; the AA-hosted demo tenant: None (it serves the AA
+    catalogue). An unknown or unserved slug is a 404 before any catalogue read; a lookup or view read that cannot
+    answer is a 503 no-store, never the unscoped AA list."""
+    v = query.get("tenant")
+    slug = str((v[0] if v else "") if isinstance(v, list) else (v or "")).strip()
+    if not slug:
+        return None, None
+    try:
+        site = await tenant_site_mod.lookup(slug, pool=pool)
+        if site is None:
+            return _resp(404, {"error": "tenant not found"}, _NO_STORE_HEADERS), None
+        return None, await tenant_tours_mod.served_scope(site, pool=pool)
+    except (tenant_site_mod.TenantLookupUnavailable, tenant_tours_mod.TenantToursUnavailable):
+        return _resp(503, {"error": "tenant tours unavailable"}, _NO_STORE_HEADERS), None
 
 
 def route_name(method: str, path: str) -> str:

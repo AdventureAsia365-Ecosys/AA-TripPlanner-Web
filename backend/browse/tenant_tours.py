@@ -61,6 +61,15 @@ BY_SLUG_SQL = f"""
 """
 
 
+# AA-1130 (S283 audit T1): the tours an agency sells, for the route finder of its planner (countries, routes,
+# tour-route): source id, the agency's title, the tour's country and length. No text beyond the title.
+SCOPE_SQL = f"""
+    SELECT t.source_id, t.title, t.country, t.duration_days
+    FROM {VIEW} t
+    WHERE t.tenant_id = $1::uuid
+"""
+
+
 class TenantToursUnavailable(Exception):
     """The view could not be read (database or pool error): unknown, not "no tours"."""
 
@@ -121,6 +130,18 @@ async def _fetch(pool: Any, sql: str, *args: Any) -> Optional[list]:
 def serves_aa_catalogue(site: dict) -> bool:
     """True for the AA-hosted tenant only (config.is_aa_hosted on the tenant id); the tenant's `kind` plays no part."""
     return config.is_aa_hosted(site.get("tenant_id"))
+
+
+async def served_scope(site: dict, *, pool: Any) -> Optional[dict[str, dict]]:
+    """AA-1130: the tours a served tenant sells, {source_id: {title, country, duration_days}}, for its planner's route
+    finder. None for the AA-hosted tenant (it serves the AA catalogue, so nothing is narrowed); an agency that sells
+    no tour, or the view absent (before CIS 404), is an empty scope (the finder proposes nothing, never AA's tours).
+    A read error raises TenantToursUnavailable."""
+    if serves_aa_catalogue(site):
+        return None
+    rows = await _fetch(pool, SCOPE_SQL, site["tenant_id"]) or []
+    return {r["source_id"]: {"title": r["title"], "country": r["country"], "duration_days": r["duration_days"]}
+            for r in rows}
 
 
 async def list_tours(site: dict, q: dict, *, pool: Any) -> dict:

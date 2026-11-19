@@ -344,3 +344,17 @@ async def test_a_synthetic_demo_agency_lists_its_own_tours_and_the_aa_tenant_the
     assert empty["source"] == "tenant" and empty["total"] == 0 and empty["tours"] == []
     aa = await tenant_tours.list_tours(await tenant_site.lookup("aa-tripplanner", pool=pool), q, pool=pool)
     assert aa["source"] == "aa" and aa["total"] == 99
+
+
+async def test_the_route_finder_scope_is_each_agencys_own_tours_as_the_runtime_role(db, tp_conn):
+    """AA-1130: tenant_tours.SCOPE_SQL reads the agency's rows only (source id, its title, country, length); an agency
+    with none has an empty scope; the AA-hosted tenant is not narrowed (None, no read)."""
+    pool = _OneConnPool(tp_conn)
+    a = await tenant_tours.served_scope(await tenant_site.lookup("quillmere-voyages", pool=pool), pool=pool)
+    assert a == {"a1a1a1a1-0000-4000-8000-000000000001": {"title": "Quillmere fern valley walk", "country": "Laos",
+                                                         "duration_days": 4}}
+    b = await tenant_tours.served_scope(await tenant_site.lookup("ottervale-journeys", pool=pool), pool=pool)
+    assert set(b) == {"b1b1b1b1-0000-4000-8000-000000000001"}
+    assert await tenant_tours.served_scope(await tenant_site.lookup("audit-larchwick-tours", pool=pool),
+                                           pool=pool) == {}
+    assert await tenant_tours.served_scope(await tenant_site.lookup("aa-tripplanner", pool=pool), pool=pool) is None

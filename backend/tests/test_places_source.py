@@ -99,10 +99,10 @@ async def test_tiles_read_the_catalog_views_and_carry_located_by():
 
 
 async def test_countries_and_by_country():
-    pool = RecordingPool([("GROUP BY d.country", [{"country": "Laos", "component_count": 120}]),
+    pool = RecordingPool([("GROUP BY d.country", [{"country": "Laos", "component_count": 120, "tour_count": 4}]),
                           ("WHERE d.country = $1", [DEST_ROW])])
     resp = await h.route("GET", "/browse/countries", {}, pool=pool)
-    assert json.loads(resp["body"]) == {"countries": [{"country": "Laos", "component_count": 120}]}
+    assert json.loads(resp["body"]) == {"countries": [{"country": "Laos", "component_count": 120, "tour_count": 4}]}
     resp = await h.route("GET", "/browse/by-country", {"country": "Laos"}, pool=pool)
     assert json.loads(resp["body"])["destinations"][0]["precision"] == "point"
     _assert_cis_only(pool)
@@ -249,7 +249,7 @@ def _graph_rules():
         ("FROM catalog.v_tour_stop s JOIN catalog.v_destination", stops),
         ("FROM catalog.v_tour_component", comps),
         ("SELECT source_id, tour_id::text AS tour_id, title", [{"source_id": SRC_A, "tour_id": TOUR_A,
-                                                                "title": "Mekong Valley"}]),
+                                                                "title": "Mekong Valley", "duration_days": 3}]),
         ("SELECT source_id FROM catalog.v_tour WHERE tour_id", [{"source_id": SRC_A}]),
         ("SELECT title FROM catalog.v_tour", [{"title": "Mekong Valley"}]),
     ]
