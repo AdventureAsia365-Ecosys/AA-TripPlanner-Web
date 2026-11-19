@@ -13,6 +13,9 @@
 # Environment: AA_PREPUSH=full (same as --full), AA_PREPUSH_BASE=<ref> (default origin/main),
 #   AA_PREPUSH_VENV=<venv dir> (Python 3.12 env with backend/requirements.txt installed at its pins),
 #   AA_PREPUSH_PG_DSN=<superuser DSN of a throwaway local PostgreSQL 15 + pgvector> (runs the migration replays).
+# Lean guard (AA-1161): every mode but --ci also runs tools/repo/lean_guard.py on <base>...HEAD (change-guard.yml job
+#   `lean`): a raster image > 500 KiB, > 10 MiB of images, a dist/**/*.zip, an ELF / Mach-O / PE binary or a file
+#   > 5 MiB that .lean-allow does not list blocks the push; a missing base is a note, not a block.
 # Bypass once: git push --no-verify. Uninstall: git config --unset core.hooksPath.
 #
 # Not run locally (CI only): the PostgreSQL 15 replays and catalog-view SQL tests (unless AA_PREPUSH_PG_DSN is set
@@ -403,6 +406,10 @@ fail_setup() {
 run_check() {
   local id="$1"
   case "$id" in
+    lean-guard)
+      run_step "$id" "" "change-guard.yml / lean repo guard" \
+        "python3 -B tools/repo/lean_guard.py --base $BASE --allow-missing-base" -- \
+        python3 -B tools/repo/lean_guard.py --base "$BASE" --allow-missing-base ;;
     resource-ids)
       run_step "$id" "" "ci.yml / Backend (pytest) / No literal AWS resource IDs" \
         "python3 .github/scripts/check_resource_ids.py" -- python3 .github/scripts/check_resource_ids.py ;;
@@ -596,6 +603,8 @@ if [[ "$MODE" == "fast" ]]; then
 fi
 
 mapfile -t CHECKS < <(plan_checks "$MODE" "${PLAN_INPUT[@]}")
+# AA-1161: the lean guard reads the commits, not the diff selection, so it runs on every local push (CI: job `lean`).
+[[ "$MODE" != "ci" ]] && CHECKS+=(lean-guard)
 echo "pre-push ($MODE mode): ${#CHANGED[@]} file(s) changed vs $BASE; checks: ${CHECKS[*]}"
 [[ $PLAN_ONLY -eq 1 ]] && exit 0
 if [[ "$MODE" == "fast" && -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]]; then
