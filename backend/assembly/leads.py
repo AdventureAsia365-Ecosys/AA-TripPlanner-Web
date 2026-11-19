@@ -35,7 +35,9 @@ Delivery:
   * webhook: one signed POST right after the commit (``deliver_webhook``, ``config.LEAD_WEBHOOK_TIMEOUT_S``), then the
     daily run retries; ``X-AA-Signature: t=<unix s>,v1=<hex HMAC-SHA256(key, "<t>." + body)>``, key per tenant =
     HMAC-SHA256(master, "aa-tripplanner lead webhook v1:" + tenant_id) as its 64-character lowercase hex text, used as
-    ASCII bytes (``webhook_key``; AA hands the tenant its key); only a public address is ever posted to
+    ASCII bytes (``webhook_key``); since AA-1139 the agency owner rotates it in the agency app (tp-035 keeps the
+    version n, the key of version n >= 1 adds ":" + n to the message) and sees the new key once; only a public address
+    is ever posted to
     (``urllib_post`` refuses a private, loopback or link-local one);
   * email: one SES e-mail right after the commit (``deliver_email``), Reply-To the traveller, the same retries. The
     sender is AA's verified SES address (``config.TP_LEAD_EMAIL_FROM``) under the agency's trading name as its display
@@ -79,6 +81,8 @@ MAX_ADULTS, MAX_CHILDREN = 50, 20
 MAX_TOURS, MAX_STOPS, MAX_COUNTRIES, MAX_DAYS = 30, 12, 12, 90
 PAGE_MAX = 50
 WEBHOOK_KEY_LABEL = b"aa-tripplanner lead webhook v1:"
+# tp-035 (AA-1139): the version of a tenant's webhook signing key (scope tenant:<uuid>; no row = version 0).
+KEY_VERSION_SQL = "SELECT version FROM tripplanner.lead_webhook_key WHERE scope = $1"
 
 VIEW = "catalog.v_tenant_tripplanner_v1"
 # Column names, never * (the CIS test test_aa1038_migration_390.py runs this exact statement as tripplanner).
@@ -315,9 +319,37 @@ def _secret_key() -> Optional[bytes]:
     return value
 
 
-def webhook_key(master: bytes, tenant_id: str) -> bytes:
-    """The tenant's webhook signing key (hex of HMAC-SHA256(master, label + tenant id), as bytes)."""
-    return hmac.new(master, WEBHOOK_KEY_LABEL + tenant_id.encode(), hashlib.sha256).hexdigest().encode()
+def webhook_key(master: bytes, tenant_id: str, version: int = 0) -> bytes:
+    """The tenant's webhook signing key as bytes: the hex of HMAC-SHA256(master, label + tenant id) for version 0 (no
+    rotation yet, the key every tenant had before AA-1139), and of HMAC-SHA256(master, label + tenant id + ":" + n)
+    for version n >= 1 (``tripplanner.lead_webhook_key``, tp-035: the agency owner rotates it in the agency app)."""
+    if version < 0:
+        raise ValueError("a key version is 0 or more")
+    message = WEBHOOK_KEY_LABEL + tenant_id.encode() + (f":{version}".encode() if version else b"")
+    return hmac.new(master, message, hashlib.sha256).hexdigest().encode()
+
+
+async def webhook_key_version(conn: Any, tenant_id: str) -> Optional[int]:
+    """The version of the tenant's webhook signing key (tp-035; no row = 0). Before tp-035 is applied the table is
+    missing (42P01): version 0, the key every tenant has then. Any other read error is None: the caller does not sign
+    with a key that may be the wrong one (``webhook_key_unavailable``, the lead waits for the daily retry). A read
+    inside a transaction runs in a savepoint, so a failure never aborts the caller's transaction."""
+    async def read() -> Optional[int]:
+        value = await conn.fetchval(KEY_VERSION_SQL, f"tenant:{tenant_id}")
+        return int(value) if value is not None else 0
+
+    try:
+        in_tx = getattr(conn, "is_in_transaction", None)
+        if callable(in_tx) and in_tx():
+            async with conn.transaction():
+                return await read()
+        return await read()
+    except Exception as e:  # noqa: BLE001 — only the type and SQLSTATE are logged
+        if getattr(e, "sqlstate", None) == "42P01":
+            return 0
+        observability.emit("lead_webhook_key_version_unreadable", error=type(e).__name__,
+                           sqlstate=getattr(e, "sqlstate", None))
+        return None
 
 
 def channel_ready(route: Route, *, resolve: Optional[Resolver] = None) -> bool:
@@ -636,10 +668,13 @@ def urllib_post(url: str, body: bytes, headers: dict, timeout: float, *, resolve
 
 
 def deliver_webhook(url: str, payload: dict, tenant_id: str, *, post: Poster = urllib_post,
-                    now: Optional[int] = None, timeout: Optional[float] = None) -> Optional[str]:
-    """None when the tenant answered 2xx, else an error code (never the URL, the body or an exception text)."""
+                    now: Optional[int] = None, timeout: Optional[float] = None,
+                    key_version: Optional[int] = 0) -> Optional[str]:
+    """None when the tenant answered 2xx, else an error code (never the URL, the body or an exception text).
+    ``key_version`` is the tenant's signing key version (:func:`webhook_key_version`); None = unreadable, so nothing
+    is sent (``webhook_key_unavailable``: the daily run retries)."""
     master = webhook_master_key()
-    if master is None:
+    if master is None or key_version is None:
         return "webhook_key_unavailable"
     if not url.startswith("https://"):
         return "webhook_url_not_https"
@@ -647,7 +682,7 @@ def deliver_webhook(url: str, payload: dict, tenant_id: str, *, post: Poster = u
     ts = int(now if now is not None else time.time())
     headers = {"Content-Type": "application/json", "X-AA-Contract": CONTRACT,
                "Idempotency-Key": payload["idempotency_key"],
-               "X-AA-Signature": signature(webhook_key(master, tenant_id), body, ts)}
+               "X-AA-Signature": signature(webhook_key(master, tenant_id, key_version), body, ts)}
     try:
         status = post(url, body, headers, timeout if timeout is not None else config.LEAD_WEBHOOK_TIMEOUT_S)
     except Exception as e:  # noqa: BLE001
@@ -747,7 +782,9 @@ async def deliver_now(conn: Any, row_id: int, route: Route, payload: dict, **kw:
     """One delivery attempt of a webhook / e-mail lead after its commit: delivered = redacted at once; a failure
     counts the attempt and leaves the row for the daily run. Returns the error code or None."""
     if route.channel == "webhook":
-        error = deliver_webhook(route.webhook_url or "", payload, route.tenant_id, post=kw.get("post", urllib_post))
+        version = await webhook_key_version(conn, route.tenant_id)
+        error = deliver_webhook(route.webhook_url or "", payload, route.tenant_id, post=kw.get("post", urllib_post),
+                                key_version=version)
     elif route.channel == "email":
         error = deliver_email(route.email or "", payload, route.name, send=kw.get("send", ses_mailer))
     else:

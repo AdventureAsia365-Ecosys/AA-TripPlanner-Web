@@ -31,6 +31,9 @@ DEV_M2M_CRM_CLIENT_ID = "1lstqvrbqc4sgrbhf3143cqot7"  # aa-m2m-dev-crm (public i
 ENV_ISSUER = "TP_M2M_ISSUER"
 ENV_CLIENT_ID = "TP_M2M_CRM_CLIENT_ID"
 SCOPE_LEADS_DELIVER = "tripplanner.leads/deliver"
+# AA-1139: the agency app's TripPlanner module (leads with their delivery status, usage, the webhook signing key:
+# backend/assembly/planner_admin.py). A separate scope, so the lead pull's token cannot rotate a key.
+SCOPE_LEADS_MANAGE = "tripplanner.leads/manage"
 CLIENT_NOT_ALLOWED = "client not allowed"   # the shared verifier's message for a valid token of another client
 
 _verifier: Optional[MultiIssuerVerifier] = None

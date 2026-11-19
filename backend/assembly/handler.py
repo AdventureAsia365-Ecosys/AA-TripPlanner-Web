@@ -53,6 +53,7 @@ from backend.assembly import leads as leads_mod
 from backend.assembly import handoff as handoff_mod
 from backend.assembly import master_content
 from backend.assembly import narration_cache
+from backend.assembly import planner_admin
 from backend.assembly import notify as notify_mod
 from backend.assembly import registration as reg_mod
 from backend.assembly import account as account_mod
@@ -103,6 +104,10 @@ _ROUTE_NAMES = (
     ("GET", re.compile(r"^/me/trips$"), "me_trips"),
     ("GET", re.compile(r"^/trip/m2m/v1/tenants/[^/]+/leads$"), "m2m_leads"),
     ("POST", re.compile(r"^/trip/m2m/v1/tenants/[^/]+/leads/[^/]+/ack$"), "m2m_lead_ack"),
+    ("GET", re.compile(r"^/trip/m2m/v1/tenants/[^/]+/planner/leads$"), "m2m_planner_leads"),
+    ("GET", re.compile(r"^/trip/m2m/v1/tenants/[^/]+/planner/usage$"), "m2m_planner_usage"),
+    ("GET", re.compile(r"^/trip/m2m/v1/tenants/[^/]+/planner/webhook-key$"), "m2m_planner_key"),
+    ("POST", re.compile(r"^/trip/m2m/v1/tenants/[^/]+/planner/webhook-key/rotate$"), "m2m_planner_key_rotate"),
 )
 
 _HEADERS = {"content-type": "application/json", "cache-control": "no-store"}
@@ -756,6 +761,9 @@ async def _send_lead(conn, trip_id: str, body: dict, guest_token: Optional[str],
 _M2M_PREFIX = "/trip/m2m/"
 _M2M_LEADS_RE = re.compile(r"^/trip/m2m/v1/tenants/([^/]+)/leads$")
 _M2M_ACK_RE = re.compile(r"^/trip/m2m/v1/tenants/([^/]+)/leads/([^/]+)/ack$")
+# AA-1139: the agency app's TripPlanner module (planner_admin.py), scope tripplanner.leads/manage.
+_M2M_PLANNER_RE = re.compile(r"^/trip/m2m/v1/tenants/([^/]+)/planner/(leads|usage|webhook-key|webhook-key/rotate)$")
+_PLANNER_METHODS = {"leads": "GET", "usage": "GET", "webhook-key": "GET", "webhook-key/rotate": "POST"}
 
 
 def is_m2m_path(path: str) -> bool:
@@ -770,7 +778,12 @@ async def serve_m2m(method: str, path: str, body: dict, authorization: Optional[
     The CRM client is a platform credential (one client, every tenant): only a tenant whose route resolves to crm NOW
     is served (else 404 tenant_not_on_crm), so a leaked token reaches no tenant that left the CRM add-on or was never
     on it. A list call is the tenant's beacon (leads.mark_crm_pull): the crm channel takes leads only while it is
-    fresh."""
+    fresh.
+
+    AA-1139: ``.../planner/*`` (the agency app's TripPlanner module) is served by :func:`serve_m2m_planner` with its
+    own scope."""
+    if _M2M_PLANNER_RE.match(path):
+        return await serve_m2m_planner(method, path, body, authorization, acquire=acquire, verify=verify)
     verify = verify or m2m_auth.verify_bearer
     try:
         await verify(authorization)
@@ -820,6 +833,57 @@ async def serve_m2m(method: str, path: str, body: dict, authorization: Optional[
             return _resp(200, ack) if ack is not None else _resp(404, {"error": "lead_not_found"})
     except Exception as e:  # noqa: BLE001
         observability.emit("assembly_error", route="m2m_leads", error=type(e).__name__)
+        observability.capture(e)
+        return _resp(503, {"error": "unavailable"})
+
+
+async def serve_m2m_planner(method: str, path: str, body: dict, authorization: Optional[str], *, acquire=None,
+                            verify=None) -> dict:
+    """AA-1139 (contract lead.submitted.v1 1.1, tag planner): GET .../planner/leads, .../planner/usage,
+    .../planner/webhook-key and POST .../planner/webhook-key/rotate for the agency app (planner_admin.py). The bearer
+    (scope tripplanner.leads/manage) is verified before any SQL; the connection is then bound to the path's tenant
+    (source m2m). A tenant CIS does not list with a TripPlanner subscription is 404 unknown_tenant."""
+    verify = verify or m2m_auth.verify_bearer
+    try:
+        await verify(authorization, m2m_auth.SCOPE_LEADS_MANAGE)
+    except m2m_auth.Refused as e:
+        observability.emit("m2m_refused", code=e.code)
+        return _resp(e.status, {"error": e.code})
+    match = _M2M_PLANNER_RE.match(path)
+    if match is None or _PLANNER_METHODS[match.group(2)] != method:
+        return _resp(404, {"error": "not_found"})
+    tenant_raw, what = match.group(1), match.group(2)
+    if not leads_mod.is_uuid(tenant_raw):
+        return _resp(400, {"error": "invalid_tenant_id"})
+    limit = planner_admin.DEFAULT_LIMIT
+    actor = ""
+    try:
+        if what == "leads":
+            raw = body.get("limit", planner_admin.DEFAULT_LIMIT)
+            if not str(raw).isdigit() or not 1 <= int(raw) <= leads_mod.PAGE_MAX:
+                return _resp(400, {"error": "invalid_limit"})
+            limit = int(raw)
+        if what == "webhook-key/rotate":
+            actor = planner_admin.valid_actor(body)
+    except planner_admin.Refused as e:
+        return _resp(e.status, {"error": e.code})
+    try:
+        if acquire is None:
+            from backend.shared.db import get_pool
+            acquire = (await get_pool()).acquire
+        async with acquire() as conn, tenant.bound(conn, tenant_raw, source=tenant.SOURCE_M2M) as tid:
+            row = await planner_admin.tenant_row(conn, tid)
+            if what == "leads":
+                return _resp(200, await planner_admin.leads(conn, tid, limit))
+            if what == "usage":
+                return _resp(200, await planner_admin.usage(conn, tid, row["ai_sessions_monthly"]))
+            if what == "webhook-key":
+                return _resp(200, await planner_admin.key_info(conn, tid))
+            return _resp(200, await planner_admin.rotate_key(conn, tid, actor))
+    except planner_admin.Refused as e:
+        return _resp(e.status, {"error": e.code})
+    except Exception as e:  # noqa: BLE001
+        observability.emit("assembly_error", route=f"m2m_planner_{what}", error=type(e).__name__)
         observability.capture(e)
         return _resp(503, {"error": "unavailable"})
 
