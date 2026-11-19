@@ -53,6 +53,7 @@ from backend.assembly import leads as leads_mod
 from backend.assembly import handoff as handoff_mod
 from backend.assembly import master_content
 from backend.assembly import narration_cache
+from backend.assembly.planner_admin import m2m as planner_m2m
 from backend.assembly import notify as notify_mod
 from backend.assembly import registration as reg_mod
 from backend.assembly import account as account_mod
@@ -1047,11 +1048,10 @@ def _handle(event, context):  # pragma: no cover - thin AWS adapter
         return asyncio.get_event_loop().run_until_complete(run_extraction_event(event["extraction"]))
 
     method, path, body = _extract_request(event)
-    # AA-1038 slice 3: the CRM's lead pull carries an M2M bearer token instead of the BFF's edge key (m2m_auth.py);
-    # every other route keeps the edge key check below.
+    # The CRM's M2M calls (AA-1038 lead pull, AA-1139 .../planner/*) carry a bearer token; the rest the edge key below.
     if is_m2m_path(path):
         authorization = auth._headers_lower(event).get("authorization")  # noqa: SLF001
-        return asyncio.get_event_loop().run_until_complete(serve_m2m(method, path, body, authorization))
+        return asyncio.get_event_loop().run_until_complete(planner_m2m(method, path, body, authorization, serve_m2m))
 
     denied = auth.check_event(event)
     if denied is not None:

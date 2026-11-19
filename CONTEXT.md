@@ -921,11 +921,24 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   CRM stored it). Only a public address is ever posted to (`leads.public_address_check`, checked again at each
   POST). webhook: one signed POST right after the commit (`X-AA-Signature: t=<unix s>,v1=<hex HMAC-SHA256(key,
   "<t>." + body)>`, key per tenant = HMAC-SHA256(master, "aa-tripplanner lead webhook v1:" + tenant id), master from
-  `TP_LEAD_WEBHOOK_KEY` or Secrets Manager `tripplanner/<env>/lead-webhook-key`). email: one SES e-mail from
+  `TP_LEAD_WEBHOOK_KEY` or Secrets Manager `tripplanner/<env>/lead-webhook-key`; AA-1139: the key has a version,
+  tp-035 `tripplanner.lead_webhook_key`, no row = version 0 = that key, version n >= 1 adds `":" + n` to the message;
+  an unreadable version sends nothing, `webhook_key_unavailable`). email: one SES e-mail from
   `TP_LEAD_EMAIL_FROM` under the agency's trading name as the sender's display name (AA-1116, `leads.sender_address`:
   control characters out, MIME encoded when not ASCII), Reply-To the traveller. Delivered = payload redacted at once
   (ids only). The live proof of the webhook and e-mail channels on a synthetic agency (signature, Reply-To, sender
   name) is the root `tools/uat/tp-lead-proof.cjs` (root runbook `docs/ops/runbooks/pilot-rehearsal.md` step 6b).
+- **The agency app's module** (AA-1139, contract `lead.submitted.v1` 1.1 tag `planner`,
+  `backend/assembly/planner_admin.py`; notes `docs/implementation-notes/AA-1139.md`): `/trip/m2m/v1/tenants/{id}/planner/`
+  `leads` (the newest leads, ids / times / channel / status pending | retrying | delivered | rejected | expired /
+  tries / last error code, and this UTC month's counts; never a traveller field), `usage` (this month's AI sessions
+  against `ai_sessions_monthly`, the leads of the last 24 hours against the lead cap setting), `webhook-key` (version
+  and time, never the key) and `POST webhook-key/rotate` (`{"actor": "crm-member:<uuid>"}`, or `"studio-member:<uuid>"` for the Content
+  studio owner of an agency without the CRM add-on: the next version and its
+  key, shown once; 503 `webhook_key_unavailable` without a master secret, nothing written). An M2M token of the CRM
+  client with its own scope `tripplanner.leads/manage` (the pull's `deliver` token reaches none of them), checked
+  before any SQL; the connection binds the path's tenant; a tenant CIS does not list is 404 `unknown_tenant`. The
+  caller is the AA-Partner CRM API, which checks the person's agency role first.
 - **Hold window.** Jobs Lambda kind `tp_lead_deliver` (daily, 3 attempts): FIRST, batch after batch (500 rows per
   transaction, 90 s budget, a failing batch tried again at once), every pending lead older than
   `TP_LEAD_HOLD_DAYS` (clamped 3..7) minus two tick intervals and a 1 h margin (`leads.hold_cutoff`, 4 d 23 h at 7
