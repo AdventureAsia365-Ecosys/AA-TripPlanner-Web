@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.17.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.16.0...v0.17.0) (2026-11-21)
+
+
+### Features
+
+* AI spend rules per environment, the agency notice when AI sessions are used up, the degraded-check staff bell and the stage caps as settings ([#276](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/276)) ([5b5f8e6](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/5b5f8e6f612469a7527331533bd0e1d2dda732f9))
+* full CSP and COOP on every TripPlanner response ([#279](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/279)) ([ea5c608](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/ea5c60875de557cb468ad434f2ff6d8780a27819))
+* the agency app's TripPlanner module routes (leads with their delivery status, usage, rotatable webhook key) ([#288](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/288)) ([1498c1a](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/1498c1ab231305c5e636792a2c67f04630391a3f))
+* tp-034 the AI notice events in the TripPlanner outbox and the contract view CIS pulls them from ([#277](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/277)) ([a77366c](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/a77366cbec3c0aa35b347e443280f23c324767ed))
+* tp-035 the version of each tenant's lead webhook signing key, so an agency can rotate it ([#287](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/287)) ([16ca29e](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/16ca29e144aa97a6bf37f14910741b3d0c91098b))
+* TripPlanner lead e-mails show the agency's name as the sender ([#280](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/280)) ([5111305](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/5111305df0845355c457e9757d321d5f14df840a))
+* TripPlanner reads its connection budget share from the CIS cap view, log only first ([#284](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/284)) ([a17de39](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/a17de39dcbaf5d334c96a5a8d5e659a85b98537a))
+
+
+### Bug Fixes
+
+* agency planner route finder, legal links and tour page call to action (S283 audit T1) ([#282](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/282)) ([0d626f6](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/0d626f617b2857f765c85fdde9f806b6fd288f20))
+
 ## [0.16.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.15.0...v0.16.0) (2026-11-17)
 
 
