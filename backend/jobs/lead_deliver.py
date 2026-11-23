@@ -28,7 +28,14 @@ Each run, in this order (ids, counts and error codes only in the result, DM-6.3)
 2. **Rejected** (``rejected`` part, read only): leads the CRM acknowledged ``rejected`` since the previous tick
    (``delivery_error`` ``rejected[:<reason>]``), counted per reason. A rejected lead is a traveller's request the agency
    never sees: ``attention: ["lead_rejected_by_crm"]`` (the assembly Lambda already logged an ERROR line at the ack).
-3. **Retry** (``retry`` part): pending ``lead.submitted`` rows of channel webhook / email, oldest first, at most
+3. **Re-route** (``reroute`` part, AA-1160): pending CRM leads (inside their hold) of a tenant whose route is no longer
+   crm because the CRM holds no agency for it (CIS 475 ``crm_agency`` false and no fresh CRM pull: ``leads.load_route``)
+   move once to the agency's own webhook / e-mail route: ``delivery_channel`` changes in one guarded UPDATE (only while
+   the row is still a pending crm row, so a second run, or a CRM ack in between, changes nothing), counted per channel
+   in the job result and logged ``lead_rerouted`` (ids only). The retry part right after delivers them. A tenant whose
+   fallback is none, or a route CIS cannot answer, keeps its rows (the hold ends them, loudly). S285 found such leads:
+   crm.core without a CRM agency, skipped by the CRM pull (``skipped_agency``), reaching nobody. A dry run counts only.
+4. **Retry** (``retry`` part): pending ``lead.submitted`` rows of channel webhook / email, oldest first, at most
    :data:`RETRY_MAX` per run and at most :data:`RETRY_BUDGET_S` seconds of wall clock (what is left is ``deferred``
    to the next run). The tenant's route is read again from CIS (``catalog.v_tenant_tripplanner_v1``): a route whose
    channel is no longer the row's is not retried (``route_changed``; the hold ends it). One attempt per row
@@ -116,6 +123,52 @@ def validate_payload(payload: Any) -> dict[str, Any]:
     if "dry_run" in payload and not isinstance(payload["dry_run"], bool):
         raise PermanentError("bad_payload")
     return payload
+
+
+# AA-1160: pending CRM leads inside the hold, oldest first (the re-route candidates), and the guarded switch.
+REROUTE_PICK_SQL = (
+    "SELECT id, tenant_id::text AS tenant_id, payload->>'lead_id' AS lead_id FROM tripplanner.outbox "
+    "WHERE event = 'lead.submitted' AND delivery_channel = 'crm' AND delivered_at IS NULL AND redacted_at IS NULL AND created_at >= $1 "
+    "ORDER BY id LIMIT $2")
+REROUTE_SQL = (
+    "UPDATE tripplanner.outbox SET delivery_channel = $2 WHERE id = $1 AND event = 'lead.submitted' "
+    "AND delivery_channel = 'crm' AND delivered_at IS NULL AND redacted_at IS NULL")
+FALLBACK_CHANNELS = ("webhook", "email")
+
+
+def _reroute_counts() -> dict[str, Any]:
+    return {"candidates": 0, "rerouted": 0, "by_channel": {}, "kept_crm": 0, "no_fallback": 0}
+
+
+async def reroute(conn: Any, cutoff: datetime, *, dry_run: bool = False) -> dict[str, Any]:
+    """Move the pending CRM leads of tenants without a CRM agency to their fallback route, once (module docstring)."""
+    counts = _reroute_counts()
+    routes: dict[str, Any] = {}
+    for r in await conn.fetch(REROUTE_PICK_SQL, cutoff, RETRY_MAX):
+        counts["candidates"] += 1
+        tid = r["tenant_id"]
+        if tid not in routes:
+            try:
+                routes[tid] = await leads.load_route(conn, tid)
+            except leads.LeadRefused:
+                routes[tid] = None
+        route = routes[tid]
+        if route is not None and route.channel == "crm":
+            counts["kept_crm"] += 1
+            continue
+        if route is None or route.channel not in FALLBACK_CHANNELS:
+            counts["no_fallback"] += 1
+            continue
+        if dry_run:
+            counts["by_channel"][route.channel] = counts["by_channel"].get(route.channel, 0) + 1
+            continue
+        done = await conn.execute(REROUTE_SQL, r["id"], route.channel)
+        if int(str(done).rsplit(" ", 1)[-1] or 0):
+            counts["rerouted"] += 1
+            counts["by_channel"][route.channel] = counts["by_channel"].get(route.channel, 0) + 1
+            observability.emit("lead_rerouted", tenant_id=tid, lead_id=str(r["lead_id"]),
+                               from_channel="crm", to_channel=route.channel)
+    return counts
 
 
 def _retry_counts() -> dict[str, int]:
@@ -254,10 +307,11 @@ async def run(pool: Any, job: Job, *, now: Optional[datetime] = None,
         # Retention first, committed batch by batch: delivery can never hold it back.
         expired = await expire(conn, cutoff, dry_run=dry_run, budget_s=expire_budget_s, clock=clock, sleep=sleep)
         rejected = await rejected_since(conn, at - leads.EXPIRY_TICK_INTERVAL)
+        rerouted = await reroute(conn, cutoff, dry_run=dry_run)
         retried = (_retry_counts() if dry_run
                    else await retry(conn, cutoff, deliver=deliver, budget_s=budget_s, clock=clock))
     result: dict[str, Any] = {"mode": "dry_run" if dry_run else "live", "hold_days": leads.hold_days(),
-                              "expire": expired, "rejected": rejected, "retry": retried}
+                              "expire": expired, "rejected": rejected, "reroute": rerouted, "retry": retried}
     attention = []
     if expired["expired"]:
         attention.append(ATTENTION_EXPIRED)
@@ -272,5 +326,6 @@ async def run(pool: Any, job: Job, *, now: Optional[datetime] = None,
     observability.emit("lead_deliver_run", **{f"retry_{k}": v for k, v in retried.items()},
                        expire_candidates=expired["candidates"], expired=expired["expired"],
                        expire_batches=expired["batches"], expire_left=expired["left"], rejected=rejected["count"],
+                       rerouted=rerouted["rerouted"], reroute_no_fallback=rerouted["no_fallback"],
                        **{f"expired_{k}": v for k, v in sorted(expired["by_channel"].items())}, mode=result["mode"])
     return result

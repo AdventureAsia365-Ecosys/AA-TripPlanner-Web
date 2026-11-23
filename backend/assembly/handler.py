@@ -805,7 +805,8 @@ async def serve_m2m(method: str, path: str, body: dict, authorization: Optional[
             acquire = (await get_pool()).acquire
         async with acquire() as conn, tenant.bound(conn, tenant_raw, source=tenant.SOURCE_M2M) as tid:
             try:
-                route_ = await leads_mod.load_route(conn, tid)
+                # The CRM's own call proves its agency: the crm route holds while the add-on is live (AA-1160).
+                route_ = await leads_mod.load_route(conn, tid, crm_pull=True)
             except leads_mod.LeadRefused as e:
                 if e.status == 503:
                     return _resp(503, {"error": "unavailable"})

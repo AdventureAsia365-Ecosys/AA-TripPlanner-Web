@@ -33,8 +33,9 @@ class FakeConn:
     """Records the order of statements; pending rows to retry and old rows to expire (an expired row is gone from
     the pending set, as in the database). ``locked`` ids are passed over by SKIP LOCKED but still counted."""
 
-    def __init__(self, retry_rows=(), old_rows=(), migrated=True, rejected=(), locked=(), fail_picks=0):
+    def __init__(self, retry_rows=(), old_rows=(), migrated=True, rejected=(), locked=(), fail_picks=0, crm_rows=()):
         self.retry_rows = list(retry_rows)
+        self.crm_rows = list(crm_rows)          # AA-1160: pending CRM leads (re-route candidates)
         self.old_rows = list(old_rows)
         self.migrated = migrated
         self.rejected = list(rejected)
@@ -68,6 +69,9 @@ class FakeConn:
             return [r for r in self.old_rows if r["id"] not in self.locked][: args[1]]
         if sql == lead_deliver.REJECTED_SINCE_SQL:
             return self.rejected
+        if sql == lead_deliver.REROUTE_PICK_SQL:
+            self.log.append("reroute_pick")
+            return [{"id": r["id"], "tenant_id": r["tenant_id"], "lead_id": f"lead-{r['id']}"} for r in self.crm_rows]
         raise AssertionError(sql)
 
     async def execute(self, sql, *args):
@@ -75,6 +79,14 @@ class FakeConn:
             self.scope_log.append("scope" if sql == tenant.SYSTEM_SCOPE_SQL else "unscope")
             return "SELECT 1" if sql == tenant.SYSTEM_SCOPE_SQL else "RESET"
         assert self.scope_log[-1:] == ["scope"], "a tenant table was written outside the system scope"
+        if sql == lead_deliver.REROUTE_SQL:                # AA-1160: a pending crm row moves to the fallback channel
+            row = next((r for r in self.crm_rows if r["id"] == args[0]), None)
+            if row is None:
+                return "UPDATE 0"
+            self.crm_rows.remove(row)
+            self.retry_rows.append({**row, "delivery_channel": args[1]})
+            self.log.append(f"reroute:{args[0]}:{args[1]}")
+            return "UPDATE 1"
         assert sql == lead_deliver.EXPIRE_SQL
         payload = json.loads(args[1])
         assert payload["redacted"] is True and "traveller" not in payload
@@ -219,7 +231,7 @@ async def test_dry_run_counts_only(routes):
 
     out = await lead_deliver.run(Pool(conn), _job(dry_run=True), now=NOW, deliver=deliver)
     assert out["mode"] == "dry_run" and out["expire"]["candidates"] == 1 and out["expire"]["expired"] == 0
-    assert "attention" not in out and conn.log == []
+    assert "attention" not in out and conn.log == ["reroute_pick"]   # AA-1160: the re-route only counts (a read)
 
 
 @pytest.mark.asyncio
@@ -485,3 +497,68 @@ async def test_the_run_opens_the_system_scope_first_and_resets_it_last(routes):
     with pytest.raises(ConnectionError):
         await lead_deliver.run(Pool(failing), _job(), now=NOW, deliver=None, sleep=sleep)
     assert failing.scope_log == ["scope", "unscope"]
+
+
+# ── AA-1160: pending CRM leads of a tenant without a CRM agency move once to its own route ─────────────────────────
+
+T_NOAGENCY = "5a0e0000-0000-4000-8000-00000000000d"
+T_NOFALLBACK = "5a0e0000-0000-4000-8000-00000000000e"
+T_CRM = "5a0e0000-0000-4000-8000-00000000000f"
+
+
+@pytest.fixture
+def reroute_routes(monkeypatch):
+    table = {T_NOAGENCY: _route(T_NOAGENCY, "email"), T_CRM: _route(T_CRM, "crm"), T_OK: _route(T_OK)}
+
+    async def load_route(conn, tid):
+        if tid == T_NOFALLBACK:
+            raise leads.LeadRefused(409, "lead_route_missing")
+        return table[tid]
+
+    monkeypatch.setattr(leads, "load_route", load_route)
+    return table
+
+
+@pytest.mark.asyncio
+async def test_crm_leads_without_an_agency_are_rerouted_once_then_delivered(reroute_routes):
+    crm_rows = [_row(1, T_NOAGENCY, "crm"), _row(2, T_CRM, "crm"), _row(3, T_NOFALLBACK, "crm"),
+                _row(4, T_NOAGENCY, "crm")]
+    conn = FakeConn(crm_rows=crm_rows)
+    delivered = []
+
+    async def deliver(c, row_id, route, payload):
+        delivered.append((row_id, route.channel))
+        return None
+
+    out = await lead_deliver.run(Pool(conn), _job(), now=NOW, deliver=deliver)
+    assert out["reroute"] == {"candidates": 4, "rerouted": 2, "by_channel": {"email": 2}, "kept_crm": 1,
+                              "no_fallback": 1}
+    assert "reroute:1:email" in conn.log and "reroute:4:email" in conn.log
+    assert conn.log.index("reroute:1:email") < conn.log.index("retry_pick")    # re-routed before the retry part
+    assert delivered == [(1, "email"), (4, "email")] and out["retry"]["delivered"] == 2
+    assert [r["id"] for r in conn.crm_rows] == [2, 3]                         # the CRM's own and the one with no route
+    # A second run finds nothing left to move (idempotent: the switch matches pending crm rows only).
+    again = await lead_deliver.run(Pool(conn), _job(), now=NOW, deliver=deliver)
+    assert again["reroute"]["rerouted"] == 0 and again["reroute"]["candidates"] == 2
+
+
+@pytest.mark.asyncio
+async def test_reroute_dry_run_moves_nothing(reroute_routes):
+    conn = FakeConn(crm_rows=[_row(1, T_NOAGENCY, "crm")])
+    out = await lead_deliver.run(Pool(conn), _job(dry_run=True), now=NOW)
+    assert out["reroute"]["by_channel"] == {"email": 1} and out["reroute"]["rerouted"] == 0
+    assert [r["id"] for r in conn.crm_rows] == [1] and not any(x.startswith("reroute:") for x in conn.log)
+
+
+@pytest.mark.asyncio
+async def test_a_row_taken_meanwhile_is_not_counted(reroute_routes):
+    conn = FakeConn(crm_rows=[_row(1, T_NOAGENCY, "crm")])
+    original = conn.execute
+
+    async def acked_meanwhile(sql, *args):
+        if sql == lead_deliver.REROUTE_SQL:
+            conn.crm_rows.clear()                                                # the CRM acked it first
+        return await original(sql, *args)
+    conn.execute = acked_meanwhile
+    out = await lead_deliver.run(Pool(conn), _job(), now=NOW, deliver=None)
+    assert out["reroute"]["rerouted"] == 0 and out["reroute"]["by_channel"] == {}

@@ -135,7 +135,7 @@ def send_env(monkeypatch):
     async def guard(*a, **k):
         return None
 
-    async def load_route(conn, tid):
+    async def load_route(conn, tid, **_kw):
         return leads.Route(tid, "quillmere-voyages", "Quillmere Voyages", state["channel"],
                            webhook_url=state["webhook_url"] if state["channel"] == "webhook" else None)
 
@@ -351,7 +351,7 @@ async def test_the_beacon_is_keyed_and_a_read_error_fails_closed(monkeypatch):
 async def test_review_repro_a_leaked_crm_token_reaches_no_tenant_off_the_crm(monkeypatch, route):
     listed = []
 
-    async def load_route(conn, tid):
+    async def load_route(conn, tid, **_kw):
         if route == "missing":
             raise leads.LeadRefused(409, "lead_route_missing")
         return leads.Route(tid, "s", "N", route, webhook_url="https://hooks.example.invalid/l")
