@@ -18,7 +18,7 @@
 // (--tp-map-fill / --tp-map-line / --tp-map-label, lib/mapAccent.ts): MapView reads them when the map loads.
 // Follow-up: the derivation belongs in the kit core brand layer (CIS frontend/app/_kit/core/brandTheme.ts) so every
 // app gets it; it lives here until that change is made there and synced.
-import { BRAND_TOKENS, KIT_DARK_CARD, KIT_LIGHT, brandThemeCss, contrast, type BrandToken } from "../ui/core/brandTheme.ts";
+import { BRAND_TOKENS, KIT_DARK_CARD, KIT_LIGHT, brandThemeCss, contrast, onColour, type BrandToken } from "../ui/core/brandTheme.ts";
 import { MAP_ACCENT_VARS, type MapAccent } from "./mapAccent.ts";
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
@@ -30,6 +30,8 @@ export const KIT_DARK_BG = "#0f141b";
 export const BAND_LIGHT = "#1f2933";
 export const BAND_DARK = "#0a0e13";
 const TEXT_MIN = 4.5;
+/** Non-text contrast of a control against its surface (WCAG 1.4.11). */
+const UI_MIN = 3;
 
 function rgb(hex: string): [number, number, number] {
   return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
@@ -92,6 +94,15 @@ export function darkFamily(theme: unknown): Partial<Record<BrandToken, string>> 
   };
   const deep = readableShade(accent, WHITE, [KIT_DARK_CARD, KIT_DARK_BG, tint, soft]);
   if (deep) out["accent-deep"] = deep;
+  // S289 live check: the kit keeps its gold accent in the dark theme when the agency accent is under 3:1 on the dark
+  // card (a deep teal), so buttons and the active tab stayed gold. Lighten the accent until it holds 3:1 (WCAG 1.4.11).
+  if (contrast(accent, KIT_DARK_CARD) < UI_MIN) {
+    const lit = readableShade(accent, WHITE, [KIT_DARK_CARD], UI_MIN);
+    if (lit) {
+      out.accent = lit;
+      out["on-accent"] = onColour(lit);
+    }
+  }
   return out;
 }
 

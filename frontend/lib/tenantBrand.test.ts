@@ -48,6 +48,12 @@ test("the dark family and the band accent read on their surfaces", () => {
   for (const s of [KIT_DARK_CARD, KIT_DARK_BG, dark["accent-tint"]!, dark["accent-soft"]!]) {
     assert.ok(contrast(dark["accent-deep"]!, s) >= 4.5, s);
   }
+  // S289: a dark agency accent is lightened for the dark theme instead of falling back to the kit gold.
+  assert.ok(contrast(TEAL.accent, KIT_DARK_CARD) < 3);
+  assert.ok(dark.accent && contrast(dark.accent, KIT_DARK_CARD) >= 3 && !KIT_GOLDS.includes(dark.accent));
+  assert.ok(dark["on-accent"] && contrast(dark["on-accent"], dark.accent) >= 4.5);
+  assert.ok(plannerBrandCss(TEAL).includes(`--aa-accent:${dark.accent};`));
+  assert.equal(darkFamily({ accent: "#4fc2a3" }).accent, undefined);  // already reads on the dark card: kit keeps it
   const band = bandAccent(TEAL);
   assert.ok(band.light && contrast(band.light, BAND_LIGHT) >= 4.5);
   assert.ok(band.dark && contrast(band.dark, BAND_DARK) >= 4.5);
@@ -59,7 +65,7 @@ test("plannerBrandCss: no kit gold left under an agency theme, nothing added wit
   for (const token of ["--aa-accent-border", "--aa-accent-tint", "--aa-accent-soft", "--tp-band-accent"]) {
     assert.ok(css.includes(`${token}:`), token);
   }
-  assert.ok(css.includes("html[data-theme=dark] body{--aa-accent-deep:"), "the dark family block");
+  assert.ok(/html\[data-theme=dark\] body\{[^}]*--aa-accent-deep:/.test(css), "the dark family block");
   for (const gold of KIT_GOLDS) assert.ok(!css.toLowerCase().includes(gold), gold);
   assert.ok(!/["'<>&]/.test(css), "the block renders as plain <style> text");
   assert.equal(plannerBrandCss({}), "");
