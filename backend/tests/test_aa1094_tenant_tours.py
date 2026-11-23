@@ -15,6 +15,7 @@ import pytest
 from backend import config
 from backend.browse import catalog, tenant_site, tenant_tours
 from backend.browse import handler as browse_handler
+from backend.shared import agency_prices
 
 pytestmark = pytest.mark.asyncio
 
@@ -53,11 +54,14 @@ class _PgError(Exception):
 class FakePool:
     """fetchrow = the tenant lookup; fetch = the view (by SQL) and the photo / cover reads."""
 
-    def __init__(self, site=None, tours=(), error=None, photos=()):
+    def __init__(self, site=None, tours=(), error=None, photos=(), prices=None):
         self.site, self.tours, self.error, self.photos, self.calls = site, list(tours), error, list(photos), []
+        self.prices = prices  # AA-1152: the agency's own price list row (tripplanner.agency_prices), None = none
 
     async def fetchrow(self, sql, *args):
         self.calls.append(("fetchrow", sql, args))
+        if sql == agency_prices.READ_SQL:
+            return self.prices
         return self.site
 
     async def fetch(self, sql, *args):
@@ -89,9 +93,11 @@ async def test_an_agency_lists_its_own_tours_with_its_text_and_no_price():
     assert card["highlights"] == ["Invented viewpoint", "Invented village"]
     assert card["ai"] == {"ai_generated": True, "generator": tenant_tours.TENANT_AI_GENERATOR, "model": None,
                           "generated_at": WHEN.isoformat(), "human_edited": False}
+    # AA-1152: plus the agency's own price (none published here); never AA's price.
     assert set(card) == set(catalog._card({**_tour_row(), "lifecycle_stage": None, "published_at": None,
-                                           "updated_at": None}))
-    assert "price" not in json.dumps(out) and "from_price" not in card
+                                           "updated_at": None})) | {"agency_price"}
+    assert card["agency_price"] is None
+    assert "from_price" not in json.dumps(out) and "from_price" not in card
     ((_, sql, args),) = _view_calls(pool)
     assert args[0] == AGENCY and "WHERE t.tenant_id = $1::uuid" in sql and "SELECT *" not in sql
 
@@ -209,7 +215,7 @@ async def test_the_tour_page_has_the_tenant_text_photos_and_the_agency():
                                                                              "name": "Quillmere Voyages"}
     assert page["title"] == "Quillmere's ridge walk" and page["itinerary_text"].startswith("Day 1")
     assert [p["photo_id"] for p in page["photos"]] == ["p1"]               # the same file once
-    assert "from_price" not in page and "price" not in json.dumps(page)
+    assert "from_price" not in page and page["agency_price"] is None
     ((_, _, args),) = _view_calls(pool)
     assert args == (AGENCY, "invented-ridge-trek-laos-5f1e0c2a", "5f1e0c2a")
 
@@ -259,3 +265,15 @@ async def test_route_refuses_a_bad_list_query_and_a_bad_tour_slug():
     odd = await browse_handler.route("GET", "/browse/tenant/quillmere-voyages/tours/Bad_Slug", {},
                                      pool=FakePool(site=_site_row()))
     assert odd["statusCode"] == 404
+
+
+async def test_aa1152_the_agency_page_shows_its_own_from_price():
+    row = {"show_prices": True, "currency": "USD", "tours": {_tour_row()["source_id"]: "1235"}, "addons": {}}
+    site = tenant_site.shape(_site_row())
+    pool = FakePool(tours=[_tour_row()], prices=row)
+    (card,) = (await tenant_tours.list_tours(site, _q(), pool=pool))["tours"]
+    assert card["agency_price"] == {"from_per_person": "1235", "currency": "USD"}
+    page = await tenant_tours.tour_detail(site, _tour_row()["slug"], pool=FakePool(tours=[_tour_row()], prices=row))
+    assert page["agency_price"] == {"from_per_person": "1235", "currency": "USD"}
+    hidden = FakePool(tours=[_tour_row()], prices={**row, "show_prices": False})
+    assert (await tenant_tours.list_tours(site, _q(), pool=hidden))["tours"][0]["agency_price"] is None

@@ -40,7 +40,7 @@ const goneTours = createGoneCache();
 // AA-1090 R8: the paths this proxy acted on before custom domains (the old matcher, kept as literals): the planner
 // pages (guest cookie), the four /api/trip operations (guest cookie, cross-site refusal) and the tour pages (410).
 const PLANNER_PATH_RE = /^\/(?:[^/]+\/)?plan(?:\/.*)?$/;
-const TRIP_API_PATHS = new Set(["/api/trip", "/api/trip/narrate", "/api/trip/send", "/api/trip/chat"]);
+const TRIP_API_PATHS = new Set(["/api/trip", "/api/trip/narrate", "/api/trip/send", "/api/trip/chat", "/api/trip/addons"]); // AA-1152
 const TOUR_PATH_RE = /^\/tours\/[^/]+$/;
 const OWN_HOST = siteHost(process.env.NEXT_PUBLIC_SITE_URL || "https://tripplanner.lumiguides.it.com");
 

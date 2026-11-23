@@ -5,6 +5,7 @@
 // checks the two sides at run time. The language reaches the components through components/PlannerLang.tsx.
 // Agency names come in as arguments; no message names Adventure Asia (lib/agencyBrand.test.ts).
 import { defineMessages, translator, type Catalog, type Lang, type Messages, type Translator } from "../ui/core/i18n.ts";
+import { ADDONS } from "./dayAddons.messages.ts"; // AA-1152: the day cards' AA add-ons
 
 const n_ = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
@@ -571,7 +572,7 @@ export function plannerLang(locale: string | null | undefined): Lang {
 
 /** Every catalogue of the planner (the run-time key check of lib/plannerI18n.test.ts). */
 export const PLANNER_CATALOGS: Record<string, Messages<Catalog>> = {
-  PLANNER, TRIP, DAYS, LEAD, FILTERS, ROUTES, SHARE, POPUP, TOURS, PREFILL,
+  PLANNER, TRIP, DAYS, LEAD, FILTERS, ROUTES, SHARE, POPUP, TOURS, PREFILL, ADDONS,
 } as unknown as Record<string, Messages<Catalog>>;
 
 export { translator, type Lang, type Translator };

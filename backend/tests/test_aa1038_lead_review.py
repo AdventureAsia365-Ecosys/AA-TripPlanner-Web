@@ -119,6 +119,9 @@ class SendConn:
     async def fetchval(self, sql, *args):  # AA-1139: the webhook key version (no row = version 0)
         return None
 
+    async def fetch(self, sql, *args):  # AA-1152: the trip's add-on picks (none here)
+        return []
+
     def transaction(self):
         @asynccontextmanager
         async def tx():

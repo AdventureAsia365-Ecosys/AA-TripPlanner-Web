@@ -22,7 +22,9 @@ from typing import Any, Optional, Protocol
 from backend.assembly import sequencing
 from backend.shared import component_ids
 
-VALID_EVENTS = {"add_component", "remove_component", "reorder", "sent", "add_day", "remove_day"}
+# AA-1152 (tp-037): add_addon / remove_addon, the AA add-ons picked on a day card (backend/assembly/day_addons.py).
+VALID_EVENTS = {"add_component", "remove_component", "reorder", "sent", "add_day", "remove_day", "add_addon",
+                "remove_addon"}
 
 # AA-674 / PR-11 point 3: a day the traveller adds on top of the AA legs. It is not part of any
 # tour, so the Trip Case shows it as a customization. kind: extra_night (stay one more night at a

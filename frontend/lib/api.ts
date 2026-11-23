@@ -23,6 +23,7 @@ import { readChatAnswer, type ChatAnswer } from "./planChat";
 import { isWafChallenge, throughWafEdge } from "./wafChallenge";
 // AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
 import { plannerTenant, tenantFetch } from "./plannerTenant";
+import type { TripAddons } from "./dayAddons";
 import { withTenant } from "./routeFinder";
 import type { LeadBody } from "./leadForm";
 
@@ -511,4 +512,28 @@ export async function fetchTourRoute(
   } catch {
     return "error";
   }
+}
+
+// AA-1152: the AA add-ons of each day card (app/api/trip/addons/route.ts, lib/dayAddons.ts). A failed read is "no add-on".
+export async function fetchTripAddons(tripId: string): Promise<TripAddons | null> {
+  const res = await tenantFetch(`/api/trip/addons?${new URLSearchParams({ trip_id: tripId })}`);
+  if (!res.ok) return null;
+  return (await res.json().catch(() => null)) as TripAddons | null;
+}
+
+// Pick (POST) or unpick (DELETE) one add-on of one day; the answer is the trip's add-ons again (null when refused).
+export async function setTripAddon(
+  tripId: string,
+  sessionId: string,
+  day: number,
+  componentId: string,
+  picked: boolean,
+): Promise<TripAddons | null> {
+  const res = await tenantFetch("/api/trip/addons", {
+    method: picked ? "POST" : "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ trip_id: tripId, session_id: sessionId, day, component_id: componentId }),
+  });
+  if (!res.ok) return null;
+  return (await res.json().catch(() => null)) as TripAddons | null;
 }

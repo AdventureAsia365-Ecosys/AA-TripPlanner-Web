@@ -29,6 +29,7 @@ import { dayPhoto, stopPhoto } from "@/lib/stopSync";
 import type { ItineraryDay } from "@/lib/types";
 import { PlaceIcon } from "@/components/ActivityIcon";
 import StopActivities from "@/components/StopActivities";
+import { DayAddonsList, DayAddonsProvider } from "@/components/DayAddons";
 import StopPhoto from "@/components/StopPhoto";
 import { Icon } from "@/ui/Icon";
 import { usePlannerT } from "@/components/PlannerLang";
@@ -356,6 +357,7 @@ export default function DayList({
       <p id="tp-reorder-hint" className="sr-only">
         {t("reorderHint")}
       </p>
+      <DayAddonsProvider>
       <ol ref={listRef} aria-label={t("yourDays")} className="space-y-0" data-testid="day-list">
         {groups.map((g, gi) => {
           const first = g.stops[0];
@@ -452,6 +454,7 @@ export default function DayList({
                     );
                   })()
                 )}
+                <DayAddonsList day={g.day} />
               </div>
 
               {/* Travel connector to the next day. Road legs show real driving distance/time; flight legs say so
@@ -470,6 +473,7 @@ export default function DayList({
           );
         })}
       </ol>
+      </DayAddonsProvider>
       <p role="status" aria-live="polite" className="sr-only" data-testid="reorder-announce">
         {announce}
       </p>

@@ -60,10 +60,12 @@ _ALLOWED_TRIPPLANNER = {"sessions", "customers", "trip_events", "trip_drafts", "
                         "ai_spend_month",   # tp-029, AA-1041 (the planning chat's monthly caps)
                         "ai_session_month",   # tp-032, AA-1116 (the monthly AI sessions quota)
                         "tenant_erasure_log", "erase_tenant",   # tp-030, AA-1093 (tenant offboarding)
-                        "lead_webhook_key"}   # tp-035, AA-1139 (the rotatable lead webhook signing key)
+                        "lead_webhook_key",   # tp-035, AA-1139 (the rotatable lead webhook signing key)
+                        "agency_prices"}   # tp-036, AA-1152 (an agency's own "from" prices, from its CRM)
 _ALLOWED_SHARED = {"llm_call_log"}   # CIS 173: the ledger INSERT of the model gateway
 # AA-1029: AA-Booking's contract view price.from.v1 (Booking bk-039 grants it to role tripplanner), nothing else of booking.
-_ALLOWED_BOOKING = {"v_from_prices"}
+# AA-1152: supply.place_addons.v1 (bk-068 / bk-070, SELECT to role tripplanner), the day cards' AA add-ons.
+_ALLOWED_BOOKING = {"v_from_prices", "v_place_addons"}
 
 
 def _allowed(schema: str, name: str) -> bool:

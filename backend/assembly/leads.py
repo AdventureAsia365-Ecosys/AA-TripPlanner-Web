@@ -74,6 +74,7 @@ from backend.shared import observability, ratelimit, settings
 EVENT = "lead.submitted"
 CONTRACT = "lead.submitted.v1"
 VERSION = "1.0"
+VERSION_ADDONS = "1.2"  # AA-1152: a lead whose day plan carries an add-on (lead.submitted.v1 1.2 day_plan[].addons)
 SCHEMA_MAJOR = 1
 CHANNELS = ("crm", "webhook", "email")
 BUDGET_BANDS = ("under_1000", "1000_2000", "2000_3500", "3500_5000", "over_5000", "not_sure")
@@ -440,7 +441,7 @@ def build_lead(*, route: Route, trip_id: str, answers: dict, summary: dict, lead
     stamp = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "contract": CONTRACT,
-        "version": VERSION,
+        "version": VERSION_ADDONS if any(d.get("addons") for d in summary["day_plan"]) else VERSION,
         "lead_id": lid,
         "idempotency_key": f"tp-lead:{lid}",
         "submitted_at": stamp,
@@ -685,7 +686,8 @@ def email_text(payload: dict, tenant_name: str) -> tuple[str, str]:
     for tour in trip["tours"]:
         lines.append(f"Tour: {tour['title']} ({tour['source_id']})")
     for day in trip["day_plan"]:
-        lines.append(f"Day {day['day']}: {', '.join(day['stops'])}")
+        lines += [f"Day {day['day']}: {', '.join(day['stops'])}"] + [
+            f"  Add-on: {a['title']} ({a['component_id']})" for a in day.get("addons", [])]
     if trip.get("message"):
         lines += ["", "Message:", trip["message"]]
     lines += ["", f"The traveller agreed to be contacted about this trip. Lead {payload['lead_id']}.",
