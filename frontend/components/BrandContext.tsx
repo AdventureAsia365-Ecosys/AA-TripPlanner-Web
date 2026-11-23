@@ -22,15 +22,18 @@ const BrandContext = createContext<PlannerBrand>(AA_PLANNER_BRAND);
 export function BrandProvider({
   agency,
   agencySlug,
+  lang = "en",
   children,
 }: {
   agency: string | null;
   agencySlug: string | null;
+  /** AA-1160: the agency's words in its planner's language (AA's own planner stays English). */
+  lang?: "en" | "vi";
   children: ReactNode;
 }) {
   const value = useMemo<PlannerBrand>(
-    () => (agency && agencySlug ? { copy: brandCopy(agency), legal: legalPaths(agencySlug) } : AA_PLANNER_BRAND),
-    [agency, agencySlug],
+    () => (agency && agencySlug ? { copy: brandCopy(agency, lang), legal: legalPaths(agencySlug, lang) } : AA_PLANNER_BRAND),
+    [agency, agencySlug, lang],
   );
   return <BrandContext.Provider value={value}>{children}</BrandContext.Provider>;
 }

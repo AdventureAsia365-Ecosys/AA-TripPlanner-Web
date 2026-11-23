@@ -7,7 +7,7 @@ import { notFound } from "next/navigation";
 import Header from "@/components/Header";
 import SharedTripView from "@/components/SharedTripView";
 import { isTenantSlug, resolveTenant } from "@/lib/tenantSite";
-import { brandThemeCss } from "@/ui/core/brandTheme";
+import { plannerBrandCss } from "@/lib/tenantBrand";
 
 type Props = { params: Promise<{ tenant: string }> };
 
@@ -22,7 +22,7 @@ export default async function TenantSharedTripPage({ params }: Props) {
   if (!isTenantSlug(tenant)) notFound();
   const site = await resolveTenant(tenant);
   if (!site) notFound();
-  const brand = brandThemeCss(site.theme);
+  const brand = plannerBrandCss(site.theme);
   return (
     <div className="min-h-full bg-k-bg">
       {brand && <style data-testid="tenant-brand">{brand}</style>}

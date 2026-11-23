@@ -8,6 +8,8 @@ import { AA_BAR, AA_SITE_AI } from "@/lib/brand";
 import { ThemeToggle } from "@/ui/ThemeToggle";
 import { legalPaths } from "@/lib/legal";
 import { isAgencyPlanner } from "@/lib/leadForm";
+import { usePlannerLang, usePlannerT } from "@/components/PlannerLang";
+import { PLANNER } from "@/lib/planner.messages";
 
 // Top brand bar — Adventure Asia wordmark + tagline. Kept slim so the map
 // dominates the viewport (map-first product).
@@ -65,6 +67,8 @@ export default function Header({ agency = null }: { agency?: HeaderAgency | null
 }
 
 function AgencyHeader({ agency }: { agency: HeaderAgency }) {
+  const t = usePlannerT(PLANNER);
+  const lang = usePlannerLang();
   return (
     <header
       data-testid="agency-header"
@@ -80,15 +84,18 @@ function AgencyHeader({ agency }: { agency: HeaderAgency }) {
         >
           {agency.name}
         </a>
-        <AiLabel label={AI_AGENCY_LABEL} explanation={AI_AGENCY_EXPLANATION} variant="band" />
-        <span className="hidden text-[11px] font-medium uppercase tracking-[0.18em] text-k-band-accent sm:inline">
-          Trip Planner
+        <AiLabel label={AI_AGENCY_LABEL} explanation={lang === "vi" ? t("aiAgencyExplanation") : AI_AGENCY_EXPLANATION}
+          variant="band" />
+        {/* AA-1160: --tp-band-accent follows the agency's theme on its pages (lib/tenantBrand.ts plannerBrandCss). */}
+        <span className="hidden text-[11px] font-medium uppercase tracking-[0.18em] text-k-band-accent sm:inline"
+          data-testid="agency-planner-label">
+          {t("tripPlanner")}
         </span>
       </div>
-      <nav className="flex shrink-0 items-center gap-2 text-sm" aria-label="Legal and display">
+      <nav className="flex shrink-0 items-center gap-2 text-sm" aria-label={t("legalAndDisplay")}>
         <ul className="flex items-center gap-2.5 text-[11px] text-k-on-band-muted" data-testid="agency-legal-links">
           {/* The AA-hosted demo tenant keeps AA's own pages, as its planner's forms do (PlannerApp plannerBrand). */}
-          {legalPaths(isAgencyPlanner(agency.slug) ? agency.slug : null).links.map((l) => (
+          {legalPaths(isAgencyPlanner(agency.slug) ? agency.slug : null, lang).links.map((l) => (
             <li key={l.href}>
               <a href={l.href} className="aa-focus underline-offset-2 hover:text-k-on-band hover:underline">
                 {l.label}

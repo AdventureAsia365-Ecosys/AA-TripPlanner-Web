@@ -10,7 +10,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTrip } from "@/lib/useTrip";
 import { fetchTourRoute } from "@/lib/api";
-import { formatDays } from "@/lib/text";
+import { usePlannerLang, usePlannerT } from "@/components/PlannerLang";
+import { PREFILL, formatDaysIn } from "@/lib/planner.messages";
 import type { RouteProposal, TourRouteFallback } from "@/lib/types";
 
 // Once the prompt is answered (route added, "Not now", "OK"), drop the tour params from the URL so a
@@ -36,13 +37,16 @@ type State =
 
 export default function PlanPrefill({ onApplied }: { onApplied?: () => void }) {
   const { intent, ready, itinerary, applyRoute } = useTrip();
+  const t = usePlannerT(PREFILL);
+  const lang = usePlannerLang();
+  const formatDays = (n: number) => formatDaysIn(n, lang);
   const [st, setSt] = useState<State>({ s: "idle" });
   const started = useRef(false);
 
   const apply = async (p: RouteProposal) => {
     if (await applyRoute(p)) {
       forgetTourParams();
-      setSt({ s: "applied", name: p.segments[0]?.tour_name ?? "This tour", places: p.match === "places" });
+      setSt({ s: "applied", name: p.segments[0]?.tour_name ?? t("thisTourCap"), places: p.match === "places" });
       onApplied?.();
     } else {
       setSt({ s: "error" });
@@ -74,53 +78,47 @@ export default function PlanPrefill({ onApplied }: { onApplied?: () => void }) {
       <div className={box}>
         {st.s === "confirm" && (
           <>
-            <p>
-              Add <strong>{st.p.segments[0]?.tour_name ?? "this tour"}</strong> ({formatDays(st.p.total_days)}) to your
-              current trip?
-            </p>
+            <p>{t("confirm", st.p.segments[0]?.tour_name ?? t("thisTour"), formatDays(st.p.total_days))}</p>
             <div className="mt-2 flex gap-2">
               <button onClick={() => apply(st.p)} className="aa-focus rounded-md bg-k-accent px-2.5 py-1 font-semibold text-k-on-accent">
-                Add its route
+                {t("addItsRoute")}
               </button>
               <button onClick={close} className="aa-focus rounded-md border border-k-line px-2.5 py-1 text-k-muted">
-                Not now
+                {t("notNow")}
               </button>
             </div>
           </>
         )}
         {st.s === "applied" && (
           <p>
-            <strong>{st.name}</strong> is on your trip
-            {st.places ? ", built from its places and our experiences there" : ""}. Make it yours, then send it
-            to an advisor.{" "}
-            <button onClick={close} className="aa-focus text-k-muted underline">OK</button>
+            {t("applied", st.name, st.places)}{" "}
+            <button onClick={close} className="aa-focus text-k-muted underline">{t("ok")}</button>
           </p>
         )}
         {st.s === "missing" && (
           <>
             <p>
-              {st.tour?.title ? <strong>{st.tour.title}</strong> : "This tour"} isn&apos;t on the planner map yet.
-              We&apos;ve set {st.tour?.country ?? intent.country ?? "its country"}
-              {st.tour?.duration_days ?? intent.days ? ` and ${formatDays((st.tour?.duration_days ?? intent.days) as number)}` : ""} in the
-              route finder — pick a route, or send this tour to an advisor to tailor it.
+              {t("missing", st.tour?.title || t("thisTourCap"), st.tour?.country ?? intent.country ?? t("itsCountry"),
+                st.tour?.duration_days ?? intent.days
+                  ? formatDays((st.tour?.duration_days ?? intent.days) as number) : null)}
             </p>
             {st.tour && st.tour.days.length > 0 && (
               <ol className="mt-1.5 max-h-32 overflow-y-auto border-t border-k-line pt-1.5 text-[11px] text-k-muted">
                 {st.tour.days.map((d) => (
                   <li key={d.day}>
-                    <span className="font-semibold text-k-ink">Day {d.day}</span>
+                    <span className="font-semibold text-k-ink">{t("dayN", d.day)}</span>
                     {d.title ? ` — ${d.title}` : ""}
                   </li>
                 ))}
               </ol>
             )}
-            <button onClick={close} className="aa-focus mt-1.5 text-k-muted underline">OK</button>
+            <button onClick={close} className="aa-focus mt-1.5 text-k-muted underline">{t("ok")}</button>
           </>
         )}
         {st.s === "error" && (
           <p>
-            We couldn&apos;t load this tour&apos;s route. Try the route finder instead.{" "}
-            <button onClick={close} className="aa-focus text-k-muted underline">OK</button>
+            {t("error")}{" "}
+            <button onClick={close} className="aa-focus text-k-muted underline">{t("ok")}</button>
           </p>
         )}
       </div>

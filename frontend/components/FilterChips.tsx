@@ -11,17 +11,14 @@ import {
 } from "@/lib/types";
 import type { CountryOption } from "@/lib/types";
 import ActivityIcon from "./ActivityIcon";
+import { usePlannerT } from "@/components/PlannerLang";
+import { FILTERS } from "@/lib/planner.messages";
 
-const MONTHS = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
+// AA-1160: the month and value labels come from lib/planner.messages.ts FILTERS (the planner's language).
+const MONTHS = Array.from({ length: 12 }, (_, i) => i);
 
 const SEARCH_DEBOUNCE_MS = 400;
 
-function label(v: string): string {
-  return v.replace(/_/g, " ");
-}
 
 // Group countries by region (adventure.asia's own top-level grouping) so the
 // country-first dropdown reads like the official site.
@@ -51,6 +48,8 @@ export default function FilterChips() {
     countries,
     setPreviewCountry,
   } = useTrip();
+  const t = usePlannerT(FILTERS);
+  const label = (v: string) => t("value", v);
   const [open, setOpen] = useState(true);
   const [text, setText] = useState("");
   // Country picker is a custom listbox (not a native <select>) so hovering a
@@ -122,8 +121,8 @@ export default function FilterChips() {
               </svg>
             )}
             <input
-              aria-label="Search experiences"
-              placeholder="Search experiences — e.g. sunrise trek, street food, temples"
+              aria-label={t("search")}
+              placeholder={t("searchPlaceholder")}
               value={text}
               onChange={(e) => setText(e.target.value)}
               className="aa-focus w-full bg-transparent text-sm text-k-ink placeholder:text-k-muted focus:outline-none"
@@ -131,7 +130,7 @@ export default function FilterChips() {
             {text && (
               <button
                 onClick={() => setText("")}
-                aria-label="Clear search"
+                aria-label={t("clearSearch")}
                 className="aa-focus rounded p-0.5 text-k-muted hover:text-k-ink"
               >
                 ✕
@@ -143,7 +142,7 @@ export default function FilterChips() {
             aria-expanded={open}
             className="aa-focus flex h-9 items-center gap-1.5 rounded-xl border border-k-line px-3 text-sm font-medium text-k-ink hover:bg-k-neutral-bg"
           >
-            Filters
+            {t("filters")}
             {activeCount > 0 && (
               <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-k-accent px-1 text-[11px] font-semibold text-k-on-accent">
                 {activeCount}
@@ -164,14 +163,14 @@ export default function FilterChips() {
           <div className="flex items-center justify-between border-t border-k-line bg-k-accent-tint px-3 py-1.5 text-xs text-k-accent-deep">
             <span>
               {resultCount === 0
-                ? "No matches — try different words or clear a filter."
-                : `${resultCount} place${resultCount > 1 ? "s" : ""} match “${text.trim()}”, best first.`}
+                ? t("noMatches")
+                : t("matches", resultCount, text.trim())}
             </span>
             <button
               onClick={() => setText("")}
               className="aa-focus font-semibold underline-offset-2 hover:underline"
             >
-              Back to map
+              {t("backToMap")}
             </button>
           </div>
         )}
@@ -183,7 +182,7 @@ export default function FilterChips() {
               <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-k-ink text-[11px] font-bold text-k-bg">
                 1
               </span>
-              <span className="text-xs font-semibold text-k-ink">Country</span>
+              <span className="text-xs font-semibold text-k-ink">{t("country")}</span>
               <div ref={countryBoxRef} className="relative min-w-[12rem] flex-1">
                 <button
                   type="button"
@@ -196,7 +195,7 @@ export default function FilterChips() {
                   className="aa-focus flex w-full items-center justify-between rounded-lg border border-k-line bg-k-card px-2.5 py-1.5 text-xs text-k-ink"
                 >
                   <span className={filters.country ? "" : "text-k-muted"}>
-                    {filters.country ?? "All countries"}
+                    {filters.country ?? t("allCountries")}
                   </span>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-k-muted">
                     <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -206,7 +205,7 @@ export default function FilterChips() {
                 {countryOpen && (
                   <div
                     role="listbox"
-                    aria-label="Country"
+                    aria-label={t("country")}
                     onMouseLeave={() => setPreviewCountry(null)}
                     className="aa-animate-in absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-auto rounded-lg border border-k-line bg-k-card py-1 shadow-aa"
                   >
@@ -222,7 +221,7 @@ export default function FilterChips() {
                       }}
                       className="block w-full px-3 py-1.5 text-left text-xs text-k-ink hover:bg-k-neutral-bg"
                     >
-                      All countries
+                      {t("allCountries")}
                     </button>
                     {grouped.map((g) => (
                       <div key={g.region}>
@@ -282,10 +281,10 @@ export default function FilterChips() {
                 >
                   2
                 </span>
-                <span className="text-xs font-semibold text-k-ink">Activity</span>
+                <span className="text-xs font-semibold text-k-ink">{t("activity")}</span>
                 {!activityStepEnabled && (
                   <span className="text-[11px] text-k-muted">
-                    (optional — or pick a country first)
+                    {t("activityOptional")}
                   </span>
                 )}
               </div>
@@ -314,14 +313,14 @@ export default function FilterChips() {
             {/* Extra refinements */}
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <select
-                aria-label="Intensity"
+                aria-label={t("intensity")}
                 value={filters.intensity_level ?? ""}
                 onChange={(e) =>
                   setFilters({ ...filters, intensity_level: e.target.value || undefined })
                 }
                 className="aa-focus rounded-lg border border-k-line bg-k-card px-2.5 py-1.5 text-xs capitalize text-k-ink"
               >
-                <option value="">Any intensity</option>
+                <option value="">{t("anyIntensity")}</option>
                 {INTENSITIES.map((i) => (
                   <option key={i} value={i}>
                     {label(i)}
@@ -330,7 +329,7 @@ export default function FilterChips() {
               </select>
 
               <select
-                aria-label="Season month"
+                aria-label={t("seasonMonth")}
                 value={filters.season ?? ""}
                 onChange={(e) =>
                   setFilters({
@@ -340,10 +339,10 @@ export default function FilterChips() {
                 }
                 className="aa-focus rounded-lg border border-k-line bg-k-card px-2.5 py-1.5 text-xs text-k-ink"
               >
-                <option value="">Any month</option>
-                {MONTHS.map((m, i) => (
-                  <option key={m} value={i + 1}>
-                    {m}
+                <option value="">{t("anyMonth")}</option>
+                {MONTHS.map((i) => (
+                  <option key={i} value={i + 1}>
+                    {t("month", i)}
                   </option>
                 ))}
               </select>
@@ -353,7 +352,7 @@ export default function FilterChips() {
                   onClick={() => setFilters({})}
                   className="aa-focus ml-auto rounded-lg px-2.5 py-1.5 text-xs font-medium text-k-muted hover:text-k-ink"
                 >
-                  Clear all
+                  {t("clearAll")}
                 </button>
               )}
             </div>

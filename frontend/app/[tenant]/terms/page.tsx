@@ -9,7 +9,7 @@ import AgencyLegalPage, { LegalSection } from "@/components/AgencyLegalPage";
 import { isAgencyPlanner } from "@/lib/leadForm";
 import { ANTHROPIC_USAGE_POLICY_URL, TERMS_PATH, legalPaths } from "@/lib/legal";
 import { isTenantSlug, resolveTenant } from "@/lib/tenantSite";
-import { brandThemeCss } from "@/ui/core/brandTheme";
+import { plannerBrandCss } from "@/lib/tenantBrand";
 
 type Props = { params: Promise<{ tenant: string }> };
 
@@ -27,7 +27,7 @@ export default async function TenantTermsPage({ params }: Props) {
   if (!isAgencyPlanner(site.slug)) redirect(TERMS_PATH);
   const a = site.name;
   const legal = legalPaths(site.slug);
-  const brand = brandThemeCss(site.theme);
+  const brand = plannerBrandCss(site.theme);
   return (
     <>
       {brand && <style data-testid="tenant-brand">{brand}</style>}

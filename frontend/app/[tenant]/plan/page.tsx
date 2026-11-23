@@ -12,7 +12,8 @@ import { notFound } from "next/navigation";
 import PlannerApp from "../../plan/PlannerApp";
 import { parseIntent } from "@/lib/planIntent";
 import { isTenantSlug, resolveTenant } from "@/lib/tenantSite";
-import { brandThemeCss } from "@/ui/core/brandTheme";
+import { plannerBrandCss } from "@/lib/tenantBrand";
+import { plannerLang } from "@/lib/planner.messages";
 
 type Props = {
   params: Promise<{ tenant: string }>;
@@ -31,7 +32,7 @@ export default async function TenantPlanPage({ params, searchParams }: Props) {
   if (!isTenantSlug(tenant)) notFound();
   const site = await resolveTenant(tenant);
   if (!site) notFound();
-  const brand = brandThemeCss(site.theme);
+  const brand = plannerBrandCss(site.theme);
   return (
     <>
       {brand && <style data-testid="tenant-brand">{brand}</style>}
@@ -39,6 +40,7 @@ export default async function TenantPlanPage({ params, searchParams }: Props) {
         intent={parseIntent(await searchParams)}
         tenantSlug={site.slug}
         agency={{ name: site.name, brandingBadge: site.branding_badge }}
+        lang={plannerLang(site.locale)}
       />
     </>
   );

@@ -13,9 +13,11 @@ import { useTrip } from "@/lib/useTrip";
 import { fetchCatalogTours, fetchTourRoute } from "@/lib/api";
 import type { TourCard, TourSort } from "@/lib/catalogTypes";
 import type { RouteProposal } from "@/lib/types";
-import { coverAlt, daysText, formatDays, MONTH_NAMES } from "@/lib/text";
+import { coverAlt, daysText, MONTH_NAMES } from "@/lib/text";
 import { plannerTenant } from "@/lib/plannerTenant";
 import { tourHref, type TourListSource } from "@/lib/tenantTours";
+import { usePlannerLang, usePlannerT } from "@/components/PlannerLang";
+import { TOURS, formatDaysIn } from "@/lib/planner.messages";
 
 const PAGE_SIZE = 24;
 
@@ -26,6 +28,8 @@ type Load =
 
 export default function TourListPane() {
   const { filters, applyRoute, itinerary } = useTrip();
+  const tr = usePlannerT(TOURS);
+  const lang = usePlannerLang();
   const [sort, setSort] = useState<Extract<TourSort, "duration_asc" | "duration_desc">>("duration_asc");
   const [month, setMonth] = useState(0); // 0 = any month
   const [busy, setBusy] = useState<string | null>(null);
@@ -101,8 +105,8 @@ export default function TourListPane() {
     } finally {
       setBusy(null);
     }
-    if (p === "error") say(t.tour_id, "Couldn't load this route. Try again.");
-    else if ("missing" in p) say(t.tour_id, "Not on the planner map yet — ask an advisor.");
+    if (p === "error") say(t.tour_id, tr("routeError"));
+    else if ("missing" in p) say(t.tour_id, tr("notOnMap"));
     // A trip with stops is asked first: apply-route merges into it (never deletes).
     else if (itinerary.length > 0) setConfirm({ tourId: t.tour_id, p });
     else await add(t.tour_id, p);
@@ -110,55 +114,55 @@ export default function TourListPane() {
 
   // Above the filter panel (z-15 < the Map/List toggle); the country follows the map filter.
   return (
-    <div className="absolute inset-0 z-[15] overflow-y-auto bg-k-bg px-4 pb-20 pt-4" aria-label="Tours list">
+    <div className="absolute inset-0 z-[15] overflow-y-auto bg-k-bg px-4 pb-20 pt-4" aria-label={tr("list")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-semibold text-k-ink">
-          {filters.country ? `Tours in ${filters.country}` : "All tours"}
+          {filters.country ? tr("toursIn", filters.country) : tr("allTours")}
           {load.state === "done" && <span className="ml-1.5 font-normal text-k-muted">({load.total})</span>}
-          <span className="block text-[11px] font-normal text-k-muted">Change the country on the Map view.</span>
+          <span className="block text-[11px] font-normal text-k-muted">{tr("changeCountry")}</span>
         </p>
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-1.5 text-xs text-k-muted">
-            Travel in
+            {tr("travelIn")}
             <select
               value={month}
               onChange={(e) => setMonth(Number(e.target.value))}
               className="aa-focus rounded-lg border border-k-line bg-k-card px-2 py-1 text-xs text-k-ink"
             >
-              <option value={0}>Any month</option>
+              <option value={0}>{tr("anyMonth")}</option>
               {MONTH_NAMES.map((m, i) => (
-                <option key={m} value={i + 1}>{m}</option>
+                <option key={m} value={i + 1}>{tr("month", i)}</option>
               ))}
             </select>
           </label>
           <label className="flex items-center gap-1.5 text-xs text-k-muted">
-            Sort
+            {tr("sort")}
             <select
               value={sort}
               onChange={(e) => setSort(e.target.value as typeof sort)}
               className="aa-focus rounded-lg border border-k-line bg-k-card px-2 py-1 text-xs text-k-ink"
             >
-              <option value="duration_asc">Shortest first</option>
-              <option value="duration_desc">Longest first</option>
+              <option value="duration_asc">{tr("shortest")}</option>
+              <option value="duration_desc">{tr("longest")}</option>
             </select>
           </label>
         </div>
       </div>
 
-      {load.state === "loading" && <p className="mt-6 text-center text-xs text-k-muted">Loading tours…</p>}
+      {load.state === "loading" && <p className="mt-6 text-center text-xs text-k-muted">{tr("loading")}</p>}
       {load.state === "error" && (
         <div role="alert" className="mt-6 rounded-xl border border-k-line bg-k-card p-4 text-center text-xs text-k-muted">
-          We couldn&apos;t load tours right now.{" "}
+          {tr("loadError")}{" "}
           <button onClick={() => setAttempt((a) => a + 1)} className="aa-focus font-semibold text-k-accent-deep underline">
-            Try again
+            {tr("tryAgain")}
           </button>
         </div>
       )}
       {load.state === "done" && load.tours.length === 0 && (
         <p className="mt-6 rounded-xl border border-dashed border-k-line bg-k-card p-4 text-center text-xs text-k-muted">
           {month
-            ? `No tours ${filters.country ? `in ${filters.country} ` : ""}list ${MONTH_NAMES[month - 1]} as a good time to go. Try another month.`
-            : `No tours ${filters.country ? `in ${filters.country} ` : ""}yet. Try another country.`}
+            ? tr("noneInMonth", filters.country ?? null, tr("month", month - 1))
+            : tr("none", filters.country ?? null)}
         </p>
       )}
       {load.state === "done" && load.tours.length > 0 && (
@@ -190,17 +194,17 @@ export default function TourListPane() {
                   {t.title}
                 </Link>
                 {confirm?.tourId === t.tour_id ? (
-                  <div className="mt-1.5 text-[11px] text-k-ink" role="group" aria-label="Add to your current trip?">
-                    <p>Add its route ({formatDays(confirm.p.total_days)}) to your current trip?</p>
+                  <div className="mt-1.5 text-[11px] text-k-ink" role="group" aria-label={tr("addQuestion")}>
+                    <p>{tr("addRoute", formatDaysIn(confirm.p.total_days, lang))}</p>
                     <div className="mt-1 flex gap-2">
                       <button
                         onClick={() => add(t.tour_id, confirm.p)}
                         className="aa-focus rounded-md bg-k-accent px-2 py-0.5 font-semibold text-k-on-accent"
                       >
-                        Add its route
+                        {tr("addItsRoute")}
                       </button>
                       <button onClick={() => setConfirm(null)} className="aa-focus rounded-md border border-k-line px-2 py-0.5 text-k-muted">
-                        Not now
+                        {tr("notNow")}
                       </button>
                     </div>
                   </div>
@@ -211,7 +215,7 @@ export default function TourListPane() {
                       disabled={busy !== null}
                       className="aa-focus rounded-md border border-k-accent px-2 py-0.5 text-[11px] font-semibold text-k-accent-deep transition hover:bg-k-accent-tint disabled:opacity-50"
                     >
-                      {busy === t.tour_id ? "Adding…" : "Plan this route"}
+                      {busy === t.tour_id ? tr("adding") : tr("planRoute")}
                     </button>
                     {note[t.tour_id] && <span className="text-[11px] text-k-muted">{note[t.tour_id]}</span>}
                   </div>
@@ -228,9 +232,9 @@ export default function TourListPane() {
             disabled={more === "loading"}
             className="aa-focus rounded-full border border-k-line bg-k-card px-4 py-1.5 text-xs font-semibold text-k-ink transition hover:bg-k-accent-tint disabled:opacity-50"
           >
-            {more === "loading" ? "Loading…" : `Show more (${load.tours.length} of ${load.total})`}
+            {more === "loading" ? tr("loadingMore") : tr("showMore", load.tours.length, load.total)}
           </button>
-          {more === "error" && <p className="mt-1 text-[11px] text-k-muted">Couldn&apos;t load more tours. Try again.</p>}
+          {more === "error" && <p className="mt-1 text-[11px] text-k-muted">{tr("moreError")}</p>}
         </div>
       )}
     </div>

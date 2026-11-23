@@ -43,7 +43,7 @@ export interface LegalPaths {
   links: ReadonlyArray<{ href: string; label: string }>;
 }
 
-export function legalPaths(agencySlug: string | null): LegalPaths {
+export function legalPaths(agencySlug: string | null, lang: "en" | "vi" = "en"): LegalPaths {
   if (!agencySlug) return { privacy: PRIVACY_PATH, terms: TERMS_PATH, termsAi: TERMS_AI_PATH, links: LEGAL_LINKS };
   const privacy = `/${agencySlug}${PRIVACY_PATH}`;
   const terms = `/${agencySlug}${TERMS_PATH}`;
@@ -52,8 +52,9 @@ export function legalPaths(agencySlug: string | null): LegalPaths {
     terms,
     termsAi: `${terms}#ai`,
     links: [
-      { href: privacy, label: "Privacy" },
-      { href: terms, label: "Terms" },
+      // AA-1160: the link labels follow the agency planner's language (the pages themselves stay English drafts).
+      { href: privacy, label: lang === "vi" ? "Quyền riêng tư" : "Privacy" },
+      { href: terms, label: lang === "vi" ? "Điều khoản" : "Terms" },
     ],
   };
 }
