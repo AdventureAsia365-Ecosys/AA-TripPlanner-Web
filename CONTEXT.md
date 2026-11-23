@@ -874,7 +874,13 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   the /{slug} layout marks its content with the tenant locale (`en` | `vi`, CIS site settings) on a `display:
   contents` wrapper, sets `<html lang>` before paint with an inline script (`lib/tenantLang.ts`) and keeps it on a
   client-side navigation (`components/TenantLang.tsx`, which gives `en` back on unmount). The planner's EN / VI
-  notices and the lead form's language read `<html lang>`.
+  notices read `<html lang>`. AA-1160: the planner's own words follow the locale too: `app/[tenant]/plan/page.tsx`
+  passes `lang` to `PlannerApp`, which provides it (`components/PlannerLang.tsx`, a context so the server render already
+  speaks the agency's language) to every planner component; the words are the kit-typed catalogues of
+  `lib/planner.messages.ts` (`defineMessages`, EN + VI, `lib/plannerI18n.test.ts`), the agency's brand words
+  (`lib/brand.ts brandCopy(name, lang)`) and legal link labels (`legalPaths(slug, lang)`). The lead form sends the
+  planner's language as `traveller.locale`. Data text (tour titles, place names, AI narration, activity kinds and leg
+  labels of `lib/placeIcon.ts` / `lib/mapbox.ts`) stays as served. The bare `/plan` stays English.
 - **Isolation.** Under tenant A's assertion only A's sessions and trips are visible (tp-028 policy `<table>_tenant`):
   another tenant's trip is the same 404 as an unknown one and a mutation is 401 with no write
   (`backend/tests/test_aa1038_tenant_site_pg.py`, two synthetic agencies). The bare path binds the demo tenant, so it
@@ -895,7 +901,10 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   The form (`components/LeadForm.tsx`, `lib/leadForm.ts`) sends `lead` = name, e-mail, optional phone, party, optional
   start date / budget band / message, contact consent (required) and marketing consent. The Lambda validates it (422
   `consent_required` / `invalid_lead` + field codes), reads the tenant's route from `catalog.v_tenant_tripplanner_v1`
-  (CIS 390: `lead_channel` crm / webhook / email / none) and refuses BEFORE storing when it could not deliver (409
+  (CIS 390: `lead_channel` crm / webhook / email / none; AA-1160, CIS 475: crm only while the CRM holds an agency for
+  the tenant, `crm_agency`, or listed it within the beacon window, else the agency's own `fallback_channel` with its
+  target, `leads.load_route`; the CRM's own pull keeps crm while the add-on is live, `load_route(crm_pull=True)`) and
+  refuses BEFORE storing when it could not deliver (409
   `lead_route_missing`, 503 `lead_route_unavailable` before CIS 390, 503 `lead_channel_unavailable` while the CRM
   pull is not switched on (`TP_LEAD_CRM_PULL_ENABLED`, default off) or the CRM has not listed THIS tenant within
   `TP_LEAD_CRM_PULL_FRESH_S` (600 s; the list call is the tenant's beacon, kept in `ai_rate_counter` scope `crm_pull`),
@@ -945,7 +954,9 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   days) is redacted with `delivery_error = 'expired'`, so under the real schedule a lead is redacted at the latest 7
   days after it was written even when the tick that picks it fails (the re-queued job runs at the next daily tick;
   two failed ticks in a row are the residual risk, each one loud); then the leads the CRM rejected since the last tick
-  are counted; then one retry per pending webhook / e-mail lead within a 120 s budget, with a breaker per tenant and
+  are counted; then (AA-1160) the pending CRM leads of a tenant whose route is no longer crm because the CRM holds no
+  agency for it move once to its webhook / e-mail fallback (one guarded UPDATE of `delivery_channel`, counted in the
+  job result `reroute` and logged `lead_rerouted`, ids only); then one retry per pending webhook / e-mail lead within a 120 s budget, with a breaker per tenant and
   per channel; a webhook URL on a non-public address is a route defect (`route_defect`, not retried). An expiry, a
   rejected lead, a route defect or rows left after the budget mark the job `attention` and the daily tick fails
   loudly. It
@@ -954,7 +965,12 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
 - **Brand.** `app/[tenant]/plan/page.tsx` renders the tenant theme through the kit core brand-token layer
   (`ui/core/brandTheme.ts`, synced from CIS, root ADR 0016 amendment): one `<style>` over the accent family of `--aa-*`,
   contrast-checked; the trip panel names the agency and shows "Powered by Adventure Asia" only when `tp.branding` is on
-  (BO-8, off by default).
+  (BO-8, off by default). AA-1160: every `/{slug}` page renders `lib/tenantBrand.ts plannerBrandCss(theme)`: the kit's
+  block for the theme with the accent tokens the agency did not set derived from its accent (tint, soft, border, a deep
+  shade darkened until it reads at 4.5:1), the dark theme's accent family derived the same way, and the band accent
+  `--tp-band-accent` (the "Trip Planner" label, the AI chip's ring) lightened until it reads on the navy band, so no
+  kit gold is left under an agency theme (`lib/tenantBrand.test.ts`). Follow-up: the derivation belongs in the kit core
+  brand layer (CIS canonical) so every app gets it.
 - **Per-tenant AI cap** (`shared/tenant_budget.py`): `llm_gateway.budget_status` checks, after the app caps, the
   tenant's month spend against its resolved `ai.budget_usd_monthly` from `catalog.v_tenant_ai_budget_v1` (CIS 390,
   cached 30 s per tenant, this container's calls charged on top). A reached budget is a cap (`ai_budget_exhausted`,
