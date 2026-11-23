@@ -16,8 +16,8 @@
 --   tours        JSON object {tour source_id: "amount"}: the agency's price per traveller of each AA tour it sells.
 --   addons       JSON object {"sv:<uuid>": "amount"}: the same for each AA add-on (supply.place_addons.v1).
 --   computed_at  when the CRM computed the list (a PUT with an older computed_at changes nothing: 409 stale).
---   received_at  when TripPlanner stored it (the pages hide a list older than the staleness window, a planner
---                setting).
+--   received_at  when TripPlanner stored it (kept for a later staleness rule: hiding a list the CRM stopped
+--                refreshing, after a window that will be a planner setting).
 -- One row per tenant, replaced by each PUT (no history). No personal data, no AA B2B price, no markup.
 -- Retention (data standards DM-7.1, root row added before this copy): kept while the tenant's planner exists;
 -- offboarding leaves the row (no personal data) until a later erase_tenant contract file deletes it with the tenant's
