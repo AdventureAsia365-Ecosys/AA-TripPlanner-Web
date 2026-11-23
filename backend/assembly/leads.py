@@ -7,7 +7,10 @@ verified tenant assertion, so the connection is bound to that tenant (tenant.cur
 path and the AA demo tenant keep the demo notice (410 b2b_only in handler.py): AA keeps no traveller record of its own.
 
 Where it goes. CIS decides per tenant (catalog.v_tenant_tripplanner_v1, CIS 390): ``crm`` when the tenant holds the CRM
-add-on (crm.core), else the site's ``webhook`` or ``email`` when set, else ``none``. TripPlanner refuses BEFORE storing
+add-on (crm.core), else the site's ``webhook`` or ``email`` when set, else ``none``. AA-1160 (CIS 474): ``crm`` only
+while the CRM pulled the tenant lately (its beacon: the CRM lists only an agency it can serve); else the site's own
+route (``fallback_channel``), and the daily run re-routes the tenant's pending CRM leads once to it
+(``tp_lead_deliver``). TripPlanner refuses BEFORE storing
 anything when it could not deliver: no route (409 lead_route_missing), the view not readable yet (503
 lead_route_unavailable), a channel this deployment cannot use (503 lead_channel_unavailable: the CRM pull not switched
 on with ``config.LEAD_CRM_PULL_ENABLED`` or the CRM has not listed THIS tenant's leads within
@@ -83,9 +86,11 @@ MAX_TOURS, MAX_STOPS, MAX_COUNTRIES, MAX_DAYS = 30, 12, 12, 90
 PAGE_MAX = 50
 
 VIEW = "catalog.v_tenant_tripplanner_v1"
-# Column names, never * (the CIS test test_aa1038_migration_390.py runs this exact statement as tripplanner).
+# Column names, never * (the CIS test test_aa1160_migration_474.py runs this exact statement as tripplanner).
 ROUTE_SQL = (f"SELECT tenant_id, slug, name, kind, served, in_service, crm_core, lead_channel, lead_webhook_url, "
-             f"lead_email FROM {VIEW} WHERE tenant_id = $1")
+             f"lead_email, fallback_channel, fallback_webhook_url, fallback_email FROM {VIEW} WHERE tenant_id = $1")
+# AA-1160: the agency's own routes a crm tenant falls back to while the CRM does not pull it.
+FALLBACK_CHANNELS = ("webhook", "email")
 TOURS_SQL = ("SELECT source_system, source_id, tour_id::text AS tour_id, title, country FROM catalog.v_tour "
              "WHERE source_id = ANY($1::text[]) OR tour_id::text = ANY($1::text[])")
 INSERT_SQL = (
@@ -363,21 +368,29 @@ async def tenant_leads_24h(conn: Any, tenant_id: str) -> int:
     return int(await conn.fetchval(TENANT_LEADS_24H_SQL, tenant_id) or 0)
 
 
-async def load_route(conn: Any, tenant_id: str) -> Route:
-    """The tenant's lead route from CIS, or LeadRefused (nothing stored)."""
+async def load_route(conn: Any, tenant_id: str, *, crm_pull: bool = False) -> Route:
+    """The tenant's lead route from CIS, or LeadRefused (nothing stored). AA-1160: crm only while the CRM pulled this
+    tenant lately (:func:`crm_pull_fresh`: the CRM lists only an agency it can serve, never a locked, offboarding or
+    deleted one), else the agency's own ``fallback_channel`` with its target; none = 503 lead_channel_unavailable as
+    before (S285: crm.core without a CRM agency, leads skipped). ``crm_pull`` (the CRM's own call) keeps crm."""
     try:
         row = await conn.fetchrow(ROUTE_SQL, tenant_id)
-    except Exception as e:  # noqa: BLE001 — 42P01 / 42501 / 42703 before CIS 390, or a read error
+    except Exception as e:  # noqa: BLE001 — 42P01 / 42501 / 42703 before CIS 390 / 474, or a read error
         observability.emit("lead_route_unreadable", error=type(e).__name__, sqlstate=getattr(e, "sqlstate", None))
         raise LeadRefused(503, "lead_route_unavailable") from None
     if row is None or not row["served"] or not row["in_service"]:
         raise LeadRefused(404, "unknown_tenant")
-    channel = row["lead_channel"]
+    channel, webhook_url, email = row["lead_channel"], row["lead_webhook_url"], row["lead_email"]
+    if channel == "crm" and not crm_pull and not await crm_pull_fresh(conn, tenant_id):
+        channel, webhook_url, email = row["fallback_channel"], row["fallback_webhook_url"], row["fallback_email"]
+        observability.emit("lead_route_crm_fallback", tenant_id=str(row["tenant_id"]), channel=channel)
+        if channel not in FALLBACK_CHANNELS:
+            raise LeadRefused(503, "lead_channel_unavailable")
     if channel not in CHANNELS:
         raise LeadRefused(409, "lead_route_missing")
     return Route(str(row["tenant_id"]), row["slug"], row["name"], channel,
-                 row["lead_webhook_url"] if channel == "webhook" else None,
-                 row["lead_email"] if channel == "email" else None)
+                 webhook_url if channel == "webhook" else None,
+                 email if channel == "email" else None)
 
 
 # --- the lead ---------------------------------------------------------------------------------------------------------

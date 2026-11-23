@@ -18,18 +18,16 @@ import { aiNotice, narrationNoticeVariant } from "@/lib/aiNotices";
 import { parseNarration } from "@/lib/narration";
 import { useBrand } from "@/components/BrandContext";
 import type { NarrationSource } from "@/lib/brand";
-import { formatDays } from "@/lib/text";
 import { reasonText, stopLabel, unavailableBanner } from "@/lib/availability";
 import { ADVISOR_HANDOFF_DEMO, DEMO_NOTICE } from "@/lib/advisorDemo";
 import LeadForm from "@/components/LeadForm";
 import { isAgencyPlanner } from "@/lib/leadForm";
 import { plannerAgency, plannerTenant } from "@/lib/plannerTenant";
+import { usePlannerLang, usePlannerT } from "@/components/PlannerLang";
+import { TRIP, formatDaysIn } from "@/lib/planner.messages";
 
-const DAY_KIND_LABEL: Record<string, string> = {
-  extra_night: "Extra night",
-  free_day: "Free day",
-  extend_end: "Extra day at the end",
-};
+// AA-1160: the added-day kinds, in the planner's language (lib/planner.messages.ts TRIP).
+const DAY_KIND_KEY = { extra_night: "kindExtraNight", free_day: "kindFreeDay", extend_end: "kindEndDay" } as const;
 
 const LONG_TRIP_WARN_DAYS = 25;
 
@@ -48,11 +46,11 @@ const IATA_TO_COUNTRY: Record<string, string> = Object.entries(
 
 // Transfer hint from the gateway airport to the stop, tuned for adventure
 // trips (overland / boat / domestic flight rather than city cabs).
-function transferHint(km: number): string {
-  if (km < 15) return "you're right by the airport";
-  if (km < 120) return "a private 4WD or boat transfer";
-  if (km < 400) return "a scenic overland drive or a domestic hop";
-  return "a domestic flight, then an overland transfer";
+function transferHint(km: number): "hintAirport" | "hintTransfer" | "hintDrive" | "hintFlight" {
+  if (km < 15) return "hintAirport";
+  if (km < 120) return "hintTransfer";
+  if (km < 400) return "hintDrive";
+  return "hintFlight";
 }
 
 export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } = {}) {
@@ -81,6 +79,9 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
     undoReorder,
     reorderFailed,
   } = useTrip();
+  const t = usePlannerT(TRIP);
+  const lang = usePlannerLang();
+  const days = (n: number) => formatDaysIn(n, lang);
   // Several activities of one AA tour day share a day (AA-674), so count distinct days.
   const tripDays = new Set(itinerary.map((d) => d.day)).size;
   const totalDays = tripDays + customDays.length;
@@ -92,7 +93,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
   const [showLead, setShowLead] = useState(false);
   const agencySlug = plannerTenant();
   const agency = isAgencyPlanner(agencySlug) ? plannerAgency() : null;
-  const agencyName = agency?.name || "your travel agency";
+  const agencyName = agency?.name || t("yourAgency");
   // AA-1115: the words and legal links of this page's brand (an agency's own, or Adventure Asia's).
   const { copy, legal } = useBrand();
   const badge = copy.poweredBy(agency?.brandingBadge ?? false);
@@ -214,16 +215,16 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
     <div className="flex h-full flex-col">
       {/* Panel header */}
       <div className="flex items-baseline justify-between border-b border-k-line px-4 py-3.5">
-        <h2 className="text-base font-semibold text-k-ink">Your trip</h2>
+        <h2 className="text-base font-semibold text-k-ink">{t("yourTrip")}</h2>
         {itinerary.length > 0 && (
           <div className="flex items-center gap-2">
             {totalRoadKm > 0 && (
               <span className="text-xs text-k-muted">
-                ~{Math.round(totalRoadKm)} km by road{hasFlightLeg ? " +" : ""}
+                {t("kmByRoad", Math.round(totalRoadKm), hasFlightLeg)}
               </span>
             )}
             <span className="rounded-full bg-k-ink px-2.5 py-0.5 text-xs font-semibold text-k-bg">
-              {formatDays(totalDays)}
+              {days(totalDays)}
             </span>
           </div>
         )}
@@ -239,7 +240,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
           >
             {unavailableBanner(unavailableStops)}
           </div>
-          <ul className="mt-2 space-y-1.5" aria-label="Stops no longer available">
+          <ul className="mt-2 space-y-1.5" aria-label={t("unavailable")}>
             {unavailableStops.map((s) => (
               <li
                 key={s.component_id}
@@ -254,10 +255,10 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                 </div>
                 <button
                   onClick={() => remove(s.component_id)}
-                  aria-label={`Remove ${stopLabel(s)}`}
+                  aria-label={t("removeNamed", stopLabel(s))}
                   className="aa-focus shrink-0 rounded-md px-1.5 py-0.5 text-xs text-k-muted hover:text-k-danger"
                 >
-                  Remove
+                  {t("remove")}
                 </button>
               </li>
             ))}
@@ -268,42 +269,30 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
       {/* AA-1041 (R7 item 7): kit loading and error states while the saved trip is read. */}
       {!ready ? (
         <div className="px-4 py-4" data-testid="trip-loading">
-          <LoadingState label="Loading your trip" rows={3} compact />
+          <LoadingState label={t("loadingTrip")} rows={3} compact />
         </div>
       ) : loadFailed && itinerary.length === 0 ? (
         <div className="px-4 py-4" data-testid="trip-load-error">
-          <ErrorState title="We couldn't load your trip">
-            <p>Your trip is saved. Check your connection and try again.</p>
+          <ErrorState title={t("loadErrorTitle")}>
+            <p>{t("loadErrorBody")}</p>
             <Button variant="secondary" size="sm" className="mt-3" onClick={retryLoad}>
               <Icon name="refresh" className="h-3.5 w-3.5" />
-              Try again
+              {t("tryAgain")}
             </Button>
           </ErrorState>
         </div>
       ) : itinerary.length === 0 ? (
         <div className="flex flex-1 flex-col justify-center px-5 py-8" data-testid="trip-empty">
           <RoutePlanner />
-          <EmptyState title="Start building your trip" icon="map">
-            Pin experiences from the map and watch your day-by-day itinerary take shape here.
+          <EmptyState title={t("emptyTitle")} icon="map">
+            {t("emptyBody")}
           </EmptyState>
 
           <ol className="mt-6 space-y-3">
             {[
-              {
-                n: "1",
-                title: "Choose a country",
-                body: "Use the filters top-left to focus the map on a destination.",
-              },
-              {
-                n: "2",
-                title: "Pin what interests you",
-                body: "Click a map marker, then add an experience to your trip.",
-              },
-              {
-                n: "3",
-                title: "Reorder & send",
-                body: "Drag the handles to reorder days and stops, then send the draft to an advisor.",
-              },
+              { n: "1", title: t("step1Title"), body: t("step1Body") },
+              { n: "2", title: t("step2Title"), body: t("step2Body") },
+              { n: "3", title: t("step3Title"), body: t("step3Body") },
             ].map((step) => (
               <li key={step.n} className="flex items-start gap-3">
                 <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-k-accent-tint text-xs font-bold text-k-accent-deep">
@@ -323,9 +312,9 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
 
           <p className="mt-6 rounded-xl border border-k-line bg-k-accent-tint px-3 py-2.5 text-center text-[11px] leading-relaxed text-k-muted">
             <Icon name="info" className="mr-1 inline h-3.5 w-3.5 align-[-2px] text-k-accent-deep" />
-            Tip: try the search box to find experiences by activity, like
-            <span className="font-medium text-k-ink"> “tea plantation trek”</span> or
-            <span className="font-medium text-k-ink"> “temple visit”</span>.
+            {t("tipLead")}
+            <span className="font-medium text-k-ink"> {t("tipExample1")}</span> {t("tipOr")}
+            <span className="font-medium text-k-ink"> {t("tipExample2")}</span>.
           </p>
         </div>
       ) : (
@@ -336,7 +325,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
               <div className="rounded-xl border border-k-line bg-k-card p-2.5 text-center">
                 <p className="text-base font-bold text-k-ink">{totalDays}</p>
                 <p className="text-[10px] uppercase tracking-wide text-k-muted">
-                  {totalDays > 1 ? "Days" : "Day"}
+                  {t("days", totalDays)}
                 </p>
               </div>
               <div className="rounded-xl border border-k-line bg-k-card p-2.5 text-center">
@@ -344,7 +333,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                   {countriesVisited.size || 1}
                 </p>
                 <p className="text-[10px] uppercase tracking-wide text-k-muted">
-                  {countriesVisited.size > 1 ? "Countries" : "Country"}
+                  {t("countries", countriesVisited.size)}
                 </p>
               </div>
               <div className="rounded-xl border border-k-line bg-k-card p-2.5 text-center">
@@ -352,7 +341,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                   {totalRoadKm > 0 ? `~${Math.round(totalRoadKm)}` : "—"}
                 </p>
                 <p className="text-[10px] uppercase tracking-wide text-k-muted">
-                  km by road
+                  {t("kmByRoadShort")}
                 </p>
               </div>
             </div>
@@ -366,17 +355,17 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
             {reorderFailed && (
               <p role="alert" data-testid="reorder-failed"
                 className="mb-2 rounded-lg border border-k-danger-border bg-k-danger-soft px-2.5 py-1.5 text-xs text-k-danger">
-                We couldn&apos;t save the new order, so your days are back as they were. Please try again.
+                {t("reorderFailed")}
               </p>
             )}
             {undoOrder && !reorderFailed && (
               <div role="status" data-testid="reorder-saved"
                 className="tp-no-print mb-2 flex items-center justify-between gap-2 rounded-lg border border-k-line bg-k-card px-2.5 py-1.5 text-xs text-k-body">
-                <span>New order saved.</span>
+                <span>{t("orderSaved")}</span>
                 <button type="button" onClick={() => void undoReorder()} data-testid="reorder-undo"
                   className="aa-focus inline-flex items-center gap-1 font-semibold text-k-accent-deep">
                   <Icon name="undo" className="h-3.5 w-3.5" />
-                  Undo
+                  {t("undo")}
                 </button>
               </div>
             )}
@@ -398,11 +387,10 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                   {coverage.legs.map((leg, i) => (
                     <li key={`${leg.tour_id}-${leg.day_from}-${i}`} className="text-[11px] text-k-body">
                       <span className="font-medium text-k-ink">{leg.tour_name ?? copy.coverage.unnamedTour}</span>
-                      {" "}· tour day {leg.day_from}
-                      {leg.day_to !== leg.day_from ? `–${leg.day_to}` : ""}
+                      {" "}· {t("tourDay", leg.day_from, leg.day_to)}
                       {coverage.transfers[i] && (
                         <span className={coverage.transfers[i].ok ? "text-k-muted" : "text-k-danger"}>
-                          {" "}→ {coverage.transfers[i].ok ? "transfer" : copy.coverage.noLink}
+                          {" "}→ {coverage.transfers[i].ok ? t("transfer") : copy.coverage.noLink}
                           {coverage.transfers[i].km != null && ` (${Math.round(coverage.transfers[i].km as number)} km)`}
                         </span>
                       )}
@@ -411,8 +399,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                 </ul>
                 {coverage.gaps.map((g) => (
                   <p key={`${g.from_pin}-${g.to_pin}`} role="alert" className="mt-1.5 text-[11px] text-k-danger">
-                    {g.from_name} → {g.to_name}: {g.reason}. Your advisor can suggest a bridge, or pick
-                    places on the same route.
+                    {t("gap", g.from_name ?? "", g.to_name ?? "", g.reason ?? "")}
                   </p>
                 ))}
               </div>
@@ -423,8 +410,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                 role="alert"
                 className="mb-3 rounded-xl border border-k-accent-border bg-k-accent-tint p-2.5 text-xs text-k-accent-deep"
               >
-                This trip is {formatDays(tripDays)} — quite long. You can keep
-                adding, but consider trimming for a smoother journey.
+                {t("tooLong", days(tripDays))}
               </div>
             )}
 
@@ -436,13 +422,13 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-semibold text-k-ink">
-                    Getting there
+                    {t("gettingThere")}
                   </p>
                   <p className="mt-0.5 text-[11px] leading-relaxed text-k-muted">
-                    Fly into <span className="font-medium text-k-ink">{arrival.gw.city} ({arrival.gw.iata})</span>
-                    , then {transferHint(arrival.km)}
-                    {arrival.km >= 15 && <> (about {Math.round(arrival.km)} km away)</>} to your
-                    first stop.
+                    {t("flyInto")} <span className="font-medium text-k-ink">{arrival.gw.city} ({arrival.gw.iata})</span>
+                    {t("thenTransfer", t(transferHint(arrival.km)))}
+                    {arrival.km >= 15 && t("aboutKm", Math.round(arrival.km))}
+                    {t("toFirstStop")}
                   </p>
                 </div>
               </div>
@@ -457,9 +443,10 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                 .filter((c) => c.kind !== "extra_night")
                 .map((c) => (
                   <p key={c.day_id} className="mb-1 text-[11px] text-k-body">
-                    ➕ {DAY_KIND_LABEL[c.kind]} <span className="text-k-muted">(your addition, not part of a tour)</span>{" "}
+                    ➕ {c.kind in DAY_KIND_KEY ? t(DAY_KIND_KEY[c.kind as keyof typeof DAY_KIND_KEY]) : c.kind}{" "}
+                    <span className="text-k-muted">{t("yourAddition")}</span>{" "}
                     <button onClick={() => removeDay(c.day_id)} className="aa-focus text-k-muted hover:text-k-danger">
-                      remove
+                      {t("removeLower")}
                     </button>
                   </p>
                 ))}
@@ -468,13 +455,13 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                   onClick={() => addDay("free_day")}
                   className="aa-focus rounded-md border border-k-line px-2 py-0.5 text-[11px] text-k-ink hover:border-k-accent-border"
                 >
-                  + free day
+                  {t("addFreeDay")}
                 </button>
                 <button
                   onClick={() => addDay("extend_end")}
                   className="aa-focus rounded-md border border-k-line px-2 py-0.5 text-[11px] text-k-ink hover:border-k-accent-border"
                 >
-                  + extra day at the end
+                  {t("addEndDay")}
                 </button>
               </div>
             </div>
@@ -486,21 +473,19 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                   <PlaceIcon kind="flight" size={18} />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold text-k-ink">Heading home</p>
+                  <p className="text-xs font-semibold text-k-ink">{t("headingHome")}</p>
                   <p className="mt-0.5 text-[11px] leading-relaxed text-k-muted">
-                    After your last stop, {transferHint(departure.km)}
-                    {departure.km >= 15 && <> (about {Math.round(departure.km)} km away)</>} back to{" "}
+                    {t("afterLastStop", t(transferHint(departure.km)))}
+                    {departure.km >= 15 && t("aboutKm", Math.round(departure.km))}{t("backTo")}
                     <span className="font-medium text-k-ink">{departure.gw.city} ({departure.gw.iata})</span>
-                    {" "}for your flight home.
+                    {t("flightHome")}
                   </p>
                 </div>
               </div>
             )}
 
             <p className="mt-2 px-1 text-[11px] text-k-muted">
-              Drag a handle, or use the arrow keys on it, to reorder days and stops. Distances are rough estimates and
-              travel modes are suggestions — your advisor arranges the real
-              transfers, boats and flights for an adventure route.
+              {t("reorderHelp")}
             </p>
 
             {/* Next-to-pin suggestions — places similar to what's pinned.
@@ -509,12 +494,12 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
             {suggestions.length > 0 && (
               <div className="mt-4 rounded-xl border border-k-line bg-k-card p-3">
                 <p className="text-xs font-semibold text-k-ink">
-                  You might also like
+                  {t("alsoLike")}
                 </p>
                 <p className="mt-0.5 text-[11px] text-k-muted">
                   {suggestions.some((x) => (x.tour_count ?? 0) > 0)
                     ? copy.nextStops
-                    : "Based on what you've pinned."}
+                    : t("basedOnPins")}
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {suggestions.map((s) => (
@@ -536,7 +521,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
             <div className="mt-4 rounded-xl border border-k-line bg-k-card p-3">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold text-k-ink">
-                  Day-by-day narration
+                  {t("narrationTitle")}
                 </p>
                 <button
                   onClick={() => narrate("compose")}
@@ -544,10 +529,10 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                   className="aa-focus shrink-0 rounded-lg border border-k-accent px-2.5 py-1 text-xs font-semibold text-k-accent-deep transition hover:bg-k-accent-tint disabled:opacity-50"
                 >
                   {narrating
-                    ? "Composing…"
+                    ? t("composing")
                     : narration
-                      ? "Regenerate"
-                      : "✨ Compose"}
+                      ? t("regenerate")
+                      : t("compose")}
                 </button>
               </div>
               {/* AA-819: each narration state labelled honestly. On its own row and opening in
@@ -578,7 +563,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                     <div key={i} className="flex gap-2.5">
                       {b.day !== null && (
                         <span className="mt-0.5 inline-flex h-5 shrink-0 items-center rounded-full bg-k-accent-tint px-2 text-[10px] font-bold uppercase tracking-wide text-k-accent-deep">
-                          Day {b.day}
+                          {t("dayN", b.day)}
                         </span>
                       )}
                       <div className="min-w-0 text-xs leading-relaxed text-k-body">
@@ -643,7 +628,7 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
                 disabled={sent}
                 className="aa-focus w-full rounded-xl bg-k-accent px-3 py-2.5 text-sm font-semibold text-k-on-accent shadow-aa-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {sent ? "✓ Sent to advisor" : agency ? `Send to ${agencyName}` : "Send to an advisor"}
+                {sent ? t("sentToAgency") : agency ? t("sendTo", agencyName) : t("sendToAdvisor")}
               </button>
             ) : (
               <div className="space-y-2">
@@ -707,13 +692,13 @@ export default function TripPanel({ onShowOnMap }: { onShowOnMap?: () => void } 
               </div>
             )}
             <p className="mt-2 text-center text-[11px] text-k-muted">
-              An advisor confirms logistics before anything is booked.
+              {t("confirmsLogistics")}
             </p>
             {/* BO-8 (root ADR 0019 b8): the "Powered by" badge only when the agency's tp.branding flag is on (off by
                 default; lib/brand.ts poweredBy); small, nofollow, never inside an AI text block. */}
             {badge && (
               <p className="mt-1 text-center text-[10px] text-k-muted" data-testid="powered-by">
-                Powered by{" "}
+                {t("poweredBy")}{" "}
                 <a href={badge.href} rel="nofollow noopener" target="_blank" className="aa-focus underline">
                   {badge.name}
                 </a>

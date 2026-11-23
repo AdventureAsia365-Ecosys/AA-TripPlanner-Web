@@ -8,6 +8,8 @@ import ActivityIcon from "./ActivityIcon";
 import GeocodeAttribution from "./GeocodeAttribution";
 import AiLabel from "./AiLabel";
 import { useBrand } from "@/components/BrandContext";
+import { usePlannerT } from "@/components/PlannerLang";
+import { POPUP } from "@/lib/planner.messages";
 import { AiNotice } from "@/ui/AiNotice";
 import { ErrorState, LoadingState } from "@/ui/States";
 
@@ -23,6 +25,7 @@ function label(v: string): string {
 export default function DestinationPopup({ destinationId, onClose }: Props) {
   const { add, remove, inTripComponentIds, itinerary } = useTrip();
   const brand = useBrand(); // AA-1115: an agency's planner shows its own label and terms
+  const t = usePlannerT(POPUP); // AA-1160: the planner's language
   // AA-906 (React Compiler lint, no setState in an effect body): the fetched detail is tagged with
   // the destination it belongs to, so "loading" is derived (no answer yet for this id) instead of set
   // from the effect. As before, the previous detail stays on screen until the new one lands.
@@ -84,17 +87,17 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
 
       <div className="px-4 py-3">
         {/* AA-1041 (R7 item 7): kit loading and error states. */}
-        {loading && <LoadingState label="Loading experiences" rows={2} compact />}
+        {loading && <LoadingState label={t("loading")} rows={2} compact />}
 
         {!loading && !detail && (
-          <ErrorState title="We couldn't load this place">
-            Close it and pick the marker again, or try another place.
+          <ErrorState title={t("errorTitle")}>
+            {t("errorBody")}
           </ErrorState>
         )}
 
         {!loading && detail && detail.components.length === 0 && (
           <p className="py-6 text-center text-sm text-k-muted">
-            No experiences catalogued here yet.
+            {t("none")}
           </p>
         )}
 
@@ -153,7 +156,7 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
                 <div className="mt-2 flex items-center justify-between gap-2">
                   {inTrip && day !== null ? (
                     <span className="flex items-center gap-1 text-[11px] font-semibold text-k-accent-deep">
-                      <span aria-hidden>✓</span> In your trip — Day {day}
+                      <span aria-hidden>✓</span> {t("inTrip", day)}
                     </span>
                   ) : (
                     <span />
@@ -163,14 +166,14 @@ export default function DestinationPopup({ destinationId, onClose }: Props) {
                       onClick={() => remove(c.id)}
                       className="aa-focus rounded-lg border border-k-line bg-k-card px-3 py-1.5 text-xs font-medium text-k-muted hover:border-k-danger-border hover:text-k-danger"
                     >
-                      Remove
+                      {t("remove")}
                     </button>
                   ) : (
                     <button
                       onClick={() => add(c.id)}
                       className="aa-focus rounded-lg bg-k-accent px-4 py-1.5 text-xs font-semibold text-k-on-accent shadow-aa-sm hover:brightness-95"
                     >
-                      + Add to trip
+                      {t("add")}
                     </button>
                   )}
                 </div>

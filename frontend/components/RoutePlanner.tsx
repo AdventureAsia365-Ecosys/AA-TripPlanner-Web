@@ -13,7 +13,8 @@ import { useBrand } from "@/components/BrandContext";
 import { fetchRoutes } from "@/lib/api";
 import { plannerTenant } from "@/lib/plannerTenant";
 import { headingCountries, routeBadge, showRouteFinder } from "@/lib/routeFinder";
-import { formatDays } from "@/lib/text";
+import { usePlannerLang, usePlannerT } from "@/components/PlannerLang";
+import { ROUTES, formatDaysIn } from "@/lib/planner.messages";
 import { Icon } from "@/ui/Icon";
 import type { RouteProposal } from "@/lib/types";
 
@@ -48,6 +49,9 @@ export default function RouteFinderGate({ compact = false }: { compact?: boolean
 
 function RoutePlanner({ compact }: { compact: boolean }) {
   const { countries: allCountries, filters, applyRoute, setRoutePreview, intent } = useTrip();
+  const t = usePlannerT(ROUTES);
+  const lang = usePlannerLang();
+  const formatDays = (n: number) => formatDaysIn(n, lang);
   const countries = headingCountries(allCountries);
   const { copy } = useBrand(); // AA-1115: an unnamed tour is "AA tour" on AA's planner only
   // AA-812: pre-filled from the home search / a tour page (/plan?country=&days=&travellers=).
@@ -95,13 +99,13 @@ function RoutePlanner({ compact }: { compact: boolean }) {
         className="aa-focus mb-3 w-full rounded-xl border border-dashed border-k-accent-border px-3 py-2 text-xs font-semibold text-k-accent-deep transition hover:bg-k-accent-tint"
       >
         <Icon name="compass" className="mr-1 inline h-3.5 w-3.5 align-[-2px]" />
-        Start from a tour route
+        {t("startFrom")}
       </button>
     );
   }
 
   return (
-    <div className="mb-3 rounded-xl border border-k-line bg-k-card p-3" aria-label="Plan from a tour route">
+    <div className="mb-3 rounded-xl border border-k-line bg-k-card p-3" aria-label={t("planFromRoute")}>
       <div className="flex items-center justify-between">
         <p className="text-xs font-semibold text-k-ink">Plan from a tour route</p>
         {compact && (
@@ -111,17 +115,17 @@ function RoutePlanner({ compact }: { compact: boolean }) {
         )}
       </div>
       <p className="mt-0.5 text-[11px] text-k-muted">
-        Routes built only from our real tours — pick one, then make it yours.
-        {intent.travellers ? ` Planning for ${intent.travellers} traveller${intent.travellers > 1 ? "s" : ""}.` : ""}
+        {t("intro")}
+        {intent.travellers ? t("planningFor", intent.travellers) : ""}
       </p>
       <div className="mt-2 flex gap-2">
         <select
-          aria-label="Heading to"
+          aria-label={t("headingTo")}
           value={country}
           onChange={(e) => setCountry(e.target.value)}
           className="aa-focus min-w-0 flex-1 rounded-lg border border-k-line bg-k-card px-2 py-1.5 text-xs text-k-ink"
         >
-          <option value="">Heading to…</option>
+          <option value="">{t("headingToOption")}</option>
           {/* AA-812: a country pre-filled from the home page that the planner list does not have yet */}
           {country && !countries.some((c) => c.country === country) && <option value={country}>{country}</option>}
           {countries.map((c) => (
@@ -131,7 +135,7 @@ function RoutePlanner({ compact }: { compact: boolean }) {
           ))}
         </select>
         <input
-          aria-label="Days"
+          aria-label={t("days")}
           type="number"
           min={2}
           max={30}
@@ -144,13 +148,13 @@ function RoutePlanner({ compact }: { compact: boolean }) {
           disabled={!country || loading}
           className="aa-focus shrink-0 rounded-lg bg-k-accent px-3 py-1.5 text-xs font-semibold text-k-on-accent transition hover:brightness-95 disabled:opacity-50"
         >
-          {loading ? "Finding…" : "Find routes"}
+          {loading ? t("finding") : t("find")}
         </button>
       </div>
 
       {proposals && proposals.length === 0 && (
         <p className="mt-2 text-[11px] text-k-muted">
-          No tour route of about {formatDays(days)} in {country} yet — try another length.
+          {t("none", formatDays(days), country)}
         </p>
       )}
 
@@ -178,7 +182,7 @@ function RoutePlanner({ compact }: { compact: boolean }) {
                   disabled={applying !== null}
                   className="aa-focus shrink-0 rounded-md border border-k-accent px-2 py-0.5 text-[11px] font-semibold text-k-accent-deep transition hover:bg-k-accent-tint disabled:opacity-50"
                 >
-                  {applying === i ? "Adding…" : "Start with this route"}
+                  {applying === i ? t("adding") : t("startWith")}
                 </button>
               </div>
               <ul className="mt-1 space-y-0.5">

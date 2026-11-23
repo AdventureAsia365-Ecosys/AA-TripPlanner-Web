@@ -13,7 +13,6 @@ import {
 import {
   APPROXIMATE_LABEL,
   LINE_COLOR,
-  TRIP_FEATURE_COLOR,
   formatStretch,
   isDrawable,
   isExactPin,
@@ -23,6 +22,7 @@ import {
   planTrip,
   shapeLevel,
 } from "@/lib/lines";
+import { mapAccentFrom } from "@/lib/mapAccent";
 import { TileLoader, planTiles } from "@/lib/tileLoader";
 import type { BrowseFilters, DestinationPin } from "@/lib/types";
 import { COUNTRY_BBOX, COUNTRY_ISO, needsGeocodeAttribution } from "@/lib/types";
@@ -327,7 +327,7 @@ export default function MapView() {
 
     map.on("load", () => {
       map.resize(); // ensure canvas matches container after first layout
-
+      const accent = mapAccentFrom((name) => getComputedStyle(document.body).getPropertyValue(name)); // AA-1160 theme
       // --- Selected-country highlight. Uses Mapbox's free country-boundaries
       // tileset so the chosen country gets a soft gold fill + gold outline,
       // making "I picked Laos" visually obvious (not just a camera move).
@@ -343,7 +343,7 @@ export default function MapView() {
         "source-layer": "country_boundaries",
         // Start matching nothing; the country effect sets the real filter.
         filter: ["==", ["get", "iso_3166_1"], "__none__"],
-        paint: { "fill-color": "#DB9628", "fill-opacity": 0.1 },
+        paint: { "fill-color": accent.fill, "fill-opacity": 0.1 },
       });
       map.addLayer({
         id: "country-highlight-line",
@@ -351,7 +351,7 @@ export default function MapView() {
         source: COUNTRY_SOURCE,
         "source-layer": "country_boundaries",
         filter: ["==", ["get", "iso_3166_1"], "__none__"],
-        paint: { "line-color": "#B87A1A", "line-width": 2, "line-opacity": 0.85 },
+        paint: { "line-color": accent.line, "line-width": 2, "line-opacity": 0.85 },
       });
 
       // AA-847 slice 6d: line places (rivers, roads, trails) under the pins: white casing, water blue, roads ink
@@ -414,7 +414,7 @@ export default function MapView() {
       });
       // Colour system (deliberate, so the three roles never blur together):
       //   ink  (#1F2933) = "browse / not yet picked"  -> clusters + single pins
-      //   gold (#DB9628) = "in your trip"             -> numbered day stops + route
+      //   gold (#DB9628) = "in your trip"             -> numbered day stops + route (an agency's `accent`)
       map.addLayer({
         id: "clusters",
         type: "circle",
@@ -493,7 +493,7 @@ export default function MapView() {
         paint: {
           // SOLID gold: this source only holds REAL road-following geometry
           // (from Directions) for legs that are genuinely drivable.
-          "line-color": "#B87A1A",
+          "line-color": accent.line,
           "line-width": 4,
           "line-opacity": 0.95,
         },
@@ -536,7 +536,7 @@ export default function MapView() {
         source: TRIP_FEATURE_SOURCE,
         filter: ["!=", ["get", "approx"], true],
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": TRIP_FEATURE_COLOR, "line-width": 4, "line-opacity": 0.95 },
+        paint: { "line-color": accent.line, "line-width": 4, "line-opacity": 0.95 },
       });
       map.addLayer({
         id: "trip-feature-approx",
@@ -544,7 +544,7 @@ export default function MapView() {
         source: TRIP_FEATURE_SOURCE,
         filter: ["==", ["get", "approx"], true],
         layout: { "line-join": "round" },
-        paint: { "line-color": TRIP_FEATURE_COLOR, "line-width": 3, "line-opacity": 0.9, "line-dasharray": [2, 1.5] },
+        paint: { "line-color": accent.line, "line-width": 3, "line-opacity": 0.9, "line-dasharray": [2, 1.5] },
       });
       map.addLayer({
         id: "trip-feature-label",
@@ -556,7 +556,7 @@ export default function MapView() {
           "text-size": 11,
           "text-font": ["DIN Offc Pro Medium", "Arial Unicode MS Regular"],
         },
-        paint: { "text-color": "#7A5210", "text-halo-color": "#ffffff", "text-halo-width": 1.4 },
+        paint: { "text-color": accent.label, "text-halo-color": "#ffffff", "text-halo-width": 1.4 },
       });
       // AA-1041 (R7 item 3): the numbered trip stops are DOM markers now (see the "trip stop markers" effect), so a
       // stop can be hovered, focused and selected on the map like its row in the trip panel.

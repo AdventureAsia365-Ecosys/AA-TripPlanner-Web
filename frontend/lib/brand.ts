@@ -190,9 +190,11 @@ function agencyCopy(agency: string): BrandCopy {
 export const AA_CATALOG_AI: AiPill = aaCopy().catalogAi;
 
 /** The shared components' words for an agency (its name) or for Adventure Asia's own site (null). */
-export function brandCopy(agency: string | null): BrandCopy {
+export function brandCopy(agency: string | null, lang: "en" | "vi" = "en"): BrandCopy {
   const name = typeof agency === "string" ? agency.trim() : "";
-  return name ? agencyCopy(name) : aaCopy();
+  if (!name) return aaCopy();
+  // AA-1160: an agency's planner in Vietnamese (its CIS locale); Adventure Asia's own site stays English.
+  return lang === "vi" ? agencyCopyVi(name) : agencyCopy(name);
 }
 
 export interface TenantMetaSite {
@@ -225,5 +227,62 @@ export function tenantMetadata(site: TenantMetaSite | null) {
       type: "website" as const,
       locale: site.locale === "vi" ? "vi_VN" : "en_US",
     },
+  };
+}
+
+// AA-1160: the agency's words in Vietnamese (the same keys as agencyCopy; lib/plannerI18n.test.ts compares them).
+function agencyCopyVi(agency: string): BrandCopy {
+  const itinerary =
+    "Lịch trình riêng của tour cho những ngày này, do AI viết từ ghi chú của tour và được kiểm tra chất lượng tự động.";
+  return {
+    agency,
+    catalogAi: {
+      label: "AI",
+      shortLabel: "AI",
+      explanation:
+        "Do một mô hình AI viết từ ghi chú của tour và được kiểm tra chất lượng tự động. " +
+        `${agency} xác nhận mọi chi tiết trước khi bạn đặt.`,
+    },
+    narration: {
+      master: {
+        label: "Lịch trình tour · AI",
+        shortLabel: "Lịch trình · AI",
+        explanation: `${itinerary} ${agency} xác nhận mọi chi tiết.`,
+      },
+      master_basic: {
+        label: "Lịch trình tour · AI",
+        shortLabel: "Lịch trình · AI",
+        explanation:
+          `${itinerary} Tính năng viết bằng AI hiện chưa dùng được (đang tạm dừng, hoặc đã hết hạn mức hôm nay), nên ` +
+          `những ngày chưa có lịch trình chỉ hiện tên địa điểm. ${agency} xác nhận mọi chi tiết.`,
+      },
+      mixed: {
+        label: "Lịch trình tour + AI",
+        shortLabel: "Lịch trình + AI",
+        explanation:
+          "Phần lớn là lịch trình riêng của các tour, do AI viết từ ghi chú của tour và được kiểm tra chất lượng tự " +
+          `động; AI cũng viết những ngày còn thiếu. ${agency} xác nhận mọi chi tiết.`,
+      },
+      llm: {
+        label: "Mô tả bằng AI",
+        shortLabel: "Mô tả bằng AI",
+        explanation: `Do AI viết từ mô tả của các tour. ${agency} xác nhận mọi chi tiết.`,
+      },
+    },
+    coverage: {
+      aria: "Dựng từ các tour",
+      built: (n) => `Dựng từ ${n} tour`,
+      uncovered: "Một phần chuyến đi chưa có tour nào đi qua",
+      unnamedTour: "Tour",
+      noLink: "chưa có tour nối",
+    },
+    activities: {
+      none: "Không có hoạt động nào khác ở đây.",
+      onTours: (n) => `trong ${n} tour`,
+    },
+    nextStops: "Nơi các tour đi tiếp từ điểm dừng cuối của bạn.",
+    narrationIntro: "Chúng tôi sẽ lấy câu chuyện từng ngày từ lịch trình riêng của các tour, theo thứ tự bạn chọn.",
+    consent: `${agency} có thể liên hệ với tôi về chuyến đi này.`,
+    poweredBy: (badge) => (badge ? { name: AA_NAME, href: AA_URL } : null),
   };
 }

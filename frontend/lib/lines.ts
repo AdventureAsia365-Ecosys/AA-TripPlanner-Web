@@ -6,9 +6,9 @@ export type LineClass = "water" | "road" | "trail";
 export type Coord = [number, number]; // [lng, lat]
 
 // Style (TripPlanner map): water blue, roads ink solid, trails / paths / circuits ink dashed; a white casing under
-// every line; the trip's stretch of a line is gold. Approximate / provisional lines are dashed and labelled.
+// every line; the trip's stretch of a line is gold (an agency's accent on its planner: lib/mapAccent.ts). Approximate /
+// provisional lines are dashed and labelled.
 export const LINE_COLOR: Record<LineClass, string> = { water: "#3B82C4", road: "#1F2933", trail: "#1F2933" };
-export const TRIP_FEATURE_COLOR = "#B87A1A";
 export const APPROXIMATE_LABEL = "approximate route";
 // Below this zoom the map asks for the light geometry (≤ 60 vertices), from it the detailed one (≤ 300).
 export const MID_ZOOM = 7;

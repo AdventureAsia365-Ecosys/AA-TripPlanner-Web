@@ -31,6 +31,8 @@ import { PlaceIcon } from "@/components/ActivityIcon";
 import StopActivities from "@/components/StopActivities";
 import StopPhoto from "@/components/StopPhoto";
 import { Icon } from "@/ui/Icon";
+import { usePlannerT } from "@/components/PlannerLang";
+import { DAYS } from "@/lib/planner.messages";
 
 type SortKind = "stop" | "day";
 interface Drag {
@@ -62,6 +64,7 @@ export default function DayList({
     removeDay,
     stopDetails,
   } = useTrip();
+  const t = usePlannerT(DAYS);
   // AA-1041: the hover / selection sync has its own context (lib/useTrip.tsx), so a hover re-renders only its readers.
   const { activeStopId, selectedStop, hoverStop, selectStop } = useStopSync();
   const listRef = useRef<HTMLOListElement | null>(null);
@@ -80,6 +83,7 @@ export default function DayList({
   const groups = groupByDay(itinerary);
   const nameOfDestination = (id: string) => itinerary.find((x) => x.destination_id === id && !isLine(x))?.name ?? null;
   const detailOf = (d: ItineraryDay) => stopDetails.get(d.component_id);
+  const placeOf = (d: ItineraryDay) => d.destination_name ?? detailOf(d)?.destination_name ?? d.name ?? "";
   const kindOf = (d: ItineraryDay) =>
     placeKind({
       name: d.name,
@@ -199,12 +203,12 @@ export default function DayList({
   // A render function, not a component: the handle keeps its DOM node (and its pointer capture) across re-renders.
   const handle = (kind: SortKind, index: number, id: string, label: string) => {
     const length = kind === "stop" ? itinerary.length : groups.length;
-    const unit = kind === "stop" ? "stop" : "day";
+    const unit = kind === "stop" ? t("unitStop") : t("unitDay");
     const moves: { text: string; to: number; testId: string }[] = [
-      { text: "Move up", to: index - 1, testId: "move-up" },
-      { text: "Move down", to: index + 1, testId: "move-down" },
-      { text: "Move to start", to: 0, testId: "move-first" },
-      { text: "Move to end", to: length - 1, testId: "move-last" },
+      { text: t("moveUp"), to: index - 1, testId: "move-up" },
+      { text: t("moveDown"), to: index + 1, testId: "move-down" },
+      { text: t("moveFirst"), to: 0, testId: "move-first" },
+      { text: t("moveLast"), to: length - 1, testId: "move-last" },
     ];
     const open = menu === id;
     return (
@@ -213,7 +217,7 @@ export default function DayList({
           type="button"
           data-handle={id}
           data-testid={kind === "stop" ? "stop-handle" : "day-handle"}
-          aria-label={`Reorder ${label}`}
+          aria-label={t("reorderNamed", label)}
           aria-describedby="tp-reorder-hint"
           aria-haspopup="menu"
           aria-expanded={open}
@@ -230,7 +234,7 @@ export default function DayList({
         {open && (
           <span
             role="menu"
-            aria-label={`Move ${label}`}
+            aria-label={t("moveNamed", label)}
             data-reorder-menu
             data-testid="reorder-menu"
             onKeyDown={(e) => onMenuKey(e, id)}
@@ -272,7 +276,7 @@ export default function DayList({
             data-testid="show-on-map"
             className="aa-focus text-[11px] font-medium text-k-accent-deep"
           >
-            Show on map
+            {t("showOnMap")}
           </button>
         )}
         {d.destination_id && (
@@ -281,7 +285,7 @@ export default function DayList({
             onClick={() => setOpenStop(openStop === d.component_id ? null : d.component_id)}
             className="aa-focus text-[11px] font-medium text-k-accent-deep"
           >
-            {openStop === d.component_id ? "Hide activities" : "Activities here"}
+            {openStop === d.component_id ? t("hideActivities") : t("activitiesHere")}
           </button>
         )}
         <button
@@ -289,7 +293,7 @@ export default function DayList({
           onClick={() => addDay("extra_night", d.component_id)}
           className="aa-focus text-[11px] text-k-muted hover:text-k-ink"
         >
-          + extra night
+          {t("addExtraNight")}
         </button>
       </div>
       {openStop === d.component_id && d.destination_id && <StopActivities destinationId={d.destination_id} />}
@@ -297,9 +301,9 @@ export default function DayList({
         .filter((c) => c.kind === "extra_night" && c.after_component_id === d.component_id)
         .map((c) => (
           <p key={c.day_id} className="mt-1 text-[11px] text-k-body">
-            Extra night here <span className="text-k-muted">(your addition)</span>{" "}
+            {t("extraNightHere")} <span className="text-k-muted">{t("yourAddition")}</span>{" "}
             <button type="button" onClick={() => removeDay(c.day_id)} className="aa-focus tp-no-print text-k-muted hover:text-k-danger">
-              remove
+              {t("removeLower")}
             </button>
           </p>
         ))}
@@ -311,7 +315,7 @@ export default function DayList({
       <p className="truncate text-sm font-semibold text-k-ink">
         {isLine(d) && (
           // The SVG wave, not the "〰" glyph: it is missing from Poppins and most system fonts.
-          <span role="img" aria-label="Route" className="mr-1 inline-block align-[-3px] text-k-accent-deep">
+          <span role="img" aria-label={t("route")} className="mr-1 inline-block align-[-3px] text-k-accent-deep">
             <Icon name="wave" className="h-4 w-4" />
           </span>
         )}
@@ -326,10 +330,10 @@ export default function DayList({
     <button
       type="button"
       onClick={() => remove(d.component_id)}
-      aria-label={`Remove ${stopLabelOf(d)}`}
+      aria-label={t("removeNamed", stopLabelOf(d))}
       className="aa-focus tp-no-print shrink-0 rounded-md px-1.5 py-0.5 text-xs text-k-muted opacity-100 transition hover:text-k-danger md:opacity-0 md:focus:opacity-100 md:group-hover:opacity-100"
     >
-      Remove
+      {t("remove")}
     </button>
   );
 
@@ -350,10 +354,9 @@ export default function DayList({
   return (
     <>
       <p id="tp-reorder-hint" className="sr-only">
-        Drag the handle, or press the up and down arrow keys on it, to move it. Home and End move it to the start or the
-        end. Tap the handle, or press Enter on it, for a menu of moves.
+        {t("reorderHint")}
       </p>
-      <ol ref={listRef} aria-label="Your days" className="space-y-0" data-testid="day-list">
+      <ol ref={listRef} aria-label={t("yourDays")} className="space-y-0" data-testid="day-list">
         {groups.map((g, gi) => {
           const first = g.stops[0];
           const last = g.stops[g.stops.length - 1];
@@ -361,7 +364,7 @@ export default function DayList({
           const dayActive = g.stops.some((s) => s.component_id === activeStopId);
           const photo = dayPhoto(stopDetails, g.stops.map((s) => s.component_id));
           const leg = gi < groups.length - 1 ? legs.get(last.component_id) : undefined;
-          const dayLabel = many ? `Day ${g.day}` : stopLabelOf(first);
+          const dayLabel = many ? t("dayN", g.day) : stopLabelOf(first);
           return (
             <li key={first.component_id} data-sort-day={gi} data-testid="day" className="tp-print-day">
               <div
@@ -381,9 +384,9 @@ export default function DayList({
                         </span>
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-k-ink">Day {g.day}</p>
+                        <p className="text-sm font-semibold text-k-ink">{t("dayN", g.day)}</p>
                         <p className="truncate text-xs text-k-muted">
-                          {g.stops.length} stops · {first.destination_name ?? detailOf(first)?.destination_name ?? first.name}
+                          {t("stopsAt", g.stops.length, placeOf(first))}
                         </p>
                       </div>
                     </div>
@@ -439,7 +442,7 @@ export default function DayList({
                         <div className="min-w-0 flex-1">
                           <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-k-muted">
                             <PlaceIcon kind={kind} size={12} className="text-k-accent-deep" />
-                            Day {d.day} · {kindLabel(kind)}
+                            {t("dayN", d.day)} · {kindLabel(kind)}
                           </p>
                           {stopText(d)}
                           {stopActions(d)}

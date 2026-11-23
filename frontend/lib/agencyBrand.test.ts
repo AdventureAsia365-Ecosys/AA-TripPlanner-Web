@@ -283,7 +283,7 @@ test("the agency's planner, share view and tour page use the agency bar, and the
     assert.match(read(f), /<Header agency=\{\{ slug: site\.slug, name: site\.name \}\} \/>/, f);
   }
   const app = read("app/plan/PlannerApp.tsx");
-  assert.match(app, /<BrandProvider agency=\{brandSlug \? agencyName : null\} agencySlug=\{brandSlug\}>/);
+  assert.match(app, /<BrandProvider agency=\{brandSlug \? agencyName : null\} agencySlug=\{brandSlug\}( lang=\{lang\})?>/);
   assert.match(app, /const brandSlug = headerAgency && isAgencyPlanner\(tenantSlug\) \? tenantSlug : null;/);
   for (const page of ["privacy", "terms"]) {
     const src = read(`app/[tenant]/${page}/page.tsx`);

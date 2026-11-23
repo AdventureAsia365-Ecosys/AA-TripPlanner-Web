@@ -16,6 +16,8 @@ import { reloadIntoPlannerDocument } from "@/lib/plannerNav";
 import { whenIdle } from "@/lib/idle";
 import { Icon } from "@/ui/Icon";
 import { LoadingState } from "@/ui/States";
+import { PlannerLangProvider, usePlannerT } from "@/components/PlannerLang";
+import { PLANNER, type Lang } from "@/lib/planner.messages";
 
 // AA-1041 (first-load performance, S277 Lighthouse check): the map and the Mapbox library (about 1.4 MB of script, the
 // bulk of the planner's first load) are their own chunk, asked for once the planner has hydrated, painted and gone idle
@@ -29,14 +31,15 @@ const MapView = dynamic(() => import("@/components/MapView"), { ssr: false, load
 
 // AA-1041: the planning chat is fetched and mounted the first time its tab (or the phone's Chat view) opens, then
 // stays mounted so the conversation survives a tab switch. Nothing of it runs on the planner's first load.
-const PlanChat = dynamic(() => import("@/components/PlanChat"), {
-  ssr: false,
-  loading: () => (
+function ChatPending() {
+  const t = usePlannerT(PLANNER);
+  return (
     <div className="p-4">
-      <LoadingState label="Loading the chat" rows={2} compact />
+      <LoadingState label={t("loadingChat")} rows={2} compact />
     </div>
-  ),
-});
+  );
+}
+const PlanChat = dynamic(() => import("@/components/PlanChat"), { ssr: false, loading: ChatPending });
 
 // Below this width we stack map/trip and toggle between them, so neither
 // gets squeezed on a phone. Above it, the classic side-by-side layout.
@@ -50,11 +53,12 @@ const MOBILE_BREAKPOINT = 768;
 const PANE_TOGGLE_BOTTOM = "bottom-16 xl:bottom-4";
 
 function PaneToggle({ pane, setPane }: { pane: "map" | "list"; setPane: (p: "map" | "list") => void }) {
+  const t = usePlannerT(PLANNER);
   const btn = (p: "map" | "list", label: string) => (
     <button
       onClick={() => setPane(p)}
       aria-pressed={pane === p}
-      className={`aa-focus px-3.5 py-1.5 text-xs font-semibold transition ${
+      className={`aa-focus whitespace-nowrap px-3.5 py-1.5 text-xs font-semibold transition ${
         pane === p ? "bg-k-ink text-k-bg" : "text-k-ink hover:bg-k-accent-tint"
       }`}
     >
@@ -66,8 +70,8 @@ function PaneToggle({ pane, setPane }: { pane: "map" | "list"; setPane: (p: "map
       data-testid="pane-toggle"
       className={`absolute ${PANE_TOGGLE_BOTTOM} left-1/2 z-20 flex -translate-x-1/2 overflow-hidden rounded-full border border-k-line bg-k-card shadow-aa`}
     >
-      {btn("map", "Map")}
-      {btn("list", "List of tours")}
+      {btn("map", t("map"))}
+      {btn("list", t("tourList"))}
     </div>
   );
 }
@@ -77,6 +81,7 @@ function PaneToggle({ pane, setPane }: { pane: "map" | "list"; setPane: (p: "map
 type SideTab = "trip" | "chat";
 
 function SideTabs({ tab, setTab }: { tab: SideTab; setTab: (t: SideTab) => void }) {
+  const tr = usePlannerT(PLANNER);
   const btn = (t: SideTab, label: string, icon: string) => (
     <button
       type="button"
@@ -94,15 +99,16 @@ function SideTabs({ tab, setTab }: { tab: SideTab; setTab: (t: SideTab) => void 
     </button>
   );
   return (
-    <div role="tablist" aria-label="Trip panel" className="flex border-b border-k-line bg-k-card">
-      {btn("trip", "Your trip", "route")}
-      {btn("chat", "Plan with chat", "chat")}
+    <div role="tablist" aria-label={tr("tripPanel")} className="flex border-b border-k-line bg-k-card">
+      {btn("trip", tr("yourTrip"), "route")}
+      {btn("chat", tr("planWithChat"), "chat")}
     </div>
   );
 }
 
 function Layout({ initialMobileView, agency }: { initialMobileView: "map" | "trip"; agency: HeaderAgency | null }) {
   const { itinerary } = useTrip();
+  const t = usePlannerT(PLANNER);
   const [isMobile, setIsMobile] = useState(false);
   const [mobileView, setMobileView] = useState<"map" | "trip" | "chat">(initialMobileView);
   const [sideTab, setSideTab] = useState<SideTab>("trip");
@@ -200,7 +206,7 @@ function Layout({ initialMobileView, agency }: { initialMobileView: "map" | "tri
         </aside>
         {/* AA-1041 slice 2: the planning chat, its own view on a phone (mounted, so the conversation stays). */}
         <section
-          aria-label="Plan with chat"
+          aria-label={t("planWithChat")}
           style={{
             position: "absolute",
             inset: 0,
@@ -222,7 +228,7 @@ function Layout({ initialMobileView, agency }: { initialMobileView: "map" | "tri
           }`}
         >
           <Icon name="map" className="mr-1 inline h-4 w-4 align-[-3px]" />
-          Explore
+          {t("explore")}
         </button>
         <button
           onClick={() => setMobileView("trip")}
@@ -233,7 +239,7 @@ function Layout({ initialMobileView, agency }: { initialMobileView: "map" | "tri
           }`}
         >
           <Icon name="route" className="mr-1 inline h-4 w-4 align-[-3px]" />
-          Your trip
+          {t("yourTripShort")}
           {itinerary.length > 0 && (
             <span className="ml-1.5 rounded-full bg-k-ink px-1.5 py-0.5 text-[10px] font-bold text-k-bg">
               {new Set(itinerary.map((d) => d.day)).size}
@@ -250,7 +256,7 @@ function Layout({ initialMobileView, agency }: { initialMobileView: "map" | "tri
           }`}
         >
           <Icon name="chat" className="mr-1 inline h-4 w-4 align-[-3px]" />
-          Chat
+          {t("chat")}
         </button>
       </nav>
     </div>
@@ -270,10 +276,13 @@ export default function PlannerApp({
   intent,
   tenantSlug = null,
   agency = null,
+  lang = "en",
 }: {
   intent: PlanIntent;
   tenantSlug?: string | null;
   agency?: PlannerAgency | null;
+  /** AA-1160: the agency's locale on /{slug}/plan; English on the bare /plan. */
+  lang?: Lang;
 }) {
   // AA-1038 R5 slice 2: a /{slug}/plan page names its tenant before the trip state loads (the ids key and the
   // x-tp-tenant-slug header of every /api/trip call, lib/plannerTenant.ts). The bare /plan passes none. Set during
@@ -299,11 +308,13 @@ export default function PlannerApp({
   // the k-* tokens, so browser-styled controls (country select, days input) stay readable in dark.
   // The Mapbox basemap stays the light outdoors style in both themes (map imagery, not UI text).
   return (
-    <BrandProvider agency={brandSlug ? agencyName : null} agencySlug={brandSlug}>
-      <TripProvider initialIntent={intent}>
-        <Layout initialMobileView={intent.ask ? "trip" : "map"} agency={headerAgency} />
-        <GuestResetNotice />
-      </TripProvider>
-    </BrandProvider>
+    <PlannerLangProvider lang={lang}>
+      <BrandProvider agency={brandSlug ? agencyName : null} agencySlug={brandSlug} lang={lang}>
+        <TripProvider initialIntent={intent}>
+          <Layout initialMobileView={intent.ask ? "trip" : "map"} agency={headerAgency} />
+          <GuestResetNotice />
+        </TripProvider>
+      </BrandProvider>
+    </PlannerLangProvider>
   );
 }

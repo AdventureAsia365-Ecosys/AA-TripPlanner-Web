@@ -18,7 +18,7 @@ import { clip, daysText } from "@/lib/text";
 import { isTenantSlug, resolveTenant } from "@/lib/tenantSite";
 import { itineraryParagraphs, tenantPlanHref, tenantTextMark, tenantTourPath } from "@/lib/tenantTours";
 import { legalPaths } from "@/lib/legal";
-import { brandThemeCss } from "@/ui/core/brandTheme";
+import { plannerBrandCss } from "@/lib/tenantBrand";
 import { AiNotice, ButtonLink, Icon } from "@/ui";
 
 type Props = { params: Promise<{ tenant: string; tour: string }> };
@@ -56,7 +56,7 @@ export default async function TenantTourPage({ params }: Props) {
   if (!found) notFound();
   const { site, t } = found;
   if (t.slug !== tour) permanentRedirect(`/${site.slug}/tours/${t.slug}`);
-  const brand = brandThemeCss(site.theme);
+  const brand = plannerBrandCss(site.theme);
   const mark = tenantTextMark(t.ai);
   const days = daysText(t.duration_days, t.duration_raw);
   const facts = [

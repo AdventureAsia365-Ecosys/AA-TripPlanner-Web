@@ -7,6 +7,8 @@
 // and message, and the contact consent (required). The bare /plan and the AA demo tenant keep the demo notice
 // (lib/advisorDemo.ts): Adventure Asia keeps no traveller record of its own.
 
+import { LEAD, translator, type Lang } from "./planner.messages.ts";
+
 export const DEMO_TENANT_SLUG = "aa-tripplanner";
 
 export const BUDGET_BANDS = [
@@ -132,27 +134,37 @@ export function leadBody(f: LeadForm, locale: "en" | "vi" = "en"): LeadBody {
 }
 
 /** The calm line the planner shows for the Lambda's answer to a lead. */
-export function leadResultMessage(status: number, body: { error?: string } | null | undefined, agency: string): string {
-  if (status === 200) return `Sent to ${agency}. They will contact you about this trip.`;
+export function leadResultMessage(
+  status: number, body: { error?: string } | null | undefined, agency: string, lang?: Lang,
+): string {
+  // AA-1160: in the planner's language (lib/planner.messages.ts LEAD; no language = English, as translator reads it).
+  const t = translator(LEAD, lang as Lang);
+  if (status === 200) return t("sent", agency);
   switch (body?.error) {
     case "consent_required":
-      return "Please tick the box so the agency may contact you.";
+      return t("consentRequired");
     case "invalid_lead":
-      return "Some answers need a look: please check the highlighted fields. A phone starts with + and the country code.";
+      return t("invalidLead");
     case "lead_route_missing":
     case "lead_channel_unavailable":
     case "lead_route_unavailable":
-      return `${agency} cannot take requests from the planner right now. Please contact them directly.`;
+      return t("unavailable", agency);
     case "empty_trip":
-      return "Add a stop or a day to your trip first.";
+      return t("emptyTrip");
     // AA-1038 slice 3 (S272 review): the send limits (per session / per IP per hour, per agency per day) and BotID.
     case "rate_limited":
-      return "You have sent several requests already. Please wait a little before sending again.";
+      return t("rateLimited");
     case "lead_cap_reached":
-      return `${agency} has received many requests from the planner today. Please try again tomorrow or contact them directly.`;
+      return t("capReached", agency);
     case "bot_check_failed":
-      return "We could not confirm this request came from a browser. Please reload the page and try again.";
+      return t("botCheck");
     default:
-      return "Something went wrong. Please try again.";
+      return t("failed");
   }
+}
+
+/** A budget band's label in the planner's language (BUDGET_BANDS keeps the English ones). */
+export function budgetLabel(value: string, lang: Lang = "en"): string {
+  const key = `budget_${value}` as `budget_${(typeof BUDGET_BANDS)[number]["value"]}`;
+  return translator(LEAD, lang)(key);
 }

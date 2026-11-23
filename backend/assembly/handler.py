@@ -709,7 +709,7 @@ async def _send_lead(conn, trip_id: str, body: dict, guest_token: Optional[str],
             raise leads_mod.LeadRefused(503, "lead_channel_unavailable")
         if route_.channel == "crm" and not await leads_mod.crm_pull_fresh(conn, tenant_id):
             # The CRM is not pulling this tenant (agency locked / offboarding / not provisioned, or the pull is
-            # down): a stored lead would only wait for the hold to end it.
+            # down; load_route already falls back when it can, AA-1160): a stored lead would only wait for the hold.
             raise leads_mod.LeadRefused(503, "lead_channel_unavailable")
     except leads_mod.LeadRefused as e:
         observability.emit("lead_refused", code=e.code, tenant_id=tenant_id)
@@ -805,7 +805,7 @@ async def serve_m2m(method: str, path: str, body: dict, authorization: Optional[
             acquire = (await get_pool()).acquire
         async with acquire() as conn, tenant.bound(conn, tenant_raw, source=tenant.SOURCE_M2M) as tid:
             try:
-                route_ = await leads_mod.load_route(conn, tid)
+                route_ = await leads_mod.load_route(conn, tid, crm_pull=True)  # AA-1160: the CRM's call proves it
             except leads_mod.LeadRefused as e:
                 if e.status == 503:
                     return _resp(503, {"error": "unavailable"})
