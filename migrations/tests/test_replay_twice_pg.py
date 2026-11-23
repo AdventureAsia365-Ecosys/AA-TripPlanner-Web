@@ -370,6 +370,10 @@ ERASE_EXCEPTIONS = {
     # key needs the environment's master secret); after offboarding it signs nothing (no route, no lead). Planned by the
     # next erase_tenant contract file (delete), listed here until then.
     "lead_webhook_key": "a key version number only (no personal data, no secret); deleted by a later erase file",
+    # tp-036 (AA-1152): an agency's own "from" prices on its planner, as its CRM computed them. No personal data; after
+    # offboarding no page shows them (the tenant is no longer served). Planned by the next erase_tenant contract file
+    # (delete), listed here until then.
+    "agency_prices": "the agency's price list only (no personal data); deleted by a later erase file",
 }
 
 
