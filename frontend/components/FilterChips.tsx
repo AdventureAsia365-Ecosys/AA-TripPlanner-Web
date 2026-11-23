@@ -11,7 +11,7 @@ import {
 } from "@/lib/types";
 import type { CountryOption } from "@/lib/types";
 import ActivityIcon from "./ActivityIcon";
-import { usePlannerT } from "@/components/PlannerLang";
+import { usePlannerLang, usePlannerT } from "@/components/PlannerLang";
 import { FILTERS } from "@/lib/planner.messages";
 
 // AA-1160: the month and value labels come from lib/planner.messages.ts FILTERS (the planner's language).
@@ -50,6 +50,8 @@ export default function FilterChips() {
   } = useTrip();
   const t = usePlannerT(FILTERS);
   const label = (v: string) => t("value", v);
+  // AA-1160: English values read as titles ("cultural heritage" -> "Cultural Heritage"); Vietnamese keeps its case.
+  const caps = usePlannerLang() === "vi" ? "" : "capitalize";
   const [open, setOpen] = useState(true);
   const [text, setText] = useState("");
   // Country picker is a custom listbox (not a native <select>) so hovering a
@@ -296,7 +298,7 @@ export default function FilterChips() {
                       key={a}
                       onClick={() => toggleActivity(a)}
                       aria-pressed={active}
-                      className={`aa-focus flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium capitalize transition ${
+                      className={`aa-focus flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium ${caps} transition ${
                         active
                           ? "border-k-accent bg-k-accent text-k-on-accent shadow-aa-sm"
                           : "border-k-line bg-k-card text-k-ink hover:border-k-accent-border hover:bg-k-accent-tint"
@@ -318,7 +320,7 @@ export default function FilterChips() {
                 onChange={(e) =>
                   setFilters({ ...filters, intensity_level: e.target.value || undefined })
                 }
-                className="aa-focus rounded-lg border border-k-line bg-k-card px-2.5 py-1.5 text-xs capitalize text-k-ink"
+                className={`aa-focus rounded-lg border border-k-line bg-k-card px-2.5 py-1.5 text-xs ${caps} text-k-ink`}
               >
                 <option value="">{t("anyIntensity")}</option>
                 {INTENSITIES.map((i) => (

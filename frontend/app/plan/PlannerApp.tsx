@@ -58,7 +58,7 @@ function PaneToggle({ pane, setPane }: { pane: "map" | "list"; setPane: (p: "map
     <button
       onClick={() => setPane(p)}
       aria-pressed={pane === p}
-      className={`aa-focus px-3.5 py-1.5 text-xs font-semibold transition ${
+      className={`aa-focus whitespace-nowrap px-3.5 py-1.5 text-xs font-semibold transition ${
         pane === p ? "bg-k-ink text-k-bg" : "text-k-ink hover:bg-k-accent-tint"
       }`}
     >
@@ -239,7 +239,7 @@ function Layout({ initialMobileView, agency }: { initialMobileView: "map" | "tri
           }`}
         >
           <Icon name="route" className="mr-1 inline h-4 w-4 align-[-3px]" />
-          {t("yourTrip")}
+          {t("yourTripShort")}
           {itinerary.length > 0 && (
             <span className="ml-1.5 rounded-full bg-k-ink px-1.5 py-0.5 text-[10px] font-bold text-k-bg">
               {new Set(itinerary.map((d) => d.day)).size}
