@@ -121,7 +121,7 @@ export default async function TenantTourPage({ params }: Props) {
             Start from this itinerary on the map, change what you like, and {site.name} confirms every detail and price
             in your quote.
           </p>
-          <AgencyFromPrice price={t.agency_price} agency={site.name} />
+          <AgencyFromPrice slug={site.slug} sourceId={t.source_id} agency={site.name} />
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <ButtonLink href={planHref} variant="primary" size="lg">
               <Icon name="route" className="h-4 w-4" /> Customise this trip

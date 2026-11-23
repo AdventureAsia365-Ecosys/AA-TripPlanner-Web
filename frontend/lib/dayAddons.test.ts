@@ -1,7 +1,9 @@
 // AA-1152: the day cards' AA add-ons — the BFF's Lambda paths, the day lookup, the fact and price words. Invented ids.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addonsOfDay, addonsUpstream, durationText, priceText, type TripAddons } from "./dayAddons.ts";
+import {
+  addonsOfDay, addonsUpstream, agencyPriceOf, agencyPriceUpstream, durationText, priceText, type TripAddons,
+} from "./dayAddons.ts";
 import { ADDONS } from "./dayAddons.messages.ts";
 import { translator } from "../ui/core/i18n.ts";
 
@@ -55,4 +57,19 @@ test("the add-on words in both languages", () => {
   assert.equal(vi("runs", [7]), "Hoạt động CN");
   assert.equal(en("from", "$42"), "From $42 per person");
   assert.doesNotMatch(en("priceNote", "Lantern Travel"), /Adventure Asia/);
+});
+
+test("the tour page reads the agency's price through a no-store path, and only a well-formed answer shows", () => {
+  assert.equal(agencyPriceUpstream("SYN-TOUR-0042"), "/trip/agency-price?source_id=SYN-TOUR-0042");
+  assert.equal(agencyPriceUpstream("a&b"), "/trip/agency-price?source_id=a%26b");
+  assert.equal(agencyPriceUpstream(""), null);
+  assert.equal(agencyPriceUpstream(null), null);
+  assert.equal(agencyPriceUpstream("bad\nkey"), null);
+  assert.deepEqual(agencyPriceOf({ price: { from_per_person: "1235", currency: "USD" } }), {
+    from_per_person: "1235", currency: "USD",
+  });
+  for (const bad of [null, {}, { price: null }, { price: { from_per_person: 12, currency: "USD" } },
+    { price: { from_per_person: "1.234", currency: "USD" } }, { price: { from_per_person: "10", currency: "usd" } }]) {
+    assert.equal(agencyPriceOf(bad), null);
+  }
 });

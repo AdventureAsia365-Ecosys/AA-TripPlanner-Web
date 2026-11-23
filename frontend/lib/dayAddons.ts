@@ -85,3 +85,22 @@ export function priceText(price: DayAddonPrice, locale: string): string {
     return `${price.from_per_person} ${price.currency}`;
   }
 }
+
+// The agency's own "from" price of one tour, read on every view of its tour page (app/api/trip/agency-price/route.ts,
+// no-store), so the agency's "Show prices on my planner" switch and a new list show at once; the page itself is cached.
+const SOURCE_RE = /^[^\x00-\x1f\x7f]{1,128}$/;
+const AMOUNT_RE = /^\d{1,10}(\.\d{1,2})?$/;
+
+/** The Lambda path of the tour's agency price, or null when the tour key is malformed. */
+export function agencyPriceUpstream(sourceId: string | null): string | null {
+  if (!sourceId || !SOURCE_RE.test(sourceId)) return null;
+  return `/trip/agency-price?${new URLSearchParams({ source_id: sourceId })}`;
+}
+
+/** The price of an answer ({price: {from_per_person, currency} | null}); anything else is no price. */
+export function agencyPriceOf(body: unknown): DayAddonPrice | null {
+  const price = (body as { price?: unknown } | null)?.price as Partial<DayAddonPrice> | null | undefined;
+  if (!price || typeof price.from_per_person !== "string" || typeof price.currency !== "string") return null;
+  if (!AMOUNT_RE.test(price.from_per_person) || !/^[A-Z]{3}$/.test(price.currency)) return null;
+  return { from_per_person: price.from_per_person, currency: price.currency };
+}

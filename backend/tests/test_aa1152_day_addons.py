@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import jsonschema
@@ -220,11 +220,11 @@ class _Absent(Exception):
 @pytest.mark.asyncio
 async def test_pages_show_the_agency_price_only_when_switched_on():
     row = {"show_prices": True, "currency": "USD", "tours": json.dumps({"SYN-TOUR-0042": "1235"}),
-           "addons": {SV1: "42"}}
-    prices = await agency_prices.read(_ReadConn(row), TENANT)
+           "addons": {SV1: "42"}, "received_at": T0}
+    prices = await agency_prices.read(_ReadConn(row), TENANT, now=T0)
     assert prices.tour("SYN-TOUR-0042") == {"from_per_person": "1235", "currency": "USD"}
     assert prices.addon(SV1) == {"from_per_person": "42", "currency": "USD"} and prices.addon(SV2) is None
-    assert await agency_prices.read(_ReadConn({**row, "show_prices": False}), TENANT) is None
+    assert await agency_prices.read(_ReadConn({**row, "show_prices": False}), TENANT, now=T0) is None
     assert await agency_prices.read(_ReadConn(None), TENANT) is None
     assert await agency_prices.read(_ReadConn(error=_Absent()), TENANT) is None
     assert await agency_prices.read(_ReadConn(row), config.DEMO_TENANT_ID) is None  # AA's planner: never a price
@@ -290,3 +290,40 @@ async def test_routes_read_pick_and_unpick(monkeypatch):
     assert (await call("POST", f"/trip/{TRIP}/addons", {"session_id": "s1", "day": 1, "component_id": SV1},
                        guard=_deny))[0] == 404
     assert await call("GET", f"/trip/{TRIP}") == (418, {"path": f"/trip/{TRIP}"})
+
+
+@pytest.mark.asyncio
+async def test_a_list_the_crm_stopped_refreshing_hides_every_price(monkeypatch):
+    """The window is the setting tripplanner.prices.agency_stale_hours (CIS 476; code default 6 h)."""
+    row = {"show_prices": True, "currency": "USD", "tours": {"SYN-TOUR-0042": "1235"}, "addons": {},
+           "received_at": T0}
+    assert await agency_prices.read(_ReadConn(row), TENANT, now=T0 + timedelta(hours=6)) is not None
+    assert await agency_prices.read(_ReadConn(row), TENANT, now=T0 + timedelta(hours=6, seconds=1)) is None
+    assert await agency_prices.read(_ReadConn({**row, "received_at": None}), TENANT, now=T0) is None
+    naive = {**row, "received_at": T0.replace(tzinfo=None)}
+    assert await agency_prices.read(_ReadConn(naive), TENANT, now=T0 + timedelta(hours=1)) is not None
+    monkeypatch.setattr(agency_prices.settings, "get", lambda key, tenant_id=None: 2)  # an administrator's value
+    assert await agency_prices.read(_ReadConn(row), TENANT, now=T0 + timedelta(hours=3)) is None
+
+
+@pytest.mark.asyncio
+async def test_the_tour_page_reads_its_price_through_a_no_store_route(monkeypatch):
+    row = {"show_prices": True, "currency": "USD", "tours": {"SYN-TOUR-0042": "1235"}, "addons": {},
+           "received_at": datetime.now(timezone.utc)}
+    monkeypatch.setattr(day_addons.tenant, "current_id", lambda: TENANT)
+
+    async def fallback(method, path, body, **kw):
+        return _resp(418, {"path": path})
+
+    async def call(body, conn):
+        out = await day_addons.serve(fallback, _no_guard, _no_guard, _resp, "GET", day_addons.AGENCY_PRICE_PATH, body,
+                                     conn=conn, guest_token=None, caller=None)
+        return out["statusCode"], json.loads(out["body"])
+
+    assert await call({"source_id": "SYN-TOUR-0042"}, _Conn(prices=row)) == (
+        200, {"price": {"from_per_person": "1235", "currency": "USD"}})
+    assert await call({"source_id": "SYN-TOUR-0099"}, _Conn(prices=row)) == (200, {"price": None})
+    assert await call({"source_id": "SYN-TOUR-0042"}, _Conn(prices={**row, "show_prices": False})) == (
+        200, {"price": None})
+    assert (await call({}, _Conn(prices=row)))[0] == 400
+    assert (await call({"source_id": "bad\nkey"}, _Conn(prices=row)))[0] == 400

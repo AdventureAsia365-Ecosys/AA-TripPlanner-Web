@@ -17,11 +17,8 @@ kind demo gave every synthetic agency the AA catalogue).
 The view absent or not granted (42P01 / 42501: CIS 404 not applied yet): an agency lists no tour and has no tour
 page; one log line says why. Any other read error raises (the handler answers 503 no-store).
 
-No AA price is read or answered: the agency is the merchant of record (ADR 0019 b5) and AA's suggested retail price is
-AA's catalogue price, not the agency's. AA-1152 (S285 B2 option C, b5 as amended): each card and the tour page carry
-``agency_price`` ({from_per_person, currency}), the agency's OWN "from" price its CRM published
-(tripplanner.agency_prices.v1, backend/shared/agency_prices.py), or null (none published, the agency's switch off).
-No score, no personal data (the view carries none).
+No price is read or answered: the agency is the merchant of record (ADR 0019 b5) and AA's suggested retail price is
+AA's catalogue price, not the agency's. No score, no personal data (the view carries none).
 """
 from __future__ import annotations
 
@@ -30,7 +27,6 @@ from typing import Any, Optional
 
 from backend import config
 from backend.browse import catalog
-from backend.shared import agency_prices
 
 VIEW = "catalog.v_tenant_tour_v1"
 VIEW_ABSENT_SQLSTATES = frozenset({"42P01", "42501"})
@@ -162,9 +158,6 @@ async def list_tours(site: dict, q: dict, *, pool: Any) -> dict:
     cards = catalog.sort_cards(cards, q["sort"])
     page = cards[q["offset"]: q["offset"] + q["limit"]]
     await catalog.fill_fallback_covers(page, pool=pool)
-    prices = await agency_prices.read(pool, site["tenant_id"])
-    for card in page:
-        card["agency_price"] = prices.tour(card["source_id"]) if prices else None
     return {
         "filters": {k: q[k] for k in ("country", "min_days", "max_days", "month", "sort")},
         "total": len(cards),
@@ -222,6 +215,4 @@ async def tour_detail(site: dict, slug: str, *, pool: Any) -> Optional[dict]:
     }
     if not out["photos"]:
         await catalog.fill_fallback_covers([out], pool=pool)
-    prices = await agency_prices.read(pool, site["tenant_id"])
-    out["agency_price"] = prices.tour(t["source_id"]) if prices else None
     return out

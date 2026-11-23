@@ -9,6 +9,8 @@ last stop), **then the places visited** that day (its stops), each add-on once p
   GET    /trip/{id}/addons                        the days with their add-ons (and the traveller's picks)
   POST   /trip/{id}/addons                        {session_id, day, component_id}: pick one (trip event add_addon)
   DELETE /trip/{id}/addons/{day}/{component_id}   ?session_id=: unpick it (trip event remove_addon)
+  GET    /trip/agency-price                       ?source_id=: the agency's own "from" price of one tour (its tour
+                                                  page; no trip, no-store, so the switch and a new list show at once)
 
 A pick is a trip event (tp-037), so it survives a reload and goes with the lead (lead.submitted.v1 1.2
 ``day_plan[].addons``: the sv: id and AA's name, never a price: :func:`attach`). A pick is accepted only for an add-on
@@ -31,6 +33,7 @@ from backend.shared import agency_prices, observability, tenant
 
 ADDONS_RE = re.compile(r"^/trip/([^/]+)/addons$")
 ADDON_ITEM_RE = re.compile(r"^/trip/([^/]+)/addons/([0-9]{1,2})/(sv:[0-9a-f-]{36})$")
+AGENCY_PRICE_PATH = "/trip/agency-price"
 _SV = re.compile(r"^sv:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 MAX_PER_DAY = 12  # technical-constant: the lead's DayPlan.addons maxItems (lead.submitted.v1 1.2)
 MAX_DAY = 90  # technical-constant: the lead's DayPlan.day maximum
@@ -202,11 +205,24 @@ async def _unpick(conn: Any, trip_id: str, day: int, cid: str, body: dict,
     return resp(200, await view(conn, trip_id))
 
 
+async def tour_price(conn: Any, source_id: Any) -> Optional[dict]:
+    """GET /trip/agency-price: ``{"price": {from_per_person, currency} | null}`` of one tour on the page's agency
+    (tenant assertion); None = a malformed ``source_id`` (400)."""
+    if not isinstance(source_id, str) or not agency_prices.SOURCE_RE.match(source_id):
+        return None
+    prices = await agency_prices.read(conn, tenant.current_id())
+    return {"price": prices.tour(source_id) if prices else None}
+
+
 async def serve(fallback: Callable[..., Awaitable[dict]], guard: Callable[..., Awaitable[Optional[dict]]],
                 read_guard: Callable[..., Awaitable[Optional[dict]]], resp: Callable[[int, dict], dict],
                 method: str, path: str, body: dict, *, conn: Any, guest_token: Optional[str] = None,
                 caller: Any = None, **kw: Any) -> dict:
-    """The three add-on routes; any other path goes on to ``fallback`` (the handler's route())."""
+    """The three add-on routes and the tour page's agency price; any other path goes on to ``fallback`` (the
+    handler's route())."""
+    if path == AGENCY_PRICE_PATH and method == "GET":
+        answer = await tour_price(conn, body.get("source_id"))
+        return resp(200, answer) if answer is not None else resp(400, {"error": "source_id required"})
     m, item = ADDONS_RE.match(path), ADDON_ITEM_RE.match(path)
     if m and method == "GET":
         if denied := await read_guard(conn, m.group(1), guest_token, "addons", caller):

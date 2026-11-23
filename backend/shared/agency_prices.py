@@ -8,6 +8,12 @@ scope ``tenant:<uuid>``) and only shows it (:func:`read`): never a B2B price, a 
 here. With the agency's switch off (``show_prices`` false) no price shows. AA's own planner (config.is_aa_hosted) never
 shows an agency price (root ADR 0019 b5 as amended by AA-1152: only the agency's own price, on its own pages).
 
+Never out of date: a list that arrived longer ago than the setting ``tripplanner.prices.agency_stale_hours`` (CIS 476,
+Platform › Settings; the CRM publishes every hour) hides every price of the agency, so an agency whose CRM stopped
+publishing (locked, deleted, unreachable) never keeps showing old prices. The read is never cached (the tour page asks
+it through a no-store route, ``GET /trip/agency-price``: :mod:`backend.assembly.day_addons`), so the agency's switch
+and a new list show on the next page view.
+
 Fail soft: the table absent or not granted (42P01 / 42501, before tp-036) = no price, one log line.
 """
 from __future__ import annotations
@@ -15,12 +21,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from backend import config
-from backend.shared import observability
+from backend.shared import observability, settings
 
 ABSENT_SQLSTATES = ("42P01", "42501")
 TOURS_MAX = 2000  # technical-constant: the contract's maxItems (tripplanner.agency_prices.v1 AgencyPrices.tours)
@@ -28,9 +34,10 @@ ADDONS_MAX = 1000  # technical-constant: the contract's maxItems (AgencyPrices.a
 _AMOUNT = re.compile(r"^\d{1,10}(\.\d{1,2})?$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 _SV = re.compile(r"^sv:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-_SOURCE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
+SOURCE_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
 
-READ_SQL = "SELECT show_prices, currency, tours, addons FROM tripplanner.agency_prices WHERE scope = $1"
+READ_SQL = ("SELECT show_prices, currency, tours, addons, received_at FROM tripplanner.agency_prices "
+            "WHERE scope = $1")
 UPSERT_SQL = (
     "INSERT INTO tripplanner.agency_prices AS p (scope, show_prices, currency, tours, addons, computed_at) "
     "VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::timestamptz) "
@@ -70,9 +77,18 @@ def _object(value: Any) -> dict:
     return {str(k): str(v) for k, v in dict(data or {}).items()}
 
 
-async def read(db: Any, tenant_id: Optional[str]) -> Optional[AgencyPrices]:
-    """The agency's prices, or None (AA's own planner, no list, switch off, table absent). ``db`` is a pool or a
-    connection (a connection reads in a savepoint, so a failure never aborts the caller's transaction)."""
+def is_stale(received_at: Optional[datetime], now: datetime) -> bool:
+    """True when the list arrived longer ago than the setting's window (no arrival time = stale: never a guess)."""
+    if received_at is None:
+        return True
+    if received_at.tzinfo is None:
+        received_at = received_at.replace(tzinfo=timezone.utc)
+    return now - received_at > timedelta(hours=int(settings.get(settings.AGENCY_PRICES_STALE_HOURS)))
+
+
+async def read(db: Any, tenant_id: Optional[str], now: Optional[datetime] = None) -> Optional[AgencyPrices]:
+    """The agency's prices, or None (AA's own planner, no list, switch off, a stale list, table absent). ``db`` is a
+    pool or a connection (a connection reads in a savepoint, so a failure never aborts the caller's transaction)."""
     if tenant_id is None or config.is_aa_hosted(tenant_id):
         return None
     try:
@@ -87,6 +103,9 @@ async def read(db: Any, tenant_id: Optional[str]) -> Optional[AgencyPrices]:
         observability.emit("agency_prices_unreadable", error=type(exc).__name__)
         return None
     if row is None or not row["show_prices"]:
+        return None
+    if is_stale(row["received_at"], now or datetime.now(timezone.utc)):
+        observability.emit("agency_prices_stale", tenant_id=tenant_id)
         return None
     return AgencyPrices(str(row["currency"]), _object(row["tours"]), _object(row["addons"]))
 
@@ -131,7 +150,7 @@ def parse(body: Any) -> tuple[bool, str, dict[str, str], dict[str, str], datetim
         raise Invalid("computed_at is not a date-time") from None
     if computed_at.tzinfo is None:
         raise Invalid("computed_at has no offset")
-    tours = _list(body, "tours", "source_id", _SOURCE, TOURS_MAX)
+    tours = _list(body, "tours", "source_id", SOURCE_RE, TOURS_MAX)
     addons = _list(body, "addons", "component_id", _SV, ADDONS_MAX)
     return show, currency, tours, addons, computed_at
 

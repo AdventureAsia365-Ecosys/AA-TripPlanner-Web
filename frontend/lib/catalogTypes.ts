@@ -62,8 +62,6 @@ export interface TourList {
 // tenant's own text and the AA facts of the live tour. No price (the agency is the merchant of record).
 export interface TenantTourDetail {
   contract: "catalog.tenant_tour";
-  /** AA-1152 (B2 option C): the agency's own "from" price per traveller, as its CRM published it (null = none). */
-  agency_price?: { from_per_person: string; currency: string } | null;
   version: number;
   tenant: { slug: string; name: string };
   source_system: string;

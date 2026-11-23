@@ -307,6 +307,11 @@ TP_SPEND_ENVIRONMENT = "dev"
 # False (log only, the first release of the shares): a log line, the call goes on. True: under the dev spend rules the
 # connection is left out of the route. The fallback when the setting cannot be read; edited on Platform › Settings.
 TP_CONNECTION_SHARE_ENFORCE = False
+# AA-1152 (CIS 476: setting tripplanner.prices.agency_stale_hours): an agency's own "from" prices (pushed by its CRM
+# every hour, tripplanner.agency_prices.v1) are shown only while the last list arrived within this many hours; an older
+# list (the CRM stopped refreshing: locked, deleted, unreachable) hides every price of the agency. The fallback when
+# the setting cannot be read; edited on CIS Platform › Settings (TripPlanner tab).
+AGENCY_PRICES_STALE_HOURS = 6
 # Sent by the BFF (web task) with the traveller's address and whether a traveller session is signed in. Trusted ONLY
 # when the request also carries the right x-tripplanner-key (only the BFF has it); otherwise ignored.
 CLIENT_IP_HEADER = "x-tp-client-ip"

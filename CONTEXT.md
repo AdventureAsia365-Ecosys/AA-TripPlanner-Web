@@ -841,9 +841,13 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   amended): the agency's OWN "from" price per traveller, as its CRM computed and published it
   (`PUT /trip/m2m/v1/tenants/{id}/planner/prices`, contract `tripplanner.agency_prices.v1`, scope
   `tripplanner.leads/manage`; `tripplanner.agency_prices`, tp-036; `backend/shared/agency_prices.py`: the newest
-  `computed_at` wins, an older list is 409 `stale`), shows on its tour list cards and tour page (`agency_price`,
-  `components/site/AgencyFromPrice.tsx`) and on its day cards' add-ons, with "Indicative price; your final price
-  is in <agency>'s quote"; nothing when the agency switched prices off or published none, never on AA's own planner.
+  `computed_at` wins, an older list is 409 `stale`), shows on its tour page and on its day cards' add-ons, with
+  "Indicative price; your final price is in <agency>'s quote"; nothing when the agency switched prices off, published
+  none or its list is older than the setting `tripplanner.prices.agency_stale_hours` (CIS 476, default 6 h: a CRM
+  that stopped publishing never leaves old prices up), never on AA's own planner. Never in a cached answer: the tour
+  page (cached 30 min) reads it on each view through the no-store `GET /api/trip/agency-price` ->
+  `GET /trip/agency-price` (assembly Lambda, `day_addons.tour_price`; `components/site/AgencyFromPrice.tsx`), the day
+  cards through `/api/trip/addons` (no-store); the browse Lambda carries no agency price.
   TripPlanner never sees AA's B2B price, the markup or a supplier.
 - **The route finder of an agency's planner (AA-1130, S283 audit T1).** On `/{slug}/plan` the route finder's reads
   name the tenant (`tenant=<slug>` on `GET /browse/countries`, `/browse/routes`, `/browse/tour-route`; BFF and client
