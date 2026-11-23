@@ -86,8 +86,7 @@ MAX_TOURS, MAX_STOPS, MAX_COUNTRIES, MAX_DAYS = 30, 12, 12, 90
 PAGE_MAX = 50
 
 VIEW = "catalog.v_tenant_tripplanner_v1"
-# Column names, never * (the CIS test test_aa1160_migration_475.py runs this exact statement as tripplanner; CIS 475
-# appended the fallback route, AA-1160).
+# Column names, never * (the CIS test test_aa1160_migration_475.py runs this exact statement as tripplanner).
 ROUTE_SQL = (f"SELECT tenant_id, slug, name, kind, served, in_service, crm_core, lead_channel, lead_webhook_url, "
              f"lead_email, fallback_channel, fallback_webhook_url, fallback_email FROM {VIEW} WHERE tenant_id = $1")
 # AA-1160: the agency's own routes a crm tenant falls back to while the CRM does not pull it.
@@ -370,15 +369,10 @@ async def tenant_leads_24h(conn: Any, tenant_id: str) -> int:
 
 
 async def load_route(conn: Any, tenant_id: str, *, crm_pull: bool = False) -> Route:
-    """The tenant's lead route from CIS, or LeadRefused (nothing stored).
-
-    AA-1160: CIS says crm while the CRM add-on is live (``lead_channel``); the lead goes to the CRM only while the CRM
-    pulled this tenant lately (:func:`crm_pull_fresh`, the liveness of its CRM agency: the CRM lists only an agency it
-    can serve, active and routed to it, and skips a locked, offboarding or deleted one before the list call).
-    Otherwise the agency's own route applies (``fallback_channel`` webhook / email with its target); with no route of
-    its own the crm channel is only unavailable now (503 lead_channel_unavailable, nothing stored, as before AA-1160).
-    S285 found a tenant with crm.core and no CRM agency whose leads went to a CRM that skipped them. ``crm_pull`` (the
-    CRM's own list / ack call, which proves the agency) keeps the crm route whenever the add-on is live."""
+    """The tenant's lead route from CIS, or LeadRefused (nothing stored). AA-1160: crm only while the CRM pulled this
+    tenant lately (:func:`crm_pull_fresh`: the CRM lists only an agency it can serve, never a locked, offboarding or
+    deleted one), else the agency's own ``fallback_channel`` with its target; none = 503 lead_channel_unavailable as
+    before (S285: crm.core without a CRM agency, leads skipped). ``crm_pull`` (the CRM's own call) keeps crm."""
     try:
         row = await conn.fetchrow(ROUTE_SQL, tenant_id)
     except Exception as e:  # noqa: BLE001 — 42P01 / 42501 / 42703 before CIS 390 / 475, or a read error
@@ -388,11 +382,10 @@ async def load_route(conn: Any, tenant_id: str, *, crm_pull: bool = False) -> Ro
         raise LeadRefused(404, "unknown_tenant")
     channel, webhook_url, email = row["lead_channel"], row["lead_webhook_url"], row["lead_email"]
     if channel == "crm" and not crm_pull and not await crm_pull_fresh(conn, tenant_id):
-        fallback = row["fallback_channel"]
-        observability.emit("lead_route_crm_fallback", tenant_id=str(row["tenant_id"]), channel=fallback)
-        if fallback not in FALLBACK_CHANNELS:
+        channel, webhook_url, email = row["fallback_channel"], row["fallback_webhook_url"], row["fallback_email"]
+        observability.emit("lead_route_crm_fallback", tenant_id=str(row["tenant_id"]), channel=channel)
+        if channel not in FALLBACK_CHANNELS:
             raise LeadRefused(503, "lead_channel_unavailable")
-        channel, webhook_url, email = fallback, row["fallback_webhook_url"], row["fallback_email"]
     if channel not in CHANNELS:
         raise LeadRefused(409, "lead_route_missing")
     return Route(str(row["tenant_id"]), row["slug"], row["name"], channel,

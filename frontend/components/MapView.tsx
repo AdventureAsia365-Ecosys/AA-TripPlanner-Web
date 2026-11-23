@@ -327,10 +327,7 @@ export default function MapView() {
 
     map.on("load", () => {
       map.resize(); // ensure canvas matches container after first layout
-      // AA-1160: the "in your trip" colours (country highlight, route, featured legs) follow an agency's theme. Paint
-      // reads no CSS variable, so the agency page's tokens are read once here (AA's gold without them).
-      const accent = mapAccentFrom((name) => getComputedStyle(document.body).getPropertyValue(name));
-
+      const accent = mapAccentFrom((name) => getComputedStyle(document.body).getPropertyValue(name)); // AA-1160 theme
       // --- Selected-country highlight. Uses Mapbox's free country-boundaries
       // tileset so the chosen country gets a soft gold fill + gold outline,
       // making "I picked Laos" visually obvious (not just a camera move).
@@ -417,8 +414,7 @@ export default function MapView() {
       });
       // Colour system (deliberate, so the three roles never blur together):
       //   ink  (#1F2933) = "browse / not yet picked"  -> clusters + single pins
-      //   gold (#DB9628) = "in your trip"             -> numbered day stops + route (the agency's accent on its
-      //                                                  planner: `accent`, AA-1160)
+      //   gold (#DB9628) = "in your trip"             -> numbered day stops + route (an agency's `accent`)
       map.addLayer({
         id: "clusters",
         type: "circle",
@@ -495,7 +491,7 @@ export default function MapView() {
         source: TRIP_LINE_SOURCE,
         layout: { "line-cap": "round", "line-join": "round" },
         paint: {
-          // SOLID gold (the agency's accent on its planner): this source only holds REAL road-following geometry
+          // SOLID gold: this source only holds REAL road-following geometry
           // (from Directions) for legs that are genuinely drivable.
           "line-color": accent.line,
           "line-width": 4,
