@@ -14,9 +14,12 @@
 // that cannot be made to read is left out, so the kit's value stays. A theme without a valid accent changes nothing
 // beyond the kit's own block. Pure and import-light (the pages render it on the server into one <style> element; no
 // quote, angle bracket or ampersand in the output).
+// The planner map (Mapbox paint, which reads no CSS variable) gets its own three colours as TripPlanner tokens
+// (--tp-map-fill / --tp-map-line / --tp-map-label, lib/mapAccent.ts): MapView reads them when the map loads.
 // Follow-up: the derivation belongs in the kit core brand layer (CIS frontend/app/_kit/core/brandTheme.ts) so every
 // app gets it; it lives here until that change is made there and synced.
 import { BRAND_TOKENS, KIT_DARK_CARD, KIT_LIGHT, brandThemeCss, contrast, type BrandToken } from "../ui/core/brandTheme.ts";
+import { MAP_ACCENT_VARS, type MapAccent } from "./mapAccent.ts";
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 const WHITE = "#ffffff";
@@ -99,6 +102,19 @@ export function bandAccent(theme: unknown): { light: string | null; dark: string
   return { light: readableShade(accent, WHITE, [BAND_LIGHT]), dark: readableShade(accent, WHITE, [BAND_DARK]) };
 }
 
+/** The planner map's colours under the agency's theme (the light outdoors basemap in both themes): the accent as the
+ * country fill, the accent a shade deeper for the route, outline and featured legs (AA's own route is its accent 16 %
+ * towards black), and the light accent-deep (the agency's or the derived one) for the leg labels on their white halo. */
+export function mapAccent(theme: unknown): MapAccent | null {
+  const accent = accentOf(theme);
+  if (!accent) return null;
+  const deep = (completeTheme(theme) as Record<string, unknown>)["accent-deep"];
+  const line = mix(accent, BLACK, 0.16);
+  const label = typeof deep === "string" && HEX.test(deep) ? deep.toLowerCase()
+    : (readableShade(accent, BLACK, [WHITE]) ?? line);
+  return { fill: accent, line, label };
+}
+
 const LIGHT_SEL = "html:not([data-theme]) body,html[data-theme=light] body";
 const DARK_SEL = "html[data-theme=dark] body";
 
@@ -111,5 +127,7 @@ export function plannerBrandCss(theme: unknown): string {
   const band = bandAccent(theme);
   if (band.light) css += `${LIGHT_SEL}{--tp-band-accent:${band.light};}`;
   if (band.dark) css += `${DARK_SEL}{--tp-band-accent:${band.dark};}`;
+  const map = mapAccent(theme);
+  if (map) css += `body{${(Object.keys(MAP_ACCENT_VARS) as (keyof MapAccent)[]).map((r) => `${MAP_ACCENT_VARS[r]}:${map[r]};`).join("")}}`;
   return css;
 }

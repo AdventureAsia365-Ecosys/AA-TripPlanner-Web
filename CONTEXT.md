@@ -901,9 +901,10 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   The form (`components/LeadForm.tsx`, `lib/leadForm.ts`) sends `lead` = name, e-mail, optional phone, party, optional
   start date / budget band / message, contact consent (required) and marketing consent. The Lambda validates it (422
   `consent_required` / `invalid_lead` + field codes), reads the tenant's route from `catalog.v_tenant_tripplanner_v1`
-  (CIS 390: `lead_channel` crm / webhook / email / none; AA-1160, CIS 475: crm only while the CRM holds an agency for
-  the tenant, `crm_agency`, or listed it within the beacon window, else the agency's own `fallback_channel` with its
-  target, `leads.load_route`; the CRM's own pull keeps crm while the add-on is live, `load_route(crm_pull=True)`) and
+  (CIS 390: `lead_channel` crm / webhook / email / none; AA-1160, CIS 475: crm only while the CRM listed the tenant
+  within the beacon window, the liveness of its CRM agency (the CRM lists only an agency it can serve), else the
+  agency's own `fallback_channel` webhook / email with its target, with none the 503 below, `leads.load_route`; the
+  CRM's own pull keeps crm while the add-on is live, `load_route(crm_pull=True)`) and
   refuses BEFORE storing when it could not deliver (409
   `lead_route_missing`, 503 `lead_route_unavailable` before CIS 390, 503 `lead_channel_unavailable` while the CRM
   pull is not switched on (`TP_LEAD_CRM_PULL_ENABLED`, default off) or the CRM has not listed THIS tenant within
@@ -968,8 +969,11 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   (BO-8, off by default). AA-1160: every `/{slug}` page renders `lib/tenantBrand.ts plannerBrandCss(theme)`: the kit's
   block for the theme with the accent tokens the agency did not set derived from its accent (tint, soft, border, a deep
   shade darkened until it reads at 4.5:1), the dark theme's accent family derived the same way, and the band accent
-  `--tp-band-accent` (the "Trip Planner" label, the AI chip's ring) lightened until it reads on the navy band, so no
-  kit gold is left under an agency theme (`lib/tenantBrand.test.ts`). Follow-up: the derivation belongs in the kit core
+  `--tp-band-accent` (the "Trip Planner" label, the AI chip's ring) lightened until it reads on the navy band, and the
+  map's trip colours `--tp-map-fill` / `--tp-map-line` / `--tp-map-label` (`lib/mapAccent.ts`: Mapbox paint reads no
+  CSS variable, so `MapView` reads them from `<body>` when the map loads and paints the country highlight, the route,
+  the featured legs and their labels; AA's gold without them), so no kit gold is left under an agency theme
+  (`lib/tenantBrand.test.ts`, `lib/mapAccent.test.ts`). Follow-up: the derivation belongs in the kit core
   brand layer (CIS canonical) so every app gets it.
 - **Per-tenant AI cap** (`shared/tenant_budget.py`): `llm_gateway.budget_status` checks, after the app caps, the
   tenant's month spend against its resolved `ai.budget_usd_monthly` from `catalog.v_tenant_ai_budget_v1` (CIS 390,
