@@ -137,7 +137,7 @@ def _route_row(**over):
     row = {"tenant_id": TENANT_A, "slug": "quillmere-voyages", "name": "Quillmere Voyages", "kind": "agency",
            "served": True, "in_service": True, "crm_core": False, "lead_channel": "email",
            "lead_webhook_url": None, "lead_email": "desk@quillmere.example.invalid",
-           # CIS 475 (AA-1160): the agency's own route without the CRM
+           # CIS 474 (AA-1160): the agency's own route without the CRM
            "fallback_channel": "email", "fallback_webhook_url": None,
            "fallback_email": "desk@quillmere.example.invalid"}
     row.update(over)
@@ -518,7 +518,7 @@ async def test_the_crms_own_call_keeps_the_crm_route(monkeypatch):
     assert route.channel == "crm" and route.email is None
 
 
-def test_route_sql_reads_the_475_columns():
+def test_route_sql_reads_the_474_columns():
     for col in ("fallback_channel", "fallback_webhook_url", "fallback_email"):
         assert col in leads.ROUTE_SQL
-    assert "crm_agency" not in leads.ROUTE_SQL                     # CIS 475 keeps its marker to itself
+    assert "crm_agency" not in leads.ROUTE_SQL                     # CIS 474 keeps its marker to itself

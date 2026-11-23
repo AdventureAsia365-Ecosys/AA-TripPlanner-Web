@@ -7,7 +7,7 @@ verified tenant assertion, so the connection is bound to that tenant (tenant.cur
 path and the AA demo tenant keep the demo notice (410 b2b_only in handler.py): AA keeps no traveller record of its own.
 
 Where it goes. CIS decides per tenant (catalog.v_tenant_tripplanner_v1, CIS 390): ``crm`` when the tenant holds the CRM
-add-on (crm.core), else the site's ``webhook`` or ``email`` when set, else ``none``. AA-1160 (CIS 475): ``crm`` only
+add-on (crm.core), else the site's ``webhook`` or ``email`` when set, else ``none``. AA-1160 (CIS 474): ``crm`` only
 while the CRM pulled the tenant lately (its beacon: the CRM lists only an agency it can serve); else the site's own
 route (``fallback_channel``), and the daily run re-routes the tenant's pending CRM leads once to it
 (``tp_lead_deliver``). TripPlanner refuses BEFORE storing
@@ -86,7 +86,7 @@ MAX_TOURS, MAX_STOPS, MAX_COUNTRIES, MAX_DAYS = 30, 12, 12, 90
 PAGE_MAX = 50
 
 VIEW = "catalog.v_tenant_tripplanner_v1"
-# Column names, never * (the CIS test test_aa1160_migration_475.py runs this exact statement as tripplanner).
+# Column names, never * (the CIS test test_aa1160_migration_474.py runs this exact statement as tripplanner).
 ROUTE_SQL = (f"SELECT tenant_id, slug, name, kind, served, in_service, crm_core, lead_channel, lead_webhook_url, "
              f"lead_email, fallback_channel, fallback_webhook_url, fallback_email FROM {VIEW} WHERE tenant_id = $1")
 # AA-1160: the agency's own routes a crm tenant falls back to while the CRM does not pull it.
@@ -375,7 +375,7 @@ async def load_route(conn: Any, tenant_id: str, *, crm_pull: bool = False) -> Ro
     before (S285: crm.core without a CRM agency, leads skipped). ``crm_pull`` (the CRM's own call) keeps crm."""
     try:
         row = await conn.fetchrow(ROUTE_SQL, tenant_id)
-    except Exception as e:  # noqa: BLE001 — 42P01 / 42501 / 42703 before CIS 390 / 475, or a read error
+    except Exception as e:  # noqa: BLE001 — 42P01 / 42501 / 42703 before CIS 390 / 474, or a read error
         observability.emit("lead_route_unreadable", error=type(e).__name__, sqlstate=getattr(e, "sqlstate", None))
         raise LeadRefused(503, "lead_route_unavailable") from None
     if row is None or not row["served"] or not row["in_service"]:

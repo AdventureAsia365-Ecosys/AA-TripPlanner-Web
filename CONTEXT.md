@@ -901,7 +901,7 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   The form (`components/LeadForm.tsx`, `lib/leadForm.ts`) sends `lead` = name, e-mail, optional phone, party, optional
   start date / budget band / message, contact consent (required) and marketing consent. The Lambda validates it (422
   `consent_required` / `invalid_lead` + field codes), reads the tenant's route from `catalog.v_tenant_tripplanner_v1`
-  (CIS 390: `lead_channel` crm / webhook / email / none; AA-1160, CIS 475: crm only while the CRM listed the tenant
+  (CIS 390: `lead_channel` crm / webhook / email / none; AA-1160, CIS 474: crm only while the CRM listed the tenant
   within the beacon window, the liveness of its CRM agency (the CRM lists only an agency it can serve), else the
   agency's own `fallback_channel` webhook / email with its target, with none the 503 below, `leads.load_route`; the
   CRM's own pull keeps crm while the add-on is live, `load_route(crm_pull=True)`) and

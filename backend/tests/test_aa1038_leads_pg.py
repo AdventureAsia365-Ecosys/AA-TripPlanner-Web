@@ -51,7 +51,7 @@ AGENCY_D = "4b1d7e57-0000-4000-8000-0000000001d4"   # AA-1160: crm.core, no CRM 
 AGENCY_E = "4b1d7e57-0000-4000-8000-0000000001e5"   # AA-1160: crm.core, a CRM agency later locked, an e-mail fallback
 SCHEMA = json.loads((Path(__file__).parent / "contracts" / "lead.submitted.v1.json").read_text())
 # Copied verbatim from AA-CIS-App tests/integration/test_aa1038_migration_390.py (COLUMNS, BUDGET_COLUMNS), then the
-# CIS 475 columns this stand-in needs (AA-1160: the fallback route; the 429 / 438 columns are not read by the lead path,
+# CIS 474 columns this stand-in needs (AA-1160: the fallback route; the 429 / 438 columns are not read by the lead path,
 # so they are left out of the stand-in).
 CIS_390_COLUMNS = (
     "tenant_id uuid, slug text, name text, kind text, account_status text, in_service boolean, served boolean, "
