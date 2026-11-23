@@ -83,6 +83,7 @@ export default function DayList({
   const groups = groupByDay(itinerary);
   const nameOfDestination = (id: string) => itinerary.find((x) => x.destination_id === id && !isLine(x))?.name ?? null;
   const detailOf = (d: ItineraryDay) => stopDetails.get(d.component_id);
+  const placeOf = (d: ItineraryDay) => d.destination_name ?? detailOf(d)?.destination_name ?? d.name ?? "";
   const kindOf = (d: ItineraryDay) =>
     placeKind({
       name: d.name,
@@ -385,8 +386,7 @@ export default function DayList({
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-semibold text-k-ink">{t("dayN", g.day)}</p>
                         <p className="truncate text-xs text-k-muted">
-                          {t("stopsAt", g.stops.length,
-                            first.destination_name ?? detailOf(first)?.destination_name ?? first.name ?? "")}
+                          {t("stopsAt", g.stops.length, placeOf(first))}
                         </p>
                       </div>
                     </div>

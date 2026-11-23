@@ -135,10 +135,10 @@ export function leadBody(f: LeadForm, locale: "en" | "vi" = "en"): LeadBody {
 
 /** The calm line the planner shows for the Lambda's answer to a lead. */
 export function leadResultMessage(
-  status: number, body: { error?: string } | null | undefined, agency: string, lang: Lang = "en",
+  status: number, body: { error?: string } | null | undefined, agency: string, lang?: Lang,
 ): string {
-  // AA-1160: in the planner's language (lib/planner.messages.ts LEAD).
-  const t = translator(LEAD, lang);
+  // AA-1160: in the planner's language (lib/planner.messages.ts LEAD; no language = English, as translator reads it).
+  const t = translator(LEAD, lang as Lang);
   if (status === 200) return t("sent", agency);
   switch (body?.error) {
     case "consent_required":
