@@ -709,7 +709,8 @@ async def _send_lead(conn, trip_id: str, body: dict, guest_token: Optional[str],
             raise leads_mod.LeadRefused(503, "lead_channel_unavailable")
         if route_.channel == "crm" and not await leads_mod.crm_pull_fresh(conn, tenant_id):
             # The CRM is not pulling this tenant (agency locked / offboarding / not provisioned, or the pull is
-            # down): a stored lead would only wait for the hold to end it.
+            # down) and the tenant has no route of its own: a stored lead would only wait for the hold to end it.
+            # load_route already answers that (AA-1160); kept so the send never stores a crm lead without a beacon.
             raise leads_mod.LeadRefused(503, "lead_channel_unavailable")
     except leads_mod.LeadRefused as e:
         observability.emit("lead_refused", code=e.code, tenant_id=tenant_id)

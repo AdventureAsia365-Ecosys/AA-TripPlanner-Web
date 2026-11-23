@@ -499,7 +499,7 @@ async def test_the_run_opens_the_system_scope_first_and_resets_it_last(routes):
     assert failing.scope_log == ["scope", "unscope"]
 
 
-# ── AA-1160: pending CRM leads of a tenant without a CRM agency move once to its own route ─────────────────────────
+# ── AA-1160: pending CRM leads of a tenant the CRM does not pull (no live agency) move once to its own route ──────
 
 T_NOAGENCY = "5a0e0000-0000-4000-8000-00000000000d"
 T_NOFALLBACK = "5a0e0000-0000-4000-8000-00000000000e"
@@ -511,8 +511,8 @@ def reroute_routes(monkeypatch):
     table = {T_NOAGENCY: _route(T_NOAGENCY, "email"), T_CRM: _route(T_CRM, "crm"), T_OK: _route(T_OK)}
 
     async def load_route(conn, tid):
-        if tid == T_NOFALLBACK:
-            raise leads.LeadRefused(409, "lead_route_missing")
+        if tid == T_NOFALLBACK:                       # the CRM does not pull it and it has no route of its own
+            raise leads.LeadRefused(503, "lead_channel_unavailable")
         return table[tid]
 
     monkeypatch.setattr(leads, "load_route", load_route)

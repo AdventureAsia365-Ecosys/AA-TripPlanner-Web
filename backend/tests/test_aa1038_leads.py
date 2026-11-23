@@ -137,8 +137,8 @@ def _route_row(**over):
     row = {"tenant_id": TENANT_A, "slug": "quillmere-voyages", "name": "Quillmere Voyages", "kind": "agency",
            "served": True, "in_service": True, "crm_core": False, "lead_channel": "email",
            "lead_webhook_url": None, "lead_email": "desk@quillmere.example.invalid",
-           # CIS 475 (AA-1160): the CRM holds an agency for the tenant; the agency's own route without the CRM
-           "crm_agency": False, "fallback_channel": "email", "fallback_webhook_url": None,
+           # CIS 475 (AA-1160): the agency's own route without the CRM
+           "fallback_channel": "email", "fallback_webhook_url": None,
            "fallback_email": "desk@quillmere.example.invalid"}
     row.update(over)
     return row
@@ -160,8 +160,12 @@ async def test_route_refusals(conn, status, code):
 
 @pytest.mark.asyncio
 async def test_route_crm_and_email(monkeypatch):
-    crm = await leads.load_route(RouteConn(row=_route_row(crm_core=True, lead_channel="crm", lead_email=None,
-                                                          crm_agency=True)), TENANT_A)
+    async def fresh(conn, tid):
+        return True
+
+    monkeypatch.setattr(leads, "crm_pull_fresh", fresh)
+    crm = await leads.load_route(RouteConn(row=_route_row(crm_core=True, lead_channel="crm", lead_email=None)),
+                                 TENANT_A)
     assert crm.channel == "crm"
     monkeypatch.setattr(config, "LEAD_CRM_PULL_ENABLED", False)
     assert leads.channel_ready(crm) is False                      # CRM pull not switched on: refused, nothing stored
@@ -454,7 +458,7 @@ async def test_an_agency_tenant_goes_to_the_lead_flow(monkeypatch):
     assert out["statusCode"] == 200 and called == {"trip_id": TRIP, "tenant_id": TENANT_A}
 
 
-# ── AA-1160: crm only with a CRM agency (CIS 475) or a fresh CRM pull, else the agency's own route ────────────────
+# ── AA-1160: crm only while the CRM pulls the tenant (the liveness of its CRM agency), else the agency's own route ──
 
 def _crm_row(**over):
     return _route_row(crm_core=True, lead_channel="crm", lead_email=None, **over)
@@ -462,14 +466,14 @@ def _crm_row(**over):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("over,fresh,channel,target", [
-    ({"crm_agency": True}, False, "crm", None),                               # the CRM holds the agency
-    ({}, True, "crm", None),                                                  # not recorded yet, but the CRM pulls
+    ({}, True, "crm", None),                                                  # the CRM pulls the tenant: its agency
     ({}, False, "email", "desk@quillmere.example.invalid"),                   # S285: no agency -> own e-mail route
-    ({"fallback_channel": "webhook", "fallback_email": None,
+    ({"fallback_channel": "webhook", "fallback_email": None,                  # locked / deleted agency: no pull
       "fallback_webhook_url": "https://quillmere.example.invalid/leads"}, False, "webhook",
      "https://quillmere.example.invalid/leads"),
+    ({"crm_agency": True}, False, "email", "desk@quillmere.example.invalid"),  # a CIS marker is never read: no crm
 ])
-async def test_crm_route_needs_an_agency_or_a_fresh_pull(monkeypatch, over, fresh, channel, target):
+async def test_crm_route_needs_a_fresh_pull(monkeypatch, over, fresh, channel, target):
     seen = []
 
     async def pull_fresh(conn, tid):
@@ -480,18 +484,28 @@ async def test_crm_route_needs_an_agency_or_a_fresh_pull(monkeypatch, over, fres
     route = await leads.load_route(RouteConn(row=_crm_row(**over)), TENANT_A)
     assert route.channel == channel
     assert (route.email or route.webhook_url) == target
-    assert seen == ([] if over.get("crm_agency") else [TENANT_A])             # the beacon is read only when needed
+    assert seen == [TENANT_A]
 
 
 @pytest.mark.asyncio
-async def test_no_agency_and_no_fallback_refuses(monkeypatch):
+async def test_a_non_crm_route_reads_no_beacon(monkeypatch):
+    async def never(conn, tid):
+        raise AssertionError("only a crm route needs the beacon")
+
+    monkeypatch.setattr(leads, "crm_pull_fresh", never)
+    assert (await leads.load_route(RouteConn(row=_route_row()), TENANT_A)).channel == "email"
+
+
+@pytest.mark.asyncio
+async def test_no_pull_and_no_fallback_is_unavailable(monkeypatch):
     async def stale(conn, tid):
         return False
 
     monkeypatch.setattr(leads, "crm_pull_fresh", stale)
     with pytest.raises(leads.LeadRefused) as e:
         await leads.load_route(RouteConn(row=_crm_row(fallback_channel="none", fallback_email=None)), TENANT_A)
-    assert (e.value.status, e.value.code) == (409, "lead_route_missing")
+    # As before AA-1160: the crm channel is only unavailable now (the CRM may pull again), nothing stored.
+    assert (e.value.status, e.value.code) == (503, "lead_channel_unavailable")
 
 
 @pytest.mark.asyncio
@@ -505,5 +519,6 @@ async def test_the_crms_own_call_keeps_the_crm_route(monkeypatch):
 
 
 def test_route_sql_reads_the_475_columns():
-    for col in ("crm_agency", "fallback_channel", "fallback_webhook_url", "fallback_email"):
+    for col in ("fallback_channel", "fallback_webhook_url", "fallback_email"):
         assert col in leads.ROUTE_SQL
+    assert "crm_agency" not in leads.ROUTE_SQL                     # CIS 475 keeps its marker to itself

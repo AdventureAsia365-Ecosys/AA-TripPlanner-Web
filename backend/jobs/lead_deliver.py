@@ -29,12 +29,13 @@ Each run, in this order (ids, counts and error codes only in the result, DM-6.3)
    (``delivery_error`` ``rejected[:<reason>]``), counted per reason. A rejected lead is a traveller's request the agency
    never sees: ``attention: ["lead_rejected_by_crm"]`` (the assembly Lambda already logged an ERROR line at the ack).
 3. **Re-route** (``reroute`` part, AA-1160): pending CRM leads (inside their hold) of a tenant whose route is no longer
-   crm because the CRM holds no agency for it (CIS 475 ``crm_agency`` false and no fresh CRM pull: ``leads.load_route``)
-   move once to the agency's own webhook / e-mail route: ``delivery_channel`` changes in one guarded UPDATE (only while
+   crm because the CRM no longer pulls it (no live CRM agency: none yet, locked, offboarding or deleted, so its beacon
+   is stale: ``leads.load_route``) move once to the agency's own webhook / e-mail route: ``delivery_channel`` changes in one guarded UPDATE (only while
    the row is still a pending crm row, so a second run, or a CRM ack in between, changes nothing), counted per channel
    in the job result and logged ``lead_rerouted`` (ids only). The retry part right after delivers them. A tenant whose
    fallback is none, or a route CIS cannot answer, keeps its rows (the hold ends them, loudly). S285 found such leads:
-   crm.core without a CRM agency, skipped by the CRM pull (``skipped_agency``), reaching nobody. A dry run counts only.
+   crm.core without a CRM agency, skipped by the CRM pull (``skipped_agency``), reaching nobody. A tenant the CRM still
+   pulls keeps them (``kept_crm``: the CRM takes them at its next pull). A dry run counts only.
 4. **Retry** (``retry`` part): pending ``lead.submitted`` rows of channel webhook / email, oldest first, at most
    :data:`RETRY_MAX` per run and at most :data:`RETRY_BUDGET_S` seconds of wall clock (what is left is ``deferred``
    to the next run). The tenant's route is read again from CIS (``catalog.v_tenant_tripplanner_v1``): a route whose
@@ -133,7 +134,7 @@ REROUTE_PICK_SQL = (
 REROUTE_SQL = (
     "UPDATE tripplanner.outbox SET delivery_channel = $2 WHERE id = $1 AND event = 'lead.submitted' "
     "AND delivery_channel = 'crm' AND delivered_at IS NULL AND redacted_at IS NULL")
-FALLBACK_CHANNELS = ("webhook", "email")
+FALLBACK_CHANNELS = leads.FALLBACK_CHANNELS
 
 
 def _reroute_counts() -> dict[str, Any]:

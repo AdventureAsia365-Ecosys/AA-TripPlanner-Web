@@ -40,6 +40,7 @@ from backend import config  # noqa: E402
 from backend.assembly import handler, leads  # noqa: E402
 from backend.jobs import lead_deliver  # noqa: E402
 from backend.jobs.queue import Job  # noqa: E402
+from backend.shared import ratelimit  # noqa: E402
 from backend.shared import tenant_assertion as ta  # noqa: E402
 
 DEMO = config.DEMO_TENANT_ID
@@ -47,15 +48,15 @@ AGENCY_A = "4b1d7e57-0000-4000-8000-0000000001a1"
 AGENCY_B = "4b1d7e57-0000-4000-8000-0000000001b2"
 AGENCY_C = "4b1d7e57-0000-4000-8000-0000000001c3"
 AGENCY_D = "4b1d7e57-0000-4000-8000-0000000001d4"   # AA-1160: crm.core, no CRM agency yet, an e-mail fallback
+AGENCY_E = "4b1d7e57-0000-4000-8000-0000000001e5"   # AA-1160: crm.core, a CRM agency later locked, an e-mail fallback
 SCHEMA = json.loads((Path(__file__).parent / "contracts" / "lead.submitted.v1.json").read_text())
 # Copied verbatim from AA-CIS-App tests/integration/test_aa1038_migration_390.py (COLUMNS, BUDGET_COLUMNS), then the
-# CIS 475 columns this stand-in needs (AA-1160: crm_agency and the fallback route; the 429 / 438 columns are not read by
-# the lead path, so they are left out of the stand-in).
+# CIS 475 columns this stand-in needs (AA-1160: the fallback route; the 429 / 438 columns are not read by the lead path,
+# so they are left out of the stand-in).
 CIS_390_COLUMNS = (
     "tenant_id uuid, slug text, name text, kind text, account_status text, in_service boolean, served boolean, "
     "tp_launcher boolean, tp_branding boolean, theme jsonb, locale text, crm_core boolean, lead_channel text, "
-    "lead_webhook_url text, lead_email text, crm_agency boolean, fallback_channel text, fallback_webhook_url text, "
-    "fallback_email text"
+    "lead_webhook_url text, lead_email text, fallback_channel text, fallback_webhook_url text, fallback_email text"
 )
 # AA-1116: the CIS 438 column list (BUDGET_COLUMNS of AA-CIS-App tests/integration/test_aa1116_migration_438.py), the
 # columns backend/shared/tenant_budget.py BUDGET_SQL reads.
@@ -66,16 +67,18 @@ CREATE SCHEMA IF NOT EXISTS catalog;
 CREATE TABLE catalog.zz_tenant_rows ({CIS_390_COLUMNS});
 INSERT INTO catalog.zz_tenant_rows VALUES
  ('{DEMO}', 'aa-tripplanner', 'Adventure Asia TripPlanner demo', 'demo', 'active', true, true, true, false, '{{}}',
-  'en', false, 'none', NULL, NULL, false, 'none', NULL, NULL),
+  'en', false, 'none', NULL, NULL, 'none', NULL, NULL),
  ('{AGENCY_A}', 'quillmere-voyages', 'Quillmere Voyages', 'agency', 'active', true, true, true, false, '{{}}', 'en',
-  true, 'crm', NULL, NULL, true, 'none', NULL, NULL),
+  true, 'crm', NULL, NULL, 'none', NULL, NULL),
  ('{AGENCY_B}', 'ottervale-journeys', 'Ottervale Journeys', 'agency', 'active', true, true, true, false, '{{}}', 'en',
-  false, 'webhook', 'https://ottervale.example.invalid/hooks/leads', NULL, false, 'webhook',
+  false, 'webhook', 'https://ottervale.example.invalid/hooks/leads', NULL, 'webhook',
   'https://ottervale.example.invalid/hooks/leads', NULL),
  ('{AGENCY_C}', 'saltmarsh-routes', 'Saltmarsh Routes', 'agency', 'active', true, true, true, false, '{{}}', 'en',
-  false, 'none', NULL, NULL, false, 'none', NULL, NULL),
+  false, 'none', NULL, NULL, 'none', NULL, NULL),
  ('{AGENCY_D}', 'brackenford-trails', 'Brackenford Trails', 'agency', 'active', true, true, true, false, '{{}}', 'vi',
-  true, 'crm', NULL, NULL, false, 'email', NULL, 'desk@brackenford.example.invalid');
+  true, 'crm', NULL, NULL, 'email', NULL, 'desk@brackenford.example.invalid'),
+ ('{AGENCY_E}', 'larkhollow-escapes', 'Larkhollow Escapes', 'agency', 'active', true, true, true, false, '{{}}', 'en',
+  true, 'crm', NULL, NULL, 'email', NULL, 'desk@larkhollow.example.invalid');
 CREATE VIEW catalog.v_tenant_tripplanner_v1 WITH (security_barrier = true) AS SELECT * FROM catalog.zz_tenant_rows;
 CREATE TABLE catalog.zz_budget_rows ({CIS_390_BUDGET});
 CREATE VIEW catalog.v_tenant_ai_budget_v1 WITH (security_barrier = true) AS SELECT * FROM catalog.zz_budget_rows;
@@ -337,7 +340,7 @@ async def test_two_concurrent_sends_never_pass_the_tenant_cap(db, tp_conn, monke
 
 
 async def test_crm_core_without_an_agency_takes_the_fallback_and_old_crm_leads_move_once(db, tp_conn, monkeypatch):
-    """AA-1160 (S285 live gap): crm.core but no CRM agency (CIS 475 crm_agency false, the CRM never lists the tenant).
+    """AA-1160 (S285 live gap): crm.core but no CRM agency (the CRM never lists the tenant: no beacon).
     A send goes to the agency's own e-mail route and is delivered at once; a CRM lead stored earlier (before AA-1160)
     is re-routed once by the daily run and delivered by e-mail; the CRM's own call still sees the crm route."""
     mails: list[dict] = []
@@ -385,3 +388,53 @@ async def test_crm_core_without_an_agency_takes_the_fallback_and_old_crm_leads_m
     # The CRM's own list call is still served (the add-on is live): an empty page, and its beacon is then fresh.
     status, page = await _crm(tp_conn, "GET", f"/trip/m2m/v1/tenants/{AGENCY_D}/leads")
     assert status == 200 and page["leads"] == []
+
+
+async def test_a_locked_crm_agency_falls_back_and_its_pending_crm_leads_move_once(db, tp_conn, monkeypatch):
+    """AA-1160 review: a CRM agency that the CRM held and then locked (last-owner lock), offboarded or deleted. While the
+    CRM lists the tenant (fresh beacon) a send is a crm lead and the daily run keeps it for the CRM; once the CRM stops
+    listing it (Forbidden / NotFound before the list call: the beacon goes stale) a new send takes the agency's own
+    e-mail route, never 503, and the pending crm lead moves once to that route and is delivered."""
+    mails: list[dict] = []
+    monkeypatch.setattr(config, "TP_LEAD_EMAIL_FROM", "planner@example.invalid")
+    monkeypatch.setattr(leads, "ses_mailer", mails.append)
+    e = _header(AGENCY_E, "larkhollow-escapes")
+    status, _page = await _crm(tp_conn, "GET", f"/trip/m2m/v1/tenants/{AGENCY_E}/leads")   # the CRM serves it
+    assert status == 200
+    session, trip, token = await _trip(tp_conn, e)
+    status, body = await _request(tp_conn, "POST", f"/trip/{trip}/send-to-advisor",
+                                  {"session_id": session, "lead": FORM}, token, e)
+    assert status == 200 and body["lead"]["channel"] == "crm", body
+    crm_lead = body["lead"]["lead_id"]
+
+    class Pool:
+        def acquire(self):
+            return _acquire(tp_conn)()
+
+    def job(jid):
+        return Job(id=jid, kind=lead_deliver.KIND, payload={"trigger": "schedule"}, attempt=1, max_attempts=1)
+
+    kept = await lead_deliver.run(Pool(), job("j-1160-e1"))
+    assert kept["reroute"]["rerouted"] == 0 and kept["reroute"]["kept_crm"] >= 1, kept
+
+    # The agency is locked in the CRM: its pull skips it (skipped_agency), so the beacon ages past its window.
+    su = await asyncpg.connect(db["su_dsn"])
+    try:
+        await su.execute("UPDATE tripplanner.ai_rate_counter SET window_start = window_start - interval '1 day' "
+                         "WHERE key_hash = $1",
+                         ratelimit.key_hash(ratelimit.SCOPE_CRM_PULL, ratelimit.KIND_TENANT, AGENCY_E))
+    finally:
+        await su.close()
+
+    session2, trip2, token2 = await _trip(tp_conn, e)
+    status, body = await _request(tp_conn, "POST", f"/trip/{trip2}/send-to-advisor",
+                                  {"session_id": session2, "lead": FORM}, token2, e)
+    assert status == 200 and body["lead"]["channel"] == "email", body
+    sent_before = len(mails)
+    moved = await lead_deliver.run(Pool(), job("j-1160-e2"))
+    assert moved["reroute"]["rerouted"] == 1 and moved["reroute"]["by_channel"] == {"email": 1}, moved
+    old = [r for r in await _lead_rows(db["su_dsn"]) if json.loads(r["payload"]).get("lead_id") == crm_lead][0]
+    assert old["delivery_channel"] == "email" and old["delivered_at"] is not None
+    assert len(mails) == sent_before + 1
+    again = await lead_deliver.run(Pool(), job("j-1160-e3"))
+    assert again["reroute"]["rerouted"] == 0 and len(mails) == sent_before + 1      # once
