@@ -1320,9 +1320,16 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   the vendored kit core and `backend/aa_llm` exempt) fails; today's offenders sit in `.github/code-health-baseline.json`,
   may not get worse, and the baseline only shrinks: after an improvement run `python3 .github/scripts/code_health.py
   update` and commit it. `scripts/pre-push.sh` runs it too.
+- **Merge queue, coverage floor, rollback (AA-1119)**: `ci.yml` and `pr-title.yml` run on `merge_group` (and
+  `secret-scan.yml`'s `gitleaks` from the second AA-1119 PR); the ruleset copy is `.github/rulesets/main-merge-queue.json`
+  (applied by the tech lead, with strict required checks). "Backend (pytest)" fails below `fail_under` in
+  `backend/.coveragerc` (90.0, measured 90.31 % on 24/11/2026), and `.github/scripts/coverage_floor.py` refuses a lower
+  floor than the base's. A red `verify` or `release` of `deploy-web-dev.yml` rolls the service back to the revision it
+  ran before the deploy (`.github/scripts/ecs_smoke_rollback.py`, refused when unsafe) and opens a `deploy-smoke-red`
+  issue.
 - **CI checks**: required "Backend (pytest)", "Frontend (lint + build)", "Migrations (lint, PG 15
   replay)" (on a PR it also refuses an added line naming a migration by an old number after a renumber,
-  `.github/scripts/migration_refs.py`, AA-1024 l22; a history note carries `old-mig-ok`; and an added tp-NNN that is not main max + 1 on the main of the run, or that an older open PR also adds under another name, `.github/scripts/migration_numbers.py`: no merge queue here, so re-run the PR's CI after another migration PR merged); plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan
+  `.github/scripts/migration_refs.py`, AA-1024 l22; a history note carries `old-mig-ok`; and an added tp-NNN that is not main max + 1 on the main of the run, or that an older open PR also adds under another name, `.github/scripts/migration_numbers.py`: a pull_request step only, not run in the merge queue, so re-run the PR's CI after another migration PR merged); plus "Security Audit" (AA-879: pip-audit on `backend/requirements.txt`, failing). Secret scan
   (AA-981 follow-up): `secret-scan.yml`, check "gitleaks" on every PR (lines the PR adds, rules and baseline from
   the base branch) and "gitleaks full history" (`secret-scan-history.yml`) nightly / on push to `main` (branches, tags, pull
   request heads);
