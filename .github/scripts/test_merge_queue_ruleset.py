@@ -26,9 +26,8 @@ REQUIRED = {
     "Settings Lint": "ci.yml",
     "gitleaks": "secret-scan.yml",
 }
-# secret-scan.yml gets its merge_group trigger in a second PR: the gitleaks job runs the BASE branch's copy, and the
-# guard before this change refused a second trigger (the same two steps as AA-Booking).
-PENDING_TRIGGER = {"secret-scan.yml"}
+# Workflows whose merge_group trigger is still to come (empty since the second AA-1119 PR added secret-scan.yml's).
+PENDING_TRIGGER: set[str] = set()
 MERGE_GROUP = "  merge_group:\n    types: [checks_requested]"
 
 
