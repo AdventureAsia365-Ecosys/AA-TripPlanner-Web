@@ -68,6 +68,7 @@ STAGE_CAP_COMPOSE_USD = "tripplanner.spend.stage_cap_compose_usd"  # AA-1126 (CI
 STAGE_CAP_SEARCH_USD = "tripplanner.spend.stage_cap_search_usd"
 NEAR_CAP_PCT = "tripplanner.spend.near_cap_pct"
 CONNECTION_SHARE_ENFORCE = "tripplanner.spend.connection_share_enforce"  # AA-1143 (CIS 456): log only by default
+AGENCY_PRICES_STALE_HOURS = "tripplanner.prices.agency_stale_hours"  # AA-1152 (CIS 476)
 SPEND_DEV, SPEND_PROD = "dev", "prod"
 
 
@@ -112,6 +113,7 @@ SETTINGS: dict[str, Setting] = {s.key: s for s in (
     Setting(STAGE_CAP_SEARCH_USD, "float", "TP_DAILY_SPEND_CAP_SEARCH_USD", 0, 200),
     Setting(NEAR_CAP_PCT, "int", "SPEND_NEAR_CAP_PCT", 50, 99),
     Setting(CONNECTION_SHARE_ENFORCE, "bool", "TP_CONNECTION_SHARE_ENFORCE"),
+    Setting(AGENCY_PRICES_STALE_HOURS, "int", "AGENCY_PRICES_STALE_HOURS", 2, 168),
 )}
 
 

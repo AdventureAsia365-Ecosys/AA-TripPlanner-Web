@@ -2,6 +2,7 @@
 // with the agency's own text (CIS view catalog.v_tenant_tour_v1 through the browse Lambda) under the agency's brand:
 // its trading name in the bar, its brand tokens (the same kit core brand-token block as /{slug}/plan), no Adventure
 // Asia logo, no AA price (the agency is the merchant of record) and no account link (travellers are guests, d11).
+// AA-1152 (B2 option C): the agency's OWN "from" price when its CRM publishes one (components/site/AgencyFromPrice.tsx).
 // The planner's tour list on /{slug}/plan opens these pages; "Plan this trip" goes back to the agency's planner.
 // AA-1130 (S283 audit T1): the call to action also sits near the top, under the facts ("Make it yours", like the AA
 // tour page's card), so it is not 5,000 px down after a long itinerary; the page ends with the agency's own Privacy
@@ -13,6 +14,7 @@ import type { Metadata } from "next";
 import { notFound, permanentRedirect } from "next/navigation";
 import Header from "@/components/Header";
 import LcpImage from "@/components/site/LcpImage";
+import AgencyFromPrice from "@/components/site/AgencyFromPrice";
 import { getTenantTour } from "@/lib/catalog";
 import { clip, daysText } from "@/lib/text";
 import { isTenantSlug, resolveTenant } from "@/lib/tenantSite";
@@ -119,6 +121,7 @@ export default async function TenantTourPage({ params }: Props) {
             Start from this itinerary on the map, change what you like, and {site.name} confirms every detail and price
             in your quote.
           </p>
+          <AgencyFromPrice slug={site.slug} sourceId={t.source_id} agency={site.name} />
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <ButtonLink href={planHref} variant="primary" size="lg">
               <Icon name="route" className="h-4 w-4" /> Customise this trip

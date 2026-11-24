@@ -5,6 +5,7 @@ Routes:
   GET    /trip/{trip_id}/suggestions              next-to-pin suggestions
   GET    /trip/{trip_id}/coverage                 AA tour leg chain
   GET    /trip/{trip_id}/stops/{dest}/activities  AA activities at one stop
+  GET    /trip/{trip_id}/addons                   AA-1152 (day_addons.py): each day's AA add-ons; POST picks, DELETE
   POST   /trip/{trip_id}/components               add_component
   DELETE /trip/{trip_id}/components/{component_id} remove_component
   PATCH  /trip/{trip_id}/reorder                  reorder
@@ -14,22 +15,19 @@ Routes:
   POST   /me/claim                                sign-in: link this browser's guest sessions to the account
   GET    /me/trips                                My Trips: the signed-in traveller's trips
 
-Every mutating route runs _guard (AA-827) right after its required-field check: the guest token
-from the BFF must match the session (guest_session.py), and the session must own the trip.
-session_id is an identifier, never a credential. Every trip read GET runs _read_guard (AA-909): the
-token must match the session that owns the trip, else the same 404 as an unknown route.
+Every mutating route runs _guard (AA-827) right after its required-field check: the guest token from the BFF must
+match the session (guest_session.py), and the session must own the trip. session_id is an identifier, never a
+credential. Every trip read GET runs _read_guard (AA-909): the token must match the session that owns the trip, else
+the same 404 as an unknown route.
 
-AA-908 (root ADR 0006 Phase 4): a signed-in traveller's BFF also sends the EXTERNAL access token
-(`x-tripplanner-access`, account.py). Both guards then also let through the account that owns the
-session (a second device has its own guest cookie), and a signed-in mutation links its session to the
-account. The /me routes need that token (401 sign_in_required without it). Without a valid token
-every answer is exactly the guest one.
+AA-908 (root ADR 0006 Phase 4): a signed-in traveller's BFF also sends the EXTERNAL access token (`x-tripplanner-
+access`, account.py). Both guards then also let through the account that owns the session (a second device has its own
+guest cookie), and a signed-in mutation links its session to the account. The /me routes need that token (401
+sign_in_required without it). Without a valid token every answer is exactly the guest one.
 
-Stateful per-visitor; never cached. The framework-agnostic route()
-coroutine takes injectable conn + sender and is unit-tested directly.
-Narration (compose/renarrate) is triggered by the frontend via a separate
-streaming call after the debounce window; these mutation endpoints return
-the updated projection immediately.
+Stateful per-visitor; never cached. The framework-agnostic route() coroutine takes injectable conn + sender and is
+unit-tested directly. Narration (compose/renarrate) is triggered by the frontend via a separate streaming call after
+the debounce window; these mutation endpoints return the updated projection immediately.
 """
 from __future__ import annotations
 
@@ -58,7 +56,7 @@ from backend.assembly import notify as notify_mod
 from backend.assembly import registration as reg_mod
 from backend.assembly import account as account_mod
 from backend.assembly import ai_admission
-from backend.assembly import activities as activities_mod
+from backend.assembly import activities as activities_mod, day_addons
 from backend.assembly import coverage as coverage_mod
 from backend.assembly import suggestions as suggest_mod
 from backend.shared import component_ids, llm_gateway, m2m_auth, observability, ratelimit, tenant, tenant_assertion
@@ -741,6 +739,7 @@ async def _send_lead(conn, trip_id: str, body: dict, guest_token: Optional[str],
             return _resp(429, {"error": "lead_cap_reached"})
         # Added days count as days; their notes (free text) never go into the lead.
         summary = await leads_mod.trip_summary(conn, current, extra_days=len(added))
+        summary = await day_addons.attach(conn, trip_id, summary)  # AA-1152: the add-ons picked on each day
         itinerary = await events_mod.append_event(conn, trip_id, session_id, "sent", {"session_id": session_id})
         handoff = await _last_event(conn, trip_id)
         payload = leads_mod.build_lead(route=route_, trip_id=trip_id, answers=answers, summary=summary)
@@ -971,13 +970,13 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
                 access_token: Optional[str] = None, acquire=None, tenant_id: Optional[str] = None,
                 tenant_source: str = tenant.SOURCE_DEFAULT,
                 client: ratelimit.Client = ratelimit.UNKNOWN_CLIENT) -> dict:
-    """route() on a pooled connection, behind a catch-all (AA-827): an unexpected error answers 500
-    and logs only its type, where it was raised and the route name — never str(e), which can carry
-    request values (asyncpg echoes bad input). `acquire` is injectable for tests.
+    """route() on a pooled connection, behind a catch-all (AA-827): an unexpected error answers 500 and logs only its
+    type, where it was raised and the route name — never str(e), which can carry request values (asyncpg echoes
+    bad input). `acquire` is injectable for tests.
 
     AA-908: `access_token` is the raw `x-tripplanner-access` header; it is verified before any SQL
-    (account.caller_from_header). The JWKS is fetched on the first signed-in request of a container
-    and kept (a failed refresh keeps the last good key set).
+    (account.caller_from_header). The JWKS is fetched on the first signed-in request of a container and kept (a
+    failed refresh keeps the last good key set).
 
     AA-1038 (R5 slice 1, tp-025 shadow RLS): the tenant context is bound right after acquire, before route(), and
     unbound in a finally even when route() raises (tenant.bound). Every request is the demo tenant
@@ -994,7 +993,8 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
             acquire = (await get_pool()).acquire
         async with acquire() as conn, tenant.bound(conn, tid, source=tenant_source):
             await settings.refresh(conn)          # S279 L5: the admin-editable settings, cached 25 s (never raises)
-            return await route(method, path, body, conn=conn, guest_token=guest_token, caller=caller, client=client)
+            return await day_addons.serve(route, _guard, _read_guard, _resp, method, path, body, conn=conn,
+                                          guest_token=guest_token, caller=caller, client=client)  # AA-1152
     except Exception as e:  # noqa: BLE001
         frames = traceback.extract_tb(e.__traceback__)
         at = f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}" if frames else ""

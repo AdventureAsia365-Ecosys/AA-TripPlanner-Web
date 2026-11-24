@@ -17,6 +17,10 @@ the person's agency role first (root ADR 0008a: it never reads this schema).
                                                          shows it once); ``studio-member`` is the Content studio
                                                          owner of an agency without the CRM add-on (the CRM checked
                                                          the membership with CIS first)
+  PUT  /trip/m2m/v1/tenants/{id}/planner/prices           AA-1152 (contract tripplanner.agency_prices.v1): the
+                                                         agency's own "from" prices and its show-prices switch, as
+                                                         its CRM computed them (backend/shared/agency_prices.py);
+                                                         409 stale for a list older than the one kept
 
 What never leaves: a traveller's name, e-mail, phone or message (a pending lead still holds them; the list reads ids,
 times and states only), the webhook URL or the e-mail address (CIS serves the route), the master secret. A tenant is
@@ -36,7 +40,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
 from backend.assembly import leads as leads_mod
-from backend.shared import m2m_auth, observability, settings, tenant, tenant_sessions
+from backend.shared import agency_prices, m2m_auth, observability, settings, tenant, tenant_sessions
 
 VIEW = "catalog.v_tenant_tripplanner_v1"
 TENANT_SQL = f"SELECT tenant_id, ai_sessions_monthly FROM {VIEW} WHERE tenant_id = $1"
@@ -163,10 +167,20 @@ async def rotate_key(conn: Any, tenant_id: str, actor: str) -> dict:
             "key": leads_mod.webhook_key(master, tenant_id, version).decode()}
 
 
+async def store_prices(conn: Any, tenant_id: str, body: Any) -> dict:
+    """AA-1152: the agency's price list (422 invalid outside the contract, 409 stale for an older list)."""
+    try:
+        return await agency_prices.store(conn, tenant_id, body)
+    except agency_prices.Invalid:
+        raise Refused(422, "invalid") from None
+    except LookupError:
+        raise Refused(409, "stale") from None
+
+
 # --- the M2M routes ---------------------------------------------------------------------------------------------------
 
-PATH_RE = re.compile(r"^/trip/m2m/v1/tenants/([^/]+)/planner/(leads|usage|webhook-key|webhook-key/rotate)$")
-METHODS = {"leads": "GET", "usage": "GET", "webhook-key": "GET", "webhook-key/rotate": "POST"}
+PATH_RE = re.compile(r"^/trip/m2m/v1/tenants/([^/]+)/planner/(leads|usage|webhook-key|webhook-key/rotate|prices)$")
+METHODS = {"leads": "GET", "usage": "GET", "webhook-key": "GET", "webhook-key/rotate": "POST", "prices": "PUT"}
 _HEADERS = {"content-type": "application/json", "cache-control": "no-store"}
 
 
@@ -202,9 +216,11 @@ def parse(method: str, path: str, body: dict) -> tuple[str, str, int, str]:
     return tenant_raw, what, limit, actor
 
 
-async def answer(conn: Any, tenant_id: str, what: str, limit: int, actor: str) -> dict:
+async def answer(conn: Any, tenant_id: str, what: str, limit: int, actor: str, body: Optional[dict] = None) -> dict:
     """The body of one planner route for the bound tenant (CIS must list it: else 404 unknown_tenant)."""
     row = await tenant_row(conn, tenant_id)
+    if what == "prices":
+        return await store_prices(conn, tenant_id, body)
     if what == "leads":
         return await leads(conn, tenant_id, limit)
     if what == "usage":
@@ -234,7 +250,7 @@ async def serve(method: str, path: str, body: dict, authorization: Optional[str]
             acquire = (await get_pool()).acquire
         async with acquire() as conn, tenant.bound(conn, tenant_raw, source=tenant.SOURCE_M2M) as tid:
             await settings.refresh(conn)  # S279 L5: the admin-editable settings (lead cap override), never raises
-            return _resp(200, await answer(conn, tid, what, limit, actor))
+            return _resp(200, await answer(conn, tid, what, limit, actor, body))
     except Refused as e:
         return _resp(e.status, {"error": e.code})
     except Exception as e:  # noqa: BLE001
