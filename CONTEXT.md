@@ -904,7 +904,10 @@ S276) makes the database enforce it: a connection without a tenant context sees 
   labels of `lib/placeIcon.ts` / `lib/mapbox.ts`) stays as served. The bare `/plan` stays English.
 - **Isolation.** Under tenant A's assertion only A's sessions and trips are visible (tp-028 policy `<table>_tenant`):
   another tenant's trip is the same 404 as an unknown one and a mutation is 401 with no write
-  (`backend/tests/test_aa1038_tenant_site_pg.py`, two synthetic agencies). The bare path binds the demo tenant, so it
+  (`backend/tests/test_aa1038_tenant_site_pg.py`, two synthetic agencies). A NEW session of tenant B that writes to
+  tenant A's trip id passes the token check and sees no draft, so the trip_drafts upsert meets A's hidden row and RLS
+  refuses it (42501): `events.append_event` raises `TripOfAnotherTenant`, the write rolls back and `serve()` answers the
+  same 403 `forbidden` as a trip owned by another session (S290; never a 500). The bare path binds the demo tenant, so it
   sees demo rows only; a connection with no tenant bound sees no row (FORCE slice, tp-028).
 - **Not in this slice.** The tenant brand, `lead.submitted.v1` and the per-tenant AI caps came with slice 3
   (below); FORCE RLS (tp-028) and the ECS + CloudFront hosting move came after it. The launcher (AA-1115, entitlement

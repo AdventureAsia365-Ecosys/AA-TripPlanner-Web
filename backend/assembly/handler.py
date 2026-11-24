@@ -513,7 +513,7 @@ async def _guard(conn, trip_id: str, session_id: str, guest_token: Optional[str]
     if outcome in guest_session.DENIED:
         guest_session.emit(outcome, route_name)
         return _resp(401, {"error": "guest_session_invalid"})
-    owner = await _trip_owner(conn, trip_id)
+    owner = await events_mod.trip_owner(conn, trip_id)
     if owner is not None and str(owner) != str(session_id):
         guest_session.emit(guest_session.FORBIDDEN_OWNER, route_name)
         return _resp(403, {"error": "forbidden", "detail": "this trip belongs to another session"})
@@ -824,13 +824,6 @@ async def serve_m2m(method: str, path: str, body: dict, authorization: Optional[
         return _resp(503, {"error": "unavailable"})
 
 
-async def _trip_owner(conn, trip_id: str) -> Optional[str]:
-    """The session that created the trip (trip_drafts.session_id is never changed by the upsert),
-    or None when the trip has no draft yet."""
-    row = await conn.fetchrow("SELECT session_id FROM tripplanner.trip_drafts WHERE id = $1", trip_id)
-    return row["session_id"] if row else None
-
-
 async def _settle_chat_calls(conn, tenant_id: Optional[str], calls: list, signal: dict) -> None:
     """A chat turn's ledger rows (one per attempt, failed ones included) and its monthly charge. Both writes never
     raise (a failed write is an ERROR line and holds the stage closed), so every exit of a turn runs them."""
@@ -995,6 +988,11 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
             await settings.refresh(conn)          # S279 L5: the admin-editable settings, cached 25 s (never raises)
             return await day_addons.serve(route, _guard, _read_guard, _resp, method, path, body, conn=conn,
                                           guest_token=guest_token, caller=caller, client=client)  # AA-1152
+    except events_mod.TripOfAnotherTenant:
+        # S290 follow-up: a trip id of another tenant (hidden by RLS) under a fresh session of this one: the same 403
+        # as a trip owned by another session, after the rollback; never a 500.
+        guest_session.emit(guest_session.FORBIDDEN_OWNER, _route_name(method, path))
+        return _resp(403, {"error": "forbidden", "detail": "this trip belongs to another session"})
     except Exception as e:  # noqa: BLE001
         frames = traceback.extract_tb(e.__traceback__)
         at = f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}" if frames else ""

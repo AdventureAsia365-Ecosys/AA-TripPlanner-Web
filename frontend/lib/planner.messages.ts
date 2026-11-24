@@ -402,6 +402,7 @@ export const ROUTES = defineMessages(
     adding: "Adding…",
     startWith: "Start with this route",
     planFromRoute: "Plan from a tour route",
+    close: "Close",
     days: "Days",
   },
   {
@@ -416,6 +417,7 @@ export const ROUTES = defineMessages(
     adding: "Đang thêm…",
     startWith: "Bắt đầu với tuyến này",
     planFromRoute: "Lên kế hoạch từ tuyến của tour",
+    close: "Đóng",
     days: "Số ngày",
   },
 );

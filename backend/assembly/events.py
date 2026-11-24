@@ -282,6 +282,23 @@ async def unavailable_stops(conn: _Conn, trip_id: str, missing: Optional[list[st
     return out
 
 
+async def trip_owner(conn: _Conn, trip_id: str) -> Optional[str]:
+    """The session that created the trip (trip_drafts.session_id is never changed by the upsert),
+    or None when the trip has no draft visible to this tenant yet (moved from the handler, S290)."""
+    row = await conn.fetchrow("SELECT session_id FROM tripplanner.trip_drafts WHERE id = $1", trip_id)
+    return row["session_id"] if row else None
+
+
+# S290 follow-up: SQLSTATE insufficient_privilege, raised by row-level security when the trip_drafts upsert meets a row
+# of another tenant (the trip id exists, but tp-028 FORCE RLS hides it from this tenant's session).
+RLS_REFUSED = "42501"
+
+
+class TripOfAnotherTenant(Exception):
+    """The trip id belongs to another tenant: the event and the projection are rolled back and the handler answers
+    the same 403 as a trip owned by another session (never a 500)."""
+
+
 async def append_event(
     conn: _Conn,
     trip_id: str,
@@ -333,20 +350,29 @@ async def append_event(
             + carried,
             default=str,
         )
-        await conn.execute(
-            """
-            INSERT INTO tripplanner.trip_drafts (id, session_id, status, itinerary)
-            VALUES ($1, $2, $3, $4::jsonb)
-            ON CONFLICT (id) DO UPDATE
-              SET itinerary = EXCLUDED.itinerary,
-                  status = CASE WHEN tripplanner.trip_drafts.status = 'sent'
-                                THEN 'sent' ELSE EXCLUDED.status END,
-                  updated_at = now()
-            """,
-            trip_id,
-            session_id,
-            status,
-            itinerary_json,
-        )
+        try:
+            await _upsert_draft(conn, trip_id, session_id, status, itinerary_json)
+        except Exception as e:  # noqa: BLE001 — only the RLS refusal is mapped; anything else propagates
+            if getattr(e, "sqlstate", None) == RLS_REFUSED:
+                raise TripOfAnotherTenant() from None
+            raise
 
     return itinerary
+
+
+async def _upsert_draft(conn: _Conn, trip_id: str, session_id: str, status: str, itinerary_json: str) -> None:
+    await conn.execute(
+        """
+        INSERT INTO tripplanner.trip_drafts (id, session_id, status, itinerary)
+        VALUES ($1, $2, $3, $4::jsonb)
+        ON CONFLICT (id) DO UPDATE
+          SET itinerary = EXCLUDED.itinerary,
+              status = CASE WHEN tripplanner.trip_drafts.status = 'sent'
+                            THEN 'sent' ELSE EXCLUDED.status END,
+              updated_at = now()
+        """,
+        trip_id,
+        session_id,
+        status,
+        itinerary_json,
+    )

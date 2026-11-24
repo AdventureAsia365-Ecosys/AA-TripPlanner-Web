@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { missingTranslations, translator } from "../ui/core/i18n.ts";
 import {
-  FILTERS, LEAD, PLANNER, PLANNER_CATALOGS, TRIP, formatDaysIn, plannerLang,
+  FILTERS, LEAD, PLANNER, PLANNER_CATALOGS, ROUTES, TRIP, formatDaysIn, plannerLang,
 } from "./planner.messages.ts";
 import { BUDGET_BANDS, budgetLabel, leadResultMessage } from "./leadForm.ts";
 import { brandCopy } from "./brand.ts";
@@ -26,6 +26,8 @@ test("the locale picks the language; anything but vi is English", () => {
   assert.equal(translator(TRIP, "vi")("emptyTitle"), "Bắt đầu xây dựng chuyến đi");
   assert.equal(translator(TRIP, "en")("emptyTitle"), "Start building your trip");
   assert.equal(translator(PLANNER, "vi")("tripPlanner"), "Lập kế hoạch chuyến đi");
+  assert.equal(translator(ROUTES, "vi")("planFromRoute"), "Lên kế hoạch từ tuyến của tour");   // S290
+  assert.equal(translator(ROUTES, "vi")("close"), "Đóng");
   assert.equal(formatDaysIn(1, "en"), "1 day");
   assert.equal(formatDaysIn(3, "en"), "3 days");
   assert.equal(formatDaysIn(3, "vi"), "3 ngày");
@@ -68,7 +70,8 @@ test("the agency planner passes its locale to the planner, and the planner's chr
     "../components/Header.tsx": [">\n          Trip Planner\n        </span>\n      </div>\n      <nav className=\"flex shrink-0"],
     "../components/LeadForm.tsx": ["Send my request", "Budget per person"],
     "../components/FilterChips.tsx": ["Search experiences — e.g.", "All countries"],
-    "../components/RoutePlanner.tsx": ["Start from a tour route", "Find routes"],
+    "../components/RoutePlanner.tsx": ["Start from a tour route", "Find routes", "Plan from a tour route",
+      "            Close\n"],   // S290: the open finder's heading and its close button too
     "../components/DayList.tsx": ["            Show on map", "\"Move to start\""],
   };
   for (const [file, literals] of Object.entries(sources)) {
