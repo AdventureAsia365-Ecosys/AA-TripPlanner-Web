@@ -513,7 +513,7 @@ async def _guard(conn, trip_id: str, session_id: str, guest_token: Optional[str]
     if outcome in guest_session.DENIED:
         guest_session.emit(outcome, route_name)
         return _resp(401, {"error": "guest_session_invalid"})
-    owner = await _trip_owner(conn, trip_id)
+    owner = await events_mod.trip_owner(conn, trip_id)
     if owner is not None and str(owner) != str(session_id):
         guest_session.emit(guest_session.FORBIDDEN_OWNER, route_name)
         return _resp(403, {"error": "forbidden", "detail": "this trip belongs to another session"})
@@ -822,13 +822,6 @@ async def serve_m2m(method: str, path: str, body: dict, authorization: Optional[
         observability.emit("assembly_error", route="m2m_leads", error=type(e).__name__)
         observability.capture(e)
         return _resp(503, {"error": "unavailable"})
-
-
-async def _trip_owner(conn, trip_id: str) -> Optional[str]:
-    """The session that created the trip (trip_drafts.session_id is never changed by the upsert),
-    or None when the trip has no draft yet."""
-    row = await conn.fetchrow("SELECT session_id FROM tripplanner.trip_drafts WHERE id = $1", trip_id)
-    return row["session_id"] if row else None
 
 
 async def _settle_chat_calls(conn, tenant_id: Optional[str], calls: list, signal: dict) -> None:
