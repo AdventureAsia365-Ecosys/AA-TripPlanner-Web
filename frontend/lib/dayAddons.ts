@@ -68,21 +68,21 @@ export function addonsOfDay(data: TripAddons | null, day: number): DayAddon[] {
 }
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+const integers = (v: unknown): number[] => (Array.isArray(v) ? v.filter((x): x is number => Number.isInteger(x)) : []);
+const finite = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const UNITS: readonly DayAddon["unit"][] = ["person", "group", "vehicle", "day"];
+const unitOf = (v: unknown): DayAddon["unit"] => UNITS.find((u) => u === v) ?? "person";
 
 function addonOf(v: unknown): DayAddon | null {
   if (!isRecord(v) || typeof v.component_id !== "string" || typeof v.title !== "string") return null;
-  const unit = v.unit === "group" || v.unit === "vehicle" || v.unit === "day" ? v.unit : "person";
-  const minutes = typeof v.duration_minutes === "number" && Number.isFinite(v.duration_minutes) ? v.duration_minutes : null;
   return {
     component_id: v.component_id,
     title: v.title,
-    unit,
-    duration_minutes: minutes,
-    min_pax: typeof v.min_pax === "number" && Number.isFinite(v.min_pax) ? v.min_pax : 1,
-    operating_weekdays: Array.isArray(v.operating_weekdays)
-      ? v.operating_weekdays.filter((x): x is number => Number.isInteger(x))
-      : [],
+    unit: unitOf(v.unit),
+    duration_minutes: finite(v.duration_minutes),
+    min_pax: finite(v.min_pax) ?? 1,
+    operating_weekdays: integers(v.operating_weekdays),
     start_times: strings(v.start_times),
     destination_id: typeof v.destination_id === "string" ? v.destination_id : "",
     at: v.at === "sleep" ? "sleep" : "visited",
