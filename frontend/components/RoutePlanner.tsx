@@ -107,10 +107,10 @@ function RoutePlanner({ compact }: { compact: boolean }) {
   return (
     <div className="mb-3 rounded-xl border border-k-line bg-k-card p-3" aria-label={t("planFromRoute")}>
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold text-k-ink">Plan from a tour route</p>
+        <p className="text-xs font-semibold text-k-ink">{t("planFromRoute")}</p>
         {compact && (
           <button onClick={() => { setOpen(false); setRoutePreview(null); }} className="aa-focus text-[11px] text-k-muted">
-            Close
+            {t("close")}
           </button>
         )}
       </div>

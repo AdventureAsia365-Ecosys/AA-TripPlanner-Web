@@ -995,6 +995,11 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
             await settings.refresh(conn)          # S279 L5: the admin-editable settings, cached 25 s (never raises)
             return await day_addons.serve(route, _guard, _read_guard, _resp, method, path, body, conn=conn,
                                           guest_token=guest_token, caller=caller, client=client)  # AA-1152
+    except events_mod.TripOfAnotherTenant:
+        # S290 follow-up: a trip id of another tenant (hidden by RLS) under a fresh session of this one: the same 403
+        # as a trip owned by another session, after the rollback; never a 500.
+        guest_session.emit(guest_session.FORBIDDEN_OWNER, _route_name(method, path))
+        return _resp(403, {"error": "forbidden", "detail": "this trip belongs to another session"})
     except Exception as e:  # noqa: BLE001
         frames = traceback.extract_tb(e.__traceback__)
         at = f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}" if frames else ""

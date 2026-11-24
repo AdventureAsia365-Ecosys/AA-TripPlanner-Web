@@ -264,6 +264,33 @@ async def test_two_agencies_are_isolated_through_their_assertions(db, tp_conn):
     assert await tp_conn.fetchval("SELECT current_setting('app.tenant_id', true) AS guc") in (None, "")
 
 
+async def test_a_fresh_session_of_another_agency_gets_403_for_a_trip_id_it_cannot_see(db, tp_conn):
+    """S290 follow-up (S289 review): a NEW session under agency B that sends agency A's trip id passes the guest token
+    check (its own fresh session) and sees no draft (RLS), so the mutation reached the trip_drafts upsert, whose
+    conflict with A's hidden row is refused by row-level security: a 500 with rollback. It is now the 403 of a trip
+    owned by another session, nothing is written for either agency, and A's trip is unchanged."""
+    a_head, b_head = _header(AGENCY_A, "quillmere-voyages"), _header(AGENCY_B, "ottervale-journeys")
+    session_a, trip_a, token_a = await _create_trip(tp_conn, a_head)
+    su = await asyncpg.connect(db["su_dsn"])
+    count_sql = "SELECT count(*) AS n FROM tripplanner.trip_events WHERE trip_id = $1::uuid"
+    try:
+        before = await su.fetchval(count_sql, trip_a)
+        for kind in ("free_day", "free_day"):  # twice: each time a new session of B
+            session_b, token_b = str(uuid.uuid4()), secrets.token_urlsafe(32)
+            status, out, _ = await _request(tp_conn, "POST", f"/trip/{trip_a}/days",
+                                            {"session_id": session_b, "kind": kind}, token_b, b_head)
+            assert (status, out) == (403, {"error": "forbidden", "detail": "this trip belongs to another session"})
+        assert await su.fetchval(count_sql, trip_a) == before == 1
+        drafts = await su.fetch("SELECT tenant_id::text AS t, session_id::text AS s FROM tripplanner.trip_drafts "
+                                "WHERE id = $1::uuid", trip_a)
+        assert [(r["t"], r["s"]) for r in drafts] == [(AGENCY_A, session_a)]
+    finally:
+        await su.close()
+    status, body, _ = await _request(tp_conn, "GET", f"/trip/{trip_a}", token=token_a, headers=a_head)
+    assert status == 200 and body["trip_id"] == trip_a
+    assert await tp_conn.fetchval("SELECT current_setting('app.tenant_id', true) AS guc") in (None, "")
+
+
 @pytest.mark.parametrize("make", [
     lambda: {config.TENANT_ASSERTION_HEADER: ta.sign(ta.derive_key("someone-else"), AGENCY_A, "quillmere-voyages")},
     lambda: _header(AGENCY_A, "quillmere-voyages", now=1762400000),
