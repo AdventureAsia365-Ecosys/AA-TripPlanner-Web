@@ -1,0 +1,14 @@
+# AA-1119 (S282 audit R31): coverage of the backend unit tests ("Backend (pytest)" in .github/workflows/ci.yml runs
+# `pytest --cov --cov-config=.coveragerc` from backend/). fail_under is the floor: measured 90.31% on 24/11/2026 (1747
+# passed, 99 PostgreSQL tests skipped offline), floor 90.0. It only goes up (.github/scripts/coverage_floor.py checks it
+# against the base commit): raise it in the PR that adds tests, never lower it.
+[run]
+source = .
+omit =
+    tests/*
+    */tests/*
+
+[report]
+fail_under = 90.0
+precision = 2
+skip_covered = true

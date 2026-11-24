@@ -14,4 +14,6 @@ PyJWT[crypto]==2.15.1
 # Dev / test
 pytest==9.0.3
 pytest-asyncio==1.4.0
+# AA-1119: coverage floor of "Backend (pytest)" (backend/.coveragerc).
+pytest-cov==7.0.0
 jsonschema==4.23.0

@@ -40,3 +40,7 @@ Thumbs.db
 
 # AAA (AA-Booking) source docs — PRD/ERD/Figma binaries, kept locally only, not committed
 docs/AAA/
+
+# AA-1119: pytest-cov data files (backend/.coveragerc)
+.coverage
+.coverage.*

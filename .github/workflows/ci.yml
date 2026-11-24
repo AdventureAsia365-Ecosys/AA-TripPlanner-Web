@@ -5,6 +5,11 @@ on:
     branches: [main]
   push:
     branches: [main, "task/**", "chore/**", "feature/**"]
+  # AA-1119 (S282 audit R31; same pattern as AA-CIS-App, AA-Booking and AA-Partner, AA-889): the merge queue tests each
+  # group on a temporary gh-readonly-queue/main/* commit and waits for every required check there, so every job runs on
+  # merge_group too (the steps that read the PR's own files run on pull_request only).
+  merge_group:
+    types: [checks_requested]
   # AA-879: deploy-lambdas.yml calls this whole workflow as its `ci` job, so a Lambda deploy runs only
   # after every check below passed on the commit it ships.
   workflow_call:
@@ -71,7 +76,7 @@ jobs:
       - name: Code health ratchets (Python complexity, file size)
         working-directory: .
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
         run: |
           BASE_ARGS=()
           case "$BASE_SHA" in
@@ -80,12 +85,29 @@ jobs:
           esac
           python3 .github/scripts/code_health.py check --kind python,files "${BASE_ARGS[@]}"
 
+      # AA-1119 (S282 audit R31): a coverage floor on the backend unit tests. The floor is `fail_under` in
+      # backend/.coveragerc (measured 90.31% on 24/11/2026, floor 90.0); pytest-cov fails the run below it. It only goes
+      # up: .github/scripts/coverage_floor.py refuses a lower or missing floor than the base commit's (ratchet; raise it
+      # in the same PR that adds tests).
+      - name: Coverage floor only goes up (backend/.coveragerc)
+        working-directory: .
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
+        run: |
+          BASE_ARGS=()
+          case "$BASE_SHA" in
+            ""|0000000000000000000000000000000000000000) echo "::notice::No base commit: the ratchet against the base is skipped." ;;
+            *) git fetch --no-tags --depth=1 origin "$BASE_SHA" && BASE_ARGS=(--base "$BASE_SHA") ;;
+          esac
+          python3 .github/scripts/coverage_floor.py check "${BASE_ARGS[@]}"
+
       - name: Run unit tests
         # All backend unit tests are offline (no DB / Mapbox / Bedrock);
         # PYTHONPATH points at the repo root so `import backend.*` resolves.
+        # --cov reads backend/.coveragerc (source, omit, fail_under): below the floor the step fails.
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: pytest -v --tb=short
+        run: pytest -v --tb=short --cov --cov-config=.coveragerc --cov-report=term
 
   # AA-1096 (S279 thresholds audit, section 5.4): "Settings Lint", the settings-lint guard as a check of its own, named
   # the same in AA-Booking and AA-Partner, so branch protection can require it by name. Tech lead rule S279: every
@@ -302,7 +324,7 @@ jobs:
       # extra, the manifest is the one kit.lock.json pins, and no CSS file outside ui/core/tokens.css defines an --aa-*
       # variable (TripPlanner-only values are --tp-*). Provenance: that manifest is AA-CIS-App's at the lock's ref and
       # the ref is on CIS main (reads GitHub only when this change touches frontend/kit.lock.json or frontend/ui/core;
-      # otherwise it passes at once). No merge queue here, so the pull_request run is the gate.
+      # otherwise it passes at once). The pull_request run and the merge queue run (AA-1119) are both gates.
       - name: Kit core integrity (check-kit-copy.mjs)
         run: |
           node ui/core/check-kit-copy.mjs
@@ -311,7 +333,7 @@ jobs:
       - name: Kit core provenance (kit.lock.json ref on AA-CIS-App main)
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
         run: python3 ../.github/scripts/check_kit_provenance.py kit.lock.json --base "$BASE_SHA"
 
       - name: Install dependencies
@@ -351,7 +373,7 @@ jobs:
       - name: Suppressions do not grow
         if: ${{ !cancelled() && steps.eslint.conclusion != 'skipped' }}
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: |
           case "$BASE_SHA" in
             ""|0000000000000000000000000000000000000000)
@@ -382,7 +404,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: .
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
         run: |
           BASE_ARGS=()
           case "$BASE_SHA" in
