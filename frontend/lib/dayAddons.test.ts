@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  addonsOfDay, addonsUpstream, agencyPriceOf, agencyPriceUpstream, durationText, priceText, type TripAddons,
+  addonsOfDay, addonsUpstream, agencyPriceOf, agencyPriceUpstream, durationText, priceText, tripAddonsOf,
+  type TripAddons,
 } from "./dayAddons.ts";
 import { ADDONS } from "./dayAddons.messages.ts";
 import { translator } from "../ui/core/i18n.ts";
@@ -72,4 +73,50 @@ test("the tour page reads the agency's price through a no-store path, and only a
     { price: { from_per_person: "1.234", currency: "USD" } }, { price: { from_per_person: "10", currency: "usd" } }]) {
     assert.equal(agencyPriceOf(bad), null);
   }
+});
+
+// S291: a 200 with another body (the planner spec's catch-all trip mock answered the add-on read with the trip itself)
+// threw in addonsOfDay and the planner fell to its error page. Any answer that is not the add-on shape is "no add-on".
+test("an add-on answer of another shape is no add-on, never a crash of the day list", () => {
+  const trip = { trip_id: TRIP, itinerary: [{ day: 1, component_id: "c1" }], custom_days: [], unavailable_stops: [] };
+  for (const bad of [null, undefined, "x", 42, [], {}, trip, { days: null }, { days: "1" }]) {
+    assert.equal(tripAddonsOf(bad), null);
+    assert.deepEqual(addonsOfDay(tripAddonsOf(bad), 1), []);
+  }
+  // A value typed TripAddons that is not one (a cast elsewhere) is still no add-on.
+  assert.deepEqual(addonsOfDay(trip as unknown as TripAddons, 1), []);
+});
+
+test("a well-formed answer keeps its add-ons; malformed days and items are dropped, missing lists are empty", () => {
+  const parsed = tripAddonsOf({
+    trip_id: TRIP, prices_shown: true,
+    days: [
+      { day: 1, addons: [
+        { component_id: SV, title: "Evening lantern walk", unit: "person", duration_minutes: 90, min_pax: 2,
+          operating_weekdays: [2, 4], start_times: ["17:30"], destination_id: "d1", at: "sleep", selected: true,
+          price: { from_per_person: "42", currency: "USD" } },
+        { component_id: SV, title: "River boat at dawn" },
+        { title: "no id" },
+        "not an add-on",
+      ] },
+      { day: "2", addons: [] },
+      { day: 3 },
+      { day: 4, addons: [{ component_id: SV, title: "Bad price", price: { from_per_person: 7, currency: "USD" } }] },
+    ],
+  });
+  assert.ok(parsed);
+  assert.equal(parsed.prices_shown, true);
+  assert.deepEqual(parsed.days.map((d) => d.day), [1, 4]);
+  const [walk, boat] = addonsOfDay(parsed, 1);
+  assert.equal(addonsOfDay(parsed, 1).length, 2);
+  assert.deepEqual(walk, {
+    component_id: SV, title: "Evening lantern walk", unit: "person", duration_minutes: 90, min_pax: 2,
+    operating_weekdays: [2, 4], start_times: ["17:30"], destination_id: "d1", at: "sleep", selected: true,
+    price: { from_per_person: "42", currency: "USD" },
+  });
+  assert.deepEqual(boat, {
+    component_id: SV, title: "River boat at dawn", unit: "person", duration_minutes: null, min_pax: 1,
+    operating_weekdays: [], start_times: [], destination_id: "", at: "visited", selected: false, price: null,
+  });
+  assert.equal(addonsOfDay(parsed, 4)[0].price, null);
 });

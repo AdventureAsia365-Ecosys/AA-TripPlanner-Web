@@ -8,9 +8,13 @@
 //   - kit states: an error with a retry when the saved trip cannot be read; the read-only share view, which prints in
 //     the light theme for a viewer on the dark theme;
 //   - planning chat (AA-1041 slice 2): a suggestion is applied with the planner's own mutations (remove, then
-//     apply-route); a paused chat at a money cap says so and closes the composer, an outage keeps it open.
+//     apply-route); a paused chat at a money cap says so and closes the composer, an outage keeps it open;
+//   - AA add-ons on the day cards (AA-1152): a day lists its add-ons and a pick is saved; an add-on answer of another
+//     shape leaves the planner working (S291: it took the whole planner down to the error page).
 // Every /api/* call is answered by the test (page.route): no trip is written, no catalog row is read, the fixture
-// names are invented. The map itself is real (Mapbox, the deployment's token), so the sync tests need a build with
+// names are invented. /api/trip itself and each /api/trip/<path> the planner reads are answered explicitly; any other
+// /api/trip/<path> gets a 404 (the planner's "nothing to show" path), never the trip body (S291: the catch-all once
+// answered the new add-on read with the trip, and every planner test timed out on the error page). The map itself is real (Mapbox, the deployment's token), so the sync tests need a build with
 // NEXT_PUBLIC_MAPBOX_TOKEN. Run: BASE_URL=<host> npx playwright test -c planner.config.ts
 import { expect, test, type Page, type Route } from "@playwright/test";
 
@@ -64,11 +68,20 @@ interface Mock {
   // AA-1041 slice 2: the mutations a planning chat suggestion ran.
   removed: string[];
   applied: string[][];
+  // AA-1152: the add-on picks (POST /api/trip/addons bodies).
+  addonPicks: Record<string, unknown>[];
 }
+
+// AA-1152: the add-on read of a trip with none (the default answer of GET /api/trip/addons).
+const NO_ADDONS = { trip_id: IDS.tripId, days: [], prices_shown: false };
 
 // holdReorders: each reorder answer waits until the test calls mock.release(n), however long the page takes (no
 // timer: the deployed host at 1440 draws the real map beside the list and is slower than a local `next start`).
-async function mockApis(page: Page, opts: { tripStatus?: number; holdReorders?: boolean } = {}): Promise<Mock> {
+// addons: the body of GET /api/trip/addons (default: no add-on); a pick answers it again with that add-on selected.
+async function mockApis(
+  page: Page,
+  opts: { tripStatus?: number; holdReorders?: boolean; addons?: unknown } = {},
+): Promise<Mock> {
   const gates: { open: () => void; opened: Promise<void> }[] = [];
   const gate = (n: number) => {
     while (gates.length <= n) {
@@ -86,7 +99,9 @@ async function mockApis(page: Page, opts: { tripStatus?: number; holdReorders?: 
     tripStatus: opts.tripStatus ?? 200,
     removed: [],
     applied: [],
+    addonPicks: [],
   };
+  let addons: unknown = opts.addons ?? NO_ADDONS;
   let order = STOPS.map((s) => s.component_id);
   await page.addInitScript((ids) => {
     try {
@@ -99,6 +114,14 @@ async function mockApis(page: Page, opts: { tripStatus?: number; holdReorders?: 
   await page.route("**/api/trip**", async (route: Route) => {
     const req = route.request();
     const url = new URL(req.url());
+    if (url.pathname === "/api/trip/addons") {
+      if (req.method() === "GET") return route.fulfill({ json: addons });
+      const pick = req.postDataJSON() as { day: number; component_id: string };
+      mock.addonPicks.push(pick);
+      addons = selectAddon(addons, pick.day, pick.component_id, req.method() === "POST");
+      return route.fulfill({ json: addons });
+    }
+    if (url.pathname !== "/api/trip") return route.fulfill({ status: 404, json: { error: "not mocked" } });
     if (req.method() === "GET") {
       if (url.searchParams.get("resource") === "coverage") return route.fulfill({ status: 404, json: { error: "not found" } });
       if (url.searchParams.get("resource")) return route.fulfill({ json: { suggestions: [], activities: [] } });
@@ -158,15 +181,37 @@ async function mockApis(page: Page, opts: { tripStatus?: number; holdReorders?: 
   return mock;
 }
 
+// The add-on answer after a pick (selected) or an unpick of one add-on of one day.
+function selectAddon(body: unknown, day: number, componentId: string, selected: boolean): unknown {
+  const data = body as { days: { day: number; addons: { component_id: string; selected: boolean }[] }[] };
+  return {
+    ...data,
+    days: data.days.map((d) =>
+      d.day !== day ? d : { ...d, addons: d.addons.map((a) => (a.component_id === componentId ? { ...a, selected } : a)) },
+    ),
+  };
+}
+
+// Uncaught errors of the page, so a planner that fell to its error page says why instead of a bare 20 s timeout.
+const pageErrors = new WeakMap<Page, string[]>();
+
 async function openPlanner(page: Page, mobile: boolean) {
+  const errors: string[] = [];
+  pageErrors.set(page, errors);
+  page.on("pageerror", (e) => errors.push(e.message));
   const res = await page.goto("/plan", { waitUntil: "load" });
   if (res?.status() === 202) {
     // The web ACL's Challenge on the first document load: the browser solves it and reloads the page.
     await page.waitForResponse((r) => new URL(r.url()).pathname === "/plan" && r.status() !== 202, { timeout: 30_000 });
     await page.waitForLoadState("load");
   }
-  if (mobile) await page.getByRole("button", { name: /Your trip/ }).click();
-  await expect(page.getByTestId("day-list")).toBeVisible({ timeout: 20_000 });
+  try {
+    if (mobile) await page.getByRole("button", { name: /Your trip/ }).click({ timeout: 20_000 });
+    await expect(page.getByTestId("day-list")).toBeVisible({ timeout: 20_000 });
+  } catch (e) {
+    if (errors.length) throw new Error(`the planner threw before its day list showed: ${errors.join(" | ")}`, { cause: e });
+    throw e;
+  }
 }
 
 const isMobile = (name: string) => name === "390";
@@ -485,4 +530,48 @@ test("planning chat: a passing outage says so and keeps the composer open", asyn
   await expect(chat.getByTestId("chat-input")).toBeEnabled();
   await chat.getByTestId("chat-input").fill("Plan four days");
   await expect(chat.getByTestId("chat-send")).toBeEnabled();
+});
+
+// AA-1152: the AA add-ons of the day cards. Invented add-on; AA's own planner shows no price.
+const ADDON_ID = "sv:5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b";
+const ADDONS_OF_PELL = {
+  trip_id: IDS.tripId,
+  prices_shown: false,
+  days: [{
+    day: 2,
+    addons: [{
+      component_id: ADDON_ID, title: "Lantern boat at dusk", unit: "person", duration_minutes: 90, min_pax: 2,
+      operating_weekdays: [2, 4], start_times: ["17:30"], destination_id: STOPS[1].destination_id, at: "sleep",
+      selected: false, price: null,
+    }],
+  }],
+};
+
+test("add-ons: a day card lists the add-ons of its places, and a pick is saved for that day", async ({ page }, info) => {
+  const mock = await mockApis(page, { addons: ADDONS_OF_PELL });
+  await openPlanner(page, isMobile(info.project.name));
+  const days = page.getByTestId("day-list").getByTestId("day");
+  await expect(days.nth(1).getByTestId("day-addons")).toBeVisible();
+  await expect(page.getByTestId("day-addons")).toHaveCount(1);
+  await expect(days.nth(1).getByTestId("day-addon-price")).toHaveCount(0);
+  const box = days.nth(1).getByRole("checkbox", { name: "Add Lantern boat at dusk" });
+  await expect(box).not.toBeChecked();
+  // A click, not check(): the box is controlled and turns checked when the saved answer comes back.
+  await box.click();
+  await expect(box).toBeChecked();
+  expect(mock.addonPicks).toEqual([{ trip_id: IDS.tripId, session_id: IDS.sessionId, day: 2, component_id: ADDON_ID }]);
+});
+
+test("add-ons: an answer of another shape shows no add-on and the planner keeps working", async ({ page }, info) => {
+  // The shape the catch-all mock once answered: the trip itself, without `days`.
+  await mockApis(page, { addons: { trip_id: IDS.tripId, itinerary: withDays(STOPS.map((s) => s.component_id)) } });
+  const read = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/trip/addons");
+  await openPlanner(page, isMobile(info.project.name));
+  await read;
+  // Two frames after the answer: React has rendered whatever the answer set.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await expect(page.getByTestId("day-list").getByTestId("day")).toHaveCount(3);
+  await expect(page.getByTestId("day-addons")).toHaveCount(0);
+  await expect(page.getByTestId("day-list").locator(`[data-stop="${D}"]`)).toBeVisible();
+  expect(pageErrors.get(page) ?? []).toEqual([]);
 });

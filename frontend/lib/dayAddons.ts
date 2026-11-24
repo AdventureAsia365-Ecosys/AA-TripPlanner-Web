@@ -63,7 +63,52 @@ export function addonsUpstream(
 
 /** The add-ons of one day (none when the trip has no such day). */
 export function addonsOfDay(data: TripAddons | null, day: number): DayAddon[] {
-  return data?.days.find((d) => d.day === day)?.addons ?? [];
+  if (!data || !Array.isArray(data.days)) return [];
+  return data.days.find((d) => d.day === day)?.addons ?? [];
+}
+
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+function addonOf(v: unknown): DayAddon | null {
+  if (!isRecord(v) || typeof v.component_id !== "string" || typeof v.title !== "string") return null;
+  const unit = v.unit === "group" || v.unit === "vehicle" || v.unit === "day" ? v.unit : "person";
+  const minutes = typeof v.duration_minutes === "number" && Number.isFinite(v.duration_minutes) ? v.duration_minutes : null;
+  return {
+    component_id: v.component_id,
+    title: v.title,
+    unit,
+    duration_minutes: minutes,
+    min_pax: typeof v.min_pax === "number" && Number.isFinite(v.min_pax) ? v.min_pax : 1,
+    operating_weekdays: Array.isArray(v.operating_weekdays)
+      ? v.operating_weekdays.filter((x): x is number => Number.isInteger(x))
+      : [],
+    start_times: strings(v.start_times),
+    destination_id: typeof v.destination_id === "string" ? v.destination_id : "",
+    at: v.at === "sleep" ? "sleep" : "visited",
+    selected: v.selected === true,
+    price: v.price == null ? null : agencyPriceOf({ price: v.price }),
+  };
+}
+
+/**
+ * The trip's add-ons from a BFF answer, or null when the answer is not that shape (a failed read is "no add-on").
+ * The day cards render inside the planner's day list, so an unexpected body must never reach them: S291, a 200 with
+ * another shape threw in addonsOfDay and took the whole planner down to the error page.
+ */
+export function tripAddonsOf(body: unknown): TripAddons | null {
+  if (!isRecord(body) || !Array.isArray(body.days)) return null;
+  const days: DayAddons[] = [];
+  for (const d of body.days) {
+    if (!isRecord(d) || !Number.isInteger(d.day) || !Array.isArray(d.addons)) continue;
+    const addons = d.addons.map(addonOf).filter((a): a is DayAddon => a !== null);
+    days.push({ day: d.day as number, addons });
+  }
+  return {
+    trip_id: typeof body.trip_id === "string" ? body.trip_id : "",
+    days,
+    prices_shown: body.prices_shown === true,
+  };
 }
 
 /** "3 h", "1 h 30 min", "45 min" (null = nothing). */

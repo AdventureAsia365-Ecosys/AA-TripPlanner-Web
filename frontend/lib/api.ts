@@ -23,7 +23,7 @@ import { readChatAnswer, type ChatAnswer } from "./planChat";
 import { isWafChallenge, throughWafEdge } from "./wafChallenge";
 // AA-1038 R5 slice 2: every /api/trip call names the page's tenant (none on the bare /plan).
 import { plannerTenant, tenantFetch } from "./plannerTenant";
-import type { TripAddons } from "./dayAddons";
+import { tripAddonsOf, type TripAddons } from "./dayAddons";
 import { withTenant } from "./routeFinder";
 import type { LeadBody } from "./leadForm";
 
@@ -518,7 +518,7 @@ export async function fetchTourRoute(
 export async function fetchTripAddons(tripId: string): Promise<TripAddons | null> {
   const res = await tenantFetch(`/api/trip/addons?${new URLSearchParams({ trip_id: tripId })}`);
   if (!res.ok) return null;
-  return (await res.json().catch(() => null)) as TripAddons | null;
+  return tripAddonsOf(await res.json().catch(() => null));
 }
 
 // Pick (POST) or unpick (DELETE) one add-on of one day; the answer is the trip's add-ons again (null when refused).
@@ -535,5 +535,5 @@ export async function setTripAddon(
     body: JSON.stringify({ trip_id: tripId, session_id: sessionId, day, component_id: componentId }),
   });
   if (!res.ok) return null;
-  return (await res.json().catch(() => null)) as TripAddons | null;
+  return tripAddonsOf(await res.json().catch(() => null));
 }
