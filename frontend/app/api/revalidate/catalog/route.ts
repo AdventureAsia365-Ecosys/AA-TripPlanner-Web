@@ -1,6 +1,7 @@
 import { revalidatePath, revalidateTag } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
 import { SIGNATURE_HEADER, handlePurge } from "@/lib/catalogPurge";
+import { jsonInit } from "@/lib/jsonResponse";
 
 // AA-987: CIS posts one signed notice per tour lifecycle event (retired / paused / restored / superseded); this route
 // drops every TripPlanner cache that could still show the old state. All the logic (signature, body, which caches)
@@ -21,5 +22,5 @@ export async function POST(req: NextRequest) {
     revalidatePath: (path, type) => revalidatePath(path, type),
     log: (line) => console.log(line),
   });
-  return NextResponse.json(answer.body, { status: answer.status, headers: { "cache-control": "no-store" } });
+  return NextResponse.json(answer.body, jsonInit({ status: answer.status, headers: { "cache-control": "no-store" } }));
 }

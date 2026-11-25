@@ -7,6 +7,7 @@ import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
 import { tenantHeaders } from "@/lib/tenantProxy";
 import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
 import { addonsUpstream } from "@/lib/dayAddons";
+import { JSON_CONTENT_TYPE, jsonInit } from "@/lib/jsonResponse";
 
 // AA-1152: the AA add-ons of each day card (lib/dayAddons.ts). GET /api/trip/addons?trip_id= lists them; POST picks one
 // and DELETE unpicks it ({trip_id, session_id, day, component_id}). Same rules as /api/trip (app/api/trip/route.ts): the
@@ -23,7 +24,7 @@ function guestToken(req: NextRequest): { token: string | null; minted: boolean }
 }
 
 function json(body: unknown, status: number, requestId: string): NextResponse {
-  return NextResponse.json(body, { status, headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId } });
+  return NextResponse.json(body, jsonInit({ status, headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId } }));
 }
 
 async function forward(req: NextRequest, method: "GET" | "POST" | "DELETE", body: Record<string, unknown>): Promise<NextResponse> {
@@ -44,7 +45,7 @@ async function forward(req: NextRequest, method: "GET" | "POST" | "DELETE", body
   const mapped = method === "GET" ? null : mapMintedDenial(upstream.status, text, guest.minted);
   return new NextResponse(mapped ? mapped.body : text, {
     status: mapped ? mapped.status : upstream.status,
-    headers: { "content-type": "application/json", "cache-control": "no-store", vary: "Cookie", [REQUEST_ID_HEADER]: requestId },
+    headers: { "content-type": JSON_CONTENT_TYPE, "cache-control": "no-store", vary: "Cookie", [REQUEST_ID_HEADER]: requestId },
   });
 }
 
@@ -53,9 +54,9 @@ export async function GET(req: NextRequest) {
 }
 
 async function mutate(req: NextRequest, method: "POST" | "DELETE"): Promise<NextResponse> {
-  if (!isSameOrigin(req)) return NextResponse.json({ error: "cross_origin" }, { status: 403 });
+  if (!isSameOrigin(req)) return NextResponse.json({ error: "cross_origin" }, jsonInit({ status: 403 }));
   const parsed = parseTripBody(await req.text());
-  if (!parsed) return NextResponse.json({ error: "invalid_json" }, { status: 400 });
+  if (!parsed) return NextResponse.json({ error: "invalid_json" }, jsonInit({ status: 400 }));
   return forward(req, method, parsed as Record<string, unknown>);
 }
 

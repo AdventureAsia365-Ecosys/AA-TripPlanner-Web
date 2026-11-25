@@ -197,6 +197,11 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   blocks any partner iframe of TripPlanner until an allow-list is designed (KAN-20 B2B). A deploy fails red if the
   public host (through CloudFront) or the PR's preview image lacks any of them (`.github/scripts/check_security_headers.sh`
   in `deploy-web-dev.yml`; TripPlanner has no UI smoke workflow, so this is its header smoke).
+- **JSON answers name their charset (S294 hardening)**: every JSON answer is `application/json; charset=utf-8`: the
+  BFF routes and the proxy build theirs with `jsonInit()` (`frontend/lib/jsonResponse.ts`; `lib/jsonResponse.test.ts`
+  refuses a bare `NextResponse.json` or a bare `application/json` in `app/` and `proxy.ts`), and every Lambda
+  answer passes `with_json_charset()` in `backend/shared/observability.py` (`instrument()`). Input checks per data
+  item: `docs/input-validation.md`.
 - **Visual run (AA-994 S5b).** After every verified deploy, `deploy-web-dev.yml` job `visual` calls
   `.github/workflows/visual.yml` (also dispatchable with any `base_url`): Playwright (`e2e/visual/`, its own pinned
   package) opens every page of `e2e/visual/pages.ts` at 1440 x 900 and 390 x 844 in light and dark, checks no page-level

@@ -10,6 +10,7 @@ import { resolveTenant } from "@/lib/tenantSite";
 import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
 import { tenantToursPath } from "@/lib/tenantTours";
 import { scopedUpstreamPath } from "@/lib/routeFinder";
+import { JSON_CONTENT_TYPE, jsonInit } from "@/lib/jsonResponse";
 
 // BFF proxy to Lambda A (Map/Browse). Keeps BROWSE_API_URL server-side so
 // the Lambda URL is never exposed to the browser. Maps a single
@@ -41,7 +42,7 @@ export async function GET(req: NextRequest) {
   if (!BROWSE_API_URL) {
     return NextResponse.json(
       { error: "BROWSE_API_URL not configured" },
-      { status: 503 },
+      jsonInit({ status: 503 }),
     );
   }
   const q = req.nextUrl.searchParams;
@@ -99,13 +100,13 @@ export async function GET(req: NextRequest) {
     }
     upstreamPath = `/browse/tour-route?${r}`;
   } else {
-    return NextResponse.json({ error: "unknown resource" }, { status: 400 });
+    return NextResponse.json({ error: "unknown resource" }, jsonInit({ status: 400 }));
   }
   // AA-1130: an agency's planner names its tenant on the route finder's reads (countries, routes, tour-route), so the
   // Lambda proposes only the tours the agency sells, under its own titles. A malformed slug never reaches the Lambda.
   upstreamPath = scopedUpstreamPath(resource, upstreamPath, q.get("tenant"));
   if (upstreamPath === null) {
-    return NextResponse.json({ error: "bad tenant" }, { status: 400, headers: { "cache-control": "no-store" } });
+    return NextResponse.json({ error: "bad tenant" }, jsonInit({ status: 400, headers: { "cache-control": "no-store" } }));
   }
 
   // AA-1015: search calls the embedding model, so it carries the traveller's address for the per-IP limit (30 a
@@ -117,20 +118,20 @@ export async function GET(req: NextRequest) {
     // path (lib/edgeGate.ts): there the rate rule and the Challenge are its bot check, before the Lambda is called.
     const gated = edgeGateRefusal("search", req.nextUrl.pathname, edgeGateOn());
     if (gated) {
-      return NextResponse.json(gated.body, {
+      return NextResponse.json(gated.body, jsonInit({
         status: gated.status,
         headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
-      });
+      }));
     }
     limitHeaders = aiLimitHeaders(clientIp(req.headers));
     // AA-1038 R5 slice 3: a /{slug} planner's search names its tenant, so the Lambda applies that tenant's AI budget
     // and writes the ledger row for it. Signed here exactly as on /api/trip (lib/tenantProxy.ts); no header = AA's site.
     const pick = await tenantHeaders(req.headers.get(TENANT_SLUG_HEADER), TENANT_ASSERTION_KEY, resolveTenant);
     if (!pick.ok) {
-      return NextResponse.json({ error: pick.error }, {
+      return NextResponse.json({ error: pick.error }, jsonInit({
         status: pick.status,
         headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
-      });
+      }));
     }
     limitHeaders = { ...limitHeaders, ...pick.headers };
   }
@@ -160,7 +161,7 @@ export async function GET(req: NextRequest) {
   return new NextResponse(body, {
     status,
     headers: {
-      "content-type": "application/json",
+      "content-type": JSON_CONTENT_TYPE,
       ...cacheHeaders,
       [REQUEST_ID_HEADER]: requestId,
     },

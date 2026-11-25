@@ -67,7 +67,7 @@ def test_wrapper_echoes_the_id_and_binds_it_to_every_line(capsys):
     resp = wrapped(_event("/trip/3f1c2a9e-8f0b-4c1d-9e2a-0b1c2d3e4f50/components", "POST",
                           headers={"x-request-id": "bff-7"}), CTX)
     assert resp["headers"]["x-request-id"] == "bff-7"
-    assert resp["headers"]["content-type"] == "application/json"
+    assert resp["headers"]["content-type"] == "application/json; charset=utf-8"
     lines = _lines(capsys.readouterr().out)
     assert [x["evt"] for x in lines] == ["guest_auth", "request_completed"]
     assert all(x["request_id"] == "bff-7" and x["aws_request_id"] == "lambda-req-1" for x in lines)
@@ -81,6 +81,7 @@ def test_shared_headers_dict_is_not_mutated():
     shared = {"content-type": "application/json"}
     out = obs.with_request_id({"statusCode": 200, "headers": shared}, "r1")
     assert out["headers"]["x-request-id"] == "r1" and "x-request-id" not in shared
+    assert out["headers"]["content-type"] == obs.JSON_CONTENT_TYPE and shared["content-type"] == "application/json"
     assert obs.with_request_id({"ok": True}, "r1") == {"ok": True}  # direct invoke result untouched
 
 
@@ -369,3 +370,20 @@ def test_real_sdk_event_carries_request_id_and_no_pii(monkeypatch):
 
 def test_scrub_copy_matches_booking_rules():
     assert scrub_text("Bearer abcdefghijkl and eyJhbGciOi.eyJzdWIiOi.sig") == "Bearer [Filtered] and [jwt]"
+
+
+@pytest.mark.parametrize(("given", "expected"), [
+    ({"content-type": "application/json"}, {"content-type": "application/json; charset=utf-8"}),
+    ({"Content-Type": "Application/JSON"}, {"Content-Type": "application/json; charset=utf-8"}),
+    ({"content-type": "application/json; charset=latin-1"}, {"content-type": "application/json; charset=latin-1"}),
+    ({"content-type": "application/x-ndjson"}, {"content-type": "application/x-ndjson"}),
+    ({"cache-control": "no-store"}, {"cache-control": "no-store"}),
+])
+def test_json_content_type_names_its_charset(given, expected):
+    assert obs.with_json_charset(given) == expected
+
+
+def test_every_handler_answers_json_with_the_charset(capsys):
+    wrapped = obs.instrument(lambda e, c: {"statusCode": 400, "headers": {"content-type": "application/json"},
+                                           "body": "{}"}, "browse", browse_handler.route_name)
+    assert wrapped(_event("/browse/search"), CTX)["headers"]["content-type"] == "application/json; charset=utf-8"
