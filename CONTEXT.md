@@ -131,6 +131,17 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   only in 7.x; Tailwind 3 asks `^6`); drop it when Tailwind moves to v4. Next 16 no longer pins a
   vulnerable postcss, so the AA-904 postcss override is gone (`npm audit --omit=dev`: 0).
 - **Mapbox GL** for the interactive map (destination pins, trip routing, day-by-day view).
+- **Shared map engine** (AA-948, S294 tech lead decision D8; the root ADR 0016 guarded byte copy pattern):
+  `frontend/lib/map-engine/` is the **canonical** copy of the ecosystem's map engine, extracted from
+  `components/MapView.tsx`: a framework-free core (`geo.ts` great-circle legs, bounds, route stops; `motion.ts` the
+  reduce-motion gate; `layers.ts` the "stops + route" layer set; `engine.ts` map creation and sizing, sources, camera
+  framing, DOM markers, one popup, layer clicks, teardown; mapbox-gl passed in) and a thin React binding (`react.ts`,
+  `useMapEngine`). It imports nothing outside itself but mapbox-gl types and react (`react.ts`). MapView draws through
+  it; the planner's own layers, data and colours stay in MapView. AA-Partner holds a byte copy
+  (`web/lib/map-engine/`, `web/map-engine.lock.json`) for the CRM proposal builder map, never TripPlanner app code
+  (its CI import guard). After editing the engine: `node frontend/lib/map-engine/check-map-engine.mjs --write`
+  (`npm test` fails on a stale `MANIFEST.json`), merge, then `--sync` the copy into AA-Partner
+  (`docs/implementation-notes/AA-948.md`).
 - Talks to the backend Lambdas over HTTP; no direct DB access from the browser.
 - Deploy is CI-driven: `.github/workflows/deploy-web-dev.yml` (below) is the only deploy of the frontend. The Vercel
   deploy (`vercel-deploy.yml`, `frontend/vercel.json`, the repo secret `VERCEL_TOKEN`) was retired with the Vercel
