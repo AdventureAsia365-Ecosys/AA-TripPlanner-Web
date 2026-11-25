@@ -35,7 +35,6 @@
   "frontend/components/FilterChips.tsx::FilterChips": 24,
   "frontend/components/MapView.tsx::MapView.useCallback()": 16,
   "frontend/components/MapView.tsx::MapView.useCallback().run": 14,
-  "frontend/components/MapView.tsx::MapView.useEffect()#11": 15,
   "frontend/components/PlanPrefill.tsx::PlanPrefill": 20,
   "frontend/components/RoutePlanner.tsx::RoutePlanner": 15,
   "frontend/components/SharedTripView.tsx::SharedTripView": 30,
@@ -60,11 +59,11 @@
   "frontend/lib/wafChallenge.ts::reloadForWafToken": 11
  },
  "files": {
-  "backend/assembly/handler.py": 1078,
+  "backend/assembly/handler.py": 1076,
   "backend/browse/catalog.py": 875,
   "backend/shared/llm_gateway.py": 1440,
   "backend/tests/test_assembly.py": 1632,
   "backend/tests/test_places_source_pg.py": 1239,
-  "frontend/components/MapView.tsx": 1077
+  "frontend/components/MapView.tsx": 944
  }
 }
