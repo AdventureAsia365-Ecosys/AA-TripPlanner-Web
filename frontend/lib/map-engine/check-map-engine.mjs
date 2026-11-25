@@ -66,41 +66,54 @@ export function importsOf(text) {
   return out;
 }
 
+/** Whether the core file `f` may import `spec` (of `kind`): ./siblings, mapbox-gl types (and its dynamic import in
+ *  engine.ts), react in react.ts. */
+function allowedCoreImport(f, spec, kind) {
+  if (spec.startsWith("./")) return !spec.slice(2).includes("/");
+  if (spec === "mapbox-gl") return kind === "type" || (kind === "dynamic" && f === "engine.ts");
+  return spec === "react" && f === "react.ts";
+}
+
 /** Problems of the core's own imports (the closed set). */
 export function coreImportProblems(dir) {
   const problems = [];
-  for (const f of coreFiles(dir)) {
-    if (!/\.(ts|tsx)$/.test(f)) continue;
+  for (const f of coreFiles(dir).filter((x) => /\.(ts|tsx)$/.test(x))) {
     for (const { spec, kind } of importsOf(readFileSync(join(dir, f), "utf8"))) {
-      if (spec.startsWith("./") && !spec.slice(2).includes("/")) continue;
-      if (spec === "mapbox-gl" && (kind === "type" || (kind === "dynamic" && f === "engine.ts"))) continue;
-      if (spec === "react" && f === "react.ts") continue;
+      if (allowedCoreImport(f, spec, kind)) continue;
       problems.push(`${f}: imports "${spec}" (${kind}); the core imports only ./siblings, mapbox-gl types and react (react.ts)`);
     }
   }
   return problems;
 }
 
+/** A folder's MANIFEST.json as { manifest } or { problem }. */
+function readManifest(dir) {
+  const path = join(dir, MANIFEST);
+  if (!existsSync(path)) return { problem: `${MANIFEST} is missing; ${FIX}` };
+  try {
+    return { manifest: JSON.parse(readFileSync(path, "utf8")) };
+  } catch (err) {
+    return { problem: `${MANIFEST} is not JSON (${err.message}); ${FIX}` };
+  }
+}
+
+/** Missing, extra and changed files of a folder against the manifest's `files`. */
+function fileProblems(dir, want) {
+  const have = coreFiles(dir);
+  const missing = Object.keys(want).filter((f) => !have.includes(f)).map((f) => `${f} is missing; ${FIX}`);
+  const wrong = have.map((f) => {
+    if (!(f in want)) return `${f} is not in ${MANIFEST}; ${FIX}`;
+    return sha256(readFileSync(join(dir, f))) === want[f] ? null : `${f} differs from ${MANIFEST}; ${FIX}`;
+  });
+  return [...missing, ...wrong.filter(Boolean)];
+}
+
 /** Integrity of a folder against its MANIFEST.json. */
 export function integrityProblems(dir) {
-  const path = join(dir, MANIFEST);
-  if (!existsSync(path)) return [`${MANIFEST} is missing; ${FIX}`];
-  let manifest;
-  try {
-    manifest = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    return [`${MANIFEST} is not JSON (${err.message}); ${FIX}`];
-  }
-  const want = manifest?.files ?? {};
-  const problems = [];
-  if (JSON.stringify(manifest?.canonical) !== JSON.stringify(CANONICAL)) problems.push(`${MANIFEST} names another canonical source; ${FIX}`);
-  const have = coreFiles(dir);
-  for (const f of Object.keys(want)) if (!have.includes(f)) problems.push(`${f} is missing; ${FIX}`);
-  for (const f of have) {
-    if (!(f in want)) problems.push(`${f} is not in ${MANIFEST}; ${FIX}`);
-    else if (sha256(readFileSync(join(dir, f))) !== want[f]) problems.push(`${f} differs from ${MANIFEST}; ${FIX}`);
-  }
-  return [...problems, ...coreImportProblems(dir)];
+  const { manifest, problem } = readManifest(dir);
+  if (problem) return [problem];
+  const source = JSON.stringify(manifest?.canonical) === JSON.stringify(CANONICAL) ? [] : [`${MANIFEST} names another canonical source; ${FIX}`];
+  return [...source, ...fileProblems(dir, manifest?.files ?? {}), ...coreImportProblems(dir)];
 }
 
 function* sourceFiles(root) {
@@ -123,6 +136,23 @@ export function repoRootOf(start) {
   }
 }
 
+/** The guard's verdict on one import of a consumer file (null = fine). */
+function specProblem(spec, { file, repo, inEngine, engineDir }) {
+  if (TP_NAMES.some((re) => re.test(spec))) {
+    return `imports "${spec}": TripPlanner code is reached only through the map engine copy (${engineDir})`;
+  }
+  if (spec.startsWith(".")) {
+    const target = resolve(dirname(file), spec);
+    const inside = target === repo || target.startsWith(repo + sep);
+    return inside ? null : `imports "${spec}", outside this repository: use the map engine copy (${engineDir})`;
+  }
+  const mapbox = spec === "mapbox-gl" || spec.startsWith("mapbox-gl/");
+  if (mapbox && !inEngine && spec !== "mapbox-gl/dist/mapbox-gl.css") {
+    return `imports "${spec}": draw maps through the map engine (${engineDir}), not mapbox-gl directly`;
+  }
+  return null;
+}
+
 /** The consumer import guard: problems under `srcRoot`, the engine copy being `engineDir` (relative to it). A relative
  *  import may reach the rest of the consumer's own repository (its e2e helpers), never a folder outside it. */
 export function importGuardProblems(srcRoot, engineDir) {
@@ -131,23 +161,10 @@ export function importGuardProblems(srcRoot, engineDir) {
   const engine = resolve(root, engineDir);
   const problems = [];
   for (const file of sourceFiles(root)) {
-    const rel = relative(root, file);
-    const inEngine = file.startsWith(engine + sep);
+    const where = { file, repo, inEngine: file.startsWith(engine + sep), engineDir };
     for (const { spec } of importsOf(readFileSync(file, "utf8"))) {
-      if (TP_NAMES.some((re) => re.test(spec))) {
-        problems.push(`${rel}: imports "${spec}": TripPlanner code is reached only through the map engine copy (${engineDir})`);
-        continue;
-      }
-      if (spec.startsWith(".")) {
-        const target = resolve(dirname(file), spec);
-        if (target !== repo && !target.startsWith(repo + sep)) {
-          problems.push(`${rel}: imports "${spec}", outside this repository: use the map engine copy (${engineDir})`);
-        }
-        continue;
-      }
-      if ((spec === "mapbox-gl" || spec.startsWith("mapbox-gl/")) && !inEngine && spec !== "mapbox-gl/dist/mapbox-gl.css") {
-        problems.push(`${rel}: imports "${spec}": draw maps through the map engine (${engineDir}), not mapbox-gl directly`);
-      }
+      const problem = specProblem(spec, where);
+      if (problem) problems.push(`${relative(root, file)}: ${problem}`);
     }
   }
   return problems;
@@ -178,45 +195,49 @@ function arg(argv, name) {
   return i >= 0 ? argv[i + 1] : undefined;
 }
 
-function main(argv) {
-  const report = (problems, okText) => {
-    for (const p of problems) console.error(`FAIL  ${p}`);
-    if (!problems.length) console.log(`ok    ${okText}`);
-    return problems.length ? 1 : 0;
-  };
-  if (argv.includes("--write")) {
-    const problems = coreImportProblems(HERE);
-    if (problems.length) return report(problems, "");
-    writeFileSync(join(HERE, MANIFEST), manifestText(HERE));
-    console.log(`wrote ${MANIFEST} (${coreFiles(HERE).length} files)`);
+function report(problems, okText) {
+  for (const p of problems) console.error(`FAIL  ${p}`);
+  if (!problems.length) console.log(`ok    ${okText}`);
+  return problems.length ? 1 : 0;
+}
+
+function runWrite() {
+  const problems = coreImportProblems(HERE);
+  if (problems.length) return report(problems, "");
+  writeFileSync(join(HERE, MANIFEST), manifestText(HERE));
+  console.log(`wrote ${MANIFEST} (${coreFiles(HERE).length} files)`);
+  return 0;
+}
+
+function runSync(argv) {
+  const [repo, dest, lockFile] = [arg(argv, "--sync"), arg(argv, "--dest"), arg(argv, "--lock")];
+  if (!repo || !dest || !lockFile) {
+    console.error("usage: --sync <repo> --dest <dir> --lock <file> --ref <sha>");
+    return 2;
+  }
+  try {
+    const lock = syncInto(repo, dest, lockFile, arg(argv, "--ref"));
+    console.log(`synced ${coreFiles(HERE).length} files into ${join(repo, dest)} (ref ${lock.ref.slice(0, 12)})`);
     return 0;
+  } catch (err) {
+    console.error(`FAIL  ${err.message}`);
+    return 1;
   }
-  if (argv.includes("--sync")) {
-    const repo = arg(argv, "--sync");
-    const dest = arg(argv, "--dest");
-    const lockFile = arg(argv, "--lock");
-    if (!repo || !dest || !lockFile) {
-      console.error("usage: --sync <repo> --dest <dir> --lock <file> --ref <sha>");
-      return 2;
-    }
-    try {
-      const lock = syncInto(repo, dest, lockFile, arg(argv, "--ref"));
-      console.log(`synced ${coreFiles(HERE).length} files into ${join(repo, dest)} (ref ${lock.ref.slice(0, 12)})`);
-      return 0;
-    } catch (err) {
-      console.error(`FAIL  ${err.message}`);
-      return 1;
-    }
+}
+
+function runImports(argv) {
+  const [src, engine] = [arg(argv, "--imports"), arg(argv, "--engine")];
+  if (!src || !engine) {
+    console.error("usage: --imports <src-root> --engine <dir under src-root>");
+    return 2;
   }
-  if (argv.includes("--imports")) {
-    const src = arg(argv, "--imports");
-    const engine = arg(argv, "--engine");
-    if (!src || !engine) {
-      console.error("usage: --imports <src-root> --engine <dir under src-root>");
-      return 2;
-    }
-    return report(importGuardProblems(src, engine), `no TripPlanner import and no direct mapbox-gl import outside ${engine}`);
-  }
+  return report(importGuardProblems(src, engine), `no TripPlanner import and no direct mapbox-gl import outside ${engine}`);
+}
+
+function main(argv) {
+  if (argv.includes("--write")) return runWrite();
+  if (argv.includes("--sync")) return runSync(argv);
+  if (argv.includes("--imports")) return runImports(argv);
   if (argv.length) {
     console.error(`unknown arguments: ${argv.join(" ")}`);
     return 2;
