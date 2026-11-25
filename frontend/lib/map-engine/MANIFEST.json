@@ -1,0 +1,15 @@
+{
+  "canonical": {
+    "repo": "AdventureAsia365-Ecosys/AA-TripPlanner-Web",
+    "path": "frontend/lib/map-engine"
+  },
+  "files": {
+    "check-map-engine.mjs": "5c36f50c62b1082f9da4e92938557160f5da1424a4c5f566bd0d90e520da517c",
+    "engine.ts": "60815c11905cd421adf3395c8d63d4618bd0900305ba9e153a72ad0d919b43a0",
+    "geo.ts": "1ae4b9aacf6e037b33bb129367076177df35af4270f3d856908644f295bb37b8",
+    "index.ts": "d70fd6a68398e01e4bb68a524e1e041d269720958958c84eecefedf31997cdfc",
+    "layers.ts": "74697549ee7114e946980bb3c35649aff15a4f2877c55e303723d59e3c0e19bd",
+    "motion.ts": "bddee5962b9176d3fa2f642170a61a5c878926a556db9bc688447199975a209e",
+    "react.ts": "fb30fae35786d0a708fec50c5cc5e09e0793c0355236660b618aa1442af06ec1"
+  }
+}

@@ -42,7 +42,8 @@ test("the map is marked ready at the end of its load handler, and not ready once
   const load = src.indexOf('map.on("load"');
   assert.ok(load > 0, 'map.on("load") not found');
   const ready = src.indexOf("setMapReady(true)", load);
-  const remove = src.indexOf("map.remove()", load);
+  // AA-948: the shared map engine removes the map (engine.destroy(): markers, observers, map.remove()).
+  const remove = src.indexOf("engine.destroy()", load);
   assert.ok(ready > load && ready < remove, "setMapReady(true) must sit inside the load handler");
   assert.ok(src.indexOf("setMapReady(false)", remove) > remove, "the cleanup must reset mapReady");
 });
@@ -58,5 +59,5 @@ test("the country fly effect is one of them (?country= on first load flies the c
   assert.ok(fly, "the country effect (fetchByCountry) not found");
   assert.match(fly.body, /if \(!map \|\| !mapReady\) return;/);
   assert.ok(fly.deps.includes("filters.country") && fly.deps.includes("mapReady"));
-  assert.match(fly.body, /map\.fitBounds\(/);
+  assert.match(fly.body, /\.fitTo\(/); // AA-948: the engine frames the pins (lib/map-engine engine.fitTo)
 });

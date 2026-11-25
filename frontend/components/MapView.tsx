@@ -23,6 +23,20 @@ import {
   shapeLevel,
 } from "@/lib/lines";
 import { mapAccentFrom } from "@/lib/mapAccent";
+// AA-948: the shared map engine (canonical here, byte copies in other apps): map creation and sizing, sources, camera
+// framing under the site's reduce-motion gate, DOM markers, layer clicks, the "stops + route" layer set.
+import {
+  addRouteLayers,
+  camReduced,
+  createMapEngine,
+  emptyCollection,
+  greatCircleSegment,
+  lngLat,
+  routeCollection,
+  routeStops,
+  type Frameable,
+  type MapEngine,
+} from "@/lib/map-engine";
 import { TileLoader, planTiles } from "@/lib/tileLoader";
 import type { BrowseFilters, DestinationPin } from "@/lib/types";
 import { COUNTRY_BBOX, COUNTRY_ISO, needsGeocodeAttribution } from "@/lib/types";
@@ -39,26 +53,9 @@ const TRIP_FEATURE_SOURCE = "trip-feature-line";
 // Kill switch: draw every line in the provisional (dashed ink) style. ⚠️ underscore env name — a build arg of the image (inlined at build).
 const LINES_PROVISIONAL = ["1", "true", "on"].includes((process.env.NEXT_PUBLIC_MAP_LINES_PROVISIONAL ?? "").toLowerCase());
 
-// Extend bounds by a destination: its bbox for a line, its point otherwise.
-// AA-995: mapbox-gl skips camera animations for the OS reduced-motion setting, not for the site's own gate
-// (<html data-motion="reduce">, set by the footer "Reduce motion" toggle too). Read the gate at call time.
-function motionReduced(): boolean {
-  return typeof document !== "undefined" && document.documentElement.getAttribute("data-motion") === "reduce";
-}
-function camMs(ms: number): number {
-  return motionReduced() ? 0 : ms;
-}
-function camReduced(): { duration?: number } {
-  return motionReduced() ? { duration: 0 } : {};
-}
-
-function extendBy(b: mapboxgl.LngLatBounds, p: DestinationPin) {
-  if (isLine(p) && p.bbox) {
-    b.extend([p.bbox[0], p.bbox[1]]);
-    b.extend([p.bbox[2], p.bbox[3]]);
-  } else {
-    b.extend([p.lng, p.lat]);
-  }
+// What a destination frames: its bbox for a line, its point otherwise.
+function frameOf(p: DestinationPin): Frameable {
+  return isLine(p) && p.bbox ? [p.bbox[0], p.bbox[1], p.bbox[2], p.bbox[3]] : [p.lng, p.lat];
 }
 const TRIP_LINE_SOURCE = "trip-line";
 const TRIP_FLIGHT_SOURCE = "trip-flight-line";
@@ -66,47 +63,6 @@ const TRIP_GATEWAY_SOURCE = "trip-gateways";
 const COUNTRY_SOURCE = "country-boundaries";
 // AA-674: preview of a proposed AA route (hovered in the route planner).
 const ROUTE_PREVIEW_SOURCE = "route-preview";
-
-// Interpolate a great-circle arc between two [lng,lat] points (n segments).
-// A slight arc (vs a dead-straight segment) reads as "travel between", and
-// stays visually sensible over long spans.
-function greatCircleSegment(
-  a: [number, number],
-  b: [number, number],
-  n = 24,
-): [number, number][] {
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const toDeg = (r: number) => (r * 180) / Math.PI;
-  const lat1 = toRad(a[1]);
-  const lon1 = toRad(a[0]);
-  const lat2 = toRad(b[1]);
-  const lon2 = toRad(b[0]);
-  const d =
-    2 *
-    Math.asin(
-      Math.min(
-        1,
-        Math.sqrt(
-          Math.sin((lat2 - lat1) / 2) ** 2 +
-            Math.cos(lat1) * Math.cos(lat2) * Math.sin((lon2 - lon1) / 2) ** 2,
-        ),
-      ),
-    );
-  if (d === 0) return [a, b];
-  const out: [number, number][] = [];
-  for (let i = 0; i <= n; i++) {
-    const f = i / n;
-    const A = Math.sin((1 - f) * d) / Math.sin(d);
-    const B = Math.sin(f * d) / Math.sin(d);
-    const x = A * Math.cos(lat1) * Math.cos(lon1) + B * Math.cos(lat2) * Math.cos(lon2);
-    const y = A * Math.cos(lat1) * Math.sin(lon1) + B * Math.cos(lat2) * Math.sin(lon2);
-    const z = A * Math.sin(lat1) + B * Math.sin(lat2);
-    const lat = Math.atan2(z, Math.sqrt(x * x + y * y));
-    const lon = Math.atan2(y, x);
-    out.push([toDeg(lon), toDeg(lat)]);
-  }
-  return out;
-}
 
 // AA-812 hotfix (D1): tiles are planned by lib/tileLoader (bounded per view, coarse cells at low
 // zoom) instead of one request per 1-degree cell. Wait this long after the last moveend.
@@ -128,10 +84,10 @@ export default function MapView() {
   // AA-1041: the hover / selection sync has its own context (lib/useTrip.tsx), so a hover re-renders only its readers.
   const { activeStopId, selectedStop, hoverStop, selectStop } = useStopSync();
   // AA-1041 (R7 item 3): the trip's stop markers (DOM buttons: focusable, named, branded by the k-* tokens), by key.
-  const stopMarkersRef = useRef<Map<string, { marker: mapboxgl.Marker; el: HTMLButtonElement; ids: string[] }>>(
-    new Map(),
-  );
+  // The markers themselves are the engine's (engine.setMarkers); this keeps each one's element and component ids.
+  const stopMarkersRef = useRef<Map<string, { el: HTMLButtonElement; ids: string[] }>>(new Map());
   const mapRef = useRef<mapboxgl.Map | null>(null);
+  const engineRef = useRef<MapEngine | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pinsRef = useRef<Map<string, DestinationPin>>(new Map());
   // AA-847 slice 6d: the line places on screen (by id) and the shape level drawn
@@ -289,31 +245,20 @@ export default function MapView() {
 
   useEffect(() => {
     if (!hasMapboxToken() || !containerRef.current || mapRef.current) return;
-    mapboxgl.accessToken = MAPBOX_TOKEN;
-    const map = new mapboxgl.Map({
+    // AA-948: the engine creates the map (token, style, camera), logs Mapbox "error" events (token/style/worker
+    // problems are events, not exceptions), and fixes the canvas size (two animation frames, a ResizeObserver, and a
+    // resize when the style loads).
+    const engine = createMapEngine(mapboxgl, {
       container: containerRef.current,
+      accessToken: MAPBOX_TOKEN,
       style: "mapbox://styles/mapbox/outdoors-v12",
       center: [105, 15],
       zoom: 3,
     });
+    const map = engine.map;
+    const stopMarkers = stopMarkersRef.current;
+    engineRef.current = engine;
     mapRef.current = map;
-
-    // Mapbox reports token/style/worker problems via an 'error' event, not
-    // a thrown exception — so a broken map leaves the JS console clean.
-    map.on("error", (e) => {
-      console.error("[mapbox error]", e?.error?.message ?? e);
-    });
-
-    // The map is created inside useEffect (after first paint), but Mapbox
-    // still frequently measures the container before layout settles and
-    // locks the canvas at its 400x300 default. Force a resize on the next
-    // animation frames, and keep a ResizeObserver for later layout changes.
-    const raf1 = requestAnimationFrame(() => {
-      map.resize();
-      requestAnimationFrame(() => map.resize());
-    });
-    const ro = new ResizeObserver(() => map.resize());
-    ro.observe(containerRef.current);
 
     // Debounced: a fitBounds/flyTo or a drag ends with one refresh, not one per moveend.
     let moveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -326,7 +271,6 @@ export default function MapView() {
     };
 
     map.on("load", () => {
-      map.resize(); // ensure canvas matches container after first layout
       const accent = mapAccentFrom((name) => getComputedStyle(document.body).getPropertyValue(name)); // AA-1160 theme
       // --- Selected-country highlight. Uses Mapbox's free country-boundaries
       // tileset so the chosen country gets a soft gold fill + gold outline,
@@ -610,58 +554,17 @@ export default function MapView() {
         },
       });
 
-      // AA-674: a proposed route, drawn as a dashed ink line with numbered day dots.
-      map.addSource(ROUTE_PREVIEW_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: "route-preview-line",
-        type: "line",
-        source: ROUTE_PREVIEW_SOURCE,
-        filter: ["==", ["geometry-type"], "LineString"],
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": "#1F2A37", "line-width": 3, "line-dasharray": [1.5, 1.5], "line-opacity": 0.85 },
-      });
-      map.addLayer({
-        id: "route-preview-stops",
-        type: "circle",
-        source: ROUTE_PREVIEW_SOURCE,
-        filter: ["==", ["geometry-type"], "Point"],
-        paint: {
-          "circle-radius": 9,
-          "circle-color": "#1F2A37",
-          "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 2,
-        },
-      });
-      map.addLayer({
-        id: "route-preview-labels",
-        type: "symbol",
-        source: ROUTE_PREVIEW_SOURCE,
-        filter: ["==", ["geometry-type"], "Point"],
-        layout: {
-          "text-field": ["get", "label"],
-          "text-size": 10,
-          "text-font": ["DIN Offc Pro Medium", "Arial Unicode MS Regular"],
-          "text-allow-overlap": true,
-        },
-        paint: { "text-color": "#ffffff" },
+      // AA-674: a proposed route, drawn as a dashed ink line with numbered day dots (the engine's route layer set).
+      addRouteLayers(map, ROUTE_PREVIEW_SOURCE, "route-preview", {
+        lineColor: "#1F2A37",
+        stopColor: "#1F2A37",
+        labelColor: "#ffffff",
       });
 
-      for (const layer of ["unclustered", "unclustered-area", "destination-lines-hit"]) {
-        map.on("click", layer, (e) => {
-          const f = e.features?.[0];
-          const id = f?.properties?.id as string | undefined;
-          if (id) setSelected(id);
-        });
-        map.on("mouseenter", layer, () => {
-          map.getCanvas().style.cursor = "pointer";
-        });
-        map.on("mouseleave", layer, () => {
-          map.getCanvas().style.cursor = "";
-        });
-      }
+      engine.onLayerClick(["unclustered", "unclustered-area", "destination-lines-hit"], (props) => {
+        const id = props.id as string | undefined;
+        if (id) setSelected(id);
+      });
       map.on("click", "clusters", (e) => {
         const f = map.queryRenderedFeatures(e.point, { layers: ["clusters"] })[0];
         const clusterId = f.properties?.cluster_id;
@@ -685,13 +588,13 @@ export default function MapView() {
     });
 
     return () => {
-      cancelAnimationFrame(raf1);
       if (moveTimer) clearTimeout(moveTimer);
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
       loaderRef.current?.abort();
-      ro.disconnect();
-      map.remove();
+      engine.destroy(); // markers, observers and the map
+      stopMarkers.clear();
+      engineRef.current = null;
       mapRef.current = null;
       setMapReady(false);
     };
@@ -751,11 +654,7 @@ export default function MapView() {
           )
         : pins;
       const fitPins = inBox.length > 0 ? inBox : pins;
-      if (fitPins.length > 0) {
-        const b = new mapboxgl.LngLatBounds();
-        for (const p of fitPins) extendBy(b, p);
-        map.fitBounds(b, { padding: 80, maxZoom: 8, duration: camMs(700) });
-      }
+      engineRef.current?.fitTo(fitPins.map(frameOf), { padding: 80, maxZoom: 8, durationMs: 700 });
     });
     return () => {
       cancelled = true;
@@ -768,11 +667,8 @@ export default function MapView() {
     const map = mapRef.current;
     if (!map || !mapReady || searchResults === null) return;
     setSourceData(searchResults);
-    if (searchResults.length > 0) {
-      const b = new mapboxgl.LngLatBounds();
-      for (const p of searchResults) extendBy(b, p); // a river result frames its whole bbox
-      map.fitBounds(b, { padding: 80, maxZoom: 9, duration: camMs(600) });
-    }
+    // a river result frames its whole bbox
+    engineRef.current?.fitTo(searchResults.map(frameOf), { padding: 80, maxZoom: 9, durationMs: 600 });
   }, [searchResults, setSourceData, mapReady]);
 
   // Draw the trip path (day-ordered line + numbered stops) from the itinerary.
@@ -916,11 +812,11 @@ export default function MapView() {
   // the trip panel too; a click (or Enter) selects it there (the panel scrolls to it).
   useEffect(() => {
     // Markers need the map, not its style: they are drawn while tiles still load (or when some fail).
-    const map = mapRef.current;
-    if (!map) return;
+    const engine = engineRef.current;
+    if (!engine) return;
     const markers = stopMarkersRef.current;
-    for (const m of markers.values()) m.marker.remove();
     markers.clear();
+    const specs: { key: string; coord: [number, number]; element: HTMLElement }[] = [];
     for (const s of markerStops(itinerary)) {
       const el = document.createElement("button");
       el.type = "button";
@@ -945,17 +841,11 @@ export default function MapView() {
         e.stopPropagation();
         selectStop(id, "map");
       });
-      const marker = new mapboxgl.Marker({ element: el }).setLngLat(s.coord).addTo(map);
-      markers.set(s.key, { marker, el, ids: s.componentIds });
+      specs.push({ key: s.key, coord: s.coord, element: el });
+      markers.set(s.key, { el, ids: s.componentIds });
     }
+    engine.setMarkers(specs); // a fresh element per stop: every marker is replaced, as before
   }, [itinerary, mapReady, hoverStop, selectStop]);
-  useEffect(
-    () => () => {
-      for (const m of stopMarkersRef.current.values()) m.marker.remove();
-      stopMarkersRef.current.clear();
-    },
-    [],
-  );
 
   // The active stop (hovered or selected, from either side) is drawn larger and darker on the map.
   useEffect(() => {
@@ -973,51 +863,28 @@ export default function MapView() {
     if (!map || !selectedStop || selectedStop.from !== "list") return;
     const m = markerOf(markerStops(itinerary), selectedStop.componentId);
     if (!m) return;
-    map.easeTo({ center: m.coord, zoom: Math.max(map.getZoom(), 8), ...camReduced() });
+    engineRef.current?.easeTo(m.coord, Math.max(map.getZoom(), 8));
     // itinerary is read for the marker's point only; a reorder must not move the camera again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStop, mapReady]);
 
-  // AA-674: draw (or clear) the previewed AA route and frame it.
+  // AA-674: draw (or clear) the previewed AA route and frame it: one dot per stop (the first day it is reached),
+  // labelled with that day number, joined by great-circle arcs (the engine's routeStops / routeCollection).
   useEffect(() => {
-    const map = mapRef.current;
-    const src = map?.getSource(ROUTE_PREVIEW_SOURCE) as mapboxgl.GeoJSONSource | undefined;
-    if (!map || !src) return;
-    const pts = (routePreview?.days ?? []).filter(
-      (d) => typeof d.lat === "number" && typeof d.lng === "number",
+    const engine = engineRef.current;
+    if (!engine || !engine.map.getSource(ROUTE_PREVIEW_SOURCE)) return;
+    const stops = routeStops(
+      (routePreview?.days ?? []).map((d) => ({ label: String(d.day), coord: lngLat(d.lng, d.lat) })),
     );
-    if (pts.length === 0) {
-      src.setData({ type: "FeatureCollection", features: [] });
+    if (stops.length === 0) {
+      engine.setData(ROUTE_PREVIEW_SOURCE, emptyCollection());
       return;
     }
-    // One dot per stop (first day it is reached), labelled with that day number.
-    const stops: { day: number; coord: [number, number] }[] = [];
-    for (const d of pts) {
-      const coord: [number, number] = [d.lng as number, d.lat as number];
-      const last = stops[stops.length - 1];
-      if (!last || last.coord[0] !== coord[0] || last.coord[1] !== coord[1]) stops.push({ day: d.day, coord });
-    }
-    const line: [number, number][] = [];
-    for (let i = 0; i < stops.length - 1; i++) {
-      const seg = greatCircleSegment(stops[i].coord, stops[i + 1].coord, 8);
-      line.push(...(i === 0 ? seg : seg.slice(1)));
-    }
-    src.setData({
-      type: "FeatureCollection",
-      features: [
-        ...(line.length > 1
-          ? [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: line } }]
-          : []),
-        ...stops.map((st) => ({
-          type: "Feature" as const,
-          properties: { label: String(st.day) },
-          geometry: { type: "Point" as const, coordinates: st.coord },
-        })),
-      ],
-    });
-    const b = new mapboxgl.LngLatBounds(stops[0].coord, stops[0].coord);
-    for (const st of stops) b.extend(st.coord);
-    map.fitBounds(b, { padding: 80, maxZoom: 9, duration: camMs(600) });
+    engine.setData(ROUTE_PREVIEW_SOURCE, routeCollection(stops, 8));
+    engine.fitTo(
+      stops.map((st) => st.coord),
+      { padding: 80, maxZoom: 9, durationMs: 600 },
+    );
   }, [routePreview]);
 
   // Open a destination's popup when something (e.g. a suggestion click) asks
@@ -1036,7 +903,7 @@ export default function MapView() {
     const map = mapRef.current;
     const pin = pinsRef.current.get(focusDestinationId);
     if (map && pin) {
-      map.easeTo({ center: [pin.lng, pin.lat], zoom: Math.max(map.getZoom(), 7), ...camReduced() });
+      engineRef.current?.easeTo([pin.lng, pin.lat], Math.max(map.getZoom(), 7));
     }
     focusDestination(null);
   }, [focusDestinationId, focusDestination]);
