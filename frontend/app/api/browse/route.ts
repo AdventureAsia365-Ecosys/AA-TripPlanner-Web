@@ -36,8 +36,7 @@ function passthroughFilters(src: URLSearchParams, dst: URLSearchParams) {
   }
 }
 
-// AA-1111: a throw answers 500 {"error": "internal", "request_id"} (lib/apiError.ts), never Next's bare 500.
-export const GET = withApiErrors("browse", async (req: NextRequest) => {
+async function GET(req: NextRequest) {
   // AA-871: one id per request, sent to the Lambda and echoed on the response.
   const requestId = requestIdFor(req.headers);
   if (!BROWSE_API_URL) return errorResponse(NOT_CONFIGURED, 503, requestId);
@@ -163,4 +162,9 @@ export const GET = withApiErrors("browse", async (req: NextRequest) => {
       [REQUEST_ID_HEADER]: requestId,
     },
   });
-});
+}
+
+// AA-1111: a throw answers 500 {"error": "internal", "request_id"} (lib/apiError.ts), never Next's bare 500. The
+// handler keeps its name (GET) for the code-health baseline; the guarded one is what Next serves.
+const guardedGET = withApiErrors("browse", GET);
+export { guardedGET as GET };

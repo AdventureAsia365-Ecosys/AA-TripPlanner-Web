@@ -182,17 +182,26 @@ const API_ERRORS = [
   ["no trip API on this deployment", "/api/trip?trip_id=x", 503, "not_configured"],
 ];
 
+function jsonOrNull(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+// Exactly {"error": code, "request_id": the x-request-id header}, and nothing of the upstream body or the env.
+function apiErrorOk(r, status, code) {
+  const body = jsonOrNull(r.html);
+  if (r.status !== status || !body || !r.requestId) return false;
+  const shape = body.error === code && body.request_id === r.requestId && Object.keys(body).length === 2;
+  return shape && !/var\/task|Traceback|Internal Server Error|_API_URL/.test(r.html);
+}
+
 async function checkApiErrors(port, failures) {
   for (const [label, path, status, code] of API_ERRORS) {
     const r = await get(port, path, null);
-    let body = null;
-    try {
-      body = JSON.parse(r.html);
-    } catch {
-      // not JSON: fails below
-    }
-    const ok = r.status === status && body?.error === code && body?.request_id === r.requestId && r.requestId !== ""
-      && Object.keys(body).length === 2 && !/var\/task|Traceback|Internal Server Error|_API_URL/.test(r.html);
+    const ok = apiErrorOk(r, status, code);
     if (!ok) failures.push(`${label} (${path}): ${r.status} ${r.html.slice(0, 200)}`);
     console.log(`${ok ? "ok  " : "FAIL"} ${label} (${path}): ${status} {"error": "${code}", "request_id"}`);
   }

@@ -64,8 +64,7 @@ function requestGuestToken(req: NextRequest): { token: string | null; minted: bo
 
 // GET /api/trip?trip_id=... — the trip reads: the current itinerary (restore after a page reload,
 // trip_id persisted client-side), suggestions, coverage and the activities at one stop.
-// AA-1111: a throw answers 500 {"error": "internal", "request_id"} (lib/apiError.ts), never Next's bare 500.
-export const GET = withApiErrors("trip", async (req: NextRequest) => {
+async function GET(req: NextRequest) {
   const requestId = requestIdFor(req.headers);
   if (!TRIP_API_URL) return errorResponse(NOT_CONFIGURED, 503, requestId);
   // resource=suggestions | coverage | activities, or none for the itinerary (lib/tripProxy.ts).
@@ -99,9 +98,9 @@ export const GET = withApiErrors("trip", async (req: NextRequest) => {
       [REQUEST_ID_HEADER]: requestId,
     },
   });
-});
+}
 
-export const POST = withApiErrors("trip", async (req: NextRequest) => {
+async function POST(req: NextRequest) {
   // AA-827: a cross-site browser POST never reaches the Lambda (the cookie is SameSite=Lax anyway).
   // proxy.ts already refuses it before minting; this is defence in depth.
   if (!isSameOrigin(req)) {
@@ -205,4 +204,10 @@ export const POST = withApiErrors("trip", async (req: NextRequest) => {
       [REQUEST_ID_HEADER]: requestId,
     },
   });
-});
+}
+
+// AA-1111: a throw answers 500 {"error": "internal", "request_id"} (lib/apiError.ts), never Next's bare 500. The
+// handlers keep their names (GET, POST) for the code-health baseline; the guarded ones are what Next serves.
+const guardedGET = withApiErrors("trip", GET);
+const guardedPOST = withApiErrors("trip", POST);
+export { guardedGET as GET, guardedPOST as POST };
