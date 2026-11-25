@@ -15,8 +15,9 @@
 //   node check-map-engine.mjs --imports <src-root> --engine <dir under src-root>
 //                                             the consumer import guard (CI): no source file under <src-root> imports the
 //                                             TripPlanner app (its package or repo name, or a relative path that leaves
-//                                             <src-root>), and mapbox-gl is imported only inside the engine copy (its
-//                                             stylesheet mapbox-gl/dist/mapbox-gl.css may be imported anywhere)
+//                                             the consumer's own git repository), and mapbox-gl is imported only inside
+//                                             the engine copy (its stylesheet mapbox-gl/dist/mapbox-gl.css may be
+//                                             imported anywhere)
 //
 // Exit codes: 0 fine, 1 a check failed, 2 usage error. Fix for a failed copy check: edit the canonical folder in
 // AA-TripPlanner-Web, run --write there, merge it, then --sync into the consumer; never edit a copy.
@@ -114,9 +115,19 @@ function* sourceFiles(root) {
   }
 }
 
-/** The consumer import guard: problems under `srcRoot`, the engine copy being `engineDir` (relative to it). */
+/** The git repository a folder belongs to (the nearest parent with a .git entry), or the folder itself. */
+export function repoRootOf(start) {
+  for (let dir = resolve(start); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    if (dirname(dir) === dir) return resolve(start);
+  }
+}
+
+/** The consumer import guard: problems under `srcRoot`, the engine copy being `engineDir` (relative to it). A relative
+ *  import may reach the rest of the consumer's own repository (its e2e helpers), never a folder outside it. */
 export function importGuardProblems(srcRoot, engineDir) {
   const root = resolve(srcRoot);
+  const repo = repoRootOf(root);
   const engine = resolve(root, engineDir);
   const problems = [];
   for (const file of sourceFiles(root)) {
@@ -129,8 +140,8 @@ export function importGuardProblems(srcRoot, engineDir) {
       }
       if (spec.startsWith(".")) {
         const target = resolve(dirname(file), spec);
-        if (target !== root && !target.startsWith(root + sep)) {
-          problems.push(`${rel}: imports "${spec}", outside this app: use the map engine copy (${engineDir}), never another repo`);
+        if (target !== repo && !target.startsWith(repo + sep)) {
+          problems.push(`${rel}: imports "${spec}", outside this repository: use the map engine copy (${engineDir})`);
         }
         continue;
       }

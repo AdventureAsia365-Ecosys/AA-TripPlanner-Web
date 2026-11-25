@@ -377,6 +377,10 @@ test("check-map-engine.mjs --imports: TripPlanner app imports and direct mapbox-
     writeFileSync(join(web, "components/Good.tsx"), 'import { useMapEngine } from "@/lib/map-engine/react";\nimport "mapbox-gl/dist/mapbox-gl.css";\n');
     assert.equal(runCheck(["--imports", web, "--engine", "lib/map-engine"]).code, 0);
     writeFileSync(join(web, "components/Bad1.tsx"), 'import MapView from "../../AA-TripPlanner-Web/frontend/components/MapView";\n');
+    writeFileSync(join(web, "components/Bad4.ts"), 'import { x } from "../../../sibling-repo/lib/x";\n');
+    mkdirSync(join(root, "e2e"), { recursive: true });
+    writeFileSync(join(root, ".git"), "gitdir: elsewhere\n"); // the consumer repo root: its own e2e folder is fine
+    writeFileSync(join(web, "components/OwnE2e.ts"), 'import { pages } from "../../e2e/pages";\n');
     writeFileSync(join(web, "components/Bad2.ts"), 'export const m = () => import("mapbox-gl");\n');
     writeFileSync(join(web, "components/Bad3.ts"), 'import { x } from "aa-tripplanner-frontend/lib/lines";\n');
     const r = runCheck(["--imports", web, "--engine", "lib/map-engine"]);
@@ -384,6 +388,8 @@ test("check-map-engine.mjs --imports: TripPlanner app imports and direct mapbox-
     assert.match(r.out, /Bad1\.tsx: imports "\.\.\/\.\.\/AA-TripPlanner-Web/);
     assert.match(r.out, /Bad2\.ts: imports "mapbox-gl"/);
     assert.match(r.out, /Bad3\.ts: imports "aa-tripplanner-frontend/);
+    assert.match(r.out, /Bad4\.ts: imports "\.\.\/\.\.\/\.\.\/sibling-repo\/lib\/x", outside this repository/);
+    assert.doesNotMatch(r.out, /OwnE2e/);
     assert.doesNotMatch(r.out, /Good\.tsx/);
   } finally {
     rmSync(root, { recursive: true, force: true });
