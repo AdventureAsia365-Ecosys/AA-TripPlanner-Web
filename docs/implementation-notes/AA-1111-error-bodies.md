@@ -22,8 +22,9 @@ and "Big Redirect Detected" (10044) on the `tripplanner` and `tripplanner-plan` 
 ## Decisions
 
 - **The bare `/{slug}` redirect moves to `proxy.ts`.** For a served tenant the proxy answers
-  `NextResponse.redirect(…, 307)`: no body, a relative `Location` (Next relativises a same-host URL), the same target
-  as before. A slug that is no served tenant, or a lookup that cannot answer, passes to `app/[tenant]/page.tsx`
+  `NextResponse.redirect(…, 307)`: a relative `Location` (Next relativises a same-host URL), the same target as before
+  plus the request's query string, and no page in the body (Next writes the target itself as the body of a proxy
+  redirect: 23 bytes for the fixture agency, against 9.8 KB before). A slug that is no served tenant, or a lookup that cannot answer, passes to `app/[tenant]/page.tsx`
   unchanged (404 page / retryable error page), so the page keeps its `redirect()` as the fallback. An agency's own
   domain (`/` is rewritten to `/{slug}`) gets the same bodiless redirect; the tenant is already resolved there.
   The slug test is `lib/tenantRoot.ts` (pure, `npm test`).
@@ -45,6 +46,15 @@ and "Big Redirect Detected" (10044) on the `tripplanner` and `tripplanner-plan` 
 ## Changed
 
 - Nothing in the tour copy (false positive, documented above).
+- `scripts/check-agency-render.mjs` (CI, after the build) also checks the bodiless redirect on our host and on the
+  agency's own domain, and two BFF error bodies (an upstream crash whose body names internals, a missing trip API).
+
+## Reproduced locally (next build + next start, Lambdas unreachable)
+
+- `/api/trip`, `/api/browse`, `/api/trip/addons` with an unreachable Lambda: before, Next's bare 500; now 500
+  `{"error":"internal","request_id":"<x-request-id>"}` and one `bff_error` line (route, `TypeError`, id).
+- A failed tenant lookup (`/{slug}`) and a failed destination read show the kit error pages with "Reference:
+  <digest>"; the HTML carries the digest only, the stack stays in the server log.
 
 ## Tradeoffs
 
@@ -57,5 +67,7 @@ and "Big Redirect Detected" (10044) on the `tripplanner` and `tripplanner-plan` 
 ## Should know
 
 - Tests: `lib/apiError.test.ts`, `lib/tenantRoot.test.ts` (npm test), `backend/tests/test_s294_error_bodies.py`.
-- Live step after deploy: `curl -sI https://<tp host>/pilot-rehearsal-01` → 307, `content-length: 0` (or no body),
-  `location: /pilot-rehearsal-01/plan`; 404 paths as listed above unchanged.
+- Live step after deploy: `curl -s -o b -w '%{http_code} %{size_download} %{redirect_url}' https://<tp host>/<pilot slug>`
+  → 307, at most the target's length in bytes, location `/<pilot slug>/plan`; the 404 paths above unchanged.
+- The proxy now looks up every single-segment path on our host that can be a slug (the page did the same lookup
+  before; both are cached per instance, a miss for 30 s).

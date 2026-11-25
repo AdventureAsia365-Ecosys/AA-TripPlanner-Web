@@ -8,6 +8,9 @@
 // on its own domain, and fails when the HTML names Adventure Asia (or "AA AI"). Two controls keep the check honest:
 // AA's own pages (and AA's 404 for an unknown slug) still say Adventure Asia, and every agency page names the agency.
 //
+// AA-1111 (S294 ZAP triage) rides on the same server: the bare /{slug} (and "/" on the agency's domain) is a 307 to the
+// planner with no page in its body (proxy.ts), and a 5xx of the BFF is {"error": "<code>", "request_id"} only (lib/apiError.ts).
+//
 // Run (CI "Frontend (lint + build)", after Build): npm run build && node scripts/check-agency-render.mjs
 // No network beyond localhost, no key: the browse API is the fake below.
 import { spawn } from "node:child_process";
@@ -19,6 +22,7 @@ import { fileURLToPath } from "node:url";
 const FRONTEND = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BRAND_RE = /adventure[\s\u00a0]+asia|adventure\.asia|\bAA AI\b/i;
 const AGENCY = { slug: "quillmere-voyages", name: "Quillmere Voyages", host: "trip.quillmere.example" };
+const LEAKY_DETAIL = "Traceback: KeyError at /var/task/backend/browse/shapes.py:12";
 
 const tenant = (slug, name, kind) => ({
   tenant: {
@@ -41,6 +45,12 @@ function fakeBrowse() {
     if (path === `/browse/tenant/${AGENCY.slug}` || path === `/browse/tenant-host/${AGENCY.host}`) {
       body = tenant(AGENCY.slug, AGENCY.name, "agency");
     }
+    if (path === "/browse/shapes") {
+      // AA-1111: an upstream crash whose body names internals; the BFF must not pass it on.
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ message: "Internal Server Error", detail: LEAKY_DETAIL }));
+      return;
+    }
     res.writeHead(body ? 200 : 404, { "content-type": "application/json" });
     res.end(JSON.stringify(body ?? { error: "not_found" }));
   });
@@ -53,7 +63,8 @@ function get(port, path, host) {
       let html = "";
       res.setEncoding("utf8");
       res.on("data", (c) => (html += c));
-      res.on("end", () => ok({ status: res.statusCode ?? 0, html, location: res.headers.location ?? "" }));
+      res.on("end", () => ok({ status: res.statusCode ?? 0, html, location: res.headers.location ?? "",
+        requestId: res.headers["x-request-id"] ?? "" }));
     });
     req.on("error", fail);
     req.setTimeout(30_000, () => req.destroy(new Error(`timeout ${path}`)));
@@ -148,6 +159,45 @@ async function checkAaPages(port, failures) {
   }
 }
 
+// AA-1111: [label, path, Host header or null]. ZAP flagged the 307 of the bare /{slug}: Next streamed the page shell
+// (about 10 KB) before redirect() turned it into a 307. proxy.ts now answers it with no page (at most the target).
+const REDIRECTS = [
+  ["bare agency site", `/${AGENCY.slug}`, null],
+  ["own domain: home", "/", AGENCY.host],
+];
+
+async function checkRedirects(port, failures) {
+  for (const [label, path, host] of REDIRECTS) {
+    const r = await get(port, path, host);
+    // Next writes the target itself as the body of a proxy redirect (23 bytes here); nothing of the page.
+    const ok = r.status === 307 && r.location === `/${AGENCY.slug}/plan` && (r.html === "" || r.html === r.location);
+    if (!ok) failures.push(`${label} (${path}): ${r.status} to "${r.location}" with a ${r.html.length}-byte body`);
+    console.log(`${ok ? "ok  " : "FAIL"} ${label} (${host ?? ""}${path}): 307 to the planner, no page in the body`);
+  }
+}
+
+// AA-1111: the BFF's 5xx bodies: a code and the request id, nothing of the upstream answer or the env.
+const API_ERRORS = [
+  ["upstream crash", "/api/browse?resource=shapes&ids=x", 500, "upstream_error"],
+  ["no trip API on this deployment", "/api/trip?trip_id=x", 503, "not_configured"],
+];
+
+async function checkApiErrors(port, failures) {
+  for (const [label, path, status, code] of API_ERRORS) {
+    const r = await get(port, path, null);
+    let body = null;
+    try {
+      body = JSON.parse(r.html);
+    } catch {
+      // not JSON: fails below
+    }
+    const ok = r.status === status && body?.error === code && body?.request_id === r.requestId && r.requestId !== ""
+      && Object.keys(body).length === 2 && !/var\/task|Traceback|Internal Server Error|_API_URL/.test(r.html);
+    if (!ok) failures.push(`${label} (${path}): ${r.status} ${r.html.slice(0, 200)}`);
+    console.log(`${ok ? "ok  " : "FAIL"} ${label} (${path}): ${status} {"error": "${code}", "request_id"}`);
+  }
+}
+
 function checkStatic404(failures) {
   const static404 = readFileSync(join(FRONTEND, AA_STATIC_404), "utf8");
   const ssr = AA_404_MARKUP.test(static404) && !static404.includes("__next_error__");
@@ -163,6 +213,8 @@ async function main() {
   try {
     await checkAgencyPages(port, failures);
     await checkAaPages(port, failures);
+    await checkRedirects(port, failures);
+    await checkApiErrors(port, failures);
   } finally {
     next.kill();
     browse.close();
