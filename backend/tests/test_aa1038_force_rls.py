@@ -48,9 +48,10 @@ def test_every_assembly_connection_is_bound_to_a_tenant_where_it_is_acquired():
             sites.append(name)
             assert re.search(rf"\btenant\.bound\(\s*{m.group(1)}\b", m.group("rest")), \
                 f"{name}: a connection acquired without tenant.bound in the same `async with`: {m.group(0).strip()}"
-    # AA-1139: planner_admin.py serves the agency app's module routes (M2M, bound to the path's tenant).
+    # AA-1139: planner_admin.py serves the agency app's module routes (M2M, bound to the path's tenant). AA-1166:
+    # redteam.py is the operator-only red-team invoke (bound to the bare path's tenant, like a chat request).
     assert sorted(set(sites)) == ["backend/assembly/handler.py", "backend/assembly/local_server.py",
-                                  "backend/assembly/planner_admin.py"], sites
+                                  "backend/assembly/planner_admin.py", "backend/assembly/redteam.py"], sites
 
 
 def test_the_browse_lambda_never_names_a_tenant_table():
