@@ -37,6 +37,7 @@ import os
 import re
 import sys
 import time
+import traceback
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
@@ -175,6 +176,13 @@ def _scrub_event(_logger: Any, _method: str, event_dict: dict) -> dict:
     if event_dict.get("message") == event_dict.get("event"):
         event_dict.pop("message")
     return scrub(event_dict, keep=_KEEP)
+
+
+def raised_at(exc: BaseException) -> str:
+    """``file.py:line`` of the frame that raised ``exc``, for a log line ("" without a traceback). AA-1111: an error
+    answer carries a code only; the class and this go to the log, never ``str(exc)`` (it can echo request values)."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    return f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}" if frames else ""
 
 
 def configure_logging(stream: Optional[IO[str]] = None, level: int = logging.INFO) -> None:

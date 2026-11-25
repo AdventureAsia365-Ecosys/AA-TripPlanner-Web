@@ -8,6 +8,7 @@ import SiteFooter from "@/components/site/SiteFooter";
 import SiteHeader from "@/components/site/SiteHeader";
 import WaysIn from "@/components/site/WaysIn";
 import { ButtonLink, buttonClass } from "@/ui";
+import { ErrorReference } from "@/ui/ErrorReference";
 
 export default function RouteError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   useEffect(() => {
@@ -24,6 +25,8 @@ export default function RouteError({ error, reset }: { error: Error & { digest?:
           lead="Please try again in a moment."
           leadRole="alert"
         >
+          {/* AA-1111: the error's reference (its digest), never its message */}
+          <ErrorReference digest={error.digest} tone="band" />
           <div className="flex flex-col justify-center gap-3 sm:flex-row">
             <button type="button" onClick={reset} className={buttonClass("primary", "lg", "min-h-12")}>Try again</button>
             <ButtonLink href="/" variant="on-dark" size="lg" className="min-h-12">Home</ButtonLink>

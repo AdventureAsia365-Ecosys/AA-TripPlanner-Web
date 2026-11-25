@@ -2,6 +2,7 @@ import { revalidatePath, revalidateTag } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
 import { SIGNATURE_HEADER, handlePurge } from "@/lib/catalogPurge";
 import { jsonInit } from "@/lib/jsonResponse";
+import { withApiErrors } from "@/lib/apiError";
 
 // AA-987: CIS posts one signed notice per tour lifecycle event (retired / paused / restored / superseded); this route
 // drops every TripPlanner cache that could still show the old state. All the logic (signature, body, which caches)
@@ -12,7 +13,8 @@ import { jsonInit } from "@/lib/jsonResponse";
 // 30-min TTLs still apply).
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
+// AA-1111: a throw answers 500 {"error": "internal", "request_id"} (lib/apiError.ts), never Next's bare 500.
+export const POST = withApiErrors("revalidate_catalog", async (req: NextRequest) => {
   const body = await req.text();
   const answer = await handlePurge(req.headers.get(SIGNATURE_HEADER), body, {
     secret: process.env.CATALOG_REVALIDATE_SECRET ?? "",
@@ -23,4 +25,4 @@ export async function POST(req: NextRequest) {
     log: (line) => console.log(line),
   });
   return NextResponse.json(answer.body, jsonInit({ status: answer.status, headers: { "cache-control": "no-store" } }));
-}
+});
