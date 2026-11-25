@@ -253,6 +253,22 @@ def test_the_bound_prices_the_dearest_text_model_for_every_step():
     assert redteam.call_bound(None, 3000, 700) == 0.0
 
 
+def test_the_bound_pays_every_model_and_deployment_a_step_may_fail_over_to(monkeypatch):
+    """A reply cut at its token limit is billed and the route moves on: a step may pay each model on each of its
+    deployments once."""
+    second = gw.Model("chat-model-b", "anthropic", "anthropic_native", {"acc3": "vendor.chat-model-b"}, 1.0, 5.0)
+    both = gw.Route("tp_plan_chat", "writer", (*ROUTE.models, second))
+    one_a = redteam.call_bound(ROUTE, 3000, 700)
+    one_b = redteam.call_bound(gw.Route("tp_plan_chat", "writer", (second,)), 3000, 700)
+    assert redteam.call_bound(both, 3000, 700) == pytest.approx(one_a + one_b)
+
+    class Plan:
+        items = ("first", "second")
+
+    monkeypatch.setattr(gw, "deployment_plan", lambda route, model: Plan())
+    assert redteam.call_bound(ROUTE, 3000, 700) == pytest.approx(2 * one_a)
+
+
 # --- the paid loop --------------------------------------------------------------------------------------------------
 
 async def test_the_loop_runs_turns_on_the_redteam_stage_and_records_every_attempt(monkeypatch):
@@ -291,6 +307,36 @@ async def test_too_little_lambda_time_leaves_the_rest_for_the_next_invoke(monkey
     out = await redteam.run(Conn(), spec, lambda: next(clock), gateway)
     assert [r["verdict"] for r in out["results"]] == ["pass", "not_run", "not_run"]
     assert out["remaining"] == ["tp_injection_role", "tp_policy_offcatalog"]
+
+
+async def test_a_defect_after_a_billed_call_records_the_call_and_stops_with_a_report(monkeypatch):
+    """A tool or argument defect inside the turn (not a gateway error): the billed call still gets its ledger row,
+    the case is not_run with the defect's class, the rest are not run, and the report is still written."""
+    recorded = _gateway_env(monkeypatch)
+    gateway = Gateway({"VELMORANTH": "Sure, Norland in May."})
+
+    async def broken_turn(conn, *, message, history, itinerary, offered, generate, before_call):
+        generate(plan_chat._SYSTEM, f"<traveller_message>{message}</traveller_message>")  # noqa: SLF001
+        raise KeyError("odd tool argument")
+
+    monkeypatch.setattr(plan_chat, "run_turn", broken_turn)
+    spec = redteam.parse_spec({"apply": True, "stop_usd": 1.0,
+                               "cases": ["tp_injection_codeword", "tp_injection_role"]})
+    out = await redteam.run(Conn(), spec, lambda: 60.0, gateway)
+    assert [(s, f) for s, f, _ in recorded] == [(redteam.STAGE, False)]
+    first, second = out["results"]
+    assert first["verdict"] == "not_run" and first["reasons"] == ["turn_failed:KeyError"]
+    assert first["cost_usd"] == pytest.approx(0.002) and first["calls"] == 1
+    assert second["reasons"] == ["turn_failed:KeyError"] and out["stopped"] == "turn_failed:KeyError"
+    assert out["spent_usd"] == pytest.approx(0.002) and "=== REPORT END ===" in out["report"]
+
+
+def test_a_defect_is_never_read_as_a_model_refusal():
+    refused = gw.Call(redteam.STAGE, "writer", "chat-model", "acc3", 0, 0, 0.0, False, stop_reason="error",
+                      extra={"error": "empty response"}, failed=True, status="error", error_class="other")
+    turn = redteam.Turn(None, [refused], [], RuntimeError("boom"))
+    row, why = redteam.outcome(redteam.CASES[0], turn)
+    assert row["verdict"] == "not_run" and why == "turn_failed:RuntimeError"
 
 
 async def test_a_reached_cap_stops_before_any_call(monkeypatch):

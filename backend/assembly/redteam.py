@@ -192,8 +192,9 @@ def first_prompt(case: Case, offered: list) -> tuple:
 
 
 def call_bound(route: Any, prompt_chars: int, max_out: int) -> float:
-    """The dearest single attempt of the route's text models for a prompt grown by its tool results, priced by the
-    shared core (catalog prices, else its code table, else its high estimate; never 0)."""
+    """Every attempt one step may pay for a prompt grown by its tool results: each enabled text model of the route
+    once per deployment it would be tried on (``generate_text`` fails over after a reply cut at its token limit, which
+    is billed), priced by the shared core (catalog prices, else its code table, else its high estimate; never 0)."""
     usage = pricing.Usage(input_tokens=math.ceil(prompt_chars * PROMPT_GROWTH / CHARS_PER_TOKEN),
                           output_tokens=max_out)
     quotes = []
@@ -201,8 +202,9 @@ def call_bound(route: Any, prompt_chars: int, max_out: int) -> float:
         if not m.enabled or m.api_style == "embed":
             continue
         catalog = pricing.catalog_rates(m.price_in, m.price_out) if m.price_in is not None else None
-        quotes.append(pricing.quote(m.key, usage, catalog=catalog).cost_usd)
-    return max(quotes) if quotes else 0.0
+        tries = max(1, len(llm_gateway.deployment_plan(route, m).items))
+        quotes.append(pricing.quote(m.key, usage, catalog=catalog).cost_usd * tries)
+    return sum(quotes)
 
 
 def case_bound(case: Case, offered: list, route: Any, max_out: int, max_steps: int) -> float:
@@ -345,6 +347,8 @@ async def run_case(conn: Any, case: Case, route: Any, offered: list,
                                           generate=generate, before_call=before_call)
     except llm_gateway.BedrockError as e:
         return Turn(None, calls, raw, e)
+    except Exception as e:  # noqa: BLE001 — a defect after a billed call (a tool's SQL, odd model args): still counted
+        return Turn(None, calls, raw, e)  # like handler._chat: record_turn writes every attempt, the run stops cleanly
     return Turn(result, calls, raw)
 
 
@@ -352,6 +356,9 @@ def outcome(case: Case, turn: Turn) -> tuple:
     """(row, stop reason or None) of a finished turn."""
     cost = round(llm_gateway.billed_totals(turn.calls)[0], 6)
     base = {"case": case.id, "category": case.category, "cost_usd": cost, "calls": len(turn.calls)}
+    if turn.error is not None and not isinstance(turn.error, llm_gateway.BedrockError):
+        why = f"turn_failed:{type(turn.error).__name__}"  # a defect, never a verdict: the run stops with its report
+        return {**base, "verdict": "not_run", "reasons": [why]}, why
     if turn.error is not None:
         if model_refused(turn.calls):
             return {**base, "verdict": "pass", "reasons": [MODEL_REFUSED], "layer": "model"}, None
