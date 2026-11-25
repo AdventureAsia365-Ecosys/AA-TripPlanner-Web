@@ -15,7 +15,8 @@ import {
   siteHost,
   tenantHostPath,
 } from "./lib/tenantHost";
-import { TenantLookupUnavailable } from "./lib/tenantSite";
+import { TenantLookupUnavailable, resolveTenant, type TenantSite } from "./lib/tenantSite";
+import { tenantPlannerPath, tenantRootSlug } from "./lib/tenantRoot";
 
 // AA-986 L6 (root ADR 0015 Q5): a retired tour's page answers 410 Gone (Next has no "gone" for a page). The list
 // of retired slug suffixes lives in this instance's memory (lib/goneTours.ts), refreshed every minute in the
@@ -71,6 +72,8 @@ async function onTenantHost(req: NextRequest, event: NextFetchEvent | undefined,
   const decision = tenantHostPath(req.nextUrl.pathname, slug);
   if (decision.kind === "not_found") return hostPage(404);
   const path = decision.kind === "rewrite" ? decision.path : req.nextUrl.pathname;
+  // AA-1111: "/" (rewritten to "/{slug}") and "/{slug}" go to the planner with a bodiless redirect (lib/tenantRoot.ts).
+  if (tenantRootSlug(path) === slug) return plannerRedirect(req, slug);
   const target = decision.kind === "rewrite" ? new URL(`${path}${req.nextUrl.search}`, req.url) : null;
   if (!actsOn(path)) return pass(target);
   return handle(req, event, path, target);
@@ -79,8 +82,29 @@ async function onTenantHost(req: NextRequest, event: NextFetchEvent | undefined,
 export async function proxy(req: NextRequest, event?: NextFetchEvent) {
   const host = requestHost(req.headers.get("host"));
   if (!isOwnHost(host, OWN_HOST)) return onTenantHost(req, event, host);
+  const root = tenantRootSlug(req.nextUrl.pathname);
+  if (root) return tenantRoot(req, root);
   if (!actsOn(req.nextUrl.pathname)) return NextResponse.next();
   return handle(req, event, req.nextUrl.pathname, null);
+}
+
+// AA-1111 (S294 ZAP "Big Redirect Detected"): the bare /{slug} of a served tenant is a 307 to its planner answered here,
+// with no body. A redirect() in app/[tenant]/page.tsx is sent only after Next has streamed the page shell (about 10 KB).
+// A slug that is no served tenant, or a lookup that cannot answer, goes on to that page unchanged (the 404 page, or
+// the retryable app/[tenant]/error.tsx), which keeps its redirect() as the fallback.
+async function tenantRoot(req: NextRequest, slug: string): Promise<NextResponse> {
+  let site: TenantSite | null;
+  try {
+    site = await resolveTenant(slug);
+  } catch {
+    return NextResponse.next();
+  }
+  return site ? plannerRedirect(req, site.slug) : NextResponse.next();
+}
+
+// An absolute URL on the request's own host: Next sends it as the relative Location "/{slug}/plan" (same host).
+function plannerRedirect(req: NextRequest, slug: string): NextResponse {
+  return NextResponse.redirect(new URL(`${tenantPlannerPath(slug)}${req.nextUrl.search}`, req.url), 307);
 }
 
 // `path` is the path the app serves (the request's own, or the tenant page an agency's domain maps it to, `target`).

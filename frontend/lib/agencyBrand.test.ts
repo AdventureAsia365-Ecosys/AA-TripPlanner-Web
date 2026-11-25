@@ -85,7 +85,7 @@ test("the /{slug} site covers the pages an agency's traveller reaches", () => {
 });
 
 test("no file an agency page reaches spells Adventure Asia (lib/brand.ts only)", () => {
-  const files = reached([...tenantEntries(), "app/layout.tsx"]);
+  const files = reached([...tenantEntries(), "app/layout.tsx", "app/global-error.tsx"]);
   assert.ok(files.has("components/TripPanel.tsx") && files.has("components/LeadForm.tsx"), "the walk reaches the planner");
   const offenders = [...files].filter((f) => f !== BRAND_FILE && BRAND_RE.test(code(read(f))));
   assert.deepEqual(offenders, [], "move the words to lib/brand.ts (brandCopy for shared components)");
@@ -98,7 +98,7 @@ function aaWords(src: string): string[] {
 }
 
 test("no file an agency page reaches shows \"AA\" as a word outside lib/brand.ts and the allow-list", () => {
-  const files = reached([...tenantEntries(), "app/layout.tsx"]);
+  const files = reached([...tenantEntries(), "app/layout.tsx", "app/global-error.tsx"]);
   const offenders = [...files]
     .filter((f) => f !== BRAND_FILE && !(f in AA_WORDS_ALLOWED))
     .flatMap((f) => aaWords(code(read(f))).map((line) => `${f}: ${line}`));

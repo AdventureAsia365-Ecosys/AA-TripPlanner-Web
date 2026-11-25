@@ -34,9 +34,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import json
-import os
 import re
-import traceback
 import uuid
 from typing import Any, Optional
 
@@ -370,7 +368,9 @@ async def route(
             narration, source, ungrounded = await _narrate(conn, itinerary, None, day_texts=day_texts)
         except Exception as e:  # noqa: BLE001 — anything else is a defect: surface it as 502
             await _record_calls(conn, calls, {"mode": mode, "days": len(itinerary)})
-            return _resp(502, {"error": "narration_failed", "detail": str(e)})
+            # AA-1111: the class and the raising frame go to the log; the answer is the code, never str(e).
+            observability.emit("narration_failed", error=type(e).__name__, at=observability.raised_at(e))
+            return _resp(502, {"error": "narration_failed"})
         signal = {"mode": mode, "source": source, "days": len(itinerary),
                   "output_len_chars": len(narration)}
         if ungrounded:  # AA-731: invented figures removed before the customer saw them
@@ -994,9 +994,8 @@ async def serve(method: str, path: str, body: dict, *, guest_token: Optional[str
         guest_session.emit(guest_session.FORBIDDEN_OWNER, _route_name(method, path))
         return _resp(403, {"error": "forbidden", "detail": "this trip belongs to another session"})
     except Exception as e:  # noqa: BLE001
-        frames = traceback.extract_tb(e.__traceback__)
-        at = f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}" if frames else ""
-        observability.emit("assembly_error", route=_route_name(method, path), error=type(e).__name__, at=at)
+        observability.emit("assembly_error", route=_route_name(method, path), error=type(e).__name__,
+                           at=observability.raised_at(e))
         observability.capture(e)  # AA-871: Sentry, scrubbed (no-op when SENTRY_DSN is unset)
         return _resp(500, {"error": "internal"})
 

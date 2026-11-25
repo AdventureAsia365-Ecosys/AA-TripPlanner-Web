@@ -7,6 +7,7 @@ import {
   mapMintedDenial,
 } from "@/lib/guestToken";
 import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
+import { NOT_CONFIGURED, errorResponse, upstreamErrorBody, withApiErrors } from "@/lib/apiError";
 import { parseTripBody, tripHeaders as lambdaHeaders, tripReadAnswer, tripReadPath } from "@/lib/tripProxy";
 import { clientIp } from "@/lib/clientIp";
 import { edgeGateOn, edgeGateRefusal } from "@/lib/edgeGate";
@@ -63,14 +64,9 @@ function requestGuestToken(req: NextRequest): { token: string | null; minted: bo
 
 // GET /api/trip?trip_id=... — the trip reads: the current itinerary (restore after a page reload,
 // trip_id persisted client-side), suggestions, coverage and the activities at one stop.
-export async function GET(req: NextRequest) {
-  if (!TRIP_API_URL) {
-    return NextResponse.json(
-      { error: "TRIP_API_URL not configured" },
-      { status: 503 },
-    );
-  }
+async function GET(req: NextRequest) {
   const requestId = requestIdFor(req.headers);
+  if (!TRIP_API_URL) return errorResponse(NOT_CONFIGURED, 503, requestId);
   // resource=suggestions | coverage | activities, or none for the itinerary (lib/tripProxy.ts).
   const read = tripReadPath(req.nextUrl.searchParams);
   if ("error" in read) {
@@ -92,7 +88,8 @@ export async function GET(req: NextRequest) {
   const op = resource && READ_RESOURCES.has(resource) ? resource : "itinerary"; // never echo free text
   logUpstream(`read:${op}`, upstream.status, started, requestId);
   const answer = tripReadAnswer(op, upstream.status, text);
-  return new NextResponse(answer.body, {
+  // AA-1111: an upstream 5xx goes on as {"error": "<code>", "request_id"} only (lib/apiError.ts).
+  return new NextResponse(upstreamErrorBody(answer.status, answer.body, requestId), {
     status: answer.status,
     headers: {
       "content-type": "application/json",
@@ -103,18 +100,13 @@ export async function GET(req: NextRequest) {
   });
 }
 
-export async function POST(req: NextRequest) {
+async function POST(req: NextRequest) {
   // AA-827: a cross-site browser POST never reaches the Lambda (the cookie is SameSite=Lax anyway).
   // proxy.ts already refuses it before minting; this is defence in depth.
   if (!isSameOrigin(req)) {
     return NextResponse.json({ error: "cross_origin" }, { status: 403 });
   }
-  if (!TRIP_API_URL) {
-    return NextResponse.json(
-      { error: "TRIP_API_URL not configured" },
-      { status: 503 },
-    );
-  }
+  if (!TRIP_API_URL) return errorResponse(NOT_CONFIGURED, 503, requestIdFor(req.headers));
   // A body that is not a JSON object is a 400, not an unhandled 500 (seen in the AA-871 Sentry check).
   const parsed = parseTripBody(await req.text());
   if (!parsed) {
@@ -202,8 +194,9 @@ export async function POST(req: NextRequest) {
   logUpstream(String(b.op), upstream.status, started, requestId);
   // A refused token that was minted on this request -> 401 cookies_required (see mapMintedDenial).
   const mapped = mapMintedDenial(upstream.status, text, guest.minted);
-  return new NextResponse(mapped ? mapped.body : text, {
-    status: mapped ? mapped.status : upstream.status,
+  const status = mapped ? mapped.status : upstream.status;
+  return new NextResponse(upstreamErrorBody(status, mapped ? mapped.body : text, requestId), {
+    status,
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store",
@@ -212,3 +205,9 @@ export async function POST(req: NextRequest) {
     },
   });
 }
+
+// AA-1111: a throw answers 500 {"error": "internal", "request_id"} (lib/apiError.ts), never Next's bare 500. The
+// handlers keep their names (GET, POST) for the code-health baseline; the guarded ones are what Next serves.
+const guardedGET = withApiErrors("trip", GET);
+const guardedPOST = withApiErrors("trip", POST);
+export { guardedGET as GET, guardedPOST as POST };

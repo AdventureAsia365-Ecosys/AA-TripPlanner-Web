@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { REQUEST_ID_HEADER, requestIdFor, upstreamLogLine } from "@/lib/requestId";
+import { NOT_CONFIGURED, errorResponse, upstreamErrorBody, withApiErrors } from "@/lib/apiError";
 import { tourRouteBffAnswer } from "@/lib/tourRoute";
 import { browseCacheHeaders } from "@/lib/catalogPurge";
 import { aiLimitHeaders } from "@/lib/tripProxy";
@@ -35,15 +36,10 @@ function passthroughFilters(src: URLSearchParams, dst: URLSearchParams) {
   }
 }
 
-export async function GET(req: NextRequest) {
+async function GET(req: NextRequest) {
   // AA-871: one id per request, sent to the Lambda and echoed on the response.
   const requestId = requestIdFor(req.headers);
-  if (!BROWSE_API_URL) {
-    return NextResponse.json(
-      { error: "BROWSE_API_URL not configured" },
-      { status: 503 },
-    );
-  }
+  if (!BROWSE_API_URL) return errorResponse(NOT_CONFIGURED, 503, requestId);
   const q = req.nextUrl.searchParams;
   const resource = q.get("resource");
   const filters = new URLSearchParams();
@@ -157,7 +153,8 @@ export async function GET(req: NextRequest) {
   }
   const cacheHeaders: Record<string, string> =
     status === 200 ? browseCacheHeaders(cacheControl) : { "cache-control": cacheControl };
-  return new NextResponse(body, {
+  // AA-1111: an upstream 5xx (API Gateway's own body included) goes on as {"error": "<code>", "request_id"} only.
+  return new NextResponse(upstreamErrorBody(status, body, requestId), {
     status,
     headers: {
       "content-type": "application/json",
@@ -166,3 +163,8 @@ export async function GET(req: NextRequest) {
     },
   });
 }
+
+// AA-1111: a throw answers 500 {"error": "internal", "request_id"} (lib/apiError.ts), never Next's bare 500. The
+// handler keeps its name (GET) for the code-health baseline; the guarded one is what Next serves.
+const guardedGET = withApiErrors("browse", GET);
+export { guardedGET as GET };
