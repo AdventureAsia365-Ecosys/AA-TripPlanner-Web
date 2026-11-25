@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { REQUEST_ID_HEADER, requestIdFor } from "@/lib/requestId";
+import { NOT_CONFIGURED, errorResponse, upstreamErrorBody, withApiErrors } from "@/lib/apiError";
 import { tripHeaders as lambdaHeaders } from "@/lib/tripProxy";
 import { clientIp } from "@/lib/clientIp";
 import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
@@ -19,9 +20,10 @@ function json(body: unknown, status: number, requestId: string): NextResponse {
   return NextResponse.json(body, { status, headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId } });
 }
 
-export async function GET(req: NextRequest) {
+// AA-1111: a throw answers 500 {"error": "internal", "request_id"} (lib/apiError.ts), never Next's bare 500.
+export const GET = withApiErrors("trip_agency_price", async (req: NextRequest) => {
   const requestId = requestIdFor(req.headers);
-  if (!TRIP_API_URL) return json({ error: "TRIP_API_URL not configured" }, 503, requestId);
+  if (!TRIP_API_URL) return errorResponse(NOT_CONFIGURED, 503, requestId);
   const path = agencyPriceUpstream(req.nextUrl.searchParams.get("source_id"));
   if (!path) return json({ error: "invalid_request" }, 400, requestId);
   const slug = req.headers.get(TENANT_SLUG_HEADER);
@@ -33,8 +35,8 @@ export async function GET(req: NextRequest) {
     headers: { ...lambdaHeaders(TRIPPLANNER_API_KEY, null, requestId, clientIp(req.headers)), ...tenant.headers },
     cache: "no-store",
   });
-  return new NextResponse(await upstream.text(), {
+  return new NextResponse(upstreamErrorBody(upstream.status, await upstream.text(), requestId), {
     status: upstream.status,
     headers: { "content-type": "application/json", "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
   });
-}
+});

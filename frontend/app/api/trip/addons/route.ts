@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { MINTED_TOKEN_HEADER, guestCookieName, isGuestToken, isSameOrigin, mapMintedDenial } from "@/lib/guestToken";
 import { REQUEST_ID_HEADER, requestIdFor } from "@/lib/requestId";
+import { NOT_CONFIGURED, errorResponse, upstreamErrorBody, withApiErrors } from "@/lib/apiError";
 import { parseTripBody, tripHeaders as lambdaHeaders } from "@/lib/tripProxy";
 import { clientIp } from "@/lib/clientIp";
 import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
@@ -26,9 +27,9 @@ function json(body: unknown, status: number, requestId: string): NextResponse {
   return NextResponse.json(body, { status, headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId } });
 }
 
-async function forward(req: NextRequest, method: "GET" | "POST" | "DELETE", body: Record<string, unknown>): Promise<NextResponse> {
+async function forward(req: NextRequest, method: "GET" | "POST" | "DELETE", body: Record<string, unknown>): Promise<Response> {
   const requestId = requestIdFor(req.headers);
-  if (!TRIP_API_URL) return json({ error: "TRIP_API_URL not configured" }, 503, requestId);
+  if (!TRIP_API_URL) return errorResponse(NOT_CONFIGURED, 503, requestId);
   const tripId = method === "GET" ? req.nextUrl.searchParams.get("trip_id") : String(body.trip_id ?? "");
   const upstreamReq = addonsUpstream(method, tripId, body);
   if (!upstreamReq) return json({ error: "invalid_request" }, 400, requestId);
@@ -42,27 +43,23 @@ async function forward(req: NextRequest, method: "GET" | "POST" | "DELETE", body
   });
   const text = await upstream.text();
   const mapped = method === "GET" ? null : mapMintedDenial(upstream.status, text, guest.minted);
-  return new NextResponse(mapped ? mapped.body : text, {
-    status: mapped ? mapped.status : upstream.status,
+  const status = mapped ? mapped.status : upstream.status;
+  return new NextResponse(upstreamErrorBody(status, mapped ? mapped.body : text, requestId), {
+    status,
     headers: { "content-type": "application/json", "cache-control": "no-store", vary: "Cookie", [REQUEST_ID_HEADER]: requestId },
   });
 }
 
-export async function GET(req: NextRequest) {
-  return forward(req, "GET", {});
-}
+// AA-1111: a throw answers 500 {"error": "internal", "request_id"} (lib/apiError.ts), never Next's bare 500.
+export const GET = withApiErrors("trip_addons", async (req: NextRequest) => forward(req, "GET", {}));
 
-async function mutate(req: NextRequest, method: "POST" | "DELETE"): Promise<NextResponse> {
+async function mutate(req: NextRequest, method: "POST" | "DELETE"): Promise<Response> {
   if (!isSameOrigin(req)) return NextResponse.json({ error: "cross_origin" }, { status: 403 });
   const parsed = parseTripBody(await req.text());
   if (!parsed) return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   return forward(req, method, parsed as Record<string, unknown>);
 }
 
-export async function POST(req: NextRequest) {
-  return mutate(req, "POST");
-}
+export const POST = withApiErrors("trip_addons", async (req: NextRequest) => mutate(req, "POST"));
 
-export async function DELETE(req: NextRequest) {
-  return mutate(req, "DELETE");
-}
+export const DELETE = withApiErrors("trip_addons", async (req: NextRequest) => mutate(req, "DELETE"));
