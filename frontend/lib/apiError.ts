@@ -7,6 +7,7 @@
 //     Answers below 500 pass unchanged: they are the Lambdas' own codes and validation messages the planner reads.
 //   * withApiErrors: a route handler that throws (a Lambda that cannot be reached, a bug) answers 500 `internal` and
 //     logs one `bff_error` line (route, error class, request id), never the message (it can carry request values).
+import { JSON_CONTENT_TYPE } from "./jsonResponse.ts";
 import { REQUEST_ID_HEADER, requestIdFor, type HeaderSource } from "./requestId.ts";
 
 // A code the Lambdas send ("internal", "narration_failed", "tenant tours unavailable"): lower case, digits, "_" or a
@@ -38,7 +39,7 @@ export function upstreamErrorBody(status: number, text: string, requestId: strin
 export function errorResponse(code: string, status: number, requestId: string): Response {
   return new Response(errorBody(code, requestId), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
+    headers: { "content-type": JSON_CONTENT_TYPE, "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
   });
 }
 

@@ -7,6 +7,7 @@ import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
 import { tenantHeaders } from "@/lib/tenantProxy";
 import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
 import { agencyPriceUpstream } from "@/lib/dayAddons";
+import { JSON_CONTENT_TYPE, jsonInit } from "@/lib/jsonResponse";
 
 // AA-1152 (B2 option C): GET /api/trip/agency-price?source_id= — the agency's own "from" price of one tour for its tour
 // page (components/site/AgencyFromPrice.tsx). Never cached anywhere (no-store here and in the Lambda), so the agency's
@@ -17,7 +18,7 @@ const TRIPPLANNER_API_KEY = process.env.TRIPPLANNER_API_KEY ?? "";
 const TENANT_ASSERTION_KEY = assertionKeyMaterialFromEnv(process.env);
 
 function json(body: unknown, status: number, requestId: string): NextResponse {
-  return NextResponse.json(body, { status, headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId } });
+  return NextResponse.json(body, jsonInit({ status, headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId } }));
 }
 
 // AA-1111: a throw answers 500 {"error": "internal", "request_id"} (lib/apiError.ts), never Next's bare 500.
@@ -37,6 +38,6 @@ export const GET = withApiErrors("trip_agency_price", async (req: NextRequest) =
   });
   return new NextResponse(upstreamErrorBody(upstream.status, await upstream.text(), requestId), {
     status: upstream.status,
-    headers: { "content-type": "application/json", "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
+    headers: { "content-type": JSON_CONTENT_TYPE, "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
   });
 });

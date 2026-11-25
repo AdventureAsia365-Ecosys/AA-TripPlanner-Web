@@ -17,6 +17,7 @@ import {
 } from "./lib/tenantHost";
 import { TenantLookupUnavailable, resolveTenant, type TenantSite } from "./lib/tenantSite";
 import { tenantPlannerPath, tenantRootSlug } from "./lib/tenantRoot";
+import { jsonInit } from "./lib/jsonResponse";
 
 // AA-986 L6 (root ADR 0015 Q5): a retired tour's page answers 410 Gone (Next has no "gone" for a page). The list
 // of retired slug suffixes lives in this instance's memory (lib/goneTours.ts), refreshed every minute in the
@@ -138,7 +139,7 @@ async function tourPage(event: NextFetchEvent | undefined, path: string, target:
 function withGuestCookie(req: NextRequest, path: string, target: URL | null) {
   const action = guestCookieAction(req, req.cookies.get(guestCookieName())?.value);
   if (action.kind === "reject") {
-    return NextResponse.json({ error: "cross_origin" }, { status: 403 });
+    return NextResponse.json({ error: "cross_origin" }, jsonInit({ status: 403 }));
   }
   let res: NextResponse;
   if (path.startsWith("/api/")) {

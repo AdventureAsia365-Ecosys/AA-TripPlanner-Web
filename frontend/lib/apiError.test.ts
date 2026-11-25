@@ -59,7 +59,7 @@ test("errorBody never passes a code that is not one", () => {
 test("errorResponse: JSON, no-store, the request id header", async () => {
   const res = errorResponse("not_configured", 503, RID);
   assert.equal(res.status, 503);
-  assert.equal(res.headers.get("content-type"), "application/json");
+  assert.equal(res.headers.get("content-type"), "application/json; charset=utf-8");
   assert.equal(res.headers.get("cache-control"), "no-store");
   assert.equal(res.headers.get("x-request-id"), RID);
   assert.deepEqual(await res.json(), { error: "not_configured", request_id: RID });

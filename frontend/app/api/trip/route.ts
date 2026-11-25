@@ -14,6 +14,7 @@ import { edgeGateOn, edgeGateRefusal } from "@/lib/edgeGate";
 import { TENANT_SLUG_HEADER, resolveTenant } from "@/lib/tenantSite";
 import { tenantHeaders, type TenantPick } from "@/lib/tenantProxy";
 import { assertionKeyMaterialFromEnv } from "@/lib/tenantAssertion";
+import { JSON_CONTENT_TYPE, jsonInit } from "@/lib/jsonResponse";
 
 // BFF proxy to Lambda B (Trip Assembly). Keeps TRIP_API_URL server-side.
 // Maps a single { op } POST body onto the Lambda's REST verbs/paths.
@@ -43,10 +44,10 @@ function pickTenant(req: NextRequest): Promise<TenantPick> {
 }
 
 function tenantRefusal(pick: Extract<TenantPick, { ok: false }>, requestId: string): NextResponse {
-  return NextResponse.json({ error: pick.error }, {
+  return NextResponse.json({ error: pick.error }, jsonInit({
     status: pick.status,
     headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
-  });
+  }));
 }
 
 function logUpstream(op: string, status: number, started: number, requestId: string): void {
@@ -70,7 +71,7 @@ async function GET(req: NextRequest) {
   // resource=suggestions | coverage | activities, or none for the itinerary (lib/tripProxy.ts).
   const read = tripReadPath(req.nextUrl.searchParams);
   if ("error" in read) {
-    return NextResponse.json({ error: read.error }, { status: 400 });
+    return NextResponse.json({ error: read.error }, jsonInit({ status: 400 }));
   }
   // AA-909: a read without the owner's token is a 404 from the Lambda (a fresh trip with no draft
   // too); the client treats it as an empty trip. No cookies_required mapping on reads: a 404 never
@@ -92,7 +93,7 @@ async function GET(req: NextRequest) {
   return new NextResponse(upstreamErrorBody(answer.status, answer.body, requestId), {
     status: answer.status,
     headers: {
-      "content-type": "application/json",
+      "content-type": JSON_CONTENT_TYPE,
       "cache-control": "no-store",
       vary: "Cookie",
       [REQUEST_ID_HEADER]: requestId,
@@ -104,13 +105,13 @@ async function POST(req: NextRequest) {
   // AA-827: a cross-site browser POST never reaches the Lambda (the cookie is SameSite=Lax anyway).
   // proxy.ts already refuses it before minting; this is defence in depth.
   if (!isSameOrigin(req)) {
-    return NextResponse.json({ error: "cross_origin" }, { status: 403 });
+    return NextResponse.json({ error: "cross_origin" }, jsonInit({ status: 403 }));
   }
   if (!TRIP_API_URL) return errorResponse(NOT_CONFIGURED, 503, requestIdFor(req.headers));
   // A body that is not a JSON object is a 400, not an unhandled 500 (seen in the AA-871 Sentry check).
   const parsed = parseTripBody(await req.text());
   if (!parsed) {
-    return NextResponse.json({ error: "invalid_json" }, { status: 400 });
+    return NextResponse.json({ error: "invalid_json" }, jsonInit({ status: 400 }));
   }
   const b = parsed as Record<string, any>;
   const tripId = encodeURIComponent(b.trip_id ?? "");
@@ -164,7 +165,7 @@ async function POST(req: NextRequest) {
       payload = { session_id: b.session_id };
       break;
     default:
-      return NextResponse.json({ error: "unknown op" }, { status: 400 });
+      return NextResponse.json({ error: "unknown op" }, jsonInit({ status: 400 }));
   }
 
   const requestId = requestIdFor(req.headers);
@@ -175,10 +176,10 @@ async function POST(req: NextRequest) {
     // limits "Send to advisor" per session, per IP and per tenant per day, and the chat (AA-1041) per session and IP.
     const gated = edgeGateRefusal(b.op, req.nextUrl.pathname, edgeGateOn());
     if (gated) {
-      return NextResponse.json(gated.body, {
+      return NextResponse.json(gated.body, jsonInit({
         status: gated.status,
         headers: { "cache-control": "no-store", [REQUEST_ID_HEADER]: requestId },
-      });
+      }));
     }
   }
   const tenant = await pickTenant(req);
@@ -198,7 +199,7 @@ async function POST(req: NextRequest) {
   return new NextResponse(upstreamErrorBody(status, mapped ? mapped.body : text, requestId), {
     status,
     headers: {
-      "content-type": "application/json",
+      "content-type": JSON_CONTENT_TYPE,
       "cache-control": "no-store",
       vary: "Cookie",
       [REQUEST_ID_HEADER]: requestId,

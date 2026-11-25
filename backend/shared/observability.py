@@ -139,11 +139,26 @@ def request_id_for(event: dict, context: Any = None) -> str:
     )
 
 
+JSON_MEDIA_TYPE = "application/json"
+JSON_CONTENT_TYPE = "application/json; charset=utf-8"
+
+
+def with_json_charset(headers: dict) -> dict:
+    """``headers`` with a bare ``application/json`` content type (any header-name case) given ``charset=utf-8``
+    (S294 hardening: a JSON body names its encoding). Other media types and explicit parameters stay as they are."""
+    out = dict(headers)
+    for name, value in headers.items():
+        if str(name).lower() == "content-type" and isinstance(value, str) and value.strip().lower() == JSON_MEDIA_TYPE:
+            out[name] = JSON_CONTENT_TYPE
+    return out
+
+
 def with_request_id(response: Any, request_id: str) -> Any:
-    """A copy of a Lambda proxy response with ``x-request-id`` added (anything else is returned unchanged)."""
+    """A copy of a Lambda proxy response with ``x-request-id`` added and a JSON content type that names its charset
+    (:func:`with_json_charset`); anything else is returned unchanged."""
     if not isinstance(response, dict) or "statusCode" not in response:
         return response
-    return {**response, "headers": {**(response.get("headers") or {}), REQUEST_ID_HEADER: request_id}}
+    return {**response, "headers": {**with_json_charset(response.get("headers") or {}), REQUEST_ID_HEADER: request_id}}
 
 
 # --- log lines ----------------------------------------------------------------------------------------------------
