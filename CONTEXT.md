@@ -381,6 +381,14 @@ TripPlanner sends no e-mail: the staff "new inquiry" e-mail is sent by AA-Bookin
   **Claude**. Building/AI-narrating a trip is a write that also incurs model cost, so it is
   deliberately isolated from the cacheable read path. Keep anything that writes trip state or
   calls a text model here.
+- **Operator-only direct invokes of the assembly Lambda** (`handler._handle` → `redteam.direct_op`): an event with
+  no `requestContext` (so never an API Gateway request) and the key `extraction` (AA-675, every op answers 410) or
+  `redteam` (AA-1166 follow-up, `backend/assembly/redteam.py`: the capped AI red-team of the planning chat, dev / test
+  / local only). `{"redteam": {}}` is a dry run (readiness, per-case bound, no model call, no write);
+  `{"redteam": {"apply": true, "stop_usd": <cap>}}` runs invented adversarial chat turns through `plan_chat.run_turn`
+  on the chat's own route relabelled to the stage `adhoc_aa1166_redteam_tp`, one ledger row per attempt, and answers
+  the verdicts plus a report between `=== REPORT BEGIN ===` / `=== REPORT END ===`; cases left when the 60 s Lambda
+  runs short are listed in `remaining` for the next invoke (the budget counts the stage's spend of the day).
 - Runtime: **Python 3.12**. The two functions are separate deploy units so the cacheable read
   path and the expensive stateful path scale and cache independently.
 - **Edge shared secret** (`backend/shared/auth.py`, AA-878): both Lambdas check the

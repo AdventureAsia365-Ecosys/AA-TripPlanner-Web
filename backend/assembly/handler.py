@@ -1038,12 +1038,12 @@ def _handle(event, context):  # pragma: no cover - thin AWS adapter
 
     from backend.shared import auth
 
-    # AA-675: operator-only extraction checks, reached by a direct `lambda invoke` (IAM-authorised).
-    # Read-only since AA-712 slice 6a (writer ops answer 410). API Gateway events always carry
+    # AA-675 / AA-1166: operator-only ops of a direct `lambda invoke` (IAM-authorised): the extraction checks (410 since
+    # AA-712 slice 6a) and the planning-chat red-team (assembly/redteam.py, dev only). API Gateway events always carry
     # requestContext, so this branch is not reachable over HTTP.
-    if "extraction" in event and "requestContext" not in event:
-        from backend.extraction.lambda_entry import run_extraction_event
-        return asyncio.get_event_loop().run_until_complete(run_extraction_event(event["extraction"]))
+    if "requestContext" not in event and ("extraction" in event or "redteam" in event):
+        from backend.assembly.redteam import direct_op
+        return asyncio.get_event_loop().run_until_complete(direct_op(event, context))
 
     method, path, body = _extract_request(event)
     # The CRM's M2M calls (AA-1038 lead pull, AA-1139 .../planner/*) carry a bearer token; the rest the edge key below.
