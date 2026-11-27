@@ -145,15 +145,18 @@ export default function AiLabel({
         className={`${open ? "block" : "hidden"} ${panelPos} rounded-lg border px-2.5 py-2 text-[11px] font-normal normal-case leading-relaxed tracking-normal ${style.panel}`}
       >
         {explanation}
-        {report && (
-          <a
-            href={report.href}
-            className={`${style.focus} mt-1.5 block font-semibold underline underline-offset-2`}
-          >
-            {report.label}
-          </a>
-        )}
+        <ReportLink report={report} focus={style.focus} />
       </span>
     </span>
+  );
+}
+
+// AA-1185: the "Report AI content" link under the explanation; nothing when the page passes no report.
+function ReportLink({ report, focus }: { report?: { label: string; href: string }; focus: string }) {
+  if (!report) return null;
+  return (
+    <a href={report.href} className={`${focus} mt-1.5 block font-semibold underline underline-offset-2`}>
+      {report.label}
+    </a>
   );
 }

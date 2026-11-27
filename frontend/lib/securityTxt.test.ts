@@ -52,7 +52,8 @@ test("the Report AI content link of AA's pages mails the security.txt contact", 
 test("the AI label renders the report link only when a page passes one; agency pages pass none", () => {
   const label = readFileSync(join(APP, "components", "AiLabel.tsx"), "utf8");
   assert.ok(label.includes("report?: { label: string; href: string };"));
-  assert.ok(label.includes("{report && ("));
+  assert.ok(label.includes("<ReportLink report={report} focus={style.focus} />"));
+  assert.ok(label.includes("if (!report) return null;"));
   for (const f of ["components/Header.tsx", "components/site/SiteHeader.tsx"]) {
     assert.ok(readFileSync(join(APP, f), "utf8").includes("explanation={AA_SITE_AI.explanation}"), f);
     assert.ok(readFileSync(join(APP, f), "utf8").includes("report={AA_AI_REPORT}"), f);
