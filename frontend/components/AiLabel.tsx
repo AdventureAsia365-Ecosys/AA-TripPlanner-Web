@@ -58,6 +58,8 @@ interface Props {
   // inline: it opens in the flow below the label (inside clipped or scrolling boxes).
   placement?: "popover" | "inline";
   className?: string;
+  // AA-1185: a "Report AI content" link under the explanation (Adventure Asia's own pages: lib/brand.ts AA_AI_REPORT).
+  report?: { label: string; href: string };
 }
 
 export default function AiLabel({
@@ -68,6 +70,7 @@ export default function AiLabel({
   variant = "solid",
   placement = "popover",
   className = "",
+  report,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [shift, setShift] = useState(0);
@@ -142,7 +145,18 @@ export default function AiLabel({
         className={`${open ? "block" : "hidden"} ${panelPos} rounded-lg border px-2.5 py-2 text-[11px] font-normal normal-case leading-relaxed tracking-normal ${style.panel}`}
       >
         {explanation}
+        <ReportLink report={report} focus={style.focus} />
       </span>
     </span>
+  );
+}
+
+// AA-1185: the "Report AI content" link under the explanation; nothing when the page passes no report.
+function ReportLink({ report, focus }: { report?: { label: string; href: string }; focus: string }) {
+  if (!report) return null;
+  return (
+    <a href={report.href} className={`${focus} mt-1.5 block font-semibold underline underline-offset-2`}>
+      {report.label}
+    </a>
   );
 }

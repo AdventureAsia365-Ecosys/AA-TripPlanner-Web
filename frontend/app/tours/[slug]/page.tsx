@@ -12,7 +12,7 @@ import type { Metadata } from "next";
 import { SiteLink } from "@/ui/SiteLink";
 import { notFound, permanentRedirect } from "next/navigation";
 import AiLabel from "@/components/AiLabel";
-import { AA_CATALOG_AI } from "@/lib/brand";
+import { AA_AI_REPORT, AA_CATALOG_AI } from "@/lib/brand";
 import CtaBand, { CTA_REASSURANCES } from "@/components/site/CtaBand";
 import DayToggleAll from "@/components/site/DayToggleAll";
 import JsonLd from "@/components/site/JsonLd";
@@ -134,7 +134,7 @@ function SectionHeading({ id, children, ai = false }: { id: string; children: st
         <h2 id={id} className="font-script text-script-sm text-k-ink">{children}</h2>
         <span aria-hidden className="mt-2 block h-0.5 w-10 rounded-pill bg-k-accent" />
       </div>
-      {ai && <AiLabel tone="kit" label={AA_CATALOG_AI.label} shortLabel={AA_CATALOG_AI.shortLabel} explanation={AA_CATALOG_AI.explanation} />}
+      {ai && <AiLabel tone="kit" label={AA_CATALOG_AI.label} shortLabel={AA_CATALOG_AI.shortLabel} explanation={AA_CATALOG_AI.explanation} report={AA_AI_REPORT} />}
     </div>
   );
 }
@@ -390,7 +390,7 @@ export default async function TourPage({ params }: Props) {
             {t.summary && <p className="mt-4 max-w-[72ch] text-body text-k-body" {...aiMark}>{t.summary}</p>}
             {/* AA-819 (D4): the tour text below is the CIS writer model's output (automated checks). */}
             {(t.summary || t.subtitle) && (
-              <AiLabel tone="kit" className="mt-2" label={AA_CATALOG_AI.label} shortLabel={AA_CATALOG_AI.shortLabel} explanation={AA_CATALOG_AI.explanation} />
+              <AiLabel tone="kit" className="mt-2" label={AA_CATALOG_AI.label} shortLabel={AA_CATALOG_AI.shortLabel} explanation={AA_CATALOG_AI.explanation} report={AA_AI_REPORT} />
             )}
 
             <KeyFacts facts={facts} />
