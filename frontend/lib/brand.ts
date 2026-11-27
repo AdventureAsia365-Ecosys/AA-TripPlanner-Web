@@ -32,12 +32,14 @@ export const AA_BAR = { logoAlt: AA_NAME, homeLabel: `${AA_NAME} Trip Planner â€
 
 /**
  * AA-1185 (S295 security audit SA-73): the "Report AI content" link under the AI pill's explanation on Adventure Asia's
- * own pages. It goes to the security contact the site's /.well-known/security.txt names (one watched address for
- * vulnerabilities and AI content concerns). An agency's pages show no such link (no Adventure Asia address there).
+ * own pages. It goes to the contact the site's /.well-known/security.txt names (the company role mailbox, one watched
+ * address for vulnerabilities and AI content concerns). An agency's pages show no such link (no Adventure Asia address
+ * there). Like the other values of this file it is a code value today; moving the brand contact and wording into
+ * admin-editable settings is a recorded follow-up (docs/implementation-notes/AA-1185.md).
  */
 export const AA_AI_REPORT = {
   label: "Report AI content",
-  href: "mailto:security@adventure.asia?subject=AI%20content%20report",
+  href: "mailto:info@adventure.asia?subject=AI%20content%20report",
 };
 
 /** The site-wide AI pill next to the AA mark (the planner's AA bar and the site header). */
