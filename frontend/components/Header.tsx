@@ -4,7 +4,7 @@ import Link from "next/link";
 import AiLabel, { AI_AGENCY_EXPLANATION, AI_AGENCY_LABEL } from "@/components/AiLabel";
 // AA-1115: Adventure Asia's words come from lib/brand.ts and only in the AA bar below (lib/agencyBrand.test.ts allows
 // this import here only because an agency's planner returns the agency bar first).
-import { AA_BAR, AA_SITE_AI } from "@/lib/brand";
+import { AA_AI_REPORT, AA_BAR, AA_SITE_AI } from "@/lib/brand";
 import { ThemeToggle } from "@/ui/ThemeToggle";
 import { legalPaths } from "@/lib/legal";
 import { isAgencyPlanner } from "@/lib/leadForm";
@@ -44,7 +44,7 @@ export default function Header({ agency = null }: { agency?: HeaderAgency | null
         </Link>
         {/* AA-805: AI Phase 0 — say plainly, next to the AA mark, that the planner uses AI.
             AA-819: a button with its explanation (touch + keyboard), naming only what is AI. */}
-        <AiLabel label={AA_SITE_AI.label} shortLabel={AA_SITE_AI.shortLabel} explanation={AA_SITE_AI.explanation} variant="band" />
+        <AiLabel label={AA_SITE_AI.label} shortLabel={AA_SITE_AI.shortLabel} explanation={AA_SITE_AI.explanation} variant="band" report={AA_AI_REPORT} />
         <div className="hidden leading-tight sm:block">
           <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-k-band-accent">
             Trip Planner

@@ -30,6 +30,16 @@ export const AA_COMPANY_PRIVACY_URL = "https://adventure.asia/privacy-policy";
 /** The AA bar of the planner (components/Header.tsx, AA's site only). */
 export const AA_BAR = { logoAlt: AA_NAME, homeLabel: `${AA_NAME} Trip Planner — home` };
 
+/**
+ * AA-1185 (S295 security audit SA-73): the "Report AI content" link under the AI pill's explanation on Adventure Asia's
+ * own pages. It goes to the security contact the site's /.well-known/security.txt names (one watched address for
+ * vulnerabilities and AI content concerns). An agency's pages show no such link (no Adventure Asia address there).
+ */
+export const AA_AI_REPORT = {
+  label: "Report AI content",
+  href: "mailto:security@adventure.asia?subject=AI%20content%20report",
+};
+
 /** The site-wide AI pill next to the AA mark (the planner's AA bar and the site header). */
 export const AA_SITE_AI = {
   label: `${AA_NAME} AI`,
