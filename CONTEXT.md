@@ -1375,7 +1375,7 @@ vendored as JSON Schema in `backend/tests/contracts/lead.submitted.v1.json`); no
   run in "Backend (pytest)"). The Vercel Deployment Protection branches left with the Vercel project (AA-1038).
 - **Releases (AA-891)**: release-please in manifest mode (`release-please-config.json`,
   `.release-please-manifest.json`, `CHANGELOG.md`, tags `vX.Y.Z`, `bump-minor-pre-major`), run by
-  `.github/workflows/release-please.yml` on push to `main` in the environment `release` with an `aa-ecosys-ci-bot`
+  `.github/workflows/release-please.yml` on push to `main` in the environment `ci-bot` with an `aa-ecosys-ci-bot`
   App token (so the release PR gets its checks). The manifest is the only version file (the frontend `package.json`
   has none). A release commit touches only root files, so it deploys nothing; a build reports the manifest version
   of its commit: Lambdas `version` next to `git_sha` on log lines and as a Sentry tag (`backend/VERSION`, written

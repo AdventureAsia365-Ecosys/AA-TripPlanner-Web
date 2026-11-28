@@ -7,7 +7,7 @@ name: Release Please
 # The release PR is opened with a token of the GitHub App aa-ecosys-ci-bot (contents / issues / pull_requests
 # write), not GITHUB_TOKEN: a PR opened by GITHUB_TOKEN does not trigger workflows, so its required checks would
 # never run. The App id is the variable AA_CI_BOT_APP_ID and its private key the secret AA_CI_BOT_PRIVATE_KEY,
-# read in the environment "release" (deployment branch policy: main only). GITHUB_TOKEN itself is read-only.
+# read in the environment "ci-bot" (deployment branch policy: main only). GITHUB_TOKEN itself is read-only.
 #
 # A release commit changes only CHANGELOG.md and .release-please-manifest.json (repo root), so neither
 # deploy-web-dev.yml (frontend/**) nor deploy-lambdas.yml (backend/**) runs on it. The version a deployment reports
@@ -30,7 +30,7 @@ jobs:
     name: Release PR / tag
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: release
+    environment: ci-bot
     timeout-minutes: 10
     steps:
       - name: Mint an aa-ecosys-ci-bot token
