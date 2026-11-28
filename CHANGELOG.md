@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.18.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.17.0...v0.18.0) (2026-11-28)
+
+
+### Features
+
+* AA add-ons on each day card, picks in the lead, and the agency's own from prices on its pages ([#298](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/298)) ([12b6a4d](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/12b6a4d2540463d30032c1a006cc98eb6f4ae44f))
+* agency planner speaks its locale, follows its theme (map included), and its leads fall back when the CRM does not pull the tenant ([#294](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/294)) ([fee1447](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/fee1447a4a87a5941d1b88424d301963ff9c5a20))
+* capped AI red-team of the planning chat as an operator-only Lambda invoke ([#305](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/305)) ([cad41df](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/cad41dfee14147c5fa151a49cea5723c966cf522))
+* every TripPlanner JSON answer names its charset, and a page of the input checks per data item ([#306](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/306)) ([4d6919e](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/4d6919e779debf8bbf043977bf509ec3b88eb94f))
+* extract a framework-free map engine from the planner map ([#304](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/304)) ([c980c7e](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/c980c7e1c1a24fd22c9a0aecfa804760734c67f0))
+* security.txt (RFC 9116) and a Report AI content link under the AI label ([#308](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/308)) ([6349be4](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/6349be4c284183e4cc0cdc2cd732e006b5d4bd36))
+* tp-036 agency_prices and tp-037 add-on trip events for the day cards and agency prices ([#297](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/297)) ([da1b01f](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/da1b01f3a183f25c050c6ee8a575d0f12aae79dc))
+
+
+### Bug Fixes
+
+* 403 for another agency's trip id under a new session; planner route finder heading in vi ([#299](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/299)) ([1b8502c](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/1b8502c3bfb6e5a81d80aed847fefcc59da6bdf4))
+* a dark agency accent is lightened for the planner's dark theme instead of the kit gold ([#296](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/296)) ([002b73a](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/002b73a7a549eed221898c24736b093bddc8f570))
+* generic error bodies with a request id and a bodiless agency redirect ([#307](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/307)) ([c1456b5](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/c1456b5babb2d1d97bc1bfbb3dda3e550f287834))
+* planner survives an add-on answer of another shape; planner spec mocks the add-on read ([#303](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/issues/303)) ([aa78d94](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/commit/aa78d945c59bbb0984ec826384433b992b1da357))
+
 ## [0.17.0](https://github.com/AdventureAsia365-Ecosys/AA-TripPlanner-Web/compare/v0.16.0...v0.17.0) (2026-11-21)
 
 
