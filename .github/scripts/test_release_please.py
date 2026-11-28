@@ -5,7 +5,7 @@
 Stdlib only (this suite runs before Python dependencies are installed), so the workflows are read as text.
 Pinned here:
   - the release-please config / manifest (manifest mode, bump-minor-pre-major, v-prefixed tags, CHANGELOG.md);
-  - .github/workflows/release-please.yml: push to main + workflow_dispatch only, environment "release",
+  - .github/workflows/release-please.yml: push to main + workflow_dispatch only, environment "ci-bot",
     GITHUB_TOKEN read-only, the release PR opened with an aa-ecosys-ci-bot App token (so required checks run on it);
   - a release commit (CHANGELOG.md + the manifest, repo root) deploys nothing: the push `paths:` filters of the two
     deploy workflows match none of the files release-please writes.
@@ -107,7 +107,7 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertEqual(self.text.count("permissions:"), 1)
 
     def test_environment_release(self) -> None:
-        self.assertRegex(self.text, r"\n    environment: release\n")
+        self.assertRegex(self.text, r"\n    environment: ci-bot\n")
 
     def test_app_token_opens_the_release_pr(self) -> None:
         self.assertRegex(self.text, r"uses: actions/create-github-app-token@[0-9a-f]{40} # v3\.")
